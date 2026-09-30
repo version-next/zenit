@@ -1,0 +1,7 @@
+{
+  "results": [
+    {"name":"reactive_1k_signal_fanout","median_ns":363000.000,"p95_ns":392000.000,"min_ns":360000.000,"mean_ns":366260.000,"samples":50,"iters_per_sample":1},
+    {"name":"resource_pool_alloc_release_cycle","median_ns":9.033,"p95_ns":9.521,"min_ns":8.057,"mean_ns":9.006,"samples":50,"iters_per_sample":16384},
+    {"name":"slotmap_alloc_free_cycle","median_ns":3.540,"p95_ns":3.998,"min_ns":3.235,"mean_ns":3.558,"samples":50,"iters_per_sample":32768}
+  ]
+}

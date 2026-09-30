@@ -1,0 +1,40 @@
+// ⚠️  TEMPLATE — when you copy this directory into your own project:
+//
+//   1. Rename `.name = .myapp` to your package name.
+//   2. Replace `.fingerprint` below with one Zig generates for you.
+//      The current value is the template's; if you keep it, two projects
+//      sharing it will collide in Zig's package cache. To get a fresh one:
+//        - rm build.zig.zon
+//        - zig init  (then re-add the `.dependencies` block manually), OR
+//        - delete the .fingerprint line and `zig build` once — Zig will
+//          print the unique value to use.
+//   3. Switch the zenit dep from `.path` to `.url + .hash` once you're
+//      depending on a published version.
+.{
+    .name = .myapp,
+    .version = "0.1.0",
+    .fingerprint = 0x8798022a7f8e220e,
+    .minimum_zig_version = "0.15.2",
+
+    .dependencies = .{
+        // The default `.path` is relative to **this file's directory** and
+        // assumes you're running from inside the zenit repo at
+        // `templates/minimal-app/`. After copying this template elsewhere,
+        // you MUST change one of:
+        //   - `.path` to your local zenit checkout, **relative to this file**.
+        //     e.g. if myapp/ sits next to the zenit checkout: `.path = "../zenit"`.
+        //     ⚠ Zig 0.15.2 rejects absolute paths here:
+        //       `error: expected path relative to build root; found absolute path`
+        //   - or switch to `.url + .hash` (recommended for published apps):
+        //     `zig fetch --save=zenit https://github.com/<fork>/zenit/archive/<rev>.tar.gz`
+        .zenit = .{ .path = "../../" },
+    },
+
+    .paths = .{
+        "README.md",
+        "build.zig",
+        "build.zig.zon",
+        "e2e",
+        "src",
+    },
+}

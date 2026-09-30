@@ -1,0 +1,211 @@
+{
+  "schema_version": 1,
+  "unicode_baseline": "Unicode 17.0.0 UAX #29 extended grapheme clusters; generated from vendored UCD data",
+  "coordinate_units": {
+    "storage": "UTF-8 byte offsets",
+    "editing": "extended grapheme boundaries",
+    "geometry": "line-local logical pixels (future VisualLine contract)"
+  },
+  "cases": [
+    {
+      "id": "latin_ligature_candidate",
+      "category": "latin",
+      "mode": "plain",
+      "text": "office",
+      "utf8_bytes": 6,
+      "grapheme_boundaries": [0, 1, 2, 3, 4, 5, 6],
+      "geometry_status": "not_captured",
+      "limitation": "graphemes are captured; fi/ffi shaping clusters and caret stops are not exposed by one shared layout"
+    },
+    {
+      "id": "latin_combining_acute",
+      "category": "combining",
+      "mode": "plain",
+      "text": "éx",
+      "utf8_bytes": 4,
+      "grapheme_boundaries": [0, 3, 4],
+      "geometry_status": "not_captured",
+      "limitation": "visual cluster geometry is not yet serialized"
+    },
+    {
+      "id": "cjk_punctuation",
+      "category": "cjk_wrap",
+      "mode": "plain",
+      "text": "你好，世界",
+      "utf8_bytes": 15,
+      "grapheme_boundaries": [0, 3, 6, 9, 12, 15],
+      "geometry_status": "not_captured",
+      "limitation": "soft-wrap opportunities and punctuation hanging are not yet in the shared model"
+    },
+    {
+      "id": "mandatory_crlf_lf",
+      "category": "newline",
+      "mode": "plain",
+      "text": "a\r\nb\n",
+      "utf8_bytes": 5,
+      "grapheme_boundaries": [0, 1, 3, 4, 5],
+      "geometry_status": "not_captured",
+      "limitation": "newline affinity and empty trailing visual line are not represented"
+    },
+    {
+      "id": "arabic_diacritics",
+      "category": "arabic",
+      "mode": "plain",
+      "text": "مَرْحَبًا",
+      "utf8_bytes": 18,
+      "grapheme_boundaries": [0, 4, 8, 12, 16, 18],
+      "geometry_status": "not_captured",
+      "limitation": "CoreText shapes visually, but joining clusters/caret stops are not serialized for editing"
+    },
+    {
+      "id": "hebrew_marks",
+      "category": "hebrew",
+      "mode": "plain",
+      "text": "שָׁלוֹם",
+      "utf8_bytes": 14,
+      "grapheme_boundaries": [0, 6, 8, 12, 14],
+      "geometry_status": "not_captured",
+      "limitation": "visual caret order and strong/weak positions are not represented"
+    },
+    {
+      "id": "mixed_ltr_rtl_numbers",
+      "category": "bidi",
+      "mode": "plain",
+      "text": "abc אבג 123",
+      "utf8_bytes": 14,
+      "grapheme_boundaries": [0, 1, 2, 3, 4, 6, 8, 10, 11, 12, 13, 14],
+      "geometry_status": "not_captured",
+      "limitation": "visual run order, bidi-boundary affinity, and disjoint selection rectangles are not shared"
+    },
+    {
+      "id": "emoji_family_zwj",
+      "category": "emoji_zwj",
+      "mode": "plain",
+      "text": "👨‍👩‍👧‍👦",
+      "utf8_bytes": 25,
+      "grapheme_boundaries": [0, 25],
+      "geometry_status": "not_captured",
+      "limitation": "one editing cluster is captured; fallback/color glyph geometry is not"
+    },
+    {
+      "id": "emoji_skin_tone",
+      "category": "emoji_modifier",
+      "mode": "plain",
+      "text": "👍🏽",
+      "utf8_bytes": 8,
+      "grapheme_boundaries": [0, 8],
+      "geometry_status": "not_captured",
+      "limitation": "glyph cluster geometry is not serialized"
+    },
+    {
+      "id": "emoji_flag_japan",
+      "category": "regional_indicator",
+      "mode": "plain",
+      "text": "🇯🇵",
+      "utf8_bytes": 8,
+      "grapheme_boundaries": [0, 8],
+      "geometry_status": "not_captured",
+      "limitation": "flag glyph geometry is not serialized"
+    },
+    {
+      "id": "emoji_variation_selector",
+      "category": "variation_selector",
+      "mode": "plain",
+      "text": "♥️",
+      "utf8_bytes": 6,
+      "grapheme_boundaries": [0, 6],
+      "geometry_status": "not_captured",
+      "limitation": "text-vs-emoji presentation and fallback run identity are not serialized"
+    },
+    {
+      "id": "devanagari_conjunct_gb9c",
+      "category": "indic",
+      "mode": "plain",
+      "text": "क्ष",
+      "utf8_bytes": 9,
+      "grapheme_boundaries": [0, 9],
+      "geometry_status": "captured",
+      "limitation": "Unicode 17 GB9c keeps the virama-linked consonant conjunct in one extended grapheme cluster"
+    },
+    {
+      "id": "thai_spacing_mark",
+      "category": "thai",
+      "mode": "plain",
+      "text": "กำ",
+      "utf8_bytes": 6,
+      "grapheme_boundaries": [0, 6],
+      "geometry_status": "not_captured",
+      "limitation": "dictionary line breaking and shaped caret geometry are not represented"
+    },
+    {
+      "id": "khmer_conjunct_gb9c",
+      "category": "khmer",
+      "mode": "plain",
+      "text": "ខ្មែរ",
+      "utf8_bytes": 15,
+      "grapheme_boundaries": [0, 12, 15],
+      "geometry_status": "captured",
+      "limitation": "Unicode 17 GB9c captures the coeng-linked consonant; dictionary and syllable tailoring remain out of scope"
+    },
+    {
+      "id": "hangul_jamo_sequence",
+      "category": "hangul",
+      "mode": "plain",
+      "text": "한",
+      "utf8_bytes": 9,
+      "grapheme_boundaries": [0, 9],
+      "geometry_status": "not_captured",
+      "limitation": "composed glyph geometry is not serialized"
+    },
+    {
+      "id": "fallback_latin_cjk_emoji",
+      "category": "font_fallback",
+      "mode": "plain",
+      "text": "A中😀",
+      "utf8_bytes": 8,
+      "grapheme_boundaries": [0, 1, 4, 8],
+      "geometry_status": "not_captured",
+      "limitation": "fallback font identity and run boundaries are not part of a shared layout result"
+    },
+    {
+      "id": "tabs_trailing_spaces",
+      "category": "whitespace",
+      "mode": "plain",
+      "text": "a\tb  ",
+      "utf8_bytes": 5,
+      "grapheme_boundaries": [0, 1, 2, 3, 4, 5],
+      "geometry_status": "not_captured",
+      "limitation": "tab policy, trailing-space caret stops, and selection widths are not unified"
+    },
+    {
+      "id": "empty_text",
+      "category": "empty_line",
+      "mode": "plain",
+      "text": "",
+      "utf8_bytes": 0,
+      "grapheme_boundaries": [0],
+      "geometry_status": "not_captured",
+      "limitation": "empty visual-line metrics/caret are not serialized"
+    },
+    {
+      "id": "password_mask_cluster",
+      "category": "password",
+      "mode": "password",
+      "text": "a👍🏽b",
+      "utf8_bytes": 10,
+      "grapheme_boundaries": [0, 1, 9, 10],
+      "geometry_status": "not_captured",
+      "limitation": "mask glyph count must map to source graphemes; current UI geometry is not serialized"
+    },
+    {
+      "id": "ime_preedit_hiragana",
+      "category": "ime",
+      "mode": "ime_preedit",
+      "text": "にほんご",
+      "utf8_bytes": 12,
+      "grapheme_boundaries": [0, 3, 6, 9, 12],
+      "geometry_status": "not_captured",
+      "limitation": "preedit span, composition selection, and candidate-window geometry are not unified"
+    }
+  ]
+}

@@ -1,0 +1,71 @@
+// zenit — Zig GUI framework, GPL-3.0-only OR commercial (see LICENSING.md).
+//
+// `fingerprint` is the stable package identity used by Zig's package manager.
+// Do NOT regenerate it on releases — downstream consumers' caches are keyed
+// off this value. Bump `version` only.
+.{
+    .name = .zenit,
+    .version = "0.1.0-alpha",
+    .fingerprint = 0xd8a68ba39878e4d7,
+    .minimum_zig_version = "0.15.2",
+
+    .dependencies = .{},
+
+    // `paths` is include-only (Zig has no exclude form), so `docs` is listed
+    // file-by-file rather than wholesale. Everything not named here — the
+    // internal planning notes in `docs/internal/`, the release-process
+    // checklists, the roadmap and bug ledger — stays in the repo but does
+    // NOT ship in the package tarball. Consumers get reference docs; they
+    // have no use for our process, and it dates badly in a published artifact.
+    //
+    // Internal checkout 的付费图标位于顶层 `private/`，刻意不在此 allowlist
+    // 中，因此 Zig fetch/package payload 只有 Lucide。公开 Git source export
+    // 仍须排除整个 private/；scripts/check_oss_icon_license.sh 负责 fail closed。
+    .paths = .{
+        "LICENSE",
+        "LICENSING.md",
+        "CLA.md",
+        "README.md",
+        "CONTRIBUTING.md",
+        "SECURITY.md",
+        "CODE_OF_CONDUCT.md",
+        "build.zig",
+        "build.zig.zon",
+        "docs/API_STABILITY.md",
+        "docs/CONSOLE.md",
+        "docs/DEVTOOLS.md",
+        "docs/GETTING_STARTED.md",
+        "docs/HARNESS.md",
+        "docs/MIGRATION.md",
+        "docs/STYLING.md",
+        "docs/UI_FRAMEWORK_CORE.md",
+        "docs/UI_OSS_BOUNDARY.md",
+        "src",
+        "examples",
+        "e2e/client.ts",
+        "e2e/png.ts",
+        "e2e/design_diff.ts",
+        "e2e/golden_compare.ts",
+        "e2e/mock.ts",
+        "e2e/pencil_export.ts",
+        "e2e/scenario_runner.ts",
+        "e2e/controller.ts",
+        "e2e/watcher.ts",
+        "e2e/scenario.schema.json",
+        "e2e/report.schema.json",
+        "e2e/storybook.test.ts",
+        "e2e/runner.ts",
+        "tests/package_consumer",
+        "tools/bidi_conformance.zig",
+        "tools/text_coordinate_property.zig",
+        "tools/text_coordinate_oracle.zig",
+        "tools/metal_preflight.zig",
+        "tools/gen_svg_assets.zig",
+        "tools/gen_component_index.zig",
+        "tools/macos_capability_matrix.zig",
+        "native",
+        "scripts",
+        "templates",
+        "vendor",
+    },
+}

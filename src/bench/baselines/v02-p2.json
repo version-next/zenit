@@ -1,0 +1,13 @@
+{
+  "results": [
+    {"name":"reactive_1k_signal_fanout","median_ns":604000.000,"p95_ns":1142000.000,"min_ns":565000.000,"mean_ns":736940.000,"samples":50,"iters_per_sample":1},
+    {"name":"reactive_diamond_no_glitch_set","median_ns":5562.500,"p95_ns":6625.000,"min_ns":4750.000,"mean_ns":5638.750,"samples":50,"iters_per_sample":16},
+    {"name":"reactive_lazy_memo_unused","median_ns":3.113,"p95_ns":3.357,"min_ns":2.991,"mean_ns":3.149,"samples":50,"iters_per_sample":16384},
+    {"name":"reactive_topological_chain_10","median_ns":5375.000,"p95_ns":6625.000,"min_ns":3562.500,"mean_ns":5687.500,"samples":50,"iters_per_sample":16},
+    {"name":"resource_pool_alloc_release_cycle","median_ns":8.728,"p95_ns":9.766,"min_ns":7.751,"mean_ns":8.855,"samples":50,"iters_per_sample":16384},
+    {"name":"slotmap_alloc_free_cycle","median_ns":3.784,"p95_ns":4.272,"min_ns":3.418,"mean_ns":3.816,"samples":50,"iters_per_sample":16384},
+    {"name":"element_table_10k_dfs_traverse","median_ns":23750.000,"p95_ns":24000.000,"min_ns":21250.000,"mean_ns":23320.000,"samples":50,"iters_per_sample":4},
+    {"name":"intrinsic_cache_get","median_ns":2.380,"p95_ns":2.472,"min_ns":2.258,"mean_ns":2.351,"samples":50,"iters_per_sample":32768},
+    {"name":"element_table_unlink_relink","median_ns":4.272,"p95_ns":5.920,"min_ns":3.296,"mean_ns":4.380,"samples":50,"iters_per_sample":16384}
+  ]
+}

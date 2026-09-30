@@ -1,0 +1,384 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "zenit:scenario:v2",
+  "title": "zenit UI 自动化 scenario",
+  "description": "YAML 的 JSON 表示（YAML → JSON 后校验）。对应 docs/internal/UI_AUTOMATION_PLAN.md §4。",
+  "type": "object",
+  "required": ["version", "meta", "target", "cases"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": 2 },
+    "meta": {
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$" },
+        "title": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "target": {
+      "type": "object",
+      "required": ["build", "launch", "viewport"],
+      "additionalProperties": false,
+      "properties": {
+        "build": {
+          "type": "object",
+          "required": ["step"],
+          "additionalProperties": false,
+          "properties": {
+            "step": { "type": "string" },
+            "args": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "launch": {
+          "type": "object",
+          "required": ["executable"],
+          "additionalProperties": false,
+          "properties": {
+            "executable": { "type": "string" },
+            "args": { "type": "array", "items": { "type": "string" } },
+            "env": { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        },
+        "viewport": {
+          "type": "object",
+          "required": ["expected_logical"],
+          "additionalProperties": false,
+          "properties": {
+            "expected_logical": {
+              "type": "object",
+              "required": ["width", "height"],
+              "additionalProperties": false,
+              "properties": {
+                "width": { "type": "number" },
+                "height": { "type": "number" }
+              }
+            },
+            "expected_scale": { "type": "number" }
+          }
+        }
+      }
+    },
+    "mocks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "request", "response"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "request": {
+            "type": "object",
+            "required": ["method", "path"],
+            "additionalProperties": false,
+            "properties": {
+              "method": { "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+              "path": { "type": "string" }
+            }
+          },
+          "response": { "$ref": "#/definitions/mockResponse" }
+        }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "timeline", "expect"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "setup": { "$ref": "#/definitions/setup" },
+          "mocks": {
+            "type": "object",
+            "additionalProperties": { "$ref": "#/definitions/mockResponse" }
+          },
+          "timeline": {
+            "type": "array",
+            "items": { "$ref": "#/definitions/timelineOp" }
+          },
+          "expect": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/definitions/expect" }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "mockResponse": {
+      "type": "object",
+      "required": ["status"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "type": "integer" },
+        "body_file": { "type": "string" },
+        "body_json": {},
+        "body_text": { "type": "string" },
+        "delay_ms": { "type": "integer" }
+      }
+    },
+    "setup": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "view": { "type": "string" },
+        "state_key": { "type": "string" }
+      }
+    },
+    "target": {
+      "type": "object",
+      "required": ["test_id"],
+      "additionalProperties": false,
+      "properties": {
+        "test_id": { "type": "string" },
+        "anchor": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "x": { "type": "number" },
+            "y": { "type": "number" }
+          }
+        },
+        "offset": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "x": { "type": "number" },
+            "y": { "type": "number" }
+          }
+        }
+      }
+    },
+    "modifiers": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "shift": { "type": "boolean" },
+        "ctrl": { "type": "boolean" },
+        "alt": { "type": "boolean" },
+        "cmd": { "type": "boolean" }
+      }
+    },
+    "waitForPredicate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "node": {
+          "type": "object",
+          "required": ["test_id"],
+          "additionalProperties": false,
+          "properties": {
+            "test_id": { "type": "string" },
+            "visible": { "type": "boolean" },
+            "text_contains": { "type": "string" }
+          }
+        },
+        "focused": { "$ref": "#/definitions/target" },
+        "requests": {
+          "type": "object",
+          "required": ["mock", "count"],
+          "additionalProperties": false,
+          "properties": {
+            "mock": { "type": "string" },
+            "count": { "type": "integer" }
+          }
+        },
+        "console": {
+          "type": "object",
+          "required": ["level", "count"],
+          "additionalProperties": false,
+          "properties": {
+            "level": { "enum": ["debug", "log", "info", "warn", "error"] },
+            "count": { "type": "integer" }
+          }
+        },
+        "input_state": {
+          "type": "object",
+          "required": ["test_id"],
+          "additionalProperties": false,
+          "properties": {
+            "test_id": { "type": "string" },
+            "buffer": { "type": "string" },
+            "ime_phase": { "type": "string" }
+          }
+        },
+        "timeout_ms": { "type": "integer" }
+      }
+    },
+    "timelineOp": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "hover": { "$ref": "#/definitions/target" },
+        "press": { "$ref": "#/definitions/target" },
+        "release": { "$ref": "#/definitions/target" },
+        "click": { "$ref": "#/definitions/target" },
+        "pointer_drag": {
+          "type": "object",
+          "required": ["from", "to"],
+          "additionalProperties": false,
+          "properties": {
+            "from": { "$ref": "#/definitions/target" },
+            "to": { "$ref": "#/definitions/target" }
+          }
+        },
+        "key": {
+          "type": "object",
+          "required": ["key"],
+          "additionalProperties": false,
+          "properties": {
+            "key": { "type": "string" },
+            "modifiers": { "$ref": "#/definitions/modifiers" }
+          }
+        },
+        "text": {
+          "type": "object",
+          "required": ["text"],
+          "additionalProperties": false,
+          "properties": { "text": { "type": "string" } }
+        },
+        "ime_preedit": {
+          "type": "object",
+          "required": ["text"],
+          "additionalProperties": false,
+          "properties": {
+            "text": { "type": "string" },
+            "cursor_utf8_offset": { "type": "integer" }
+          }
+        },
+        "ime_commit": {
+          "type": "object",
+          "required": ["text"],
+          "additionalProperties": false,
+          "properties": { "text": { "type": "string" } }
+        },
+        "ime_cancel": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {}
+        },
+        "scroll": {
+          "type": "object",
+          "required": ["target", "dx", "dy"],
+          "additionalProperties": false,
+          "properties": {
+            "target": { "$ref": "#/definitions/target" },
+            "dx": { "type": "number" },
+            "dy": { "type": "number" },
+            "modifiers": { "$ref": "#/definitions/modifiers" }
+          }
+        },
+        "file_drop": {
+          "type": "object",
+          "required": ["target", "paths"],
+          "additionalProperties": false,
+          "properties": {
+            "target": { "$ref": "#/definitions/target" },
+            "paths": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "wait": {
+          "type": "object",
+          "required": ["ms"],
+          "additionalProperties": false,
+          "properties": { "ms": { "type": "integer" } }
+        },
+        "wait_for": { "$ref": "#/definitions/waitForPredicate" },
+        "assert": { "$ref": "#/definitions/waitForPredicate" },
+        "screenshot": {
+          "type": "object",
+          "required": ["id"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "type": "string" },
+            "region": {
+              "oneOf": [
+                { "const": "window" },
+                {
+                  "type": "object",
+                  "required": ["test_id"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "test_id": { "type": "string" },
+                    "padding": { "type": "number" }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "recording_start": {
+          "type": "object",
+          "required": ["id"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "type": "string" },
+            "fps": { "type": "integer" }
+          }
+        },
+        "recording_stop": {
+          "type": "object",
+          "required": ["id"],
+          "additionalProperties": false,
+          "properties": { "id": { "type": "string" } }
+        }
+      }
+    },
+    "expect": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "design" },
+            "reference": { "type": "string" },
+            "pen": {
+              "type": "object",
+              "required": ["file", "node_id"],
+              "additionalProperties": false,
+              "properties": {
+                "file": { "type": "string" },
+                "node_id": { "type": "string" },
+                "scale": { "type": "number" }
+              }
+            },
+            "max_changed_ratio": { "type": "number" },
+            "max_rmse": { "type": "number" }
+          },
+          "anyOf": [
+            { "required": ["reference"] },
+            { "required": ["pen"] }
+          ]
+        },
+        {
+          "type": "object",
+          "required": ["kind", "baseline"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "golden" },
+            "baseline": { "type": "string" },
+            "pixel_delta_threshold": { "type": "number" },
+            "max_changed_ratio": { "type": "number" },
+            "max_rmse": { "type": "number" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "needs_review" }
+          }
+        }
+      ]
+    }
+  }
+}

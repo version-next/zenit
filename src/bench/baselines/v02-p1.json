@@ -1,0 +1,10 @@
+{
+  "results": [
+    {"name":"reactive_1k_signal_fanout","median_ns":505000.000,"p95_ns":539000.000,"min_ns":499000.000,"mean_ns":510440.000,"samples":50,"iters_per_sample":1},
+    {"name":"reactive_diamond_no_glitch_set","median_ns":4593.750,"p95_ns":5218.750,"min_ns":4125.000,"mean_ns":4640.625,"samples":50,"iters_per_sample":32},
+    {"name":"reactive_lazy_memo_unused","median_ns":2.991,"p95_ns":3.235,"min_ns":2.747,"mean_ns":3.028,"samples":50,"iters_per_sample":32768},
+    {"name":"reactive_topological_chain_10","median_ns":4750.000,"p95_ns":5468.750,"min_ns":4343.750,"mean_ns":4790.000,"samples":50,"iters_per_sample":32},
+    {"name":"resource_pool_alloc_release_cycle","median_ns":8.850,"p95_ns":9.705,"min_ns":7.996,"mean_ns":8.873,"samples":50,"iters_per_sample":16384},
+    {"name":"slotmap_alloc_free_cycle","median_ns":3.540,"p95_ns":3.967,"min_ns":3.113,"mean_ns":3.582,"samples":50,"iters_per_sample":16384}
+  ]
+}

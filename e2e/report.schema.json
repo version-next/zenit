@@ -1,0 +1,83 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "zenit:report:v1",
+  "title": "zenit UI 自动化 report",
+  "description": "runner 落盘的 report 索引结构。对应 docs/internal/UI_AUTOMATION_PLAN.md §7。",
+  "type": "object",
+  "required": ["schema_version", "scenario_id", "run_id", "timestamp", "cases"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "scenario_id": { "type": "string" },
+    "run_id": { "type": "string" },
+    "timestamp": { "type": "string" },
+    "commit": { "type": "string" },
+    "dirty": { "type": "boolean" },
+    "build_args": { "type": "array", "items": { "type": "string" } },
+    "executable_hash": { "type": "string" },
+    "mock_profile_hash": { "type": "string" },
+    "scenario_hash": { "type": "string" },
+    "environment": {
+      "type": "object",
+      "properties": {
+        "os": { "type": "string" },
+        "arch": { "type": "string" },
+        "gpu": { "type": "string" },
+        "scale": { "type": "number" },
+        "locale": { "type": "string" },
+        "appearance": { "type": "string" },
+        "fonts": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "status"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "status": { "enum": ["pass", "fail", "needs_review", "skip", "error"] },
+          "duration_ms": { "type": "integer" },
+          "error": { "type": "string" },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "kind", "path"],
+              "additionalProperties": false,
+              "properties": {
+                "id": { "type": "string" },
+                "kind": { "enum": ["screenshot", "recording"] },
+                "path": { "type": "string" },
+                "sha256": { "type": "string" }
+              }
+            }
+          },
+          "expectations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["kind", "ok"],
+              "additionalProperties": false,
+              "properties": {
+                "kind": { "enum": ["design", "golden", "needs_review"] },
+                "ok": { "type": "boolean" },
+                "reference": { "type": "string" },
+                "changed_ratio": { "type": "number" },
+                "rmse": { "type": "number" },
+                "score": { "type": "number" },
+                "hints": { "type": "array", "items": { "type": "string" } },
+                "heatmap": { "type": "string" },
+                "reviewer": { "type": "string" },
+                "decision": { "enum": ["approved", "rejected"] },
+                "reason": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

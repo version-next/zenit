@@ -1,0 +1,52 @@
+# Zig build artifacts
+zig-out/
+zig-cache/
+.zig-cache/
+.zig-global-cache/
+.zig-local-cache/
+.zig-lib-*/
+
+# Native / build outputs
+dist/
+*.o
+*.a
+*.so
+*.dylib
+*.dSYM/
+
+# macOS
+.DS_Store
+._*
+
+# Editors
+.vscode/
+.idea/
+*.sublime-*
+*.swp
+*.swo
+*~
+
+# E2E / tooling
+node_modules/
+*.log
+__pycache__/
+*.pyc
+*.pyo
+
+# Scenario automation output (reports, golden candidates, screenshots/recordings)
+reports/
+golden-candidate/
+designs-cache/
+
+# Local gate / benchmark evidence (archived separately, never source inputs)
+.bench-output/
+.ci-evidence/
+release-evidence/
+
+# Local secrets and agent state
+.env
+.env.*
+.claude/
+
+# Optional licensed icon pack (paid license, never redistribute; see LICENSING.md)
+private/

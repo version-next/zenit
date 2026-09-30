@@ -1,0 +1,11 @@
+.{
+    .name = .zenit_package_consumer,
+    .version = "0.0.0",
+    .fingerprint = 0x8f1192bc52b0dc28,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{
+        .zenit = .{ .path = "../package" },
+        .zenit_icons_untitled = .{ .path = "../private-icons" },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}

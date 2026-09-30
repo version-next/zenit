@@ -1,0 +1,19 @@
+{
+  "results": [
+    {"name":"reactive_1k_signal_fanout","median_ns":576000.000,"p95_ns":938000.000,"min_ns":564000.000,"mean_ns":668780.000,"samples":50,"iters_per_sample":1},
+    {"name":"reactive_diamond_no_glitch_set","median_ns":5187.500,"p95_ns":5906.250,"min_ns":4593.750,"mean_ns":5186.250,"samples":50,"iters_per_sample":32},
+    {"name":"reactive_lazy_memo_unused","median_ns":2.808,"p95_ns":2.960,"min_ns":2.747,"mean_ns":2.817,"samples":50,"iters_per_sample":32768},
+    {"name":"reactive_topological_chain_10","median_ns":7312.500,"p95_ns":9250.000,"min_ns":5625.000,"mean_ns":7435.000,"samples":50,"iters_per_sample":16},
+    {"name":"resource_pool_alloc_release_cycle","median_ns":8.606,"p95_ns":9.033,"min_ns":7.813,"mean_ns":8.644,"samples":50,"iters_per_sample":16384},
+    {"name":"slotmap_alloc_free_cycle","median_ns":3.784,"p95_ns":4.089,"min_ns":3.418,"mean_ns":3.765,"samples":50,"iters_per_sample":16384},
+    {"name":"element_table_10k_dfs_traverse","median_ns":24250.000,"p95_ns":25000.000,"min_ns":24000.000,"mean_ns":24260.000,"samples":50,"iters_per_sample":4},
+    {"name":"intrinsic_cache_get","median_ns":2.411,"p95_ns":2.411,"min_ns":2.380,"mean_ns":2.408,"samples":50,"iters_per_sample":32768},
+    {"name":"element_table_unlink_relink","median_ns":5.249,"p95_ns":5.554,"min_ns":5.066,"mean_ns":5.292,"samples":50,"iters_per_sample":16384},
+    {"name":"paint_chunk_content_hash_hit","median_ns":1.953,"p95_ns":2.167,"min_ns":1.923,"mean_ns":1.970,"samples":50,"iters_per_sample":32768},
+    {"name":"element_id_packed_roundtrip","median_ns":0.763,"p95_ns":0.793,"min_ns":0.748,"mean_ns":0.762,"samples":50,"iters_per_sample":65536},
+    {"name":"paint_chunk_record_2_items","median_ns":6.958,"p95_ns":7.324,"min_ns":6.958,"mean_ns":7.004,"samples":50,"iters_per_sample":8192},
+    {"name":"promotion_hint_should_promote","median_ns":1.251,"p95_ns":1.297,"min_ns":1.251,"mean_ns":1.259,"samples":50,"iters_per_sample":65536},
+    {"name":"promotion_hint_primary_reason","median_ns":0.748,"p95_ns":0.809,"min_ns":0.748,"mean_ns":0.757,"samples":50,"iters_per_sample":65536},
+    {"name":"promotion_hint_pack_unpack","median_ns":1.007,"p95_ns":1.038,"min_ns":0.992,"mean_ns":1.005,"samples":50,"iters_per_sample":65536}
+  ]
+}
