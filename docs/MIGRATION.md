@@ -39,7 +39,11 @@ alters a public symbol.
 Behavior: a mouse wheel without gesture phases no longer rubber-bands (same as
 NSScrollView). Momentum that reaches an edge bounces once; the rest of that
 momentum stream does not push outward again. Losing window focus cancels an
-in-progress gesture and momentum.
+in-progress gesture and momentum. A diagonal event on a `.both` ScrollArea that
+can scroll only one of its axes goes to the layer of its dominant axis instead
+of dropping the other component. `Notifier` cards are swiped by trackpad
+gestures only: `ended` commits past the threshold, `cancelled` springs back,
+and a mouse wheel no longer swipes (there was a 140 ms silence timeout before).
 
 **Why.** The old state was released by timeouts, and several guards were
 frame or millisecond windows. Begin/end signals now exist for gestures and

@@ -1306,6 +1306,64 @@ test("Notification: 九种类型、折叠 / 展开堆叠、悬停暂停、删除
   await clearAll();
 });
 
+test("Notification: 触控板横扫按 ended 关闭、cancelled 弹回，鼠标滚轮不驱动横扫", async () => {
+  await switchTo("notification");
+  async function cardTexts(): Promise<string> {
+    const o: string[] = [];
+    const walk = (n: any) => {
+      if (n.component === "Notification") collectText(n, o);
+      else for (const c of n.children ?? []) walk(c);
+    };
+    walk(await tree());
+    return o.join(" │ ");
+  }
+  async function clearAll(): Promise<void> {
+    await mouseMove(-10, -10);
+    await clickTestId("story.notify.btn.clear");
+    await sleep(600);
+  }
+  await clearAll();
+  await clickTestId("story.notify.btn.warning");
+  await sleep(700);
+  const w0 = await screenPos("story.notify.warning");
+  const x = w0.x + 120, y = w0.y + w0.h / 2;
+
+  // 鼠标滚轮没有手势阶段：不驱动横扫，卡片不动、不关闭
+  for (let i = 0; i < 8; i++) {
+    await scrollAt(x, y, 30, 0);
+    await sleep(16);
+  }
+  await sleep(500);
+  const w1 = await screenPos("story.notify.warning");
+  assert(Math.abs(w1.x - w0.x) < 1, `滚轮不应移动卡片: ${w0.x} -> ${w1.x}`);
+  assert((await cardTexts()).includes("磁盘空间不足"), "滚轮把通知关掉了");
+
+  // 手势被系统取消：即使越过阈值也弹回
+  await scrollAt(x, y, 0, 0, { phase: "began" });
+  for (let i = 0; i < 8; i++) {
+    await scrollAt(x, y, 20, 0, { phase: "changed" });
+    await sleep(16);
+  }
+  await scrollAt(x, y, 0, 0, { phase: "cancelled" });
+  await sleep(700);
+  const w2 = await screenPos("story.notify.warning");
+  assert(Math.abs(w2.x - w0.x) < 1, `cancelled 应弹回: ${w0.x} -> ${w2.x}`);
+  assert((await cardTexts()).includes("磁盘空间不足"), "cancelled 却关闭了通知");
+
+  // 停顿再久也不会自己松手；ended 越过 84px 才关闭
+  await scrollAt(x, y, 0, 0, { phase: "began" });
+  for (let i = 0; i < 8; i++) {
+    await scrollAt(x, y, 20, 0, { phase: "changed" });
+    await sleep(16);
+  }
+  await sleep(600);
+  assert((await cardTexts()).includes("磁盘空间不足"), "手指还在板上，通知不应被关闭");
+  await scrollAt(x, y, 0, 0, { phase: "ended" });
+  await sleep(700);
+  assert(!(await cardTexts()).includes("磁盘空间不足"), "ended 越过阈值后没有关闭");
+  await clearAll();
+});
+
 test("Notification: 拖拽关闭（84px 阈值 / 弹回 / 甩出）、不可拖拽区、内联回复 Enter 提交", async () => {
   await switchTo("notification");
   // 只查提醒卡片（宿主的通知中心历史行可能在树上有同样标题）。

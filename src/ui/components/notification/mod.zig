@@ -960,8 +960,8 @@ pub const Notifier = struct {
         const self = notifierOf(card) orelse return;
         switch (ev.phase) {
             .start => {
-                // 鼠标接管横扫：从当前位移继续，并结束横扫状态（否则横扫的静默超时会在
-                // 用户仍按住时替他「松手」）。
+                // 鼠标接管横扫：从当前位移继续，并结束横扫状态（之后到达的触控板
+                // ended/cancelled 不能替仍按着鼠标的用户「松手」）。
                 card.drag_base = if (card.scroll_dragging) card.drag_dx else 0;
                 card.scroll_dragging = false;
                 card.dragging = true;
@@ -985,20 +985,32 @@ pub const Notifier = struct {
         self.container.markRenderDirty();
     }
 
+    /// 触控板双指横扫。只由手势驱动：changed 累加位移，ended 按位移决定关闭还是
+    /// 弹回，cancelled（系统中断、窗口失焦、新手势开始）一律弹回。鼠标滚轮没有
+    /// 手势阶段、无法判断松手，不驱动横扫（同 macOS 通知中心）。
     fn scrollHandler(ev: events.ScrollEvent, ctx: ?*anyopaque) core.EventResult {
         const card: *Card = @ptrCast(@alignCast(ctx orelse return .ignored));
         const self = notifierOf(card) orelse return .ignored;
         if (card.leaving or card.dragging and !card.scroll_dragging) return .ignored;
-        // 惯性阶段不驱动（松手判定已在静默超时里完成）。
-        if (ev.isMomentum()) return if (card.scroll_dragging) .stop else .ignored;
+        // 惯性在松手之后，横扫已经结束
+        if (ev.isMomentum()) return .ignored;
+        switch (ev.phase) {
+            .none, .may_begin, .began => return .ignored,
+            .ended, .cancelled => {
+                if (!card.scroll_dragging) return .ignored;
+                card.drag_dx += ev.dx;
+                if (ev.phase == .ended) self.releaseDrag(card) else self.springBack(card);
+                self.container.markRenderDirty();
+                return .stop;
+            },
+            .changed => {},
+        }
         if (!card.scroll_dragging and @abs(ev.dx) <= @abs(ev.dy) * 1.2) return .ignored;
         card.scroll_dragging = true;
         card.dragging = true;
         card.spring_at_ms = null;
         card.spring_pending = false;
         card.drag_dx += ev.dx;
-        card.last_scroll_wall_ms = std.time.milliTimestamp();
-        if (ev.phaseEnded()) self.releaseDrag(card);
         self.container.markRenderDirty();
         return .stop;
     }
@@ -1058,12 +1070,6 @@ pub const Notifier = struct {
         self.processPending();
         // listener 回调里可能关掉整个 Notifier（dispose scope / 关窗）。
         if (self.closed) return;
-
-        // 触控板横扫没有 up：真实静默 140ms 视为松手。
-        const wall = std.time.milliTimestamp();
-        for (self.cards.items) |card| {
-            if (card.scroll_dragging and wall - card.last_scroll_wall_ms > 140) self.releaseDrag(card);
-        }
 
         // 1. 量高度：首帧拿到真实高度后才诞生（born = 此刻），入场从这一帧开始。
         for (self.cards.items) |card| {
@@ -2229,7 +2235,7 @@ test "Notifier: swipe under 84px springs back, over 84px flings out and reports 
     try testing.expect(c.rect_x < x0 - 120); // 沿方向甩出（1 + 1.1p）
 }
 
-test "Notifier: right-anchored stack only flings rightward; trackpad swipe releases after silence" {
+test "Notifier: right-anchored stack only flings rightward; trackpad swipe releases on ended" {
     var rig = try TestRig.init(.bottom_right);
     defer rig.deinit();
     const id = try rig.n.show(.{ .title = "Edge", .sticky = true });
@@ -2244,18 +2250,49 @@ test "Notifier: right-anchored stack only flings rightward; trackpad swipe relea
     rig.step(900);
     rig.step(1500);
 
-    // 双指横扫：累计 dx，静默 140ms 视为松手。
+    // 双指横扫：累计 dx；不管停多久都不会自己松手，只看 ended。
     var i: usize = 0;
     while (i < 6) : (i += 1) {
         _ = Notifier.scrollHandler(.{ .dx = 20, .dy = 0, .x = 0, .y = 0, .phase = .changed, .modifiers = .{} }, @ptrCast(c));
     }
     try testing.expect(c.scroll_dragging);
     rig.step(1520);
-    try testing.expect(!c.leaving);
-    // 静默按真实墙钟判定：模拟 140ms 没有新的横扫事件。
-    c.last_scroll_wall_ms -= 200;
-    rig.step(1540);
+    rig.step(4000);
+    try testing.expect(c.scroll_dragging and !c.leaving);
+    _ = Notifier.scrollHandler(.{ .dx = 0, .dy = 0, .x = 0, .y = 0, .phase = .ended, .modifiers = .{} }, @ptrCast(c));
     try testing.expect(c.leaving);
+}
+
+test "Notifier: a cancelled trackpad swipe springs back instead of dismissing" {
+    var rig = try TestRig.init(.bottom_center);
+    defer rig.deinit();
+    const id = try rig.n.show(.{ .title = "Swipe", .sticky = true });
+    rig.step(0);
+    rig.step(800);
+    const c = rig.card(id);
+    var i: usize = 0;
+    while (i < 6) : (i += 1) {
+        _ = Notifier.scrollHandler(.{ .dx = 20, .dy = 0, .x = 0, .y = 0, .phase = .changed, .modifiers = .{} }, @ptrCast(c));
+    }
+    // 120 > 84，如果按 ended 处理就会关闭
+    _ = Notifier.scrollHandler(.{ .dx = 0, .dy = 0, .x = 0, .y = 0, .phase = .cancelled, .modifiers = .{} }, @ptrCast(c));
+    try testing.expect(!c.leaving);
+    try testing.expect(!c.scroll_dragging and !c.dragging);
+}
+
+test "Notifier: mouse wheel does not drive the swipe" {
+    var rig = try TestRig.init(.bottom_center);
+    defer rig.deinit();
+    const id = try rig.n.show(.{ .title = "Wheel", .sticky = true });
+    rig.step(0);
+    rig.step(800);
+    const c = rig.card(id);
+    var i: usize = 0;
+    while (i < 10) : (i += 1) {
+        try testing.expectEqual(core.EventResult.ignored, Notifier.scrollHandler(.{ .dx = 30, .dy = 0, .x = 0, .y = 0, .modifiers = .{} }, @ptrCast(c)));
+    }
+    try testing.expect(!c.scroll_dragging);
+    try testing.expectEqual(@as(f32, 0), c.drag_dx);
 }
 
 test "Notifier: reply sends in place as a quote and replyFailed restores the text" {
@@ -2307,8 +2344,8 @@ test "Notifier: mouse drag takes over a trackpad swipe without jumping or auto-r
     Notifier.dragCallback(fakeDrag(.start, 10), @ptrCast(c));
     try testing.expectApproxEqAbs(@as(f32, 70), c.drag_dx, 1e-4);
     try testing.expect(!c.scroll_dragging);
-    // 横扫的静默超时不能在鼠标仍按住时替用户松手。
-    c.last_scroll_wall_ms -= 500;
+    // 随后到达的触控板 ended 不能在鼠标仍按住时替用户松手。
+    _ = Notifier.scrollHandler(.{ .dx = 0, .dy = 0, .x = 0, .y = 0, .phase = .ended, .modifiers = .{} }, @ptrCast(c));
     rig.step(820);
     try testing.expect(c.dragging and !c.leaving);
     Notifier.dragCallback(fakeDrag(.end, 10), @ptrCast(c));

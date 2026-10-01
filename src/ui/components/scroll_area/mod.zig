@@ -1127,6 +1127,87 @@ test "ScrollArea: bounce animation blocks outward momentum" {
     try std.testing.expect(!state.bounce_active_y);
 }
 
+fn mountBothInsideVertical(ctx: *Cx, scope: *Scope) !struct { outer: ScrollAreaResult, inner: ScrollAreaResult } {
+    const root = try box(ctx, .{ .width = .{ .px = 500 }, .height = .{ .px = 400 } }, .{});
+    ctx.root = root;
+    const outer = try mountScrollArea(.{ .width = 320, .height = 220 }, scope, ctx);
+    try root.appendChild(std.testing.allocator, outer.container);
+    // 只能横向滚的 both 区域：内容比视口宽、与视口一样高
+    const inner = try mountScrollArea(.{ .width = 280, .height = 120, .direction = .both }, scope, ctx);
+    try outer.content.appendChild(std.testing.allocator, inner.container);
+    const strip = try box(ctx, .{ .width = .{ .px = 900 }, .height = .{ .px = 120 } }, .{});
+    try inner.content.appendChild(std.testing.allocator, strip);
+    const spacer = try box(ctx, .{ .width = .{ .grow = .{} }, .height = .{ .px = 420 } }, .{});
+    try outer.content.appendChild(std.testing.allocator, spacer);
+    ctx.layout();
+    _ = ctx.render();
+    // 横向内容宽度由宿主管理（Grid / VirtualList 的用法）
+    const inner_state = testState(inner);
+    inner_state.external_content_width = true;
+    inner_state.content_width = 900;
+    return .{ .outer = outer, .inner = inner };
+}
+
+test "ScrollArea: both mode hands a diagonal event to the layer of its dominant axis" {
+    var ctx = try Cx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const areas = try mountBothInsideVertical(ctx, scope);
+    const outer_state = testState(areas.outer);
+    const inner_state = testState(areas.inner);
+    try std.testing.expectEqual(@as(f32, 0), inner_state.maxScrollY());
+    const g = areas.inner.container.globalRect();
+
+    // 纵向为主：整个事件交给外层，纵向分量不会丢
+    ctx.handleScroll(.{ .x = g.x + 8, .y = g.y + 8, .dx = -2, .dy = -8 });
+    try std.testing.expectEqual(@as(f32, 8), outer_state.scroll_y);
+    try std.testing.expectEqual(@as(f32, 0), inner_state.scroll_x);
+
+    // 横向为主：本层处理横向，纵向小分量随轴锁丢弃
+    ctx.handleScroll(.{ .x = g.x + 8, .y = g.y + 8, .dx = -8, .dy = -2 });
+    try std.testing.expectEqual(@as(f32, 8), inner_state.scroll_x);
+    try std.testing.expectEqual(@as(f32, 8), outer_state.scroll_y);
+}
+
+test "ScrollArea: both mode keeps a held gesture when the dominant axis changes" {
+    var ctx = try Cx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const areas = try mountBothInsideVertical(ctx, scope);
+    const outer_state = testState(areas.outer);
+    const inner_state = testState(areas.inner);
+    const g = areas.inner.container.globalRect();
+
+    ctx.handleScroll(.{ .x = g.x + 8, .y = g.y + 8, .dx = 0, .dy = 0, .phase = .began });
+    ctx.handleScroll(.{ .x = g.x + 8, .y = g.y + 8, .dx = -8, .dy = -1, .phase = .changed });
+    try std.testing.expect(inner_state.touching);
+    // 手势中途变成纵向为主：不换手给外层
+    ctx.handleScroll(.{ .x = g.x + 8, .y = g.y + 8, .dx = -1, .dy = -8, .phase = .changed });
+    try std.testing.expectEqual(@as(f32, 0), outer_state.scroll_y);
+    try std.testing.expectEqual(@as(f32, 9), inner_state.scroll_x);
+}
+
+test "ScrollArea: both mode keeps the momentum of a gesture it held" {
+    var ctx = try Cx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const areas = try mountBothInsideVertical(ctx, scope);
+    const outer_state = testState(areas.outer);
+    const inner_state = testState(areas.inner);
+    const g = areas.inner.container.globalRect();
+
+    ctx.handleScroll(.{ .x = g.x + 8, .y = g.y + 8, .dx = 0, .dy = 0, .phase = .began });
+    ctx.handleScroll(.{ .x = g.x + 8, .y = g.y + 8, .dx = -8, .dy = -1, .phase = .changed });
+    ctx.handleScroll(.{ .x = g.x + 8, .y = g.y + 8, .dx = 0, .dy = 0, .phase = .ended });
+    // 惯性尾段变成纵向为主：仍属于 inner 的这段惯性，不漏给外层
+    ctx.handleScroll(.{ .x = g.x + 8, .y = g.y + 8, .dx = -1, .dy = -6, .momentum = .changed });
+    try std.testing.expectEqual(@as(f32, 0), outer_state.scroll_y);
+    try std.testing.expectEqual(@as(f32, 9), inner_state.scroll_x);
+}
+
 test "ScrollArea: both mode does not inject bonus on non-scrollable axis" {
     var ctx = try Cx.init(std.testing.allocator);
     defer ctx.deinit();

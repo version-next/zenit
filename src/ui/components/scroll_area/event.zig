@@ -142,6 +142,20 @@ pub fn scrollEventHandler(event: Event, context: ?*anyopaque) EventResult {
                 if (can_h) {
                     skip_x = skip_x or shouldDelegateHorizontalToAncestor(state, ctx, scroll.dx, is_momentum);
                 }
+                // 一个轴要交给外层、另一个轴本层能滚：按主导轴决定整个事件的归属（与单轴
+                // 的 cross-dominant passthrough 同一规则），否则本层吃掉一轴、另一轴凭空
+                // 消失。本层已持有手势（或它的惯性）时不换手，次要轴随之留在本层。
+                const y_leaves = wants_v and skip_y;
+                const x_leaves = wants_h and skip_x;
+                const holds_stream = state.touching or (is_momentum and state.latched);
+                if (!holds_stream and y_leaves != x_leaves) {
+                    const leaving_dominant = if (y_leaves) v_delta_abs > h_delta_abs else h_delta_abs > v_delta_abs;
+                    if (leaving_dominant) {
+                        logScroll("axis_passthrough both dominant-leaves: id={d} dy={d:.2} dx={d:.2}", .{ container.id, scroll.dy, scroll.dx });
+                        if (kind == .gesture) state.latched = false;
+                        return .ignored;
+                    }
+                }
             } else {
                 const single_axis_passthrough = switch (ctx.direction) {
                     .vertical => h_delta_abs > epsilon and h_delta_abs > v_delta_abs and !state.touching and !hasActiveBonusForDirection(state, .vertical),

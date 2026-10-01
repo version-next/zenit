@@ -255,10 +255,8 @@ pub const Card = struct {
     drag_binding: ?*@import("../../interaction/drag.zig").Binding = null,
     /// destroyCard 进行中：回调一律只复位状态、不再访问 Notifier / 节点。
     destroying: bool = false,
-    /// 触控板双指横扫驱动的拖拽（无 up 事件，靠静默超时收尾）。
+    /// 触控板双指横扫驱动的拖拽（以手势 ended/cancelled 收尾）。
     scroll_dragging: bool = false,
-    /// 最近一次横扫事件的真实墙钟（ms），衡量的是真实输入间隔，不用帧时钟。
-    last_scroll_wall_ms: i64 = 0,
     /// 最近一次发出的回复（失败时恢复进输入框）。
     last_reply: ?[]u8 = null,
     spring_from: f32 = 0,
