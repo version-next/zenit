@@ -1,10 +1,10 @@
-/// ControlShell — 统一基底布局函数
+/// ControlShell，统一基底布局函数
 ///
 /// 为 Button / Input / Select 提供统一的三区域节点结构:
 ///   root (row, border, background, padding)
-///   ├── icon_slot     (fit — 调用者放 icon)
-///   ├── content_slot  (grow — 调用者放 text / input / label; Button 会覆盖为 fit)
-///   └── append_slot   (fit — 调用者放 chevron / spinner / clear)
+///   ├── icon_slot     (fit，调用者放 icon)
+///   ├── content_slot  (grow，调用者放 text / input / label; Button 会覆盖为 fit)
+///   └── append_slot   (fit，调用者放 chevron / spinner / clear)
 ///
 /// 调用者通过返回的 ControlShellResult 拿到各 slot 引用，自行填充内容。
 const std = @import("std");
@@ -24,7 +24,7 @@ const theme = core.theme;
 const hooks = @import("../../hooks.zig");
 const recipe_mod = @import("../../recipe.zig");
 
-/// 统一控件变体 — 按 UniPost 规格文档
+/// 统一控件变体，按 UniPost 规格文档
 ///
 /// | 风格       | 背景                 | 文字色              | 边框           | 字重 |
 /// |-----------|---------------------|--------------------|--------------:|-----:|
@@ -80,7 +80,7 @@ pub const ControlShellConfig = struct {
 
     /// 解析完整的 ConditionalStyle:
     /// ControlShellRecipe.resolve() 统一合并 variant × size × pill × icon_only × leading_icon
-    /// → 外部 style/hover_style/pressed_style/disabled_style 最后 override
+    /// -> 外部 style/hover_style/pressed_style/disabled_style 最后 override
     fn resolvedConditionalStyle(self: ControlShellConfig, t: *const theme.ThemeTokens) ConditionalStyle {
         var cs = ControlShellRecipe.resolve(.{
             .variant = self.variant,
@@ -100,7 +100,7 @@ pub const ControlShellConfig = struct {
     }
 };
 
-/// ControlShell 返回值 — 调用者通过 slot 引用填充内容
+/// ControlShell 返回值，调用者通过 slot 引用填充内容
 pub const ControlShellResult = struct {
     /// 根节点 (带 border / background / padding 的容器)
     node: *Node,
@@ -166,7 +166,7 @@ pub fn controlShell(config: ControlShellConfig, scope: *Scope, cx: *Cx) !Control
     const width_sizing: Sizing = resolved.width orelse .{ .fit = .{} };
     const final_gap: f32 = resolved.gap orelse metrics.gap;
 
-    // root: row layout — 所有样式来自 recipe resolve 结果
+    // root: row layout，所有样式来自 recipe resolve 结果
     const node = try box(cx, .{
         .width = width_sizing,
         .height = height_sizing,
@@ -182,7 +182,7 @@ pub fn controlShell(config: ControlShellConfig, scope: *Scope, cx: *Cx) !Control
     scope_bound = true;
     node.meta.per_frame.hooks.before_render.main = syncGroupedControlShell;
     // syncGroupedControlShell 只读写 **本节点自身** 的 style.border.radius /
-    // ext.hit_shape / ext.clip_shape（见其实现），一个后代都不碰 —— 担保成立。
+    // ext.hit_shape / ext.clip_shape（见其实现），一个后代都不碰，担保成立。
     // 意义：控件基底遍布全 app（title bar/tab bar/toolbar/input 等），不声明
     // 的话每一个都会打断整条 paint 前缀，让其后所有干净子树退回 fresh emit。
     node.frame_state.state_bits.flags.before_render_hook_affects_self_only = true;
@@ -196,12 +196,12 @@ pub fn controlShell(config: ControlShellConfig, scope: *Scope, cx: *Cx) !Control
 
     // ── 行盒（line box）──
     // 外框高度合同：padding_y × 2 + 行高（font_size × line_height）。三个 slot 的最小
-    // 高度都是行高，控件高度由布局 fit 自然撑出 —— 空 label / 纯 tag / 比行高矮的内容
+    // 高度都是行高，控件高度由布局 fit 自然撑出，空 label / 纯 tag / 比行高矮的内容
     // 也不会让外框塌矮；任何控件都不写死外框 height。
     // icon_only：图标槽最小 icon_size 见方（配合 derived 的 icon_only padding）。
     const line_box: f32 = metrics.lineHeightPx();
 
-    // icon_slot (fit) — 调用者填入内容后再 appendChild 到 node，避免空节点占用 gap
+    // icon_slot (fit)，调用者填入内容后再 appendChild 到 node，避免空节点占用 gap
     const icon_slot = try box(cx, .{
         .width = .{ .fit = .{} },
         .height = .{ .fit = .{} },
@@ -220,7 +220,7 @@ pub fn controlShell(config: ControlShellConfig, scope: *Scope, cx: *Cx) !Control
         }
     }
 
-    // content_slot (grow — Button 会覆盖为 fit 以配合 justify 居中)
+    // content_slot (grow, Button 会覆盖为 fit 以配合 justify 居中)
     const content_slot = try box(cx, .{
         .width = .{ .grow = .{} },
         .height = .{ .fit = .{} },
@@ -231,7 +231,7 @@ pub fn controlShell(config: ControlShellConfig, scope: *Scope, cx: *Cx) !Control
     (try content_slot.style.ensureExtFallible(allocator)).min_height = line_box;
     try node.appendChild(allocator, content_slot);
 
-    // append_slot (fit) — 调用者填入内容后再 appendChild 到 node，避免空节点占用 gap
+    // append_slot (fit)，调用者填入内容后再 appendChild 到 node，避免空节点占用 gap
     const append_slot = try box(cx, .{
         .width = .{ .fit = .{} },
         .height = .{ .fit = .{} },
@@ -311,7 +311,7 @@ test "ControlShell: disabled skips interaction" {
     const result = try controlShell(.{ .disabled = true }, scope, ctx);
     try root.appendChild(allocator, result.node);
 
-    // disabled → no anim_bg, no hover handler
+    // disabled -> no anim_bg, no hover handler
     try std.testing.expect(result.anim_bg == null);
     try std.testing.expect(result.node.behavior.events.on_hover == null);
     result.icon_slot.destroy(allocator);
@@ -366,12 +366,12 @@ test "ControlShell: grouped non-uniform radii disable uniform clip" {
     result.append_slot.destroy(allocator);
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "control_shell: mount 在任意分配点失败时不泄漏（sweep）" {
     const sw = @import("../oom_sweep.zig");
     try sw.sweepMount("control_shell", struct {

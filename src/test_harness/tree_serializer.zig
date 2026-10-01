@@ -1,4 +1,4 @@
-/// tree_serializer — Node 树 → JSON 序列化
+/// tree_serializer, Node 树 -> JSON 序列化
 ///
 /// 递归遍历 UI Node 树，输出 JSON 结构供 AI Agent 读取。
 /// (zenit v0.5 适配：用 meta.ownership.meta.test_id / behavior.interaction.focusable /
@@ -195,9 +195,9 @@ fn serializeLayoutRecursive(jw: *JsonWriter, node: *Node, depth: usize, indent: 
 
 /// 有效不透明度：自身 × 所有祖先 opacity，以下情形直接计 0（节点不呈现）：
 /// - 自身或祖先 display:none；
-/// - 落在挂起（已关闭）浮层的 content / barrier 子树里 —— Modal 关闭时只把 barrier
+/// - 落在挂起（已关闭）浮层的 content / barrier 子树里，Modal 关闭时只把 barrier
 ///   缩成 0×0 + overflow_hidden + 层挂起，dialog 及祖先 opacity 仍是 1；
-/// - 自身或祖先 overflow_hidden 且盒子退化到 0 宽/高 —— 渲染侧同判据整棵跳过
+/// - 自身或祖先 overflow_hidden 且盒子退化到 0 宽/高，渲染侧同判据整棵跳过
 ///   （render_engine/tick.zig 的 `overflow_hidden and w/h <= 0.1`），裁剪对
 ///   absolute / z_index 子节点同样生效（只有 portal 能逃出）。
 fn effectiveOpacity(node: *Node, overlays: ?*const OverlayStack) f32 {
@@ -310,7 +310,7 @@ fn serializeNode(jw: *JsonWriter, node: *Node, overlays: ?*const OverlayStack, d
         jw.key("children");
         jw.beginArray();
         // 全量输出：曾经每层只输出前 50 个子节点（长列表后半段"查不到"，客户端从不
-        // 处理 truncated 标记 —— 静默丢失）。体积由调用方缓冲兜底，溢出显式报错。
+        // 处理 truncated 标记，静默丢失）。体积由调用方缓冲兜底，溢出显式报错。
         for (children) |child| {
             serializeNode(jw, child, overlays, depth + 1);
         }
@@ -408,7 +408,7 @@ test "effective_opacity: 0×0 的 overflow_hidden 祖先把子树计 0" {
     pumpFrames(ctx, 1);
     try testing.expectEqual(@as(f32, 0), effectiveOpacity(leaf, null));
 
-    // 对照：同样 0×0 但不裁剪 —— 子节点照常溢出可见。
+    // 对照：同样 0×0 但不裁剪，子节点照常溢出可见。
     clipper.style.overflow_hidden = false;
     clipper.markRenderDirty();
     pumpFrames(ctx, 1);

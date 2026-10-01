@@ -1,4 +1,4 @@
-//! Phase 0 — Point / PointUtf16 / OffsetUtf16
+//! Phase 0, Point / PointUtf16 / OffsetUtf16
 //!
 //! 对齐 Zed `crates/text/src/text.rs` 的文本坐标类型。
 //!

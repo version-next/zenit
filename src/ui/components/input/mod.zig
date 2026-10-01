@@ -1,4 +1,4 @@
-/// Input Component — facade
+/// Input Component, facade
 ///
 /// 文本输入组件，支持键盘输入、光标导航、焦点管理
 ///
@@ -54,7 +54,7 @@ pub const text_utils = @import("text_utils.zig");
 
 /// 输入框属性
 pub const InputProps = struct {
-    /// 初始值。**只在 mount 时读取一次** —— 之后改无效。
+    /// 初始值。**只在 mount 时读取一次**，之后改无效。
     /// 首帧之后要写入内容，用 `mountResult()` 拿 `result.state` 再调
     /// `setText()`（2026-07-31 新增）。
     initial_value: ?[]const u8 = null,
@@ -117,15 +117,15 @@ pub const InputResult = struct {
     ///
     /// 为什么需要这个 API：`node` 被 bindScopeToNode 绑在 Input 自己的
     /// childScope 上，而那个 childScope 是**调用方 scope 的子 scope**。
-    /// 于是调用方在错误路径上无论用哪种方式自己释放都会 UAF —— 消费方
+    /// 于是调用方在错误路径上无论用哪种方式自己释放都会 UAF，消费方
     /// 下游编辑器实测过两种，都是 signal 6 + 0xaaaa 毒值：
-    ///   - `cx.freeNode(node)`                        → invalidateReferencesToEx
-    ///   - `cx.freeDetachedNodeAfterScopeDispose(node)` → unregisterSubtree
+    ///   - `cx.freeNode(node)`                        -> invalidateReferencesToEx
+    ///   - `cx.freeDetachedNodeAfterScopeDispose(node)` -> unregisterSubtree
     /// 因为调用方 scope teardown 时会沿 scope 树再走一遍。
     ///
     /// ⚠️ 光靠 scope 级联**不够**：Scope.disposeNow 只释放 effects/signals/
     /// resources，**从不释放绑定的节点**（ScopeBinding.destroy 也只解绑不释放，
-    /// 见 core.zig bindScopeToNode 的注释）。所以"什么都不做"会真的泄漏 ——
+    /// 见 core.zig bindScopeToNode 的注释）。所以"什么都不做"会真的泄漏,
     /// 消费方 OOM 注入实测该失败点泄漏 22 条。
     ///
     /// 正确做法：先让 Input 的 childScope 退场（把它从调用方 scope 的子链上摘掉
@@ -320,7 +320,7 @@ pub const InputBuilder = struct {
         const sz = p.size;
         const metrics = t.control.get(sz);
         const input_font_size = metrics.font_size;
-        // 行高与 Button/Select 同源（control metrics），不再自行 ceil —— 否则 md 高 1px
+        // 行高与 Button/Select 同源（control metrics），不再自行 ceil，否则 md 高 1px
         const input_line_height = metrics.lineHeightPx();
         const input_text_line_height = metrics.line_height;
         const input_icon_size = metrics.icon_size;
@@ -394,10 +394,10 @@ pub const InputBuilder = struct {
         }, my_scope, cx);
 
         // shell.node 从 controlShell 返回到挂进 field_shell 之间是游离子树：
-        // 此前只有 icon_slot / append_slot 有 errdefer，**根节点本身没有** ——
+        // 此前只有 icon_slot / append_slot 有 errdefer，**根节点本身没有**,
         // 中途任何一步失败都会泄漏它（含 controlShell 给它分配的 StyleExt）。
         // 消费方下游编辑器的 OOM 注入实测：泄漏栈就是
-        // controlShell 的 ensureExtFallible → Input.mountResult。
+        // controlShell 的 ensureExtFallible -> Input.mountResult。
         var shell_node_owned = true;
         errdefer if (shell_node_owned) cx.freeNode(shell.node);
         var icon_owned = true;
@@ -454,7 +454,7 @@ pub const InputBuilder = struct {
             // 建好到挂进 icon_slot 之间是游离子树，append 失败即泄漏。
             var leading_icon_owned = true;
             errdefer if (leading_icon_owned) cx.freeNode(leading_icon);
-            // 已有门控 errdefer —— 不能再走会自释放 child 的 appendInputChild，
+            // 已有门控 errdefer，不能再走会自释放 child 的 appendInputChild，
             // 否则 append 失败时释放两次（生存哨兵实测 signal 6）。
             try shell.icon_slot.appendChild(cx.allocator, leading_icon);
             leading_icon_owned = false;
@@ -543,7 +543,7 @@ pub const InputBuilder = struct {
         editable_surface.meta.per_frame.hooks.before_render.main = render_mod.inputBeforeRender;
 
         // Single-line Input: selection / IME preedit underline / IME marked highlight 全部走
-        // text_display_node.text.spans —— glyph 永远在 span 背景之上，根除"selection 遮文字"
+        // text_display_node.text.spans, glyph 永远在 span 背景之上，根除"selection 遮文字"
         // 和"位置对不齐"两类 bug。只保留 cursor_node（光标条不属于文本属性）。
 
         const cursor_node = try box(cx, .{ .width = .{ .px = 0 }, .height = .{ .px = 0 } }, .{});
@@ -599,9 +599,9 @@ pub const InputBuilder = struct {
                         const s: *TextInputState = @ptrCast(@alignCast(c));
                         s.focused = true;
                         // 注意: 不设 dirty=true，聚焦不改变文本内容。
-                        // multiline 模式下 dirty 会触发 rebuildTextareaTextNodes →
-                        // markRuntimeIndexDirty → 节点从 registry detach → 焦点丢失。
-                        // 更新边框样式: 聚焦 → focus 态色（保持 1px，避免交界处抖动）
+                        // multiline 模式下 dirty 会触发 rebuildTextareaTextNodes ->
+                        // markRuntimeIndexDirty -> 节点从 registry detach -> 焦点丢失。
+                        // 更新边框样式: 聚焦 -> focus 态色（保持 1px，避免交界处抖动）
                         if (!s.has_error and !s.embedded_chrome) {
                             if (s.input_container_node) |container| {
                                 container.setBorderColor(styles.borderColor(s.tokens, s.restingBorderColor(), false, true, false));
@@ -1544,7 +1544,7 @@ test "TextInputState: new operation clears redo" {
 
 test "TextInputState: multiple undo — 连续输入合并成一个单元" {
     var state = TextInputState{};
-    // 连打三个字符（无光标跳转、无停顿、无边界字符）→ 合并为一步
+    // 连打三个字符（无光标跳转、无停顿、无边界字符）-> 合并为一步
     state.insertText("a");
     state.insertText("b");
     state.insertText("c");
@@ -1751,7 +1751,7 @@ test "Input.setText: 程序化替换内容（此前完全不可能）" {
 
 test "Input: 容量上限支持超过旧 256 字节" {
     var state = TextInputState{};
-    // 300 字节的路径 —— 旧的 256B buffer 装不下
+    // 300 字节的路径，旧的 256B buffer 装不下
     var long: [300]u8 = undefined;
     @memset(&long, 'x');
     const n = state.setText(&long);
@@ -1785,7 +1785,7 @@ test "Input: 超限截断落在 UTF-8 边界上，不产生半个字符" {
     try std.testing.expect(std.unicode.utf8ValidateSlice(s2.getText()));
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
@@ -1842,7 +1842,7 @@ test "mounted input reconversion cancels before commands blur and explicit repla
     }
 }
 
-// devtools mountPanel sweep 在 Input 内部抓到泄漏，而的夹具是 `Input(.{})`——
+// devtools mountPanel sweep 在 Input 内部抓到泄漏，而的夹具是 `Input(.{})`,
 // 没走 leading_icon / placeholder / helper 分支（夹具决定覆盖面）。补一条带齐分支的 sweep。
 test "Input: 带 leading_icon / placeholder / helper 的 mountResult 在任意分配点失败时不泄漏（sweep）" {
     try @import("../oom_sweep.zig").sweepMount("input(icon+helper)", struct {
@@ -1930,7 +1930,7 @@ test "growable Input initial display owns text across storage growth" {
 
 test "Input: 聚焦时先 dispose scope 再摘节点，blur 不碰已释放的 state" {
     // Notifier 回复框发送后原地换内容：先 dispose 内容 scope（释放 TextInputState），
-    // 再 detachChildRetained → invalidateReferencesTo → clearFocus → on_blur(state)。
+    // 再 detachChildRetained -> invalidateReferencesTo -> clearFocus -> on_blur(state)。
     // 真 app 里 SIGSEGV 在 HandlerRef.invoke。
     const alloc = std.testing.allocator;
     var ctx = try Cx.init(alloc);

@@ -1,10 +1,10 @@
-//! popover_test.zig — Popover / overlay 定位与生命周期单测
+//! popover_test.zig, Popover / overlay 定位与生命周期单测
 //!
 //! 从 popover.zig 析出（2026-07-31）。测试占原文件 961 行（42%），
 //! 与实现同文件除了撑大文件没有别的作用。
 //!
 //! ⚠ 必须在 components/mod.zig 或上游有显式 `_ = @import(...)` 才会被
-//! test runner 收集 —— Zig 的 refAllDecls 只递归本文件引用过的模块。
+//! test runner 收集，Zig 的 refAllDecls 只递归本文件引用过的模块。
 //! 析出后已用"故意反转断言"验证过测试确实仍在跑。
 
 const std = @import("std");
@@ -50,7 +50,7 @@ test "Popover: basic structure" {
 
     // 初始隐藏
     try std.testing.expectEqual(core.Sizing{ .px = 0 }, result.content.style.width);
-    // Default placement is .bottom_start → transform_origin = (0%, 0%) → (0, 0).
+    // Default placement is .bottom_start -> transform_origin = (0%, 0%) -> (0, 0).
     const origin = result.content.style.transform_origin().resolve(200, 100);
     try std.testing.expectApproxEqAbs(@as(f32, 0), origin.x, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 0), origin.y, 0.001);
@@ -222,7 +222,7 @@ test "Popover: virtual anchor returns dynamic rect" {
         try std.testing.expectEqual(@as(f32, 300), r1.y);
         try std.testing.expectEqual(@as(f32, 18), r1.h);
 
-        // 移动锚点 → 第二次读返回新值（"reactive" 锚点的关键能力）
+        // 移动锚点 -> 第二次读返回新值（"reactive" 锚点的关键能力）
         StateVirt.x = 400;
         StateVirt.y = 500;
         const r2 = pctx.anchorRect();
@@ -408,29 +408,29 @@ test "Popover: before_render preserves overlay-managed opacity and scale" {
     // 曾 QUARANTINE。原注释的诊断方向是对的（"测试用 stub 绕过了
     // OverlayStack.push 所以 signal 缺失，需要更真实的 fixture"），
     // 但结论"需要教 popoverBeforeRender 去检测 manual_*_animation_active"
-    // 是多余的 —— 该逻辑**已经存在**（:791-796 的 overlay_visual_in_progress
+    // 是多余的，该逻辑**已经存在**（:791-796 的 overlay_visual_in_progress
     // 就是读这两个 flag + opacity/scale 中间态）。
     //
     // 真正的问题全在 fixture 和断言上，四处：
     //   1. `.layer_handle = .{ .id = 0, .z_index = 0 }` 是**伪造句柄**，
     //      findLayer 查不到对应 layer，走不进 overlay 管理路径。
-    //      → 改用真实的 ctx.overlay_stack.push() 返回值并绑定 content_node。
+    //      -> 改用真实的 ctx.overlay_stack.push() 返回值并绑定 content_node。
     //   2. 用了已删除的 `node.rect = …` 和 `node.hooks`（rect 已 SoA 化到
     //      World，hook 槽位挪到 meta.per_frame.hooks）。这测试**从写下起
     //      就编译不过**，被 `if (true) return` 挡住才没暴露。
-    //      → 改用 setLayoutRect / meta.per_frame.hooks.slots。
+    //      -> 改用 setLayoutRect / meta.per_frame.hooks.slots。
     //   3. 手工建的节点默认带 layout dirty，会走 "pause unstable-layout"
-    //      分支——那条路径**本来就该**把 opacity 压到 HIDDEN_OPACITY。
-    //      → 先清 dirty，才测得到"布局已稳定"的目标场景。
+    //      分支，那条路径**本来就该**把 opacity 压到 HIDDEN_OPACITY。
+    //      -> 先清 dirty，才测得到"布局已稳定"的目标场景。
     //   4. **原断言本身与设计冲突**：它要求手工写入的 0.35 在 hook 之后
     //      原样保留。但 enter 一旦 ready，before_render 会调
     //      setEnterPaused(handle,false)，OverlayStack 随即
-    //      `enter_ctrl.apply(content)` 按动画进度写 opacity（progress=0 → 0）。
+    //      `enter_ctrl.apply(content)` 按动画进度写 opacity（progress=0 -> 0）。
     //      **opacity 的所有权此刻属于 overlay controller**，popover 不该也
     //      不会去保留调用方随手设的中间值。
-    //      → 改为断言真正的不变量：hook 不把 opacity 打回 HIDDEN_OPACITY
+    //      -> 改为断言真正的不变量：hook 不把 opacity 打回 HIDDEN_OPACITY
     //        （那才是"闪一下"的 bug 形态），且 enter 被正常放行。
-    // 全程未改任何产品代码 —— before_render 的 overlay 感知一直是对的。
+    // 全程未改任何产品代码，before_render 的 overlay 感知一直是对的。
     var ctx = try Cx.init(std.testing.allocator);
     defer ctx.deinit();
     ctx.setViewport(640, 480);
@@ -510,8 +510,8 @@ test "Popover: before_render preserves overlay-managed opacity and scale" {
     // 弹层会闪一下再出现。
     try std.testing.expect(content.getOpacity() != HIDDEN_OPACITY);
 
-    // 不变量 2：enter 被放行，且所有权移交 overlay controller ——
-    // opacity 由 enter_ctrl 按动画进度写入（progress=0 → 0），
+    // 不变量 2：enter 被放行，且所有权移交 overlay controller,
+    // opacity 由 enter_ctrl 按动画进度写入（progress=0 -> 0），
     // scale 同理回到 transition 的起始 scale。
     try std.testing.expect(position_ctx.entry_ready);
     try std.testing.expect(position_ctx.is_visible);
@@ -666,7 +666,7 @@ test "Popover: before_render pauses enter until content subtree is ready" {
 
     trigger.setLayoutRect(.{ .x = 40, .y = 24, .w = 120, .h = 32 });
     content.setLayoutRect(.{ .x = 0, .y = 0, .w = 160, .h = 72 });
-    // 未就绪 = **布局**未稳定。此前这里只置 subtree_render，断言 pause ——
+    // 未就绪 = **布局**未稳定。此前这里只置 subtree_render，断言 pause,
     // 那是 69ac08f（popover portal 化）之前的旧合同。现在 popoverContentReady
     // 刻意不再看 subtree_render：要求它干净会让刚打开的 overlay 死锁
     //（隐藏子树在被定位并准入前画不完第一帧，而定位又在等这一帧）。
@@ -724,7 +724,7 @@ test "Popover: before_render pauses enter until content subtree is ready" {
 }
 
 test "Popover: subtree_render 脏不阻止定位（死锁防回归）" {
-    // 配对测试：上一个测试守"布局脏 ⇒ pause"，这个守它的**反面** ——
+    // 配对测试：上一个测试守"布局脏 ⇒ pause"，这个守它的**反面**,
     // 仅 subtree_render 脏（布局已稳定）时必须照常定位并 ready。
     //
     // 若有人"修复"popoverContentReady 把 subtree_render 加回就绪条件，
@@ -744,7 +744,7 @@ test "Popover: subtree_render 脏不阻止定位（死锁防回归）" {
 
     trigger.setLayoutRect(.{ .x = 40, .y = 24, .w = 120, .h = 32 });
     content.setLayoutRect(.{ .x = 0, .y = 0, .w = 160, .h = 72 });
-    // 布局干净、只有渲染脏 —— 这正是"刚打开的隐藏子树"的真实状态
+    // 布局干净、只有渲染脏，这正是"刚打开的隐藏子树"的真实状态
     content.frame_state.state_bits.dirty.core.subtree_render = true;
     content.frame_state.state_bits.dirty.core.subtree_layout = false;
     content.frame_state.state_bits.dirty.core.layout = false;
@@ -884,8 +884,8 @@ test "Popover: prewarm keeps content measurable after close (reopen fast-path)" 
     // （实测：插桩确认该 early-return 在 prewarm=true 时同样命中。）
     //
     // prewarm_hidden_layout 真正的语义是"**开过一次之后**，关闭时保留已测量的
-    // 布局，让重开无需再等 ready-frame"——即 reopen fast-path，而不是"从未打开
-    // 过就先测量好"。故本测试改为验证这个真实不变量：开 → 关 → content 仍可测量。
+    // 布局，让重开无需再等 ready-frame"，即 reopen fast-path，而不是"从未打开
+    // 过就先测量好"。故本测试改为验证这个真实不变量：开 -> 关 -> content 仍可测量。
     // 初始关闭态 rect==0 的行为由邻接的
     // "can collapse hidden content when prewarm disabled" 覆盖。
     var ctx = try Cx.init(std.testing.allocator);
@@ -1193,7 +1193,7 @@ test "Popover: scale_fade open animation reuses promoted surface for stable text
 
     // Popover enter 是**多帧**路径：content 要等 prewarm/定位 settle 之后才会
     // 注册进 scene_runtime（实测本 fixture 下是第 4 帧）。原测试只跑 1 帧就
-    // `scene_runtime.get(...).?`，必然 unwrap null 崩溃 —— 这就是原注释里
+    // `scene_runtime.get(...).?`，必然 unwrap null 崩溃，这就是原注释里
     // "not registered until prewarm settles" 的实际表现。
     // 改为 settle 到注册为止，再断言"首个注册帧 rebuild、之后复用"。
     var settle: usize = 0;
@@ -1211,7 +1211,7 @@ test "Popover: scale_fade open animation reuses promoted surface for stable text
     try std.testing.expect(fr.promoted_surface_flags.rebuilt_this_frame);
     try std.testing.expect(!fr.promoted_surface_flags.reused_this_frame);
 
-    // 下一帧：动画仍在跑，但 surface 应被**复用**而非重建 ——
+    // 下一帧：动画仍在跑，但 surface 应被**复用**而非重建,
     // 这正是 scale_fade 期间文字不抖动的前提。
     ctx.frame_time_ms += 16;
     ctx.layout();
@@ -1223,7 +1223,7 @@ test "Popover: scale_fade open animation reuses promoted surface for stable text
     try std.testing.expect(!second_runtime.promoted_surface_flags.rebuilt_this_frame);
 }
 
-// ========== autosize：可用高度 → max_height（floating-ui size.availableHeight）==========
+// ========== autosize：可用高度 -> max_height（floating-ui size.availableHeight）==========
 
 /// 共用 fixture：640x480 viewport，trigger 在 y=300（下方剩 132、上方剩 284，
 /// 均已扣 padding 8 + offset 8），content 高 `content_h`。
@@ -1300,7 +1300,7 @@ const AutosizeFixture = struct {
 };
 
 test "Popover autosize: 两侧都放不下且 caller 未设 max_height 时，max_height 收紧到可用高度" {
-    // 复现：content 300 高，下方 132 / 上方 284 都放不下 → flip best-fit 选 top。
+    // 复现：content 300 高，下方 132 / 上方 284 都放不下 -> flip best-fit 选 top。
     // 修前 autosize 只在 caller 设了 max_height 时激活，面板保持 300 高、
     // translate 贴 viewport 顶，下缘越过 trigger 把 reference element 盖住。
     var f = try AutosizeFixture.init(300);
@@ -1315,7 +1315,7 @@ test "Popover autosize: 两侧都放不下且 caller 未设 max_height 时，max
     try std.testing.expectApproxEqAbs(@as(f32, 284), f.content.style.max_height(), 0.5);
     // 下一帧 layout 才应用 max_height，本帧必须已标 sizing dirty
     try std.testing.expect(f.content.frame_state.state_bits.dirty.core.layout);
-    // cap 咬住内容（300 > 284）→ chrome 必须裁切子节点，否则内容照样溢出外壳压回 trigger
+    // cap 咬住内容（300 > 284）-> chrome 必须裁切子节点，否则内容照样溢出外壳压回 trigger
     try std.testing.expect(f.content.style.overflow_hidden);
 }
 
@@ -1331,7 +1331,7 @@ test "Popover autosize: caller max_height 比可用高度更小时以 caller 为
 }
 
 test "Popover autosize: 内容放得下时 max_height 不低于内容高度（不产生裁剪）" {
-    // content 100 高，下方剩 132 → 留在 bottom，cap = 132 ≥ 100。
+    // content 100 高，下方剩 132 -> 留在 bottom，cap = 132 ≥ 100。
     var f = try AutosizeFixture.init(100);
     defer f.deinit();
     var position_ctx = f.positionCtx(null);
@@ -1342,12 +1342,12 @@ test "Popover autosize: 内容放得下时 max_height 不低于内容高度（�
     try std.testing.expect(floating.getSide(position_ctx.active_position) == .bottom);
     try std.testing.expectApproxEqAbs(@as(f32, 132), f.content.style.max_height(), 0.5);
     try std.testing.expect(f.content.style.max_height() >= 100);
-    // cap 没咬住 → 不额外裁切（保持 caller 意愿 false）
+    // cap 没咬住 -> 不额外裁切（保持 caller 意愿 false）
     try std.testing.expect(!f.content.style.overflow_hidden);
 }
 
 test "Popover autosize: 可用高度变大的那一帧仍保持裁切（ph 还贴着旧 cap）" {
-    // 复现：打开 tall popover 后滚动页面，trigger 下移 → 上方可用高度逐帧变大。
+    // 复现：打开 tall popover 后滚动页面，trigger 下移 -> 上方可用高度逐帧变大。
     // ph 是上一帧按旧 cap 排出的高度，若只和新 cap 比会判定"没咬住"而关掉
     // overflow_hidden，本帧内容（比旧 cap 还高）整块溢出面板；连续滚动 = 连续漏出。
     var f = try AutosizeFixture.init(300);
@@ -1359,7 +1359,7 @@ test "Popover autosize: 可用高度变大的那一帧仍保持裁切（ph 还�
     try std.testing.expectApproxEqAbs(@as(f32, 284), f.content.style.max_height(), 0.5);
     try std.testing.expect(f.content.style.overflow_hidden);
 
-    // 下一帧：layout 已按 cap 把面板钳到 284；页面滚动让 trigger 下移 20 → 可用 304
+    // 下一帧：layout 已按 cap 把面板钳到 284；页面滚动让 trigger 下移 20 -> 可用 304
     f.content.setLayoutRect(.{ .x = 0, .y = 0, .w = 160, .h = 284 });
     f.trigger.setLayoutRect(.{ .x = 40, .y = 320, .w = 120, .h = 32 });
     popoverBeforeRender(f.content);
@@ -1766,7 +1766,7 @@ test "Popover: wrapped text updated from a before_render hook re-wraps and repai
     try pop.trigger.appendChild(std.testing.allocator, try box(ctx, .{ .width = .{ .px = 40 }, .height = .{ .px = 20 } }, .{}));
     pop.chrome.style.direction = .column;
     try pop.content.appendChild(std.testing.allocator, try box(ctx, .{ .width = .fill(), .height = .{ .px = 40 } }, .{}));
-    // 先折叠（高 0 + 裁切 + 透明），钩子里与改文本同帧展开——面板横幅的真实时序。
+    // 先折叠（高 0 + 裁切 + 透明），钩子里与改文本同帧展开，面板横幅的真实时序。
     const collapsed = try box(ctx, .{ .width = .fill(), .direction = .column, .padding = .{ .top = 0, .right = 10, .bottom = 10, .left = 10 } }, .{});
     try pop.content.appendChild(std.testing.allocator, collapsed);
     collapsed.style.height = .{ .px = 0 };

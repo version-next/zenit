@@ -5,8 +5,8 @@
 /// 完全复现 MUI CircularProgress 的 keyframe 动画：
 ///
 /// 每个 1.4s 周期内（84帧 @ 60fps）：
-///   sweep(p)  = easeInOut(p) 映射 [0→MAX_SWEEP→0]（弧长先增后减）
-///   offset(p) = easeInOut(p) 映射 [0→-OFFSET_MID→-OFFSET_MAX]（尾部追头部）
+///   sweep(p)  = easeInOut(p) 映射 [0->MAX_SWEEP->0]（弧长先增后减）
+///   offset(p) = easeInOut(p) 映射 [0->-OFFSET_MID->-OFFSET_MAX]（尾部追头部）
 ///   rotation  = 匀速，每周期转 270°（1.5π），跨周期累积
 ///
 /// 坐标系：起始角从 -π/2（12点钟方向）开始
@@ -51,10 +51,10 @@ const CYCLE_SECONDS: f32 = 1.4;
 
 /// MUI CircularProgress keyframe 参数
 /// circumference ≈ 2π * r（r=20.2px in MUI），对应 2π 弧度
-/// dasharray: 1→100→1 px，归一化到 [0, 2π]
+/// dasharray: 1->100->1 px，归一化到 [0, 2π]
 const MAX_SWEEP: f32 = (100.0 / 126.92) * 2.0 * math.pi; // ≈ 4.95 rad
 const MIN_SWEEP: f32 = (1.0 / 126.92) * 2.0 * math.pi; // ≈ 0.05 rad（防止完全消失）
-/// dashoffset: 0 → -15 → -126 px，归一化到弧度（负号因为 offset 是向后移动）
+/// dashoffset: 0 -> -15 -> -126 px，归一化到弧度（负号因为 offset 是向后移动）
 const OFFSET_MID: f32 = (15.0 / 126.92) * 2.0 * math.pi; // 0.74 rad
 const OFFSET_MAX: f32 = (126.0 / 126.92) * 2.0 * math.pi; // ≈ 6.24 rad ≈ 2π
 /// MUI 每周期整体旋转：270° = 1.5π
@@ -70,14 +70,14 @@ inline fn easeInOut(t: f32) f32 {
 /// p ∈ [0,1]，sweep ∈ [MIN_SWEEP, MAX_SWEEP, MIN_SWEEP]
 /// 前半段增长，后半段缩短，都用 easeInOut
 inline fn sweepAt(p: f32) f32 {
-    // 前半：0→1（增长），后半：1→0（缩短），三角波 * ease
+    // 前半：0->1（增长），后半：1->0（缩短），三角波 * ease
     const tri = if (p < 0.5) p * 2.0 else (1.0 - p) * 2.0;
     const e_tri = easeInOut(tri);
     return MIN_SWEEP + e_tri * (MAX_SWEEP - MIN_SWEEP);
 }
 
 /// tail_offset(p)：尾部相对于头部的偏移角（始终 >= 0，从尾到头）
-/// p ∈ [0,1]，offset ∈ [OFFSET_MID → OFFSET_MAX → 2π(wrap)]
+/// p ∈ [0,1]，offset ∈ [OFFSET_MID -> OFFSET_MAX -> 2π(wrap)]
 /// 这个值加到尾部角度上，使弧变短
 inline fn tailOffsetAt(p: f32) f32 {
     // MUI：dashoffset 从 0 到 -15px（前半），再到 -126px（后半）
@@ -151,7 +151,7 @@ pub const SpinnerBuilder = struct {
             },
         };
 
-        // 动画状态 —— 用 my_scope.allocator 建：adoptResource / dispose 都拿 scope 的
+        // 动画状态，用 my_scope.allocator 建：adoptResource / dispose 都拿 scope 的
         // allocator 去 destroy，两边必须同源（交叉审查指出 cx.allocator 不保证等于它）。
         const state = try my_scope.allocator.create(SpinnerState);
         state.* = .{
@@ -204,7 +204,7 @@ fn spinnerDraw(ctx: DrawContext, context: ?*anyopaque) anyerror!void {
     // 弧长（sweep）：前半增长，后半缩短，easeInOut，范围 [MIN_SWEEP, MAX_SWEEP]
     const sweep = sweepAt(p);
 
-    // dashoffset：弧段的起点偏移（MUI 从 0 → -15px → -126px，用 easeInOut）
+    // dashoffset：弧段的起点偏移（MUI 从 0 -> -15px -> -126px，用 easeInOut）
     // 转换为角度后，负号意味着弧的起始端向后走，弧整体被"推前"
     // dash_shift 是正值，代表弧起始端向前移动了多少弧度
     const dash_shift = tailOffsetAt(p);
@@ -357,7 +357,7 @@ test "Spinner: animation speed follows elapsed time instead of frame count" {
 }
 
 test "Spinner: mount 在任意分配点失败时不泄漏" {
-    // 修复前 mount 有三个失败窗口 —— my_scope 无守卫、container 建好后
+    // 修复前 mount 有三个失败窗口，my_scope 无守卫、container 建好后
     // 无守卫（bindScopeToNode / ensureExt / create 任一失败即漏整棵游离节点）、
     // state 建好后 registerResource 失败即漏。写法照抄 scroll_area 的逐分配点 sweep。
     const t = std.testing;

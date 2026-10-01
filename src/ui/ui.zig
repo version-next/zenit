@@ -1,13 +1,13 @@
-//! zenit — Zig GUI Framework
+//! zenit, Zig GUI Framework
 //!
 //! **This file is the entire public API.** Consumers use `ui.*` and
-//! `ui.<group>.*` only — reaching into `core/`, `reactive/`, `i18n/` or any
+//! `ui.<group>.*` only, reaching into `core/`, `reactive/`, `i18n/` or any
 //! other internal module is unsupported. Breaking either namespace is an
 //! API break (see docs/API_STABILITY.md).
 //!
 //! Public surface organized in two layers:
 //!
-//! ## Tier 1 — top-level (`ui.X`)
+//! ## Tier 1, top-level (`ui.X`)
 //!
 //! The minimum set every app needs. Intentionally short so newcomers can
 //! scroll this file end-to-end in 60 seconds:
@@ -22,24 +22,24 @@
 //!   - **A11y**:     `A11yRole`, `A11yProps`
 //!   - **Control flow**: `Show`, `For`, `Match`
 //!
-//! ## Tier 2 — sub-namespaces (`ui.<group>.X`)
+//! ## Tier 2, sub-namespaces (`ui.<group>.X`)
 //!
 //! Grouped by concern. Reach for these when you need more than the basics:
 //!
-//!   - `ui.widgets`     — full component library: `Button`, `Input`, `Modal`,
+//!   - `ui.widgets`, full component library: `Button`, `Input`, `Modal`,
 //!                        `Tabs`, `VirtualList`, `Calendar`, `Form`, ...
-//!   - `ui.fx`          — animation, physics, router, view transitions
-//!   - `ui.events`      — full `Event` enum + every event payload type
-//!   - `ui.hooks`       — `useHover`, `useFocusRing`, `useHoverHighlight`, ...
-//!   - `ui.reactive`    — full reactive system (`Signal` etc. also at top)
-//!   - `ui.focus`       — `FocusManager`, focus scopes, tab order
-//!   - `ui.actions`     — keybinding / command dispatch
-//!   - `ui.theme`       — `ThemeTokens` + builtin light/dark themes
-//!   - `ui.control_flow`— `Show`/`For`/`Match` (also top-level)
-//!   - `ui.assets`      — `SvgAsset` registry, builtin icons
-//!   - `ui.hit`         — hit-testing types (`HitQuery`, `HitShapeSpec`, ...)
-//!   - `ui.path`        — path geometry types (`PathCommand`, `Transform2D`, ...)
-//!   - `ui.devtools`    — `Inspector`, debug tracing
+//!   - `ui.fx`, animation, physics, router, view transitions
+//!   - `ui.events`, full `Event` enum + every event payload type
+//!   - `ui.hooks`, `useHover`, `useFocusRing`, `useHoverHighlight`, ...
+//!   - `ui.reactive`, full reactive system (`Signal` etc. also at top)
+//!   - `ui.focus`, `FocusManager`, focus scopes, tab order
+//!   - `ui.actions`, keybinding / command dispatch
+//!   - `ui.theme`, `ThemeTokens` + builtin light/dark themes
+//!   - `ui.control_flow`, `Show`/`For`/`Match` (also top-level)
+//!   - `ui.assets`, `SvgAsset` registry, builtin icons
+//!   - `ui.hit`, hit-testing types (`HitQuery`, `HitShapeSpec`, ...)
+//!   - `ui.path`, path geometry types (`PathCommand`, `Transform2D`, ...)
+//!   - `ui.devtools`, `Inspector`, debug tracing
 //!
 //! Everything not on these two tiers is internal. Reach for `ui.core.*` only
 //! when prototyping a fix to the framework itself.
@@ -56,7 +56,7 @@ const control_flow_mod = @import("control_flow.zig");
 const svg_assets_mod = @import("svg_assets.zig");
 
 // ============================================================================
-// Tier 2: sub-namespaces — grouped public API
+// Tier 2: sub-namespaces, grouped public API
 // ============================================================================
 
 /// Full component library. See `components/mod.zig`.
@@ -89,7 +89,7 @@ pub const theme = theme_mod;
 pub const control_flow = control_flow_mod;
 
 /// Headless interaction primitives (`interaction.drag`, `interaction.range_hover`).
-/// They own event routing only — no Node output, no business state.
+/// They own event routing only, no Node output, no business state.
 pub const interaction = @import("interaction/mod.zig");
 
 /// SVG asset registry (the icon system) and built-in icon set.
@@ -108,7 +108,7 @@ pub const icons = @import("zenit_icons");
 pub const system_icons = @import("zenit_system_icons");
 
 /// Hit-testing query API (`HitQuery`, `HitShapeSpec`, `HitBehavior`, ...).
-/// Most apps don't need this directly — `Button`/`Input` already wire hit-test.
+/// Most apps don't need this directly, `Button`/`Input` already wire hit-test.
 /// 系统剪贴板 / 文件对话框。这些函数收 `?*SystemSdk` 而不是挂在 `Cx` 上：
 /// `ui.platform_services.clipboardSetText(cx.system_sdk, text)`。
 pub const platform_services = core.platform_services;
@@ -125,7 +125,7 @@ pub const hit = struct {
     pub const HitProxySpec = core.HitProxySpec;
 };
 
-/// Path geometry types — used by custom drawing & SVG hit shapes.
+/// Path geometry types, used by custom drawing & SVG hit shapes.
 pub const path = struct {
     pub const Transform2D = core.Transform2D;
     pub const PathFillRule = core.PathFillRule;
@@ -141,7 +141,7 @@ pub const path = struct {
 ///
 /// `ui.devtools.overlay` is the in-window inspector overlay (a one-line
 /// `attach(...)` adds dashed-rect hover highlighting). The rest of `devtools`
-/// is the standalone DevTools panel — mount it in a second window for a full
+/// is the standalone DevTools panel, mount it in a second window for a full
 /// elements / components / performance inspector.
 pub const devtools = @import("devtools.zig");
 
@@ -152,7 +152,7 @@ pub const console = @import("console.zig");
 /// Phase 6 手势识别 + 仲裁层（tap/pan/long_press/triple_tap + requireFailure 关系）。
 pub const gesture = @import("input/gesture_recognizer.zig");
 
-/// 平台无障碍接线。**这不是应用作者用的东西** —— 组件的 a11y 走
+/// 平台无障碍接线。**这不是应用作者用的东西**，组件的 a11y 走
 /// `node.behavior.interaction.a11y`（见 A11yRole / A11yProps）。
 ///
 /// 这里只暴露平台运行时接线需要的那一个入口：zenit_app 在 App.init 里把
@@ -173,10 +173,10 @@ pub const select_headless = @import("components/select_headless/mod.zig");
 
 /// Inspector data structure (used by the panel + accessible programmatically).
 // 折行布局产物的只读类型见下面的 TextLayout / LineInfo。整个
-// `core.text_layout` 模块不再导出 —— 宿主拿这两个类型就够，模块本身
+// `core.text_layout` 模块不再导出，宿主拿这两个类型就够，模块本身
 // 含 computeTextLayout 等内部函数。
 /// 系统字体目录（字体选择器的数据层）：枚举家族 + 判定每行该画什么。
-/// ⚠ 只做枚举与元数据 —— 字体族轴在渲染管线里还不存在，选中一个家族
+/// ⚠ 只做枚举与元数据，字体族轴在渲染管线里还不存在，选中一个家族
 /// 并不能让它出现在画布上，那需要 TextProps/text_run/FontSelector 一起加 family。
 /// GlyphRun shape 管线的字体解析入口。App 必须把自己的 FontSelector 装
 /// 进去，否则光标/选区与绘制用两套字体（见 zenit_app.App.setFontSelector）。
@@ -201,10 +201,10 @@ pub const LineInfo = core.text_layout.LineInfo;
 /// 逐视觉行 `TextProps.text_align` 的起点偏移。宿主自己算光标 / 命中 / 选区时必须用
 /// 这一个公式（与绘制同源），否则居中文字上的光标与字形错位。
 pub const textAlignLineOffset = core.text_layout.alignLineOffset;
-/// Accessibility bridge — wires nodes' `a11y` props to the platform.
+/// Accessibility bridge, wires nodes' `a11y` props to the platform.
 
 // ============================================================================
-// Tier 1: top-level — the minimum every app uses
+// Tier 1: top-level, the minimum every app uses
 // ============================================================================
 
 // ── Runtime ──
@@ -273,7 +273,7 @@ pub const ConditionalStyle = core.ConditionalStyle;
 pub const ThemeTokens = theme_mod.ThemeTokens;
 pub const ColorScheme = theme_mod.ColorScheme;
 
-/// 任意值逃生舱 —— 对标 Panda CSS 的 arbitrary values（`[18px]` / `[#316ff6]`）。
+/// 任意值逃生舱，对标 Panda CSS 的 arbitrary values（`[18px]` / `[#316ff6]`）。
 ///
 /// token 是默认，但设计上确有不在 scale 上的值（对齐特定视觉稿、一次性的
 /// 品牌色、像素级微调）。这时**不要**写裸字面量，用 `ui.arb.*` 包一层：
@@ -399,7 +399,7 @@ test {
 
 test "公共命名空间不泄漏渲染引擎内部（发布后删 pub 是 break-API）" {
     // ui.zig 开头声明了锁定的两层命名空间，但 `test` 块之后曾追加导出
-    // render_engine / debug_trace / paint_table / compute_position ——
+    // render_engine / debug_trace / paint_table / compute_position,
     // 其中 render_engine 连带暴露一组**可变全局**（current_frame_* 帧时钟
     // 与 setFrameClock），消费者能把时钟写坏。这与 API_STABILITY.md 把
     // render_engine 列为 Internal 直接矛盾。
@@ -413,13 +413,13 @@ test "公共命名空间不泄漏渲染引擎内部（发布后删 pub 是 break
     //
     // 这里原本是一张只列了四个名字的黑名单（render_engine / debug_trace /
     // paint_table / compute_position），于是同类的「整模块内部 pub」只要不叫
-    // 这四个名字就畅通无阻 —— 实际漏过去的有 layout_engine（2400 行布局引擎，
+    // 这四个名字就畅通无阻，实际漏过去的有 layout_engine（2400 行布局引擎，
     // 只为导出一个 setShapeFontResolver）、theme_schema（一半字段是 DevTools
     // 专用色）、a11y_router、perf_overlay（死模块）。2026-09-22 全部清掉后
     // 改成白名单：**新增一个顶层命名空间必须来这里登记**，逼作者回答一句
     // 「这东西凭什么给应用作者看」。
     //
-    // 只管命名空间（`pub const x = @import(...)` 这类），不管值类型与函数 ——
+    // 只管命名空间（`pub const x = @import(...)` 这类），不管值类型与函数,
     // 后者数量大且天然属于公共面，逐个登记收益不抵成本。
     const allowed_namespaces = [_][]const u8{
         // 组件与效果
@@ -480,12 +480,12 @@ test "公共命名空间不泄漏渲染引擎内部（发布后删 pub 是 break
 // 无法构造 `Task.runSlice` 要求的返回值。那是被顺手搬上来的内部实现，
 // 不是设计过的公共面。
 //
-// 需要自定义分片任务的宿主，请连同 `WorkStep` 一起提 issue —— 那时再把
+// 需要自定义分片任务的宿主，请连同 `WorkStep` 一起提 issue，那时再把
 // 这组词汇统一好（内部同时存在 Task/TaskPriority 与 Work* 两套叫法）
 // 一次性导出，而不是现在半成品地暴露。
 pub const Task = core.Task;
 pub const WorkKey = core.WorkKey;
-/// 渲染输出的扁平指令项 —— `ui` 层的最终产物（`render` 层消费它）。
+/// 渲染输出的扁平指令项，`ui` 层的最终产物（`render` 层消费它）。
 /// custom-draw 回调拿到的就是这个。
 ///
 /// 注：此前顶层还导出过一个指向本类型的旧 IR 别名（那个 IR 早已删除），
@@ -506,7 +506,7 @@ pub const JustifyContent = core.JustifyContent;
 ///
 /// `before_render` hook 只拿到 `*Node`，够不到 `Cx`，但按时间驱动的动画
 /// （blur 扫动、Spinner 这类直写 style 的）需要"现在几点"。以前这条路
-/// 是 `ui.render_engine.current_frame_time_ms` —— 那等于把整个渲染引擎
+/// 是 `ui.render_engine.current_frame_time_ms`，那等于把整个渲染引擎
 /// 连同一组**可变全局**（帧时钟本体 + setFrameClock）暴露给消费者，
 /// 谁都能把时钟写坏。这里只给读，不给写。
 ///
@@ -521,14 +521,14 @@ pub const frame = struct {
     pub inline fn dtSeconds() f32 {
         return core.render_engine.current_frame_dt_seconds;
     }
-    /// 当前帧的 dt（ms）—— Spring 这类需要增量的消费者用。
+    /// 当前帧的 dt（ms），Spring 这类需要增量的消费者用。
     pub inline fn dtMs() f32 {
         return core.render_engine.current_frame_dt_ms;
     }
     /// 估算"此刻"的时间戳（ms）。
     ///
     /// 事件阶段可能发生在两帧之间，此时 `timeMs()` 停在上一帧。这个函数用
-    /// 真实单调时钟补上帧内已流逝的部分 —— 输入驱动的动画（点击起手的
+    /// 真实单调时钟补上帧内已流逝的部分，输入驱动的动画（点击起手的
     /// 高亮、闪烁）用它起算才不会有最多一帧的偏差。
     pub inline fn estimateTimeMs() f64 {
         return core.render_engine.estimateTimeMs();

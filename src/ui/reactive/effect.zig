@@ -50,7 +50,7 @@ pub fn Effect(comptime Context: type, comptime effectFn: anytype) type {
 
             // 在 graph 注册 effect node + recompute callback。
             // graph 的 markSignalWritten 路径会通过 NodeId 入 pending queue，
-            // drainPendingEffects 时按拓扑序跑——调到这个 callback。
+            // drainPendingEffects 时按拓扑序跑，调到这个 callback。
             const gid = try owner.graph.createNodeRaw(.effect, &graphRecomputeCb, &effect.base);
             effect.base.graph_node_raw = @bitCast(gid);
 
@@ -130,7 +130,7 @@ pub fn Effect(comptime Context: type, comptime effectFn: anytype) type {
         }
 
         /// graph 调度路径下的 recompute callback。
-        /// 走 runWithTrackingFast——graph.recomputeNode 已经做了
+        /// 走 runWithTrackingFast, graph.recomputeNode 已经做了
         /// clearSources + pushTracking + popTracking，跳过重复设置（~30 ns/effect）。
         /// 返回 false：effect 没有"值"概念（不影响 version 戳）。
         fn graphRecomputeCb(ctx: *anyopaque) bool {

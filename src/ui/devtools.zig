@@ -1,10 +1,10 @@
-/// DevTools surface — two complementary tools:
+/// DevTools surface, two complementary tools:
 ///
-///   1. `panel` (this file) — a full DevTools window: elements / components /
+///   1. `panel` (this file), a full DevTools window: elements / components /
 ///      performance tabs. Mount it in a second native window with
 ///      `devtools.mountPanel(cx, target_cx, .{ .on_close = close_handler })`.
 ///
-///   2. `overlay` (sub-module) — an in-window inspector: dashed-rect hover
+///   2. `overlay` (sub-module), an in-window inspector: dashed-rect hover
 ///      highlight + dimension/component label. Add it with one call:
 ///      `try ui.devtools.overlay.attach(cx, scope, root, .{})`.
 ///
@@ -23,7 +23,7 @@
 /// 布局、命中、状态或渲染正确性。
 ///
 /// 反过来，如果这里改成 panic 或往上传播，就等于「打开调试面板会让被调试的
-/// app 崩掉」——调试工具压垮它本该观察的对象，是明确不想要的行为。
+/// app 崩掉」，调试工具压垮它本该观察的对象，是明确不想要的行为。
 ///
 /// 具体分几类，下面各处不再逐行重复：
 ///   - 面板 UI 构建（appendChild / build*Tab）：少画一块面板内容。
@@ -46,14 +46,14 @@ const StyleField = @import("core/types.zig").StyleField;
 pub const overlay = @import("core/devtools_overlay.zig");
 pub const source_link = @import("devtools/source_link.zig");
 
-/// 渲染原因 / 事件追踪存储 —— DevTools 的 Render / Trace 面板数据源。
+/// 渲染原因 / 事件追踪存储，DevTools 的 Render / Trace 面板数据源。
 ///
 /// 宿主应用要自建 inspector 面板时需要它：`setGlobalTraceTarget(store, frame)`
 /// 开始采集、`clearGlobalTraceTarget()` 停止，再用 `DebugTraceStore` 上的
 /// `getRenderForNode` / `getRecentEvents` 读回。
 ///
 /// 曾经挂在顶层 `ui.debug_trace`。那个位置属于"引擎内部被顺手 pub 出去"，
-/// 但**能力本身是公开的** —— 它是 devtools 的配套，所以归到这个命名空间。
+/// 但**能力本身是公开的**，它是 devtools 的配套，所以归到这个命名空间。
 pub const trace = core.debug_trace;
 const hooks = @import("hooks.zig");
 const theme_schema = @import("theme_schema.zig");
@@ -108,8 +108,8 @@ const DEVTOOLS_STATE_ID: u64 = 0xD3F70000;
 const tree_row_test_id = "devtools.tree.row";
 const perf_chart_sample_count: usize = 64;
 /// DevTools 窗口的保活轮询周期。DevTools 观察的是另一个窗口的 Cx，没有任何
-/// 跨窗口"target 渲染了 → DevTools 标脏"的推送链路（MultiWindowApp 各窗口
-/// 独立 wantsFrame），所以 DevTools 必须**无条件**自轮询——早期版本只在
+/// 跨窗口"target 渲染了 -> DevTools 标脏"的推送链路（MultiWindowApp 各窗口
+/// 独立 wantsFrame），所以 DevTools 必须**无条件**自轮询，早期版本只在
 /// target idle 时才调度下一次 poll，一旦某帧恰逢 target 活跃就不再调度，
 /// 保活链永久断裂，面板从此只有鼠标划过时才动一下。
 const devtools_keepalive_ns: u64 = 250_000_000;
@@ -121,7 +121,7 @@ const console_keepalive_ns: u64 = 50_000_000;
 /// 滚动监控的时间桶宽度：64 桶 × 100ms ≈ 6.4s 可视窗口。
 const perf_bucket_ns: u64 = 100_000_000;
 /// target.frame_count 超过此时长未推进 ⇒ FPS 行显示 (idle)。
-/// idle 停帧是框架的省电行为——面板必须把「没在渲染」和「稳定 60fps」
+/// idle 停帧是框架的省电行为，面板必须把「没在渲染」和「稳定 60fps」
 /// 区分开，否则停帧后 FPS 文本永远冻在最后一次的值上假装健康。
 const perf_idle_indicator_ns: u64 = 700_000_000;
 
@@ -329,7 +329,7 @@ fn appendStyleSourceLink(cx: *Cx, state: *DevToolsState, inspected: *Node, field
     try row.appendChild(cx.allocator, btn);
 }
 
-/// 构建可编辑 kvRow — 显示值+点击进入编辑模式
+/// 构建可编辑 kvRow，显示值+点击进入编辑模式
 fn editableKvRow(cx: *Cx, state: *DevToolsState, node: *Node, field: EditableField, parent: *Node) !void {
     const t = cx.tokens;
     const details_scope = state.details_scope orelse state.scope.?;
@@ -534,7 +534,7 @@ pub fn mountPanel(cx: *Cx, target: *Cx, opts: PanelOptions) !*Node {
 /// 组件与资源归属 `state.scope`。mountPanel 首次构建与主题切换重建共用。
 fn buildPanelContent(cx: *Cx, target: *Cx, state: *DevToolsState, root: *Node) !void {
     const t = cx.tokens;
-    // 原来八个子树全部建成游离节点、最后才用 tuple 拼进 root —— 中间任一步失败
+    // 原来八个子树全部建成游离节点、最后才用 tuple 拼进 root，中间任一步失败
     // 前面建好的全漏（sweep：889 个注入点漏 872 个）。改成每个子树建好即 adopt；
     // root 由调用方兜底回收；state 里的节点指针全部在装配成功之后才发布。
     const a = cx.allocator;
@@ -604,7 +604,7 @@ fn themeToggleEvent(event: Event, context: ?*anyopaque) EventResult {
 ///
 /// 面板的大部分颜色在构建时从 cx.tokens 写死（raw box/text 没有主题 hook），
 /// 单靠 Cx.setTheme 只能刷新组件，所以直接重建：套路同 detailsBeforeRender
-/// ——先断交互引用、摘 hook/scope 指针，再 dispose 内容 scope，最后逐个 pop
+/// 先断交互引用、摘 hook/scope 指针，再 dispose 内容 scope，最后逐个 pop
 /// 释放旧子树。必须在 root 的 before_render 里调用（tick 在递归子节点之前
 /// 执行 root hook，替换 children 是安全的）。
 fn applyThemeToggle(state: *DevToolsState, cx: *Cx, target: *Cx, root: *Node) void {
@@ -697,7 +697,7 @@ fn devtoolsBeforeRender(root_node: *Node) void {
 
     // 悬停行变化时补标脏：行 slot 的内容只在 tree_dirty 时重建，而 hover 会改变
     // 行的渲染结果（行尾的 goto 按钮）。不标脏的话按钮要等下一次因别的原因重建
-    // 树时才出现——表现为「点一下才出来」。
+    // 树时才出现，表现为「点一下才出来」。
     if (state.view_mode != .performance) {
         if (cx) |dev_cx| {
             const hovered_row = hoveredTreeRow(dev_cx);
@@ -890,7 +890,7 @@ fn mountConsoleShell(cx: *Cx, target: *Cx, state: *DevToolsState) !*Node {
     const t = cx.tokens;
     const scope = state.scope.?;
     const a = cx.allocator;
-    // shell → toolbar 先建（errdefer 兜底整棵），子节点建好即 adopt，state 指针挂稳后发布。
+    // shell -> toolbar 先建（errdefer 兜底整棵），子节点建好即 adopt，state 指针挂稳后发布。
     const shell = try core.box(cx, .{
         .direction = .column,
         .width = .{ .grow = .{} },
@@ -1437,7 +1437,7 @@ fn mountPerformancePanel(cx: *Cx, container: *Node, t: *const theme.ThemeTokens,
     state.perf_mounted = true;
 }
 
-/// Performance 面板的 on_before_render — 增量更新（不销毁/重建节点）
+/// Performance 面板的 on_before_render，增量更新（不销毁/重建节点）
 fn perfBeforeRender(content_node: *Node) void {
     const state: *DevToolsState = @ptrCast(@alignCast(content_node.meta.per_frame.hooks.slots.anim_state orelse return));
     if (state.view_mode != .performance) return;
@@ -1446,7 +1446,7 @@ fn perfBeforeRender(content_node: *Node) void {
     const cx = state.cx orelse return;
     const t = cx.tokens;
     // 无条件保活（10Hz）：性能监控必须持续走，不依赖 target 是否在渲染。
-    // 不能只在 target idle 时调度——那样某帧恰逢 target 活跃就断链（历史 bug）。
+    // 不能只在 target idle 时调度，那样某帧恰逢 target 活跃就断链（历史 bug）。
     cx.scheduleRedrawAfterNs(perf_keepalive_ns);
 
     // target 停帧检测：frame_count 长时间未推进 ⇒ 面板进入 idle 显示。
@@ -1502,7 +1502,7 @@ fn perfBeforeRender(content_node: *Node) void {
 
     if (state.perf_fps_text) |n| {
         if (target_idle) {
-            _ = updateTextNodeIfChanged(cx.allocator, n, "FPS: 0 — idle (not rendering)", .{});
+            _ = updateTextNodeIfChanged(cx.allocator, n, "FPS: idle (rendering minimized)", .{});
         } else if (current_fps > 0) {
             _ = updateTextNodeIfChanged(cx.allocator, n, "FPS: {d} (last 1s) | frame avg {d:.1}ms", .{
                 current_fps,
@@ -1540,7 +1540,7 @@ fn perfBeforeRender(content_node: *Node) void {
         });
     }
 
-    // 更新 bar 的 height + color —— 时间桶滚动图：head 起往后读 = 最旧→最新。
+    // 更新 bar 的 height + color，时间桶滚动图：head 起往后读 = 最旧->最新。
     // 空桶（idle/未填充）画 2px 中性底线；有帧的桶画「桶平均帧时间」。
     // 桶平均会抹平单帧尖刺，阈值放宽到 1.1×/1.5× 目标周期，避免 60Hz 满帧
     // 时 16.7ms≈周期本身的抖动被误画成红柱。
@@ -1576,7 +1576,7 @@ fn perfBeforeRender(content_node: *Node) void {
     // 更新 timing 文本
     const perf = target.perf;
     if (state.perf_timing_text) |n| {
-        // (encode_us/flush_us/wait_us/acquire_us/cpu_us/total_us 字段已删 — 0 write)
+        // (encode_us/flush_us/wait_us/acquire_us/cpu_us/total_us 字段已删，0 write)
         _ = updateTextNodeIfChanged(cx.allocator, n, "Timing(us): layout {d} | render {d}", .{
             perf.layout_us, perf.render_us,
         });
@@ -1610,7 +1610,7 @@ fn perfBeforeRender(content_node: *Node) void {
     state.stats_dirty = false;
 }
 
-/// VirtualList 渲染回调（保留模式 — VirtualList 管理 slot 生命周期）
+/// VirtualList 渲染回调（保留模式，VirtualList 管理 slot 生命周期）
 /// The tree-row slot the mouse is currently over, or null. Walks up from the
 /// hovered node because the pointer usually lands on a row's text/glyph child.
 fn hoveredTreeRow(cx: *Cx) ?*Node {
@@ -1627,7 +1627,7 @@ fn hoveredTreeRow(cx: *Cx) ?*Node {
     return null;
 }
 
-/// Whether `candidate` is `root` or sits inside it — hovering a row's text or
+/// Whether `candidate` is `root` or sits inside it, hovering a row's text or
 /// glyph should count as hovering the row.
 fn isSelfOrAncestor(root: *Node, candidate: *Node) bool {
     var cur: ?*Node = candidate;
@@ -1724,10 +1724,10 @@ fn renderTreeRowRetained(node: *Node, index: usize, cx: *Cx, user_context: ?*any
     }
 
     // Goto-source：hover 时在行尾显示，点击用外部编辑器打开该组件的定义处。
-    // 只有能解析出源码位置的行才显示——匿名节点和运行期拼名字的组件不在索引里，
+    // 只有能解析出源码位置的行才显示，匿名节点和运行期拼名字的组件不在索引里，
     // 与其显示一个点了没反应的按钮，不如不显示。
     // 注意用 cx.hovered_node（DevTools 自己这个窗口的鼠标悬停），而不是上面的
-    // is_hovered —— 后者读的是 target.inspector.hover_node_id，那是 pick 模式下
+    // is_hovered，后者读的是 target.inspector.hover_node_id，那是 pick 模式下
     // 鼠标悬停在**被检查的 app 窗口**上时才会被设置的，跟"鼠标停在这一行"无关。
     const row_hovered = if (cx.hovered_node) |h| isSelfOrAncestor(node, h) else false;
     const goto_name: ?[]const u8 = if (row_hovered and source_link.isConfigured())
@@ -1743,7 +1743,7 @@ fn renderTreeRowRetained(node: *Node, index: usize, cx: *Cx, user_context: ?*any
             .padding = .{ .left = 4, .right = 4, .top = 0, .bottom = 0 },
             .cursor = .pointer,
         }) catch break :resolve_goto;
-        // btn 挂到 node 之前 glyph 还可能失败 —— 门控 defer 守窗口（break 走的是正常退出，errdefer 不触发）
+        // btn 挂到 node 之前 glyph 还可能失败，门控 defer 守窗口（break 走的是正常退出，errdefer 不触发）
         var btn_owned = true;
         defer if (btn_owned) cx.freeNode(btn);
         btn.meta.ownership.meta.test_id = "devtools.tree.goto_source";
@@ -1761,7 +1761,7 @@ fn renderTreeRowRetained(node: *Node, index: usize, cx: *Cx, user_context: ?*any
         _ = core.adoptChild(cx, cx.allocator, node, btn) catch break :resolve_goto;
     }
 
-    // 点击事件 — 复用 slot 节点已有的 event_context，避免每次重新分配泄漏
+    // 点击事件，复用 slot 节点已有的 event_context，避免每次重新分配泄漏
     if (node.behavior.events.event_context) |old_ptr| {
         const old: *RowCtx = @ptrCast(@alignCast(old_ptr));
         old.* = .{ .state = state, .node_id = tree_node.id, .action = .select };
@@ -1883,7 +1883,7 @@ fn detailsBeforeRender(content_node: *Node) void {
     // 最后释放旧子节点。
     //
     // 逐个 pop 而不是 `for (children.items) |child| freeNode(child)`：tick 期间
-    // 的 freeNode 会走 removeChildIncremental → children.orderedRemove(i)，即
+    // 的 freeNode 会走 removeChildIncremental -> children.orderedRemove(i)，即
     // 边遍历边改动正在遍历的数组，后续迭代会跳过元素并最终读到已失效的槽位
     // （表现为 invalidateHandlesInSubtree 递归时解引用 0xaaaa… 毒值 segfault）。
     // 先摘链再交给 freeNode，父子链已断，removeChildIncremental 便是 no-op。
@@ -1962,7 +1962,7 @@ fn buildHeader(cx: *Cx, target: *Cx, opts: PanelOptions, state: *DevToolsState) 
     }, .{}));
     left.meta.ownership.meta.test_id = "devtools.header.left";
 
-    // "选择元素"按钮 → Button 组件 + SVG icon
+    // "选择元素"按钮 -> Button 组件 + SVG icon
     {
         const is_pick_active = target.inspector.pick_mode;
 
@@ -1987,7 +1987,7 @@ fn buildHeader(cx: *Cx, target: *Cx, opts: PanelOptions, state: *DevToolsState) 
         .font_weight = 600,
     }));
 
-    // 视图切换 → underline Tabs
+    // 视图切换 -> underline Tabs
     const mode_items = [_]TabItem{
         .{ .id = "elements", .label_text = "Elements" },
         .{ .id = "components", .label_text = "Components" },
@@ -2028,7 +2028,7 @@ fn buildHeader(cx: *Cx, target: *Cx, opts: PanelOptions, state: *DevToolsState) 
         theme_btn.meta.ownership.meta.test_id = "devtools.theme.toggle";
     }
 
-    // 关闭按钮 → Button 组件
+    // 关闭按钮 -> Button 组件
     if (opts.on_close) |h| {
         const close_ctx = try allocScopeResource(scope, CloseCtx);
         close_ctx.* = .{ .handler = h };
@@ -2206,7 +2206,7 @@ fn flattenTreeComponents(state: *DevToolsState, node: *Node, depth: u32, filter:
         const has_component_kids = hasComponentChildren(node);
         const collapsed = state.isCollapsed(node.id);
 
-        // 诊断路径：同 flattenTreeElements —— 每帧重建的显示行缓冲。
+        // 诊断路径：同 flattenTreeElements，每帧重建的显示行缓冲。
         _ = state.flat_rows.append(state.allocator, FlatTreeEntry{
             .node = node,
             .depth = depth,
@@ -2320,7 +2320,7 @@ fn buildTabBar(cx: *Cx, state: *DevToolsState) !*Node {
         .{ .id = "render", .label_text = "Render" },
         .{ .id = "trace", .label_text = "Trace" },
     };
-    // shell 先建、Tabs 建好即 adopt —— 原来 Tabs 先建、shell 的 box 自身分配失败时
+    // shell 先建、Tabs 建好即 adopt，原来 Tabs 先建、shell 的 box 自身分配失败时
     // tuple 里的 tabs 无人释放（mountPanel sweep 最后 3 个注入点）。指针挂稳后才发布。
     const shell = try core.box(cx, .{
         .direction = .row,
@@ -2340,7 +2340,7 @@ fn buildTabBar(cx: *Cx, state: *DevToolsState) !*Node {
     tabs.style.width = .{ .grow = .{} };
     tabs.style.height = .{ .fit = .{} };
     // 程序化换 tab（setActiveTab）时要能把下划线同步回组件（见
-    // syncDetailsTabs）——view-mode tabs 有同款 sync 路径，这里补齐。
+    // syncDetailsTabs），view-mode tabs 有同款 sync 路径，这里补齐。
     state.details_tabs_node = tabs;
     state.details_tabs_state = tabsStateFromNode(tabs);
     shell.meta.ownership.meta.test_id = "devtools.details.tabs";
@@ -2985,7 +2985,7 @@ fn buildTraceTab(cx: *Cx, target: *Cx, state: *DevToolsState, parent: *Node) !vo
 
     const store = target.inspector.trace_store;
 
-    // Pause/Resume 按钮 → Button 组件
+    // Pause/Resume 按钮 -> Button 组件
     {
         const is_paused = if (store) |s| s.paused else false;
         const pause_ctx = try state.frameAlloc().create(TracePauseCtx);
@@ -3001,7 +3001,7 @@ fn buildTraceTab(cx: *Cx, target: *Cx, state: *DevToolsState, parent: *Node) !vo
         try toolbar.appendChild(cx.allocator, pause_btn);
     }
 
-    // Clear 按钮 → Button 组件
+    // Clear 按钮 -> Button 组件
     {
         const clear_ctx = try state.frameAlloc().create(TraceClearCtx);
         clear_ctx.* = .{ .state = state };
@@ -3075,7 +3075,7 @@ fn buildTraceTab(cx: *Cx, target: *Cx, state: *DevToolsState, parent: *Node) !vo
         }, .{
             try core.text(cx, line, .{ .font_size = 10, .color = line_color }),
         });
-        // row 建好之后 frameAlloc().create 还可能失败 —— 门控 errdefer 守窗口，adopt 挂接。
+        // row 建好之后 frameAlloc().create 还可能失败，门控 errdefer 守窗口，adopt 挂接。
         var row_owned = true;
         errdefer if (row_owned) cx.freeNode(row);
 
@@ -3095,7 +3095,7 @@ const TracePauseCtx = struct {
 };
 
 /// Trace 工具栏按钮点击发生在 DevTools 窗口，不推进 target 的 frame_count，
-/// 而 Trace 内容默认只在 target 出帧时重建 —— 不在这里显式标脏的话，
+/// 而 Trace 内容默认只在 target 出帧时重建，不在这里显式标脏的话，
 /// Pause 按钮文字不翻转、Clear 后列表残留，要等 target 恰好渲染才更新。
 fn markTraceDetailsDirty(state: *DevToolsState) void {
     state.details_dirty = true;
@@ -3304,7 +3304,7 @@ fn signalValueText(sig: core.DebugSignalRef) []const u8 {
 
 /// 诊断路径：把 state 的原始值排版成带缩进的多行文本，写进调用方给的**定长**
 /// 缓冲 `out`。函数内所有 `catch {}` 吞的都是 NoSpaceLeft：缓冲写满即停止，
-/// 返回已写部分 —— 面板显示一段被截断的值，正是期望的降级行为。
+/// 返回已写部分，面板显示一段被截断的值，正是期望的降级行为。
 fn prettyStateValueInto(out: []u8, raw: []const u8) []const u8 {
     if (raw.len == 0) return raw;
     if (out.len == 0) return out[0..0];
@@ -3363,7 +3363,7 @@ fn prettyStateValueInto(out: []u8, raw: []const u8) []const u8 {
 }
 
 /// 诊断路径：只给 prettyStateValueInto 写缩进空格，写的是定长缓冲，
-/// 吞的是 NoSpaceLeft —— 缓冲满了就不再缩进，显示截断即可。
+/// 吞的是 NoSpaceLeft，缓冲满了就不再缩进，显示截断即可。
 fn writeIndent(writer: anytype, depth: usize) void {
     var i: usize = 0;
     while (i < depth) : (i += 1) {
@@ -3712,7 +3712,7 @@ fn mountDevtoolsSplitter(cx: *Cx, state: *DevToolsState) !*Node {
     errdefer cx.freeNode(splitter);
 
     // 视觉线 (上渐变 + 实线 + 下渐变)
-    // 原来四个节点全部建完、`state.splitter_line_node = line` 先发布，最后才逐个 append ——
+    // 原来四个节点全部建完、`state.splitter_line_node = line` 先发布，最后才逐个 append,
     // 中间任一步失败四个节点全漏，state 里还留着指向游离节点的指针。改成每个子节点建好即 adopt
     // 进 line、line 挂稳 splitter 之后才发布；line 自身用门控 errdefer 守到 adopt 前。
     const line = try core.box(cx, .{
@@ -3870,7 +3870,7 @@ fn rowEvent(event: Event, context: ?*anyopaque) EventResult {
             if (loc) |l| {
                 defer alloc.free(l.file);
                 // A failed launch (no editor on PATH) is not worth disrupting
-                // the inspector over — the button simply appears to do nothing.
+                // the inspector over, the button simply appears to do nothing.
                 source_link.open(alloc, l) catch {};
             }
             return .stop;
@@ -3929,7 +3929,7 @@ fn pickModeEvent(event: Event, context: ?*anyopaque) EventResult {
         target.inspector.enabled = true;
     } else {
         target.inspector.hover_node_id = null;
-        // 高亮画在 target 窗口里，必须让 target 重绘一帧来消掉 ——
+        // 高亮画在 target 窗口里，必须让 target 重绘一帧来消掉,
         // 否则退出 pick 后最后的 hover 高亮冻结在 target 上。
         target.needs_redraw = true;
     }
@@ -4034,7 +4034,7 @@ const DevToolsState = struct {
     /// 用户手动展开的节点（大子树默认折叠，展开后记录在此）
     explicitly_expanded: std.AutoHashMap(u32, bool) = undefined,
     /// 面板内容 scope：root 下所有组件/资源的归属。它是 `root_scope` 的子
-    /// scope——切换明暗主题时整棵内容重建，dispose 这一个就能回收旧内容的全部
+    /// scope，切换明暗主题时整棵内容重建，dispose 这一个就能回收旧内容的全部
     /// 组件状态，而 root 节点本身（host 持有的 cx.root）与其 hook 保持不动。
     scope: ?*Scope = null,
     /// Cx.root_scope（见 ensureInit）。root 节点绑定在它上面。
@@ -4074,7 +4074,7 @@ const DevToolsState = struct {
     tree_auto_scroll_id: ?u32 = null,
 
     /// goto-source 按钮的点击上下文。只有一行能处于 hover 态，故整个面板复用
-    /// 这一个实例——每帧新分配会在面板生命周期内累积（scope 资源直到 unmount
+    /// 这一个实例，每帧新分配会在面板生命周期内累积（scope 资源直到 unmount
     /// 才释放）。
     goto_ctx: RowCtx = undefined,
 
@@ -4128,16 +4128,16 @@ const DevToolsState = struct {
     perf_cache_text: ?*Node = null,
     perf_mounted: bool = false,
     /// perfBeforeRender 上次看到的 target.frame_count（idle 检测专用，与
-    /// last_seen_target_frame_count 分开——后者在 devtoolsBeforeRender 里
+    /// last_seen_target_frame_count 分开，后者在 devtoolsBeforeRender 里
     /// 每帧被消费，无法用来测"多久没变"）。
     perf_seen_frame_count: u64 = 0,
     perf_last_frame_change: ?std.time.Instant = null,
     /// 滚动时间桶（每桶 100ms，共 64 桶 ≈ 6.4s 窗口）。监控按墙钟持续
-    /// 向前滚——target 停帧时滚出 idle 空档，而不是把"最近 64 个渲染帧"
+    /// 向前滚，target 停帧时滚出 idle 空档，而不是把"最近 64 个渲染帧"
     /// 的快照冻在屏上（Chrome FPS meter 语义）。
     /// 值：<0 = 桶未填充；0 = 桶内无渲染帧（idle）；>0 = 桶内平均 FPS。
     perf_live_fps: [perf_chart_sample_count]f32 = @splat(-1.0),
-    /// 下一个要写入的桶（环形游标；渲染时从这里往后读 = 最旧→最新）。
+    /// 下一个要写入的桶（环形游标；渲染时从这里往后读 = 最旧->最新）。
     perf_live_head: usize = 0,
     perf_bucket_start: ?std.time.Instant = null,
     perf_bucket_frames: u64 = 0,
@@ -4176,7 +4176,7 @@ const DevToolsState = struct {
     }
 
     /// mountPanel 失败时 root 整棵回收，而子 mount 中途写进来的节点 / 子状态指针
-    ///（vl_state / details_content / perf_* / console_* / stats_* / splitter_*）会悬垂——
+    ///（vl_state / details_content / perf_* / console_* / stats_* / splitter_*）会悬垂,
     /// 同一 Cx 再次 mountPanel、或事件 handler（event_context = state）读到它们就是 UAF。
     /// 失败路径统一清零（交叉审查 P1/P2）。scope / target / cx 不属于这批，保留。
     pub fn clearMountedNodeRefs(self: *DevToolsState) void {
@@ -4220,7 +4220,7 @@ const DevToolsState = struct {
         // 注意: 不要在这里 dispose scope/details_scope。
         // DevTools scope 已登记为 Cx.root_scope，Cx.deinit/unmount 会在释放
         // 节点树之前 dispose 整棵 scope。deinit 也可能在 Cx.freeNode
-        // 递归中通过 on_cleanup → StateStore.remove 调用，所以这里只清理
+        // 递归中通过 on_cleanup -> StateStore.remove 调用，所以这里只清理
         // DevToolsState 自身所有的容器，不重复触碰 scope。
         self.details_scope = null;
         self.arena.deinit();
@@ -4274,11 +4274,11 @@ const DevToolsState = struct {
     /// （下一帧仍按默认折叠规则显示），用户再点一次即可，无正确性影响。
     fn toggle(self: *DevToolsState, id: u32, is_currently_collapsed: bool) void {
         if (is_currently_collapsed) {
-            // 当前折叠 → 展开
+            // 当前折叠 -> 展开
             _ = self.collapsed.remove(id);
             _ = self.explicitly_expanded.put(id, true) catch {};
         } else {
-            // 当前展开 → 折叠
+            // 当前展开 -> 折叠
             _ = self.explicitly_expanded.remove(id);
             _ = self.collapsed.put(id, true) catch {};
         }

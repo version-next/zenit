@@ -65,49 +65,35 @@ pub const ScrollState = struct {
     /// 水平 bonus
     bonus_x: f32 = 0,
     bonus_velocity_x: f32 = 0,
-    /// 用户是否正在主动输入（手指触摸中 or 鼠标滚轮），此时不运行弹簧回弹
-    user_scrolling: bool = false,
-    /// 自从上次 scroll 事件后的空闲帧数，用于鼠标滚轮超时释放 user_scrolling
-    scroll_idle_frames: u32 = std.math.maxInt(u32),
+    /// 手指在触控板上且本层持有这个手势（began/changed 起，到 ended/cancelled 止）。
+    /// 期间不跑回弹弹簧。鼠标滚轮没有手势，不会置位。
+    touching: bool = false,
+    /// 本层正在接收一段惯性（momentum began/changed 起，到 momentum ended 或新手势止）
+    momentum_active: bool = false,
+    /// 本段惯性已在该轴越界（或松手时已越界）：之后朝外的惯性交给弹簧，不再推内容。
+    /// 下一个手势开始时清除。
+    momentum_spent_y: bool = false,
+    momentum_spent_x: bool = false,
+    /// 每次实际应用一次用户滚动输入（滚轮/手势/惯性/滚动条拖拽）加一。
+    /// 宿主比较前后两帧的值即可知道这帧有没有滚动输入。
+    input_serial: u64 = 0,
     /// 关联的 PropertyTree.scrolls id（maxInt = 未注册到 World）
     world_scroll_id: u32 = std.math.maxInt(u32),
     /// World 引用（写 scroll offset 用）；不持有所有权
     world_ref: ?*anyopaque = null,
-    /// 自从上次 scroll 事件后的空闲帧数（用于惯性结束后触发回弹）
-    scroll_event_idle_frames: u32 = std.math.maxInt(u32),
-    /// 仅用于 idle-tail 过滤的空闲帧数（与 ancestor active 判断解耦）
-    tail_idle_frames: u32 = 0,
-    /// 仅用于本地 UI/编辑器层判断 momentum 是否仍在持续到达
-    /// 不参与 ancestor active 逻辑，避免破坏嵌套滚动委托。
-    momentum_idle_frames: u32 = std.math.maxInt(u32),
-    /// 是否发生过真实滚动会话（用于避免首轮手势被尾巴抑制误伤）
-    has_scroll_history: bool = false,
-    /// 当前滚动会话是否来自触摸板（有 phase 信息）
-    is_trackpad_session: bool = false,
-    /// phase ended 后，抑制把内容再次推向边界外的惯性输入（避免回弹反复重触发）
-    suppress_outward_momentum_y: bool = false,
-    suppress_outward_momentum_x: bool = false,
-    /// 触摸板 phase ended 后等待"真实新手势"重接入（过滤尾部残余小 delta）
-    awaiting_trackpad_reengage: bool = false,
-    /// phase ended 后短窗口护栏帧数（护栏期间边界向外输入一律忽略）
-    phase_end_guard_frames: u8 = 0,
     /// macOS 手势 latching：本层是否是当前手势的归属者。
     /// 手势首帧决定归属后中途不换手（NSScrollView 10.9+ 语义），momentum 跟随 latch。
     latched: bool = false,
     /// 回弹动画：临界阻尼弹簧（native NSScrollView 手感），闭式解由绝对时间戳驱动。
-    /// 回弹 active 期间 outward momentum 被拒绝（天然护栏，无需帧数计数器）
     bounce_start_time_y: f64 = 0,
     bounce_from_y: f32 = 0,
-    /// 弹簧初速度（px/s，越界方向为正向 bonus 增长方向）——携带入射惯性
+    /// 弹簧初速度（px/s，越界方向为正向 bonus 增长方向），携带入射惯性
     bounce_v0_y: f32 = 0,
     bounce_active_y: bool = false,
-    /// 回弹完成时间戳（ms），用于完成后的绝对时间护栏
-    bounce_done_time_y: f64 = 0,
     bounce_start_time_x: f64 = 0,
     bounce_from_x: f32 = 0,
     bounce_v0_x: f32 = 0,
     bounce_active_x: bool = false,
-    bounce_done_time_x: f64 = 0,
 
     // 垂直滚动条动画 (委托给 FadeIndicator)
     scrollbar_fade: physics.FadeIndicator = .{},
@@ -160,6 +146,26 @@ pub const ScrollState = struct {
         return if (max > 0) max else 0;
     }
 
+    /// 用户是否正在滚动：手指在触控板上、惯性进行中或正在拖滚动条。
+    /// 全部由确定的开始/结束信号维护，不含任何超时。
+    pub fn inputActive(self: *const ScrollState) bool {
+        return self.touching or self.momentum_active or self.scrollbar_dragging or self.scrollbar_dragging_h;
+    }
+
+    /// 本层开始持有一个新的触控板手势：接住进行中的回弹（保留当前越界量，
+    /// 内容停在手指按住的位置），并结束上一段惯性。
+    pub fn beginTouch(self: *ScrollState) void {
+        if (self.touching) return;
+        self.touching = true;
+        self.momentum_active = false;
+        self.momentum_spent_y = false;
+        self.momentum_spent_x = false;
+        self.bounce_active_y = false;
+        self.bounce_active_x = false;
+        self.bonus_velocity = 0;
+        self.bonus_velocity_x = 0;
+    }
+
     /// 返回实例级 tuning（有 override 用 override，否则用全局）
     pub fn tuning(self: *const ScrollState) ScrollTuningT {
         return self.tuning_override orelse scroll_tuning;
@@ -176,7 +182,7 @@ pub const ScrollState = struct {
     }
 
     /// 将逻辑像素值量化到物理像素网格（消除文字滚动抖动）。
-    /// 例: pixel_scale=2 时，12.3 → 12.5（= 25 物理像素 / 2）。
+    /// 例: pixel_scale=2 时，12.3 -> 12.5（= 25 物理像素 / 2）。
     pub fn snapToPixel(self: *const ScrollState, v: f32) f32 {
         const s = self.pixel_scale;
         return @round(v * s) / s;
@@ -203,7 +209,7 @@ pub const ScrollState = struct {
         return -self.snapToPixel(scroll - base);
     }
 
-    /// 入射初速度上限（px/s）——防止极端 fling 把弹簧推得过深
+    /// 入射初速度上限（px/s），防止极端 fling 把弹簧推得过深
     const max_bounce_v0: f32 = 2500;
     /// 弹簧收敛判定：位移与速度都足够小才算 settle
     const bounce_settle_pos: f32 = 0.4;
@@ -244,17 +250,17 @@ pub const ScrollState = struct {
     /// 回弹 active 期间 outward momentum 被 event handler 拒绝。
     pub fn tickBonus(self: *ScrollState, now_ms: f64) void {
         if (!self.bounce_active_y) {
-            // 非动画状态：如果有 bonus 且未在用户滚动，自动启动
-            if (self.bonus_y != 0 and !self.user_scrolling) {
+            // 非动画状态：有 bonus 且手指不在板上，启动回弹
+            if (self.bonus_y != 0 and !self.touching) {
                 self.startBounceY(now_ms);
             } else {
                 return;
             }
         }
-        if (self.user_scrolling) {
-            // 用户重新开始滚动 → 中断回弹
+        if (self.touching) {
+            // 手指按住 -> 中断回弹
             self.bounce_active_y = false;
-            logScroll("tickBonus INTERRUPTED: bonus_y={d:.2} user_scrolling=true", .{self.bonus_y});
+            logScroll("tickBonus INTERRUPTED: bonus_y={d:.2} touching", .{self.bonus_y});
             return;
         }
 
@@ -269,7 +275,6 @@ pub const ScrollState = struct {
             self.bonus_y = 0;
             self.bonus_velocity = 0;
             self.bounce_active_y = false;
-            self.bounce_done_time_y = now_ms;
             logScroll("bounce DONE Y", .{});
         }
     }
@@ -277,13 +282,13 @@ pub const ScrollState = struct {
     /// 水平回弹
     pub fn tickBonusX(self: *ScrollState, now_ms: f64) void {
         if (!self.bounce_active_x) {
-            if (self.bonus_x != 0 and !self.user_scrolling) {
+            if (self.bonus_x != 0 and !self.touching) {
                 self.startBounceX(now_ms);
             } else {
                 return;
             }
         }
-        if (self.user_scrolling) {
+        if (self.touching) {
             self.bounce_active_x = false;
             return;
         }
@@ -299,7 +304,6 @@ pub const ScrollState = struct {
             self.bonus_x = 0;
             self.bonus_velocity_x = 0;
             self.bounce_active_x = false;
-            self.bounce_done_time_x = now_ms;
             logScroll("bounce DONE X", .{});
         }
     }
@@ -342,28 +346,13 @@ pub const ScrollState = struct {
         self.onScrollActivityAxes(true, true);
     }
 
-    /// 按轴激活 scrollbar fade 与活动计数器。
+    /// 按轴激活 scrollbar fade。
     /// VSCode/Zed 标准：纯 Y 滚动只显示 Y scrollbar；纯 X 同理。
     pub fn onScrollActivityAxes(self: *ScrollState, axis_y: bool, axis_x: bool) void {
         if (axis_y) self.scrollbar_fade.onActivity();
         if (axis_x) self.scrollbar_fade_h.onActivity();
-        self.scroll_idle_frames = 0;
-        self.scroll_event_idle_frames = 0;
-        self.tail_idle_frames = 0;
-        self.momentum_idle_frames = std.math.maxInt(u32);
-        // 新滚动活动到来 → 中断活跃的回弹动画（下次 tickBonus 会重新启动）
-        self.bounce_active_y = false;
-        self.bounce_active_x = false;
-        // 注意: has_scroll_history 由 scrollEventHandler 中非 momentum 路径单独设置,
-        // 避免旧手势的残余 momentum 事件污染新 ScrollArea 的历史标记.
         // 同步调参到实例（有 override 时优先）
         self.rubber_band.coefficient = self.tuning().rubber_band_coeff;
-    }
-
-    pub fn onMomentumActivityAxes(self: *ScrollState, axis_y: bool, axis_x: bool) void {
-        if (axis_y) self.scrollbar_fade.onActivity();
-        if (axis_x) self.scrollbar_fade_h.onActivity();
-        self.momentum_idle_frames = 0;
     }
 
     pub fn tickScrollbar(self: *ScrollState) bool {
@@ -383,17 +372,8 @@ pub const ScrollTuningT = struct {
     /// 越界拖拽阻尼系数 (Apple UIScrollView 标准 = 0.55)
     /// 运行时同步到 state.rubber_band.coefficient
     rubber_band_coeff: f32 = 0.55,
-    /// 鼠标滚轮释放延迟帧数（避免边界抖动）
-    wheel_release_frames: u32 = 10,
     /// 抖动消除用的微小阈值（px）
     jitter_snap_epsilon: f32 = 0.35,
-    /// phase ended 后判定为"真实新手势"的最小输入幅度（px）。
-    /// native 不吃轻柔新手势：残余尾巴主要靠 phase-end 护栏帧过滤，此阈值只兜底极小抖动。
-    trackpad_reengage_delta_threshold: f32 = 8.0,
-    /// phase ended 后强护栏帧数（60fps 下 8 帧≈133ms）
-    phase_end_guard_frames: u8 = 8,
-    /// 无 phase_ended 时，空闲后的微小边界尾巴输入阈值（px）
-    idle_residual_delta_threshold: f32 = 10.0,
     /// 进入边界前的预阻力区域（px）。
     /// native macOS 到边界前是 1:1 无阻力（rubber band 只作用于越界后），默认关闭；
     /// 保留参数供特殊场景 opt-in。
@@ -404,14 +384,12 @@ pub const ScrollTuningT = struct {
     edge_resistance_min_factor: f32 = 0.16,
     /// 边界处最小通过比例（momentum，阻力更大）
     momentum_edge_resistance_min_factor: f32 = 0.12,
-    /// 已越界时允许继续注入 bonus 的最小 momentum 幅度（px）
-    momentum_bonus_tail_cutoff: f32 = 14.0,
 };
 
 /// 节点 on_cleanup 与 ScrollEventCtx 之间的中转格。
 ///
 /// 为什么必须有这一层：节点的 on_cleanup 回调要把 ctx 上的节点指针清成 null，
-/// 但**节点可能比 ctx 活得久，且解绑够不着它**——
+/// 但**节点可能比 ctx 活得久，且解绑够不着它**,
 ///   1. VirtualList 回收 slot 走 `detachChild + cx.freeNode`（`Node.destroy`
 ///      只剩扩容 errdefer 一处）：invoke on_cleanup 但**不** dispose scope，
 ///      于是 ctx 上四个字段被清空、ctx 本身却还活着；
@@ -419,7 +397,7 @@ pub const ScrollTuningT = struct {
 ///      content 节点），而 `detachScrollAreaBindings` 只认 ctx 上那四格，
 ///      清不到重复的那个；
 ///   3. 于是 scope.dispose() 释放 ctx 后，那个够不着的节点稍后 freeNode 时
-///      invoke 回调 → 写已释放内存 → SIGSEGV。
+///      invoke 回调 -> 写已释放内存 -> SIGSEGV。
 ///      （下游应用实测：进板滚动 Layers 列表后返回首页，必崩。）
 ///
 /// 所以回调一律改写本格，而**本格由 Cx 独占持有**（Cx.scroll_ctx_cells）：
@@ -428,7 +406,7 @@ pub const ScrollTuningT = struct {
 /// ctx == null，安全空转。
 ///
 /// 代价：格子按 ScrollArea 挂载次数累积，直到 Cx 关闭才回收（每个仅 8 字节）。
-/// 实测下游应用跑 10 轮 board↔home 往返（含 Layers 列表滚动）总数 < 5 个——
+/// 实测下游应用跑 10 轮 board↔home 往返（含 Layers 列表滚动）总数 < 5 个,
 /// 保留模式下节点复用，重挂并不会新建。换来的是"任何释放顺序都不会 UAF"。
 pub const ScrollCtxCell = struct {
     /// scope 释放 ScrollEventCtx 后置 null。

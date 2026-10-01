@@ -63,7 +63,7 @@ fn defaultRoles(node: *const Node) HitRoles {
     // 先一步过滤掉该节点，behavior 根本没机会生效（hit_behavior 名不副实）。
     //
     // 必须读裸 style 字段，不能调 nodeHitBehavior()：defaultBehavior 会回调
-    // nodeHitRoles → defaultRoles，改成前者会形成无限递归爆栈。
+    // nodeHitRoles -> defaultRoles，改成前者会形成无限递归爆栈。
     const behavior_intercepts = if (node.style.hit_behavior()) |b| switch (b) {
         .@"opaque", .self_only, .self_and_children => true,
         .pass_through, .children_only => false,

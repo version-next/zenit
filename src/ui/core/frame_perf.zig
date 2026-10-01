@@ -1,4 +1,4 @@
-//! 帧性能采样历史 —— 从 `Cx` 析出的独立值类型。
+//! 帧性能采样历史，从 `Cx` 析出的独立值类型。
 //!
 //! 背景：`Cx` 里原本铺着四组一模一样的环形缓冲（frame total / frame interval /
 //! drawable acquire / CPU-only frame），每组三个字段（`_us` / `_write` / `_len`）
@@ -23,7 +23,7 @@ pub const Sampler = struct {
     /// ⚠ 这里曾经是 u8 并靠 `+%= 1` 回绕（2026-09-22 交叉审查发现是 bug）：
     /// u8 在 256 处回绕，而 samples.len = 120，**120 不整除 256**。于是
     /// push 超过 256 次后 `write % 120` 不再等于真实写入位置，latest() 与
-    /// atFromOldest() 会读到错位的槽 —— 60fps 下约 4.3 秒即触发，DevTools
+    /// atFromOldest() 会读到错位的槽，60fps 下约 4.3 秒即触发，DevTools
     /// 的帧间隔读数会静默串到旧样本上。
     ///
     /// 改成在 push 时显式对 len 取模，回绕点与容量对齐，宽度也不再是隐含前提。
@@ -97,7 +97,7 @@ pub const Sampler = struct {
 
 /// 一帧渲染的四条耗时链路。
 pub const FramePerf = struct {
-    /// 最近一帧 frame_start→frame_end 的墙钟总耗时（us）。
+    /// 最近一帧 frame_start->frame_end 的墙钟总耗时（us）。
     frame_total_us: u64 = 0,
     /// 最近一帧真实呈现节奏间隔（us，按显示器刷新率下限钳制）。
     frame_interval_us: u64 = 0,
@@ -113,7 +113,7 @@ pub const FramePerf = struct {
     /// 与 `total` 的区别是这条链路的关键：后者存的是墙钟总耗时，里面含 vsync
     /// 等待、drawable 获取，以及"这一帧画完之后什么都没发生"的那段空转。用它
     /// 算 P95 时，一个 CPU 只花 8ms 却被显示节奏或（e2e 里）RPC 往返拖到 26ms
-    /// 的帧，会报成 26ms 的"CPU P95" —— 看起来像卡顿，实则 CPU 空闲。
+    /// 的帧，会报成 26ms 的"CPU P95"，看起来像卡顿，实则 CPU 空闲。
     /// 判断"渲染工作有没有超预算"必须用这一条。
     cpu: Sampler = .{},
 
@@ -221,7 +221,7 @@ test "Sampler: write 计数器回绕 256 之后仍指向正确样本" {
     // **120 不整除 256**。于是 push 超过 256 次以后，`write % 120` 不再等于
     // 「真实写入位置」，latest()/atFromOldest() 会读到错位的槽。
     //
-    // 60fps 下 257 帧 ≈ 4.3 秒 —— 任何跑过几秒的真实应用都必然踩到。
+    // 60fps 下 257 帧 ≈ 4.3 秒，任何跑过几秒的真实应用都必然踩到。
     // DevTools 的帧间隔读数因此会静默串到旧样本上。
     var s = Sampler{};
     for (0..300) |i| s.push(@intCast(i));

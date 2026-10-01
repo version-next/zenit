@@ -113,7 +113,7 @@ pub const Texture = struct {
     ///
     /// 存在的理由是抽象边界：`src/render` 的簿记类测试（如 offscreen 池的
     /// retained 语义）需要一个 Texture 值，但**不应该知道后端的字段布局**。
-    /// 从前它直接写 `.raw = undefined` 字面量，于是换后端就编译不过——这是
+    /// 从前它直接写 `.raw = undefined` 字面量，于是换后端就编译不过，这是
     /// C1 抓出的三个抽象泄漏之一。改由后端各自提供构造器后，测试只依赖
     /// 「能造一个指定尺寸的假纹理」这个中立能力。
     ///
@@ -155,7 +155,7 @@ pub const TextureBinding = struct {
     }
 
     /// 后端中立的测试构造器。`token` 只需可比较（`eql` 是渲染器唯一依赖的
-    /// 性质），各后端自行决定塞进哪个字段——测试因此不必知道具体后端表示。
+    /// 性质），各后端自行决定塞进哪个字段，测试因此不必知道具体后端表示。
     /// 产出的 binding 不指向真实纹理，只能用于不解引用它的纯 CPU 测试。
     pub fn testBinding(token: u64, width: u32, height: u32) TextureBinding {
         return .{ .raw = @ptrFromInt(token), .width = width, .height = height };

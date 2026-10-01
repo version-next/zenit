@@ -1,4 +1,4 @@
-//! Card 样式层 — CardRecipe(variant × selected) 与具名静态样式（zenit-styling-revamp）。
+//! Card 样式层，CardRecipe(variant × selected) 与具名静态样式（zenit-styling-revamp）。
 //! mod.zig 只消费 resolve 结果与函数返回值。
 const core = @import("../../core.zig");
 const theme = core.theme;
@@ -11,11 +11,11 @@ const recipe_mod = @import("../../recipe.zig");
 const CardVariant = @import("mod.zig").CardVariant;
 
 // ============================================================================
-// CardRecipe — recipe(variant) + selected 条件
+// CardRecipe, recipe(variant) + selected 条件
 //
 // variant 维度: background / border / corner_radius / shadow / hover 态
 // selected 条件位: 高亮边框（2px accent，细粒度字段在 mod.zig fold 进 Border）
-//   —— selected 是持久状态不是变体，走 ConditionalStyle 的 .selected 条件，
+//   selected 是持久状态不是变体，走 ConditionalStyle 的 .selected 条件，
 //      消费端 resolve(.{ .is_selected = ... })。
 // radius 固定 = 6（所有 variant 共享）
 // ============================================================================

@@ -1,4 +1,4 @@
-/// Phase L3: Text Blob — 逻辑布局与渲染缩放分离
+/// Phase L3: Text Blob，逻辑布局与渲染缩放分离
 ///
 /// TextStyleKey 唯一标识布局/塑形参数，TextLayoutBlob 保存逻辑字号空间的稳定布局结果。
 /// TextRasterPolicy 控制光栅化策略（静态锐利 vs 动画稳定）。
@@ -28,7 +28,7 @@ pub const TextStyleKey = struct {
     /// 逻辑字号（不乘 scale）
     font_size: f32,
     font_weight: u16,
-    /// 字体族 id。**必须进这个 key** —— 同一段文字换族要重新塑形,
+    /// 字体族 id。**必须进这个 key**，同一段文字换族要重新塑形,
     /// 漏了它会让第二个族命中第一个族的布局缓存(与 shapingKey 同款坑)。
     font_family: u16 = 0,
     line_height: f32,
@@ -156,7 +156,7 @@ pub const BlobStore = struct {
         const fingerprint = hashBlobFingerprint(blob);
         // 头指针可能悬空：paint pass 的双发射守卫会把 blobs 截断回
         // subtree_blob_start（render_engine/mod.zig renderNodeTransform），
-        // 但 index 里指向被截断区间的表项还在 —— 直接解引用越界 panic
+        // 但 index 里指向被截断区间的表项还在，直接解引用越界 panic
         // （线上 crash 实证：appendOrReuseTracked +336 outOfBounds）。
         // 链上 id 严格递减（新头指向旧头），存活 blob 只会链到更早、
         // 必然也存活的 blob，所以只需守卫头指针这一处。

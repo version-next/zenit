@@ -1,4 +1,4 @@
-//! Steps 样式层 — 圆圈/标题/描述/连接线的全部视觉决策。
+//! Steps 样式层，圆圈/标题/描述/连接线的全部视觉决策。
 //! 水平与垂直两个布局分支共用，mod.zig 只消费。
 const core = @import("../../core.zig");
 const Color = core.Color;
@@ -54,7 +54,7 @@ pub fn hTrackStyle(t: *const core.ThemeTokens) core.BoxStyle {
     return .{
         .position = .absolute,
         // left+right inset 只在 width=grow 时拉伸（layout_engine.layoutAbsoluteChild）；
-        // 默认 fit 会解析成 0 宽 → 连接线整条不画。
+        // 默认 fit 会解析成 0 宽 -> 连接线整条不画。
         .width = .{ .grow = .{} },
         .height = .{ .px = 2 },
         .background = t.color.border_strong,

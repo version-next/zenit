@@ -1,6 +1,6 @@
-/// TagsInput — 标签输入（B5）：Chip 列表 + 内嵌输入框
+/// TagsInput，标签输入（B5）：Chip 列表 + 内嵌输入框
 ///
-/// 提交方式：输入文本以逗号结尾（"foo," → 提交 "foo"）或点 Add 按钮。
+/// 提交方式：输入文本以逗号结尾（"foo," -> 提交 "foo"）或点 Add 按钮。
 /// tag 文本从输入框拷贝到 scope allocator（用户输入非静态），删除时释放。
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -41,7 +41,7 @@ const ChipCloseCtx = struct {
 };
 
 /// 移除后释放用户文本：chip/行节点的 TextProps 仍借用这段字节，而 freeNode 在
-/// reactive / tick 深度里只是排队 —— 必须排进与 freeNode 同一条延迟队列，节点在前、文本在后。
+/// reactive / tick 深度里只是排队，必须排进与 freeNode 同一条延迟队列，节点在前、文本在后。
 const DeferredBytes = struct {
     entry: DeferredEntry = .{},
     alloc: Allocator,
@@ -67,7 +67,7 @@ pub const TagsInputState = struct {
     scope: *Scope,
     cx: *Cx,
     tags: [64]?TagEntry = [_]?TagEntry{null} ** 64,
-    /// 每 slot 一个稳定的 close ctx（state 堆分配 → 元素指针稳定）
+    /// 每 slot 一个稳定的 close ctx（state 堆分配 -> 元素指针稳定）
     close_ctxs: [64]ChipCloseCtx = undefined,
     count: usize = 0,
     max_tags: usize,
@@ -179,9 +179,9 @@ pub const TagsInputState = struct {
 /// 输入框为空时按 Backspace 删除最后一个 tag（tags input 标配键盘行为）。
 ///
 /// 为什么走 capture 而不是 bubble：Input 的 on_event 对 Backspace
-/// （KeyCode.delete）无条件返回 handled——即使 buffer 已空
+/// （KeyCode.delete）无条件返回 handled，即使 buffer 已空
 /// （TextInputState.handleKeyDown `.delete` 分支恒 return true），事件到不了
-/// bubble 阶段。capture 阶段 root→target 先于 target 派发（event_dispatcher
+/// bubble 阶段。capture 阶段 root->target 先于 target 派发（event_dispatcher
 /// invokeHandler 注释点名的"祖先抢先拦截"场景），wrapper 在这里抢先消费。
 fn onWrapperKeyCapture(event: Event, context: ?*anyopaque) EventResult {
     const state: *TagsInputState = @ptrCast(@alignCast(context orelse return .ignored));
@@ -210,7 +210,7 @@ fn onInputChanged(state: *TagsInputState, text: []const u8) void {
         state.suppress_change = false;
         return;
     }
-    // 以逗号结尾 → 提交逗号前内容并清空输入
+    // 以逗号结尾 -> 提交逗号前内容并清空输入
     if (text.len > 0 and text[text.len - 1] == ',') {
         // 失败后若仍 clearInput，用户输入既没变成 tag 也没留在输入框里 = 静默丢数据。
         state.addTag(text[0 .. text.len - 1]) catch @panic("OOM: TagsInput 逗号提交 tag 失败");
@@ -239,7 +239,7 @@ pub fn mountTagsInput(props: TagsInputProps, scope: *Scope, cx: *Cx) !TagsInputM
 
     const state = try my_scope.allocator.create(TagsInputState);
     // sweep：adoptResource 失败当场跑 cleanup、之后任何一步失败也会经 scope 级联跑到它，
-    // 而 cleanup 会遍历 tags 释放 text —— state 此刻还没初始化（0xaa），必须先把 tags 清空。
+    // 而 cleanup 会遍历 tags 释放 text, state 此刻还没初始化（0xaa），必须先把 tags 清空。
     state.tags = [_]?TagEntry{null} ** 64;
     try my_scope.adoptResource(@ptrCast(state), struct {
         fn cleanup(ptr: *anyopaque, alloc: Allocator) void {
@@ -352,7 +352,7 @@ test "TagsInput: 初始 tags + 逗号提交 + 去重 + 删除" {
     try testing.expect(ti.state.hasTag("go"));
 
     // 去重 + 空白 no-op。输入框先放入文本：处理后被清空 = 这次 on_change 真的被
-    // 评估过（而不是被残留的 suppress 旗标吞掉——旧断言就是这样假绿的）。
+    // 评估过（而不是被残留的 suppress 旗标吞掉，旧断言就是这样假绿的）。
     _ = ti.state.input_state.setText("zig,");
     onInputChanged(ti.state, "zig,");
     try testing.expectEqual(@as(usize, 0), ti.state.input_state.buffer_len);
@@ -385,13 +385,13 @@ test "TagsInput: 输入框空时 Backspace 删除最后一个 tag（capture 拦�
     const ctx_ptr = ti.wrapper.behavior.events.event_context;
     const backspace = Event{ .key_down = .{ .key = .delete, .modifiers = .{} } };
 
-    // 输入框空 → 删最后一个 tag（后加的 "gui" 先删）并吞事件
+    // 输入框空 -> 删最后一个 tag（后加的 "gui" 先删）并吞事件
     try testing.expectEqual(EventResult.stop, cap(backspace, ctx_ptr));
     try testing.expectEqual(@as(usize, 1), ti.state.tagCount());
     try testing.expect(!ti.state.hasTag("gui"));
     try testing.expect(ti.state.hasTag("zig"));
 
-    // 输入框非空 → 放行给 input 正常删字符
+    // 输入框非空 -> 放行给 input 正常删字符
     ti.state.input_state.insertText("dr");
     try testing.expectEqual(EventResult.ignored, cap(backspace, ctx_ptr));
     try testing.expectEqual(@as(usize, 1), ti.state.tagCount());
@@ -402,7 +402,7 @@ test "TagsInput: 输入框空时 Backspace 删除最后一个 tag（capture 拦�
     try testing.expectEqual(EventResult.ignored, cap(alt_backspace, ctx_ptr));
     try testing.expectEqual(@as(usize, 1), ti.state.tagCount());
 
-    // 删空后：无 tag 可删 → ignored（不吞事件）
+    // 删空后：无 tag 可删 -> ignored（不吞事件）
     try testing.expectEqual(EventResult.stop, cap(backspace, ctx_ptr));
     try testing.expectEqual(@as(usize, 0), ti.state.tagCount());
     try testing.expectEqual(EventResult.ignored, cap(backspace, ctx_ptr));
@@ -454,7 +454,7 @@ test "TagsInput: 删除后 slot 复用，增删超过 64 次仍能添加" {
     try testing.expect(ti.state.hasTag("b"));
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "tags_input: mount 在任意分配点失败时不泄漏（sweep）" {
     const sw = @import("../oom_sweep.zig");
     try sw.sweepMount("tags_input", struct {

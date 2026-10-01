@@ -29,7 +29,7 @@ const svg_assets = @import("../../svg_assets.zig");
 // 类型定义
 // ============================================================================
 
-/// Chip 尺寸 — 映射 ControlSize 的 xs/sm/md
+/// Chip 尺寸，映射 ControlSize 的 xs/sm/md
 pub const ChipSize = enum {
     xs,
     sm,
@@ -124,10 +124,10 @@ pub const ChipBuilder = struct {
         node.style.justify = .center;
         shell.content_slot.style.width = .{ .fit = .{} };
 
-        // text color — label/icon/close 共用 recipe base 的 text_color
+        // text color, label/icon/close 共用 recipe base 的 text_color
         const text_color: Color = cs.base.text_color orelse t.color.fg_primary;
 
-        // leading icon → icon_slot
+        // leading icon -> icon_slot
         if (p.icon_asset) |asset| {
             const icon_sz = t.control.get(sz).icon_size;
             _ = try core.adoptChild(cx, allocator, shell.icon_slot, try core.iconTint(cx, asset, text_color, .{
@@ -141,7 +141,7 @@ pub const ChipBuilder = struct {
             icon_slot_detached = false;
         }
 
-        // label → content_slot
+        // label -> content_slot
         const label_node = try core.adoptChild(cx, allocator, shell.content_slot, try box(cx, .{}, .{}));
         label_node.setText(.{
             .content = p.label,
@@ -151,7 +151,7 @@ pub const ChipBuilder = struct {
             .font_weight = 500,
         });
 
-        // close 按钮 → append_slot
+        // close 按钮 -> append_slot
         if (p.closable) {
             const close_sz: f32 = t.control.get(sz).icon_size - 2;
             const close_node = try core.adoptChild(cx, allocator, shell.append_slot, try box(cx, .{
@@ -200,7 +200,7 @@ test "Chip: basic creation" {
     try root.appendChild(std.testing.allocator, node);
 
     try std.testing.expectEqualStrings("Chip", node.meta.ownership.meta.component_name.?);
-    // sm → ControlSize.sm → height=24
+    // sm -> ControlSize.sm -> height=24
     ctx.layout();
     // 高度由 padding_y × 2 + 行高 fit 撑出（不再是 style.height px）
     try std.testing.expectEqual(@as(f32, 24), node.rectFromWorldOrFallback().h);
@@ -249,7 +249,7 @@ test "Chip: with icon and close" {
     }).mount(scope, ctx);
     try root.appendChild(std.testing.allocator, node);
 
-    // md → ControlSize.md → height=32
+    // md -> ControlSize.md -> height=32
     ctx.layout();
     // 高度由 padding_y × 2 + 行高 fit 撑出（不再是 style.height px）
     try std.testing.expectEqual(@as(f32, 32), node.rectFromWorldOrFallback().h);
@@ -271,7 +271,7 @@ test "Chip: xs size" {
     }).mount(scope, ctx);
     try root.appendChild(std.testing.allocator, node);
 
-    // xs → ControlSize.xs → height=20
+    // xs -> ControlSize.xs -> height=20
     ctx.layout();
     // 高度由 padding_y × 2 + 行高 fit 撑出（不再是 style.height px）
     try std.testing.expectEqual(@as(f32, 20), node.rectFromWorldOrFallback().h);
@@ -380,12 +380,12 @@ test "Chip: render emits background and label text" {
     try std.testing.expect(saw_label);
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "chip(closable): mount 在任意分配点失败时不泄漏（sweep）" {
     try @import("../oom_sweep.zig").sweepMount("chip(closable)", struct {
         fn m(scope: *Scope, cx: *Cx) anyerror!?*Node {

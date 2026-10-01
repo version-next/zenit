@@ -2,7 +2,7 @@
 //!
 //! 这些测试**必须**跑在真实 CoreText 路径上（`src/render` test target 链了
 //! native/macos/coretext_bridge.m）。注意 `src/ui/core/text_layout.zig` 有
-//! `builtin.is_test` 分支会绕开 CoreText 走估算路径 —— 那条路径测不出 RTL，
+//! `builtin.is_test` 分支会绕开 CoreText 走估算路径，那条路径测不出 RTL，
 //! 所以这里直接用 `text.TextShaper`，不经 text_layout。
 //!
 //! 背景：CoreText 的 `CTLineCreateWithAttributedString` 内部已跑完 Unicode
@@ -52,7 +52,7 @@ fn shape(allocator: std.mem.Allocator, s: []const u8) !ShapeResult {
 /// 渲染器（text_renderer.emitGlyphInstance）的合同是：
 ///   glyph_x = cursor_x + x_offset，cursor_x 由 x_advance 累加推进。
 /// 也就是 x_offset 是**相对当前 pen** 的微调，不是绝对坐标。
-/// 若 RTL run 的 x_offset 变成大负数，字形就会反向重叠 —— 这是本测试要防的。
+/// 若 RTL run 的 x_offset 变成大负数，字形就会反向重叠，这是本测试要防的。
 fn assertNoReverseOverlap(glyphs: []const text.ShapedGlyph) !void {
     var cursor: f32 = 0;
     var prev_x: f32 = -std.math.floatMax(f32);
@@ -96,7 +96,7 @@ test "RTL: cluster（源 byte 偏移）随视觉序递减，证明 bidi 已由 C
     defer r.deinit();
 
     try testing.expect(r.glyphs.len >= 2);
-    // 视觉序第一个 glyph 对应源串**最后**一个字符 —— 这正是 RTL 的定义。
+    // 视觉序第一个 glyph 对应源串**最后**一个字符，这正是 RTL 的定义。
     try testing.expect(r.glyphs[0].cluster > r.glyphs[r.glyphs.len - 1].cluster);
     // 且末尾 glyph 落在源串起点。
     try testing.expectEqual(@as(u32, 0), r.glyphs[r.glyphs.len - 1].cluster);
@@ -120,7 +120,7 @@ test "RTL 总宽度与 LTR 一致的累加语义：advance 之和为正且等于
 
     var total: f32 = 0;
     for (r.glyphs) |g| {
-        // 每个 advance 必须为正 —— 负 advance 会让 pen 倒退。
+        // 每个 advance 必须为正，负 advance 会让 pen 倒退。
         try testing.expect(g.x_advance > 0);
         total += g.x_advance;
     }

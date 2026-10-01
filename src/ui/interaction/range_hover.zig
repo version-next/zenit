@@ -2,13 +2,13 @@
 ///
 /// 框架级交互原语：对一个 host Node 注册多个 **content-space 子矩形区域**，
 /// 每区域带 enter/leave 回调 + hover 延迟。典型消费者：
-///   - 文本中的下划线/标注 → hover 出 detail popup
+///   - 文本中的下划线/标注 -> hover 出 detail popup
 ///   - 带注解的 canvas / 图表的数据点
 ///   - inline hint 额外信息
 ///
 /// 为什么不用 Node 级 hit runtime：
 ///   - 目标 region 不是 DOM 节点（例如文本里的 byte range 标注，不是子节点）
-///   - 按帧要求 host 把 byte range → 屏幕 rect 的映射交给 registry，lazy 查询时求值
+///   - 按帧要求 host 把 byte range -> 屏幕 rect 的映射交给 registry，lazy 查询时求值
 ///   - host 滚动/reflow 时不需要重新 register，只要 rects_fn 返回最新坐标
 ///
 /// 用法：
@@ -25,12 +25,12 @@
 /// ```
 ///
 /// 注意：
-///   - 坐标系是 host Node 的 content-local（caller 负责把 global → local 转换）
+///   - 坐标系是 host Node 的 content-local（caller 负责把 global -> local 转换）
 ///   - rects_fn 每次 tick 被调用，caller 不需要缓存
 ///   - scope cleanup 时 registry 自动释放
 const std = @import("std");
 
-/// 最小 forward decl —— range_hover 实际只存 `*Node` 做标记用，不调用 Node 的方法。
+/// 最小 forward decl, range_hover 实际只存 `*Node` 做标记用，不调用 Node 的方法。
 /// 让单元测试可脱离整个 UI 栈跑（测 `attach` 以外的所有路径）。
 const Node = opaque {};
 const UIContext = opaque {};
@@ -51,7 +51,7 @@ pub const RangeRect = struct {
 
 /// 一个区域的注册条目
 pub const RangeHoverRegion = struct {
-    /// Supplier: 把 (byte_range 或其它) → 0..N 个 content-local rects 写进 buf。
+    /// Supplier: 把 (byte_range 或其它) -> 0..N 个 content-local rects 写进 buf。
     /// 返回实际写入数量（<= buf.len）。
     rects_fn: *const fn (ctx: *anyopaque, buf: []RangeRect) usize,
     ctx: *anyopaque,
@@ -90,7 +90,7 @@ pub const RangeHoverRegistry = struct {
     /// 多次 attach 同一个 node 是 caller 的责任（registry 没做 dedup）。
     ///
     /// 参数 allocator 必须长于 registry 自身；caller 负责在 scope cleanup 里 destroy()。
-    /// 不让构造函数直接吃 UIContext —— 这样 registry 可以脱离整个 UI 栈单元测试。
+    /// 不让构造函数直接吃 UIContext，这样 registry 可以脱离整个 UI 栈单元测试。
     pub fn attach(allocator: std.mem.Allocator, host: *Node) !*RangeHoverRegistry {
         const self = try allocator.create(RangeHoverRegistry);
         self.* = .{
@@ -150,7 +150,7 @@ pub const RangeHoverRegistry = struct {
     }
 
     /// 每帧 / 鼠标移动时投递（mx/my = host-local 坐标；now_ms = 当前单调时间）。
-    /// registry 自己跑 state machine：hover delay → on_enter → on_leave。
+    /// registry 自己跑 state machine：hover delay -> on_enter -> on_leave。
     pub fn tickMouseMove(self: *RangeHoverRegistry, mx: f32, my: f32, now_ms: i64) void {
         self.last_mx = mx;
         self.last_my = my;
@@ -182,7 +182,7 @@ pub const RangeHoverRegistry = struct {
                 self.active_enter_ms = now_ms;
                 self.entered = false;
             }
-            // 检查 delay（包括刚切进来的 case —— delay=0 时同帧 fire）
+            // 检查 delay（包括刚切进来的 case, delay=0 时同帧 fire）
             if (!self.entered) {
                 const elapsed = now_ms - self.active_enter_ms;
                 if (elapsed >= @as(i64, @intCast(hit_region.?.hover_delay_ms))) {

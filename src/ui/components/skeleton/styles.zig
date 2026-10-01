@@ -1,4 +1,4 @@
-/// Skeleton — 样式层
+/// Skeleton，样式层
 ///
 /// 变体外观与 shimmer 插值端点颜色；动画逻辑（tick/正弦插值）在 mod.zig。
 const core = @import("../../core.zig");

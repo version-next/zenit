@@ -106,7 +106,7 @@ fn renderShape(cx: anytype, cursor: VirtualCursor, now_ms: f64) bool {
                 appendIconWithHalo(cx, icons.cursor_click, x - 9, y - 9, 24, 0);
             } else {
                 // A raised index finger, not the open palm `hand` that `grab`
-                // uses — the two shapes must stay visually distinct.  The
+                // uses, the two shapes must stay visually distinct.  The
                 // fingertip sits at (12, 2) in the 24px viewBox and is the
                 // hotspot.
                 appendIconWithHalo(cx, icons.pointer, x - 12, y - 2, 24, 0);

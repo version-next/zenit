@@ -48,7 +48,7 @@ pub const RateState = struct {
     container_node: ?*Node = null,
     cx: *Cx,
 
-    /// 同步 a11y 数值。**只报 self.value，不报 hover_value** —— hover 预览
+    /// 同步 a11y 数值。**只报 self.value，不报 hover_value**, hover 预览
     /// 是纯视觉的临时态，把它播报出去会让 AT 用户以为分数已经改了。
     fn syncA11y(self: *RateState) void {
         const node = self.container_node orelse return;
@@ -65,7 +65,7 @@ pub const RateState = struct {
     /// 程序化设置评分值。
     ///
     /// 此前 RateState 虽然公开、`value` 字段可写，但 `updateDisplay` 是私有的
-    /// —— 直接写 `state.value` **不会重绘**，看起来能驱动实则无效
+    /// 直接写 `state.value` **不会重绘**，看起来能驱动实则无效
     /// （审查里归为"tier-b 陷阱"：暴露了 state 却没有生效的写入口）。
     ///
     /// 会 clamp 到 [0, count]，并同步星星显示。不触发 on_change
@@ -495,12 +495,12 @@ test "Rate.setValue: 程序化设值会重绘星星（此前 updateDisplay 私�
     try std.testing.expectEqual(@as(f32, 0), st.getValue());
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "rate: mount 在任意分配点失败时不泄漏（sweep）" {
     const sw = @import("../oom_sweep.zig");
     try sw.sweepMount("rate", struct {

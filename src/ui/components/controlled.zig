@@ -1,4 +1,4 @@
-//! ControlledProp — Phase 7 Radix 风格 controlled / uncontrolled 二元 props
+//! ControlledProp, Phase 7 Radix 风格 controlled / uncontrolled 二元 props
 //!
 //! 当前 zenit 组件混合用 "props 直接传值"（uncontrolled）和 "外部控制"
 //! （controlled），没有统一模式。Radix UI 已经验证 controlled/uncontrolled
@@ -17,9 +17,9 @@
 //!   props.open.write(&internal_state, new_value);
 //!
 //! 历史债避免：
-//! - **不**让组件的 props field 是单一类型 —— 用户既要"传值不管"也要"完全控制"
+//! - **不**让组件的 props field 是单一类型，用户既要"传值不管"也要"完全控制"
 //! - **不**让 controlled 写入立即生效（必须经 on_change 反馈，确保单一数据源）
-//! - **不**用 ?T optional 表达 controlled —— 区分不出 "uncontrolled with null default"
+//! - **不**用 ?T optional 表达 controlled，区分不出 "uncontrolled with null default"
 
 const std = @import("std");
 const testing = std.testing;
@@ -30,7 +30,7 @@ const testing = std.testing;
 /// 组件层的 `on_change` 已统一为 `?core.HandlerRef`，但这里保留裸函数
 /// 指针，因为 `ControlledProp(T)` 是 comptime 泛型、T 可以是任意类型
 /// （`?ValueT` / `?u32` / `bool` …）。HandlerRef 的 payload 通道只支持
-/// bool 与 []const u8 两种具体类型 —— 那是刻意的：HandlerRef 存在 Node
+/// bool 与 []const u8 两种具体类型，那是刻意的：HandlerRef 存在 Node
 /// 里，做成泛型会让 EventHandlers 变成 comptime 类型参数，污染整棵树。
 ///
 /// 所以这里的取舍是：**泛型容器用泛型回调，具体组件用 HandlerRef**。

@@ -1,4 +1,4 @@
-//! Accordion 样式层 — AccordionItemRecipe(variant) 与 header/body 几何合同（zenit-styling-revamp）。
+//! Accordion 样式层，AccordionItemRecipe(variant) 与 header/body 几何合同（zenit-styling-revamp）。
 const core = @import("../../core.zig");
 const theme = core.theme;
 const Color = core.Color;

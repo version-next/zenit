@@ -27,7 +27,7 @@ pub const StepItem = struct {
 /// Steps 属性
 pub const StepsProps = struct {
     items: []const StepItem = &.{},
-    /// 当前步骤索引。**只在 mount 时读取一次** —— Steps 是纯静态渲染
+    /// 当前步骤索引。**只在 mount 时读取一次**, Steps 是纯静态渲染
     /// （无内部 state），改这个值不会让已挂载的实例更新。
     /// 需要动态步进请重新 mount，或用 ui.Show/For 驱动。
     initial_current: usize = 0,
@@ -40,7 +40,7 @@ pub const StepsProps = struct {
 /// 每一步的 a11y 声明。
 ///
 /// 圆圈里画的是数字/对勾，全是纯视觉信号：AT 用户看不到颜色，也读不出
-/// "第 2 步是实心的"。所以必须把三种状态显式说出来 ——
+/// "第 2 步是实心的"。所以必须把三种状态显式说出来,
 /// selected = 当前步（"你在这儿"），checked = 已完成，disabled = 还没走到。
 /// 缺了这些，Steps 在 AT 侧就只剩一串没有先后关系的标题。
 fn stepA11y(item: StepItem, is_completed: bool, is_active: bool) core.A11yProps {
@@ -471,7 +471,7 @@ test "Steps: 圆圈内序号文本居中于圆心（横竖两向）" {
         try root.appendChild(std.testing.allocator, steps);
         ctx.layout();
         const kids = steps.children.items;
-        // 横向：前两个孩子是连接线轨道；纵向：圆圈在 row → indicator 下
+        // 横向：前两个孩子是连接线轨道；纵向：圆圈在 row -> indicator 下
         const first_step: usize = if (dir == .horizontal) 2 else 0;
         var checked: usize = 0;
         for (kids[first_step..]) |step| {
@@ -533,12 +533,12 @@ test "Steps: single step" {
     try std.testing.expectEqual(@as(usize, 2), steps.children.items.len);
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "steps: mount 在任意分配点失败时不泄漏（sweep）" {
     try @import("../oom_sweep.zig").sweepMount("steps", struct {
         fn m(scope: *Scope, cx: *Cx) anyerror!?*Node {

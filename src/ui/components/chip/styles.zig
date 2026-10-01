@@ -1,4 +1,4 @@
-//! Chip 样式层 — ChipRecipe + shell variant 映射
+//! Chip 样式层，ChipRecipe + shell variant 映射
 //!
 //! Chip 基于 ControlShell：这里只声明 chip 自有的样式决策
 //! （variant 的背景/文字/边框覆盖 + hover 目标色），几何仍由
@@ -11,7 +11,7 @@ const recipe_mod = @import("../../recipe.zig");
 const mod = @import("mod.zig");
 const control_shell = @import("../control_shell/mod.zig");
 
-/// ChipVariant → ControlShell 基底变体
+/// ChipVariant -> ControlShell 基底变体
 pub fn shellVariant(v: mod.ChipVariant) control_shell.ControlVariant {
     return switch (v) {
         .default => .secondary,

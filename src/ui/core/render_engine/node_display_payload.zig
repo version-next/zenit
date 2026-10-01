@@ -1,4 +1,4 @@
-//! 节点 display payload 的**只读取址** —— 从 display_list_lowering.zig 析出
+//! 节点 display payload 的**只读取址**，从 display_list_lowering.zig 析出
 //! （2026-08-05），延续 bracket_debug.zig 的拆分先例（本文件聚焦 lowering 核心）。
 //!
 //! 这一簇回答同一个问题：给定 node_id 和 own/subtree 作用域，
@@ -9,11 +9,11 @@
 //! 与 lowering 主路径的分工：那边**写**（把 display_list lower 进
 //! lowering_buffer_paint，有缓冲区状态与分配）；这边只**读已经写好的
 //! 结果**。两者混在一个文件里时，"哪些函数会动 buffer"要靠逐个读实现才能
-//! 判断 —— 分开后这一整个文件的零副作用性质是文件级保证。
+//! 判断，分开后这一整个文件的零副作用性质是文件级保证。
 //!
 //! own vs subtree：own 只含节点自己产出的 item；subtree 含它整棵子树的
 //! 连续区间（lowering 时按前序保证连续，所以子树也能用一个 start+count 表达）。
-//! count==0 返回 null 而不是空切片 —— 调用方据此区分"没有 payload"与
+//! count==0 返回 null 而不是空切片，调用方据此区分"没有 payload"与
 //! "有 payload 但为空"，跨帧 splice 路径依赖这个区分。
 
 const render_context_mod = @import("render_context.zig");
@@ -73,7 +73,7 @@ pub fn getNodeTextBlobs(
     return cx.text_blob_store.slice(start, count);
 }
 
-/// items + blobs 一起取。blobs 缺失时退化为空切片而非整体 null ——
+/// items + blobs 一起取。blobs 缺失时退化为空切片而非整体 null,
 /// 纯图形节点没有文本 blob 是正常情况，不该让整个 payload 变成"不存在"。
 pub fn getNodeDisplayPayload(
     cx: *RenderContext,

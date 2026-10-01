@@ -113,11 +113,11 @@ export fn zenit_a11y_identifier(_: u32, _: u32, _: ?[*]u8, _: c_int) c_int {
 }
 
 // 文本输入桥的同类 inert 导出。window_bridge.m 里 extern 引用了这六个符号，
-// 真实实现在 src/ui/a11y/macos_bridge.zig —— 但这个工具只生成能力矩阵元数据，
+// 真实实现在 src/ui/a11y/macos_bridge.zig，但这个工具只生成能力矩阵元数据，
 // 不该为此把整个 UI 模块拉进来。它从不创建窗口，因此这些永远不会被调到。
 //
 // （2026-09-22 补：这六个是后加的文本输入能力，加的时候漏了这里的配套桩，
-//   于是 `zig build capability-matrix` 一直链接失败 —— CI 的
+//   于是 `zig build capability-matrix` 一直链接失败，CI 的
 //   check_macos_capability_matrix 这道门禁因此长期是红的。）
 export fn zenit_text_input_copy(_: u32, _: u64, _: ?[*]u8, _: c_int) c_int {
     return -1;

@@ -108,7 +108,7 @@ pub const TabPanel = tabs.TabPanel;
 pub const scroll_area = @import("scroll_area/mod.zig");
 pub const mountScrollArea = scroll_area.mountScrollArea;
 pub const ScrollAreaResult = scroll_area.ScrollAreaResult;
-/// 程序化滚动公共入口（别直接写 state.scroll_y —— 会跳过 clamp/动量复位/像素对齐）
+/// 程序化滚动公共入口（别直接写 state.scroll_y，会跳过 clamp/动量复位/像素对齐）
 pub const ScrollAlign = scroll_area.ScrollAlign;
 pub const setScrollY = scroll_area.setScrollY;
 pub const scrollIntoView = scroll_area.scrollIntoView;
@@ -204,6 +204,9 @@ pub const NotificationEvent = notification.Event;
 pub const NotificationEventKind = notification.EventKind;
 pub const NotificationListener = notification.Listener;
 pub const NotificationStrings = notification.Strings;
+pub const NotificationHint = notification.Hint;
+pub const NotificationHintMark = notification.HintMark;
+pub const NotificationHintKeycap = notification.HintKeycap;
 
 pub const breadcrumb = @import("breadcrumb/mod.zig");
 pub const Breadcrumb = breadcrumb.Breadcrumb;
@@ -273,7 +276,7 @@ pub const Color = core.Color;
 pub const ThemeTokens = core.ThemeTokens;
 
 // popover 的析出单测（popover/tests.zig）由 popover/mod.zig 自己的 test 块
-// 显式 import——refAllDecls 只递归本文件引用过的模块，析出的测试文件若无人
+// 显式 import, refAllDecls 只递归本文件引用过的模块，析出的测试文件若无人
 // 显式 import 等于静默丢失。
 test {
     std.testing.refAllDecls(@This());

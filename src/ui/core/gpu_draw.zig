@@ -1,22 +1,22 @@
-//! GpuDraw IR — Phase 5 GPU encoder 输出格式
+//! GpuDraw IR, Phase 5 GPU encoder 输出格式
 //!
 //! 当前 zenit 渲染流水线：
-//!   DisplayItem (paint pass 唯一 IR) → GpuDraw → GPU command buffer
+//!   DisplayItem (paint pass 唯一 IR) -> GpuDraw -> GPU command buffer
 //!
 //! GpuDraw 是渲染流水线的最后 CPU IR：包含一个 GPU draw 所需的全部状态引用。
 //! 故意做成 packed/紧凑结构以利于 batcher 合并相邻 draw。
 //!
 //! 设计参照：
-//! - Skia DisplayList → backend draw call
-//! - Impeller Entity → GPU command
-//! - WebRender Primitives → Renderer batches
+//! - Skia DisplayList -> backend draw call
+//! - Impeller Entity -> GPU command
+//! - WebRender Primitives -> Renderer batches
 //!
 //! 历史债避免：
-//! - **不**让 GpuDraw 持任何 owned 资源指针——所有 GPU 资源走 ResourcePool
+//! - **不**让 GpuDraw 持任何 owned 资源指针，所有 GPU 资源走 ResourcePool
 //!   handle (u64)；GpuDraw 只引用 handle index
 //! - **不**在 GpuDraw 内嵌 GPU API 状态对象（pipeline state object 等）；走
 //!   小整型 id，由 backend table 解析
-//! - **不**让 GpuDraw 跨帧持久—— 每帧重新生成 draw stream（layer_tree 跨帧
+//! - **不**让 GpuDraw 跨帧持久，每帧重新生成 draw stream（layer_tree 跨帧
 //!   持久但 GpuDraw stream 是 frame-transient）
 
 const std = @import("std");

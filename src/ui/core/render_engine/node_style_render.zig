@@ -101,7 +101,7 @@ pub fn appendNodeShadowAndBackground(
         if (sh.spread != 0) any_spread = true;
     }
     if (shadow_slice.len >= 3 or any_spread) {
-        // CSS 多重 box-shadow：逐层发射，列表第一项在最上层 → 从最后一项画起。
+        // CSS 多重 box-shadow：逐层发射，列表第一项在最上层 -> 从最后一项画起。
         // 每层都是纯阴影（本体下方挖空），背景填充由下面的常规路径绘制。
         var i = shadow_slice.len;
         while (i > 0) {
@@ -170,7 +170,7 @@ pub fn appendNodeShadowAndBackground(
     }
 
     // 有矢量填充路径的节点：背景/渐变由 `fill_path` 画（逐顶点着色），
-    // 这里的矩形分支必须整段跳过 —— 否则会在多边形背后垫一个铺满包围盒的
+    // 这里的矩形分支必须整段跳过，否则会在多边形背后垫一个铺满包围盒的
     // 渐变方块（用户实测截图：三角外面一圈渐变底）。
     // 下面 fill_rect 分支早就有同名守卫（`vector.fill.path == null`），
     // 但 gradient 两支漏了，所以只有渐变态露馅。
@@ -298,7 +298,7 @@ pub fn appendNodeShadowAndBackground(
         // 矢量路径填充
         if (lo.vector.fill.path) |*geom| {
             // 渐变优先于纯色背景：矢量填充的渐变由 path_renderer 逐顶点着色。
-            // 注意判据是 `渐变有效 or 背景不透明` —— 设了渐变的节点背景常是
+            // 注意判据是 `渐变有效 or 背景不透明`，设了渐变的节点背景常是
             // 透明的（容器不该垫色），只看 background.a 会把渐变整条跳过。
             const mg = node.style.multi_gradient();
             const has_grad = mg != null and mg.?.stop_count >= 2;
@@ -430,7 +430,7 @@ pub fn appendNodeBorder(
     // Per-side border: 使用 border_per_side 命令，shader 内计算内轮廓，无需 clip
     if (colors_uniform) {
         const effective_uniform_border = computeEffectiveBackdropBorderColor(node, border_colors[types.Border.SIDE_TOP], draw_opacity);
-        // 颜色一致，宽度不同 → 单个 draw call
+        // 颜色一致，宽度不同 -> 单个 draw call
         try cx.display_list.append(.{
             .border_per_side = .{
                 .header = header,
@@ -451,7 +451,7 @@ pub fn appendNodeBorder(
         return;
     }
 
-    // 颜色不同 → 每边一个 draw call，只设该边宽度非零
+    // 颜色不同 -> 每边一个 draw call，只设该边宽度非零
     const tw = border_widths[types.Border.SIDE_TOP];
     const rw = border_widths[types.Border.SIDE_RIGHT];
     const bw = border_widths[types.Border.SIDE_BOTTOM];

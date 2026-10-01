@@ -23,7 +23,7 @@ const ItemHeader = display_list_mod.ItemHeader;
 const PaintItem = paint_table_mod.DisplayItem;
 const PaintItemKind = paint_table_mod.DisplayItemKind;
 
-/// Inspector overlay 写到 lowering.main (DisplayItem 流) 时的 header — 占位 INVALID。
+/// Inspector overlay 写到 lowering.main (DisplayItem 流) 时的 header，占位 INVALID。
 const INSPECTOR_HEADER: ItemHeader = .{ .transform_id = property_tree_mod.INVALID_ID, .node_id = std.math.maxInt(u32) };
 
 /// 把 fill_rect 写为 paint_table.DisplayItem 直接 append 到 main_paint
@@ -155,7 +155,7 @@ pub const Inspector = struct {
     pub fn handleMouseDown(self: *Inspector, cx: anytype, x: f32, y: f32) bool {
         // 只在 pick 模式下拦截点击
         if (!self.enabled or !self.pick_mode) return false;
-        // 坐标在视口外（如用户在 DevTools 窗口点击）→ 忽略，不消费 pick 模式
+        // 坐标在视口外（如用户在 DevTools 窗口点击）-> 忽略，不消费 pick 模式
         if (x < 0 or y < 0 or x > cx.viewport.width or y > cx.viewport.height) return false;
         if (cx.root != null) {
             const hit = cx.hitTestInspect(x, y);
@@ -367,7 +367,7 @@ fn appendHighlight(cx: anytype, rect: ComputedRect, fill_color: Color, outline: 
 
 fn computeRenderRect(node: *Node) ComputedRect {
     // 全变换 world rect：节点是被含完整变换的 hit-test 选中的，高亮必须用
-    // 同一坐标口径 —— globalRect 只累计 translate，节点在 scaled/rotated
+    // 同一坐标口径，globalRect 只累计 translate，节点在 scaled/rotated
     // 子树里时（GlassBox interactive 微放大、transition 中途）高亮会脱位。
     return nodeWorldRect(node);
 }

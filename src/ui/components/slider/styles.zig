@@ -1,4 +1,4 @@
-//! Slider 样式层 — 轨道/填充/thumb 的样式声明（几何随 props 参数化）。
+//! Slider 样式层，轨道/填充/thumb 的样式声明（几何随 props 参数化）。
 const core = @import("../../core.zig");
 const Color = core.Color;
 const SliderProps = @import("mod.zig").SliderProps;

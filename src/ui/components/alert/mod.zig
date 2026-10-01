@@ -1,6 +1,6 @@
 /// Alert Component
 ///
-/// Alert: 静态消息提示条（全局提醒见 components/notification —— Notifier）
+/// Alert: 静态消息提示条（全局提醒见 components/notification, Notifier）
 ///
 /// 特性:
 /// - info/success/warning/error 四种变体
@@ -98,7 +98,7 @@ pub const AlertBuilder = struct {
         const bg = resolved.background orelse Color.TRANSPARENT;
         const alert_border = resolved.border orelse Border{ .radius = t.radius.md };
 
-        // 外层容器 — 几何来自具名样式函数，颜色来自 recipe resolve
+        // 外层容器，几何来自具名样式函数，颜色来自 recipe resolve
         var container_style = styles.alertContainerStyle(p.title != null);
         container_style.background = bg;
         container_style.border = alert_border;
@@ -107,7 +107,7 @@ pub const AlertBuilder = struct {
         errdefer cx.freeNode(alert_node);
         alert_node.meta.ownership.meta.component_name = "Alert";
         try core.bindScopeToNode(my_scope, alert_node);
-        // role=alert 光有角色不会被朗读——AT 只在 live region 非 off 时才主动
+        // role=alert 光有角色不会被朗读，AT 只在 live region 非 off 时才主动
         // 播报新出现的内容。此前 live 是 null（=off），于是 Alert 从来只有
         // 视觉效果，屏幕阅读器用户根本收不到通知。
         // error/warning 打断当前朗读（assertive），info/success 等说完再播（polite）。
@@ -313,12 +313,12 @@ test "Alert: render emits left accent bar" {
     try std.testing.expect(saw_accent_bar);
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "alert(closable): mount 在任意分配点失败时不泄漏（sweep）" {
     try @import("../oom_sweep.zig").sweepMount("alert(closable)", struct {
         fn m(scope: *Scope, cx: *Cx) anyerror!?*Node {

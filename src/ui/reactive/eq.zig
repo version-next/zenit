@@ -1,9 +1,9 @@
-//! eqlValue — Phase 1 reactive 相等性判定
+//! eqlValue, Phase 1 reactive 相等性判定
 //!
 //! 替代 std.meta.eql。后者对 zenit 是错的：
 //! - `[]const u8`：std.meta.eql 比较 (ptr, len) 而非内容
-//! - `f32/f64 NaN`：std.meta.eql 用 ==，NaN != NaN 永远视作不同 → set 永远不被吞
-//! - `0.0 == -0.0`：std.meta.eql 用 ==，silently true → 应视作 true（这个对的）
+//! - `f32/f64 NaN`：std.meta.eql 用 ==，NaN != NaN 永远视作不同 -> set 永远不被吞
+//! - `0.0 == -0.0`：std.meta.eql 用 ==，silently true -> 应视作 true（这个对的）
 //!
 //! 类型分发：
 //! - 整数 / bool / enum / pointer / fn：==

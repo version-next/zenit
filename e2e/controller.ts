@@ -1,5 +1,5 @@
 /**
- * e2e/controller.ts — scenario dashboard 的 localhost 后端
+ * e2e/controller.ts, scenario dashboard 的 localhost 后端
  *
  * 前端是 SolidJS + @zax/ui（tools/scenario-dashboard/，build 后 dist/）。
  * 同一套执行逻辑：触发跑 = spawn `scenario_runner.ts`（不另造执行逻辑）。
@@ -12,7 +12,7 @@
  *   GET  /api/reports                列 report（含状态汇总）
  *   GET  /api/reports/:scenario/:run 单报告详情（产物路径重写为相对 base）
  *   GET  /api/scenarios              列 scenario
- *   POST /api/runs                   {scenario} → 触发跑
+ *   POST /api/runs                   {scenario} -> 触发跑
  *   GET  /api/runs/:id               运行状态 + 日志尾
  *   GET  /reports/*                  静态服务 report 产物（html/json/png/mp4）
  */

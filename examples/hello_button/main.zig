@@ -1,4 +1,4 @@
-/// hello_button — zenit 框架的最小可运行 demo
+/// hello_button, zenit 框架的最小可运行 demo
 ///
 /// 一个原生 macOS 窗口 + 一个 Button + 一个计数器文本。
 /// 点击 Button 计数 +1，文本响应式更新。
@@ -7,7 +7,7 @@
 ///   - `App.runWith(mountUI)` 一行启动主循环
 ///   - `cx.bindState` / `cx.on` 不需要分配 u64 state id
 ///
-/// 应用作者只需要写 mountUI —— 真正的"业务" UI 树构建。
+/// 应用作者只需要写 mountUI，真正的"业务" UI 树构建。
 const std = @import("std");
 const ui = @import("ui");
 const App = @import("zenit_app").App;

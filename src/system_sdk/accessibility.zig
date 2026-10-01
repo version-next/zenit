@@ -30,7 +30,7 @@ pub const Role = enum(u8) {
     gridcell,
     // 2026-07-31：补组件 a11y 声明时新增。若不在这里同步扩，Tree/DataTable/
     // Steps 等的新角色只会到达 a11y tree，走 focus.zig 那条 snapshot 路径时
-    // 会被迫降级成别的角色 —— 平台 AT 拿到的仍是错的。
+    // 会被迫降级成别的角色，平台 AT 拿到的仍是错的。
     tree,
     treeitem,
     row,

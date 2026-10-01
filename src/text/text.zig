@@ -10,7 +10,7 @@ pub const FontWeight = @import("types.zig").FontWeight;
 pub const FontStyle = @import("types.zig").FontStyle;
 
 // 系统字体目录（字体选择器的数据层）。只做枚举与元数据，
-// 不负责把字体接到渲染管线 —— family 轴在管线里还不存在。
+// 不负责把字体接到渲染管线，family 轴在管线里还不存在。
 pub const font_catalog = @import("font_catalog.zig");
 pub const FontCatalog = font_catalog.FontCatalog;
 

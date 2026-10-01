@@ -30,7 +30,7 @@ const recipe_mod = @import("../../recipe.zig");
 const styles = @import("styles.zig");
 
 // ============================================================================
-// AccordionItemRecipe — recipe(variant) 统一 AccordionItem 样式
+// AccordionItemRecipe, recipe(variant) 统一 AccordionItem 样式
 //
 // variant 维度:
 //   - default: 填充背景 + 圆角，无边框
@@ -56,7 +56,7 @@ pub const AccordionItemState = struct {
     expanded: bool = false,
     /// 上一帧的 expanded（用于 before_render 检测变化）
     last_expanded: bool = false,
-    /// 动画状态：idle → measuring(展开需要测量) → animating
+    /// 动画状态：idle -> measuring(展开需要测量) -> animating
     anim_phase: enum { idle, measure_expand, animating } = .idle,
     /// content 节点引用
     content_node: ?*Node = null,
@@ -64,13 +64,13 @@ pub const AccordionItemState = struct {
     body_node: ?*Node = null,
     /// 容器节点引用（用于 markRenderDirty + border-color 动画）
     container_node: ?*Node = null,
-    /// chevron 图标节点（通过 rotate 动画旋转：0° 折叠 → 90° 展开）
+    /// chevron 图标节点（通过 rotate 动画旋转：0° 折叠 -> 90° 展开）
     chevron_node: ?*Node = null,
     /// 标题文本节点（展开时 weight 600，折叠时 500）
     title_node: ?*Node = null,
     /// header 按钮节点（a11y expanded 挂在它身上）
     header_node: ?*Node = null,
-    /// item 容器的 hover 信号（展开时 hover → border 显现）
+    /// item 容器的 hover 信号（展开时 hover -> border 显现）
     item_hovered: ?*Signal(bool) = null,
     /// hover 时的 border 颜色
     hover_border_color: Color = Color.TRANSPARENT,
@@ -122,13 +122,13 @@ pub const AccordionItemState = struct {
     }
 };
 
-/// AccordionItem 渲染前钩子：检测 expanded 变化 → 发起 height 动画
+/// AccordionItem 渲染前钩子：检测 expanded 变化 -> 发起 height 动画
 fn accordionItemBeforeRender(node: *Node) void {
     const state: *AccordionItemState = @ptrCast(@alignCast(node.behavior.events.event_context orelse return));
     const content = state.content_node orelse return;
     const alloc = state.alloc;
 
-    // 0. hover → item 容器 border 显现（直接切换，无过渡）
+    // 0. hover -> item 容器 border 显现（直接切换，无过渡）
     if (state.item_hovered) |hovered_sig| {
         node.style.border.color = if (hovered_sig.get()) state.hover_border_color else Color.TRANSPARENT;
     }
@@ -137,7 +137,7 @@ fn accordionItemBeforeRender(node: *Node) void {
     if (state.expanded != state.last_expanded) {
         state.last_expanded = state.expanded;
 
-        // chevron rotate 动画：折叠 0° → 展开 π/2
+        // chevron rotate 动画：折叠 0° -> 展开 π/2
         if (state.chevron_node) |chevron| {
             const target_rotate: f32 = if (state.expanded) std.math.pi / 2.0 else 0.0;
             const from_rotate: f32 = if (state.expanded) 0.0 else std.math.pi / 2.0;
@@ -204,7 +204,7 @@ fn accordionItemBeforeRender(node: *Node) void {
         return;
     }
 
-    // 2. 展开测量帧：读取布局后的真实高度，发起 0 → realHeight 动画
+    // 2. 展开测量帧：读取布局后的真实高度，发起 0 -> realHeight 动画
     if (state.anim_phase == .measure_expand) {
         const real_h = content.rectFromWorldOrFallback().h;
         if (real_h > 0) {
@@ -366,7 +366,7 @@ pub const AccordionItemBuilder = struct {
             }
         }.destroy);
 
-        // 外层容器（纵向排列: header + content）— 样式由 Recipe variant 决定
+        // 外层容器（纵向排列: header + content），样式由 Recipe variant 决定
         const item = try box(cx, .{
             .width = .{ .grow = .{} },
             .height = .{ .fit = .{} },
@@ -450,7 +450,7 @@ pub const AccordionItemBuilder = struct {
         // 不改 layout rect），所以 e2e 必须看这一层。
         content.meta.ownership.meta.test_id = "accordion.content";
 
-        // 内容 body — 左缩进合同见 accordionBodyStyle
+        // 内容 body，左缩进合同见 accordionBodyStyle
         const body = try core.adoptChild(cx, allocator, content, try box(cx, styles.accordionBodyStyle(t), .{}));
         state.body_node = body;
 
@@ -702,12 +702,12 @@ test "Accordion: exclusive mode" {
     try std.testing.expect(item_a.expanded);
     try std.testing.expect(!item_b.expanded);
 
-    // 展开 B → A 应自动折叠
+    // 展开 B -> A 应自动折叠
     group.toggleItem(1);
     try std.testing.expect(!item_a.expanded);
     try std.testing.expect(item_b.expanded);
 
-    // 再次点击 B → B 折叠
+    // 再次点击 B -> B 折叠
     group.toggleItem(1);
     try std.testing.expect(!item_b.expanded);
 }
@@ -779,11 +779,11 @@ test "Accordion: hit-test follows layout after a sibling expands (regression)" {
     // 记录三个 item header 的初始顶部 y（header 是 item.children[0]）。
     const header2_y0 = items[2].children.items[0].globalRect().y;
 
-    // 展开 Section Two（item 1）→ 触发高度动画，把 Section Three 往下推。
+    // 展开 Section Two（item 1）-> 触发高度动画，把 Section Three 往下推。
     const state1: *AccordionItemState = @ptrCast(@alignCast(items[1].behavior.events.event_context.?));
     state1.setExpanded(true);
 
-    // 跑足够多帧让展开动画 + 收尾（expandComplete → height=.fit）settle。
+    // 跑足够多帧让展开动画 + 收尾（expandComplete -> height=.fit）settle。
     var frame: usize = 0;
     while (frame < 60) : (frame += 1) {
         t += 16;
@@ -823,12 +823,12 @@ fn nodeIsInSubtree(node: ?*Node, ancestor: *Node) bool {
     return false;
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "accordion_item: mount 在任意分配点失败时不泄漏（sweep）" {
     try @import("../oom_sweep.zig").sweepMount("accordion_item", struct {
         fn m(scope: *Scope, cx: *Cx) anyerror!?*Node {

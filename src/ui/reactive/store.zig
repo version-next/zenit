@@ -1,4 +1,4 @@
-/// Store — comptime 展开 struct 字段为独立 Signal，实现细粒度追踪
+/// Store, comptime 展开 struct 字段为独立 Signal，实现细粒度追踪
 ///
 /// 用法:
 /// ```zig

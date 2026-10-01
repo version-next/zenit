@@ -1,4 +1,4 @@
-//! DirtyFlags — Phase 0 地基（待 Phase 3 接入 Node 拆分）
+//! DirtyFlags, Phase 0 地基（待 Phase 3 接入 Node 拆分）
 //!
 //! 替代当前 Node 上分散的 13 个布尔 + 2 个 u32 version。
 //!
@@ -7,7 +7,7 @@
 //! - **input flags**：上游写入端用（"什么属性变了"）
 //! - **output flags**：下游读端用（"什么阶段需要重做"）
 //!
-//! 不让单个 set 同时翻多组 —— `markStyleChanged`、`markGeometryChanged` 等
+//! 不让单个 set 同时翻多组，`markStyleChanged`、`markGeometryChanged` 等
 //! 高层 API 决定输入到输出的映射，而不是让每个调用点自己 OR 一堆位。
 //!
 //! 子树传播位是单独的（`subtree_*`），由 `markSubtree` 系列 API 推进，
@@ -133,7 +133,7 @@ pub const SubtreeFlags = packed struct(u8) {
 };
 
 /// 完整脏标位汇集。32-bit packed = 内存友好；u64 对齐。
-/// 暂不放在 Node 内部 —— Phase 3 拆 Node 时把这个推进 LayoutTable/PaintTable 旁。
+/// 暂不放在 Node 内部，Phase 3 拆 Node 时把这个推进 LayoutTable/PaintTable 旁。
 pub const DirtyFlags = packed struct(u32) {
     input: InputFlags = .{},
     output: OutputFlags = .{},
@@ -151,7 +151,7 @@ pub const DirtyFlags = packed struct(u32) {
         self.* = NONE;
     }
 
-    /// 仅清掉本节点的输出脏位（保留 subtree —— 那是子树状态）。
+    /// 仅清掉本节点的输出脏位（保留 subtree，那是子树状态）。
     /// 渲染流水线在某阶段消费完后调用。
     pub fn clearOutputs(self: *DirtyFlags) void {
         self.output = .{};
@@ -162,8 +162,8 @@ pub const DirtyFlags = packed struct(u32) {
     }
 };
 
-/// InputFlags → OutputFlags 投影。决定哪些上游变更触发哪些下游阶段。
-/// **唯一**的 input→output 映射点 —— 不允许其他地方手动 OR 输出位
+/// InputFlags -> OutputFlags 投影。决定哪些上游变更触发哪些下游阶段。
+/// **唯一**的 input->output 映射点，不允许其他地方手动 OR 输出位
 /// （除调度器为合并子树脏汇总时）。
 pub fn outputFromInput(in: InputFlags) OutputFlags {
     var out = OutputFlags.NONE;

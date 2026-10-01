@@ -1,7 +1,7 @@
 /// DisplayList lowering：将 DisplayItem 序列从 local space lower 到 world space。
 ///
 /// 历史：本文件之前叫 display_list_replay.zig（旧 IR 时代的命名）。
-/// v0.5 §5 Stage B 把旧 IR 删了之后，这里只剩 lowering 工作 ——
+/// v0.5 §5 Stage B 把旧 IR 删了之后，这里只剩 lowering 工作,
 /// encoder 直接消费 lowered DisplayItem，没有 "replay" 语义了，所以改名。
 ///
 /// 输入和输出都是 DisplayItem (apply transform + scale 字段)。负责：
@@ -39,7 +39,7 @@ pub const CONTROL_HEADER: ItemHeader = .{ .transform_id = INVALID_ID, .node_id =
 
 /// 改名 + 只写 paint_table.DisplayItem。
 /// v0.5 §5 epic 时 union DisplayItem 是 source of truth，paint_table 是 mirror；
-/// 现在反过来 — paint_table 是 source，union 路径已废弃。
+/// 现在反过来，paint_table 是 source，union 路径已废弃。
 ///
 /// Control variants manage scopes. Literal controls are already lowered;
 /// a node_local push_clip also carries geometry that must follow its paint transform.
@@ -168,7 +168,7 @@ fn appendDisplayItemsToRenderListInternal(
     // 相邻 group 若共享同一 effect 链前缀，scope **跨组保持打开**，只对
     // 差异部分做关/开。早先每组整链 close+reopen：begin_blur_layer 在
     // encoder 是"立即合成玻璃背板"，同一个 blur 岛的内容被 clip_id 切成
-    // N 组时，玻璃背板被重画 N 次、每次糊掉前面组的内容 → 岛内只有最后
+    // N 组时，玻璃背板被重画 N 次、每次糊掉前面组的内容 -> 岛内只有最后
     // 一组可见（下游应用 sidebar 只剩底栏实拍）。同时每次 reopen 都跑一遍
     // blur capture+kawase 全链，纯浪费。
     // open_scopes/open_ids 以 **outermost-first** 存当前打开的链。
@@ -176,14 +176,14 @@ fn appendDisplayItemsToRenderListInternal(
     var open_ids: [8]u32 = undefined;
     var open_count: usize = 0;
     // 不可降级：Begin 已写进流，End 不写就是不配对 scope。defer 无法传播
-    // 错误 → panic（与旧实现同策略）。
+    // 错误 -> panic（与旧实现同策略）。
     defer if (include_structure and open_count > 0) {
         effect_bridge.appendDisplayEffectBridgeEnd(cx, open_scopes[0..open_count]) catch @panic("OOM: display effect bridge end (unbalanced scope)");
     };
 
     // ── clip 前缀保留（与上面 effect scope 同构）──
     // 主循环按 (effect_id, clip_id) 分组，虚拟列表每行一个 clip_id。旧实现
-    // 每组重发整条祖先链 → 所有行共享的最外层（岛的圆角 clip）被逐行
+    // 每组重发整条祖先链 -> 所有行共享的最外层（岛的圆角 clip）被逐行
     // push/pop。实测 git diff 滚动 15 万次往返，每次都触发 flushAllPending
     // （清空全部 pipeline + 吃一个 SDF uniform 槽），256 槽一帧内耗尽后
     // 后续命令整批丢失（动作栏闪没），encode 也涨到 10-17ms。
@@ -220,7 +220,7 @@ fn appendDisplayItemsToRenderListInternal(
                 open_ids[common] == chain[count - 1 - common].effect_id) common += 1;
             // clip 前缀必须在 effect scope 的任何 Begin/End **之前**收拢：
             // encoder 对 begin..end 范围要么整段跳过（GPU retained 命中），
-            // 要么在 end 恢复 begin 时的 clip 栈快照 —— pop 一旦落进新开的
+            // 要么在 end 恢复 begin 时的 clip 栈快照，pop 一旦落进新开的
             // scope 里（或留到旧 scope 关闭之后），关的就是范围外的 push，
             // 那几层 clip 永久泄漏。栈顶残留 tab 条 clip 时，该帧其后所有
             // 内容被裁进 tab 条（编辑/hover 动画帧整屏闪白的根因）。
@@ -234,7 +234,7 @@ fn appendDisplayItemsToRenderListInternal(
                 try effect_bridge.appendDisplayEffectBridgeEnd(cx, open_scopes[common..open_count]);
                 open_count = common;
             }
-            // 打开缺失的（outermost → innermost）
+            // 打开缺失的（outermost -> innermost）
             while (open_count < count) {
                 effect_scope_changed = true;
                 const entry = chain[count - 1 - open_count];
@@ -243,12 +243,12 @@ fn appendDisplayItemsToRenderListInternal(
                 open_count += 1;
             }
         }
-        // ⚠ effect 链非空(毛玻璃岛内)时 clip 链**默认仍不发射**——曾尝试
+        // ⚠ effect 链非空(毛玻璃岛内)时 clip 链**默认仍不发射**，曾尝试
         // 发射(scroll 容器 clip)修"岛内容器不裁"的架构缺口,但投影帧
         // 有未解问题:滚动条 thumb(容器 absolute 子)被裁到不可见,而行
-        // 内容正常——同域两类 item 一裁一不裁,说明 clip 投影与部分 item
+        // 内容正常，同域两类 item 一裁一不裁,说明 clip 投影与部分 item
         // 的坐标帧不一致,修好前不能开。行溢出裁剪由渲染树侧的
-        // emitScrollClipBegin/End(children 包围,mod.zig)承担——实测
+        // emitScrollClipBegin/End(children 包围,mod.zig)承担，实测
         // 独立生效(首末行半行裁剪 ✓ 滚动条 ✓ 搜索框 ✓)。
         // 显式设 ZENIT_ENABLE_EFFECT_CLIP_BRIDGE=1 可开启用于继续调查。
         const innermost_effect_for_clip: u32 =
@@ -305,13 +305,13 @@ fn appendDisplayItemsToRenderListInternal(
             // 历史 bug（2026-07-29 修）：display_list 里由 custom_draw 直接 emit 的
             // begin/end_opacity_layer（如 Snapshot.appendTo 用来施加 anchor/scale/
             // opacity 的包裹层）带的正是 CONTROL header，于是在这里被 `continue`
-            // 静默丢弃 —— 包裹层没了，snapshot 恒绘制在 local (0,0) 而非 anchor。
+            // 静默丢弃，包裹层没了，snapshot 恒绘制在 local (0,0) 而非 anchor。
             // effect_bridge 那条路径没踩到是因为它走 appendLoweredBoth 直接写
             // paint 列表，绕过了本函数。
             if (item_header.already_lowered or (isControlItem(item) and !(item == .push_clip and item.push_clip.node_local))) {
                 // 桥接 clip 前缀不得跨越 layer 边界 token：encoder 对
                 // begin..end 范围要么整段跳过（GPU retained 命中），要么在 end
-                // 恢复 begin 时的 clip 栈快照 —— 两条路径都假设范围内 clip
+                // 恢复 begin 时的 clip 栈快照，两条路径都假设范围内 clip
                 // 自洽。若跨组保留的前缀在范围内被 End（pop 关到范围外的
                 // push），那几层 clip 就永久泄漏：栈顶残留 tab 条 clip 时，
                 // 该帧其后所有内容被裁进 tab 条（编辑/hover 动画帧整屏闪白
@@ -354,7 +354,7 @@ fn appendDisplayItemsToRenderListInternal(
 
             if (item_header.transform_id >= cx.property_tree.transforms.items.len) continue;
             // Stage B S5.2: 当 replay_exec_state != null (subtree replay)，用 inverse_replay_base
-            // * world — paint pass 主路径走这里。replay_exec_state == null (derive 路径) 用
+            // * world, paint pass 主路径走这里。replay_exec_state == null (derive 路径) 用
             // transform.content (含 surface_inverse * world)，与 subtree replay 的 inverse 应用等价。
             // 注：P6.3 后所有 overlay（modal + non_modal）统一走 composited_group surface。
             const world = cx.property_tree.transforms.items[item_header.transform_id].world;
@@ -367,7 +367,7 @@ fn appendDisplayItemsToRenderListInternal(
 
             // lowering 写 DisplayItem (lower 后字段)。header 沿用 item.header (含
             // transform_id/clip_id/effect_id)，但 paint variant 的 x/y/w/h 已 lower 到
-            // world coord — encoder 不再二次变换。
+            // world coord, encoder 不再二次变换。
             const lowered_header = item_header;
             switch (item) {
                 .fill_rect => |it| {
@@ -636,7 +636,7 @@ fn appendDisplayItemsToRenderListInternal(
                             .stop_colors = it.stop_colors,
                             .stop_positions = it.stop_positions,
                             .stop_count = it.stop_count,
-                            // ⚠ 逐字段重建：漏一个就静默丢。下面四个原本**都漏了** ——
+                            // ⚠ 逐字段重建：漏一个就静默丢。下面四个原本**都漏了**,
                             // shape 丢了让椭圆的渐变铺满包围盒；radial/conic 的中心与
                             // 起始角、extend_mode 丢了让径向/角度渐变回落到默认参数。
                             .radial_center_x = it.radial_center_x,

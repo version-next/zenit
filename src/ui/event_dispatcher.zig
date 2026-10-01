@@ -1,10 +1,10 @@
 /// Event Dispatcher - Node 树事件调度
 ///
-/// 事件传播顺序: capture → target → bubble
+/// 事件传播顺序: capture -> target -> bubble
 ///
 /// 事件处理流程:
 /// 1. 命中测试: 确定目标节点
-/// 2. 构建路径: root → ... → target
+/// 2. 构建路径: root -> ... -> target
 /// 3. Capture 阶段: 从 root 到 target (**不含 target**) 逐一调用
 ///    node.behavior.events.on_event_capture (v0.6 §2.2)。null handler 节点
 ///    零开销跳过；用于祖先抢先拦截 (focus trap / scroll lock / 手势仲裁)
@@ -132,6 +132,8 @@ pub const EventDispatcher = struct {
     /// 惯性阶段 owner（is_momentum=true 时固定派发）
     scroll_momentum_owner: ?NodeHandle = null,
     scroll_momentum_owner_ptr: ?*Node = null,
+    /// 当前会话由 may_begin 打开（随后的 began 属于同一手势）
+    scroll_session_from_may_begin: bool = false,
 
     registry: ?*const NodeRegistry = null,
 
@@ -154,9 +156,10 @@ pub const EventDispatcher = struct {
         self.scroll_session_owner_ptr = null;
         self.scroll_momentum_owner = null;
         self.scroll_momentum_owner_ptr = null;
+        self.scroll_session_from_may_begin = false;
     }
 
-    /// 设置 Pointer Capture — 后续鼠标事件直接发给该节点
+    /// 设置 Pointer Capture，后续鼠标事件直接发给该节点
     pub fn setPointerCapture(self: *EventDispatcher, node: *Node) void {
         const next = if (self.registry) |registry| registry.handleFor(node) else null;
         if (std.meta.eql(next, self.pointer_capture_handle)) return;
@@ -198,7 +201,7 @@ pub const EventDispatcher = struct {
     /// 当前按下序列的 mouse_down 目标节点（无按下或节点已失效时 null）。
     ///
     /// 供"按下即拖拽"的宿主使用：on_event 回调不携带节点指针，宿主在
-    /// mouse_down handler 里需要拿到被按下的节点才能 setPointerCapture ——
+    /// mouse_down handler 里需要拿到被按下的节点才能 setPointerCapture,
     /// 不捕获的话，指针在别的节点上抬起时 mouse_up 不会回到拖拽发起方，
     /// 拖拽状态就地泄漏。dispatchMouseDownButton 在分发事件**之前**记录
     /// mouse_down_handle，因此 mouse_down handler 里调用总能拿到自己。
@@ -270,7 +273,7 @@ pub const EventDispatcher = struct {
             const path_handles = path_handle_buf[0..path.len];
             const target_handle = path_handles[path_handles.len - 1];
 
-            // Phase 1: Capture (root → target, 不含 target)
+            // Phase 1: Capture (root -> target, 不含 target)
             if (path_handles.len > 1) {
                 for (path_handles[0 .. path_handles.len - 1]) |node_handle| {
                     const node = registry.resolve(node_handle, null) orelse continue;
@@ -295,7 +298,7 @@ pub const EventDispatcher = struct {
                 return if (handled) .handled else .ignored;
             }
 
-            // Phase 3: Bubble (target 的父节点 → root)
+            // Phase 3: Bubble (target 的父节点 -> root)
             if (path_handles.len > 1) {
                 var i = path_handles.len - 1;
                 while (i > 0) {
@@ -314,7 +317,7 @@ pub const EventDispatcher = struct {
             return if (handled) .handled else .ignored;
         }
 
-        // Phase 1: Capture (root → target, 不含 target)
+        // Phase 1: Capture (root -> target, 不含 target)
         if (path.len > 1) {
             for (path[0 .. path.len - 1]) |node| {
                 const node_id = node.id;
@@ -335,7 +338,7 @@ pub const EventDispatcher = struct {
         if (target_result == .stop) return .stop;
         if (target_result == .handled) handled = true;
 
-        // Phase 3: Bubble (target 的父节点 → root)
+        // Phase 3: Bubble (target 的父节点 -> root)
         if (path.len > 1) {
             var i = path.len - 1;
             while (i > 0) {
@@ -413,7 +416,7 @@ pub const EventDispatcher = struct {
         return if (identity) |ref| ref.resolve() else null;
     }
 
-    /// 分发鼠标按下事件 — 默认左键的便利重载
+    /// 分发鼠标按下事件，默认左键的便利重载
     pub fn dispatchMouseDown(self: *EventDispatcher, x: f32, y: f32, target: ?*Node, modifiers: events.Modifiers) ?*Node {
         return self.dispatchMouseDownButton(x, y, target, .left, modifiers);
     }
@@ -423,7 +426,7 @@ pub const EventDispatcher = struct {
     /// 刻意不复用 `self.last_modifiers`（那是按下时刻的值）：两者可以不同
     /// （按下时没按 ⇧、抬手前按住，或反之），宿主在 mouse_up 判"加选还是
     /// 独占选中"时需要的是抬手时刻的真值。合成的 click 仍用 last_modifiers
-    /// —— click 的语义锚点是按下。
+    /// click 的语义锚点是按下。
     pub fn dispatchMouseUpButton(self: *EventDispatcher, x: f32, y: f32, target: ?*Node, button: events.MouseButton, modifiers: events.Modifiers) void {
         const target_handle = if (target) |t|
             if (self.registry) |registry| registry.handleFor(t) else null
@@ -432,7 +435,7 @@ pub const EventDispatcher = struct {
 
         // Pointer Capture: 发给捕获节点后自动释放。
         // click/double_click 仍要合成（浏览器 setPointerCapture 语义：capture
-        // 元素收到合成 click）——否则凡是 down 即 capture 的宿主（画布拖拽）
+        // 元素收到合成 click），否则凡是 down 即 capture 的宿主（画布拖拽）
         // 永远收不到双击。
         const capture_target = self.resolveHandle(self.pointer_capture_handle);
         if (capture_target) |capture| {
@@ -484,7 +487,7 @@ pub const EventDispatcher = struct {
     }
 
     /// click / double_click 合成（多击检测共享状态）。普通路径与 pointer
-    /// capture 路径共用——handle 优先，raw 指针只在 registry 缺席时兜底。
+    /// capture 路径共用，handle 优先，raw 指针只在 registry 缺席时兜底。
     fn synthesizeClick(self: *EventDispatcher, x: f32, y: f32, target_handle: ?NodeHandle, target: ?*Node) void {
         {
             // mouse_up handler 已经跑过，可能释放了 target 子树（例如 folder toggle）。
@@ -537,7 +540,7 @@ pub const EventDispatcher = struct {
         }
     }
 
-    /// 分发鼠标释放事件 — 默认左键、无修饰键的便利重载
+    /// 分发鼠标释放事件，默认左键、无修饰键的便利重载
     pub fn dispatchMouseUp(self: *EventDispatcher, x: f32, y: f32, target: ?*Node) void {
         self.dispatchMouseUpButton(x, y, target, .left, .{});
     }
@@ -590,266 +593,140 @@ pub const EventDispatcher = struct {
         return self.dispatch(event, target);
     }
 
-    /// 分发滚轮事件
-    pub fn dispatchScroll(self: *EventDispatcher, x: f32, y: f32, dx: f32, dy: f32, is_momentum: bool, phase_ended: bool, is_trackpad: bool, hit_target: ?*Node) EventResult {
-        return self.dispatchScrollWithModifiers(x, y, dx, dy, is_momentum, phase_ended, is_trackpad, .{}, hit_target);
+    /// 每个滚动事件在命中测试**之前**调用：新手势开始意味着上一个手势已经结束，
+    /// 它的 ended 若丢失，先补发 cancelled（否则旧 owner 及其祖先链会一直以为手指
+    /// 还在板上）。放在命中测试之前，合成事件的处理器对节点树的任何改动都能被
+    /// 随后的命中看到。may_begin 之后的 began 属于同一手势。
+    pub fn beginScrollEvent(self: *EventDispatcher, scroll: events.ScrollEvent) void {
+        if (scroll.isMomentum() or scroll.phase == .none) return;
+        switch (scroll.phase) {
+            .may_begin => self.cancelScrollGesture(),
+            .began => if (!self.scroll_session_from_may_begin) self.cancelScrollGesture(),
+            else => {},
+        }
+        self.scroll_session_from_may_begin = scroll.phase == .may_begin;
     }
 
-    /// 分发滚轮事件（携带修饰键状态）
-    pub fn dispatchScrollWithModifiers(self: *EventDispatcher, x: f32, y: f32, dx: f32, dy: f32, is_momentum: bool, phase_ended: bool, is_trackpad: bool, modifiers: Modifiers, hit_target: ?*Node) EventResult {
-        const compatible_hit_target = nearestCompatibleScrollOwner(hit_target, dx, dy) orelse hit_target;
-        const hit_handle = if (compatible_hit_target) |t|
-            if (self.registry) |registry| registry.handleFor(t) else null
-        else
-            null;
-        const registry_mode = self.registry != null;
-
-        // 仅在显式开启时输出滚动命中诊断，避免热路径日志放大 CPU 占用。
-        if (scrollDebugEnabled() and !is_momentum and !phase_ended and (dy != 0 or dx != 0)) {
-            if (compatible_hit_target) |ht| {
-                // 沿 parent 链向上查找 ScrollArea 或 VirtualList
-                var p: ?*Node = ht;
-                var found_scroll = false;
-                while (p) |n| {
-                    if (n.meta.ownership.meta.component_name) |name| {
-                        if (std.mem.eql(u8, name, "VirtualList") or std.mem.eql(u8, name, "ScrollArea")) {
-                            found_scroll = true;
-                            break;
-                        }
-                    }
-                    p = n.parent;
-                }
-                if (!found_scroll) {
-                    std.debug.print("[scroll-dbg] hit id={d} test_id={s} tag={s} at ({d:.0},{d:.0}) — NO ScrollArea ancestor\n", .{
-                        ht.id,
-                        ht.meta.ownership.meta.test_id orelse "(none)",
-                        @tagName(ht.tag),
-                        x,
-                        y,
-                    });
-                }
-            } else {
-                std.debug.print("[scroll-dbg] hitTest=null at ({d:.0},{d:.0})\n", .{ x, y });
-            }
+    /// 分发滚轮事件（调用前先 beginScrollEvent，再做命中测试）。
+    ///
+    /// 触控板手势在 may_begin/began 时按命中锁定 owner，changed 期间不换手
+    /// （内容在静止指针下移动，命中会变，不代表用户开始了新手势），ended/cancelled
+    /// 后释放；ended 把 owner 交给随后的惯性事件。鼠标滚轮（.none）没有手势，
+    /// 直接按命中派发，不读写会话状态。
+    pub fn dispatchScroll(self: *EventDispatcher, scroll: events.ScrollEvent, hit_target: ?*Node) EventResult {
+        const hit = nearestCompatibleScrollOwner(hit_target, scroll.dx, scroll.dy) orelse hit_target;
+        if (scrollDebugEnabled() and !scroll.isMomentum() and !scroll.phaseEnded() and (scroll.dy != 0 or scroll.dx != 0)) {
+            logScrollHitWithoutScrollArea(hit, scroll.x, scroll.y);
+        }
+        if (scroll.isMomentum()) return self.dispatchMomentumScroll(scroll, hit);
+        if (scroll.phase == .none) {
+            // 滚轮打断正在进行的惯性
+            self.scroll_momentum_owner = null;
+            self.scroll_momentum_owner_ptr = null;
+            const target = hit orelse return .ignored;
+            return self.dispatch(.{ .scroll = scroll }, target);
         }
 
-        if (!is_momentum) {
-            if (registry_mode) {
-                if (phase_ended) {
-                    self.scroll_momentum_owner = self.scroll_session_owner;
-                    self.scroll_momentum_owner_ptr = null;
-                } else {
-                    self.scroll_momentum_owner = null;
-                    self.scroll_momentum_owner_ptr = null;
+        switch (scroll.phase) {
+            .none => unreachable,
+            .may_begin, .began => self.setScrollSessionOwner(hit),
+            .changed => {
+                const current = self.scrollSessionOwner(hit);
+                if (current == null) {
+                    self.setScrollSessionOwner(hit);
+                } else if (hit != null and !scrollOwnerAcceptsGesture(current.?, scroll.dx, scroll.dy)) {
+                    self.setScrollSessionOwner(hit);
                 }
+            },
+            .ended, .cancelled => if (self.scrollSessionOwner(hit) == null) self.setScrollSessionOwner(hit),
+        }
 
-                if (!is_trackpad and !phase_ended) {
-                    self.scroll_session_owner = hit_handle;
-                } else if (phase_ended) {
-                    if (self.scroll_session_owner == null) {
-                        self.scroll_session_owner = hit_handle;
-                    }
-                } else {
-                    // Trackpad session owner must stay stable until phase_end.
-                    // As content moves under a stationary pointer, hit-testing can shift from
-                    // an outer vertical scroller to an inner horizontal scroller. Retargeting
-                    // mid-gesture kills momentum continuity when crossing nested scroll regions.
-                    if (self.scroll_session_owner == null) {
-                        self.scroll_session_owner = hit_handle;
-                    } else if (hit_handle != null) {
-                        const current_owner = self.resolveHandle(self.scroll_session_owner);
-                        if (current_owner == null or !scrollOwnerAcceptsGesture(current_owner.?, dx, dy)) {
-                            self.scroll_session_owner = hit_handle;
-                        }
-                    }
-                }
-
-                const owner = self.resolveHandle(self.scroll_session_owner) orelse compatible_hit_target;
-                if (owner) |resolved_owner| {
-                    if (devtoolsHitDebugEnabled()) {
-                        std.debug.print(
-                            "[devtools-hit] dispatch_scroll session_owner={any} hit_handle={any} registry_mode={any}\n",
-                            .{ self.scroll_session_owner, hit_handle, registry_mode },
-                        );
-                        logDevtoolsNodeSummary("resolved_scroll_owner", resolved_owner);
-                    }
-                    const event = Event{ .scroll = .{
-                        .x = x,
-                        .y = y,
-                        .dx = dx,
-                        .dy = dy,
-                        .is_momentum = is_momentum,
-                        .phase_ended = phase_ended,
-                        .is_trackpad = is_trackpad,
-                        .modifiers = modifiers,
-                    } };
-                    const result = self.dispatch(event, resolved_owner);
-                    if (phase_ended) {
-                        self.scroll_session_owner = null;
-                    }
-                    return result;
-                }
-
-                self.scroll_session_owner = null;
-                if (phase_ended) {
-                    return .ignored;
-                }
-                if (compatible_hit_target) |fallback_owner| {
-                    self.scroll_session_owner = hit_handle;
-                    if (devtoolsHitDebugEnabled()) {
-                        std.debug.print(
-                            "[devtools-hit] dispatch_scroll fallback session_owner={any} hit_handle={any}\n",
-                            .{ self.scroll_session_owner, hit_handle },
-                        );
-                        logDevtoolsNodeSummary("fallback_scroll_owner", fallback_owner);
-                    }
-                    const event = Event{ .scroll = .{
-                        .x = x,
-                        .y = y,
-                        .dx = dx,
-                        .dy = dy,
-                        .is_momentum = is_momentum,
-                        .phase_ended = phase_ended,
-                        .is_trackpad = is_trackpad,
-                        .modifiers = modifiers,
-                    } };
-                    return self.dispatch(event, fallback_owner);
-                }
-                return .ignored;
-            }
-
-            if (phase_ended) {
-                // phase_ended: 把当前 session owner 传递给 momentum，
-                // 后续 momentum 事件将固定发给这个节点
+        // 任何新的手指/滚轮输入都打断上一轮惯性；ended 把 owner 交给本手势的惯性。
+        switch (scroll.phase) {
+            .ended => {
                 self.scroll_momentum_owner = self.scroll_session_owner;
                 self.scroll_momentum_owner_ptr = self.scroll_session_owner_ptr;
-            } else {
-                // 新手势开始：清除旧的惯性 owner，旧 momentum 将被丢弃
+            },
+            else => {
                 self.scroll_momentum_owner = null;
                 self.scroll_momentum_owner_ptr = null;
-            }
+            },
+        }
 
-            if (!is_trackpad and !phase_ended) {
-                // 鼠标滚轮：每帧按实时命中处理（无 phase 信号，无法锁定会话）
-                self.scroll_session_owner = hit_handle;
-                self.scroll_session_owner_ptr = compatible_hit_target;
-            } else if (phase_ended) {
-                // 手指抬起帧：保持会话 owner，确保 phase_ended 发给正确目标
-                if (self.scroll_session_owner == null) {
-                    self.scroll_session_owner = hit_handle;
-                    self.scroll_session_owner_ptr = compatible_hit_target;
-                }
-            } else {
-                // 触控板会话中固定 owner，直到 phase_end。
-                // 指针下方内容会因滚动而变化，不能把这当作用户开始了新手势。
-                if (self.scroll_session_owner == null and self.scroll_session_owner_ptr == null) {
-                    self.scroll_session_owner = hit_handle;
-                    self.scroll_session_owner_ptr = compatible_hit_target;
-                } else if (compatible_hit_target) |candidate_owner| {
-                    if (self.scroll_session_owner_ptr) |current_owner| {
-                        if (!scrollOwnerAcceptsGesture(current_owner, dx, dy)) {
-                            self.scroll_session_owner = hit_handle;
-                            self.scroll_session_owner_ptr = candidate_owner;
-                        }
-                    } else {
-                        self.scroll_session_owner = hit_handle;
-                        self.scroll_session_owner_ptr = candidate_owner;
-                    }
-                }
-            }
-
-            // 优先用 session owner，如果 session owner 已失效（节点被销毁）则 fallback 到 hit test
-            const session_owner_ptr = if (self.scroll_session_owner_ptr) |owner_ptr|
-                if (compatible_hit_target) |hit| if (nodesShareRoot(owner_ptr, hit)) owner_ptr else null else owner_ptr
-            else
-                null;
-            const owner = session_owner_ptr orelse compatible_hit_target;
-            if (owner) |resolved_owner| {
-                const event = Event{ .scroll = .{
-                    .x = x,
-                    .y = y,
-                    .dx = dx,
-                    .dy = dy,
-                    .is_momentum = is_momentum,
-                    .phase_ended = phase_ended,
-                    .is_trackpad = is_trackpad,
-                    .modifiers = modifiers,
-                } };
-                const result = self.dispatch(event, resolved_owner);
-                if (phase_ended) {
-                    self.scroll_session_owner = null;
-                    self.scroll_session_owner_ptr = null;
-                }
-                return result;
-            }
-
+        const owner = self.scrollSessionOwner(hit);
+        if (devtoolsHitDebugEnabled()) {
+            std.debug.print("[devtools-hit] dispatch_scroll phase={s} session_owner={any}\n", .{ @tagName(scroll.phase), self.scroll_session_owner });
+            logDevtoolsNodeSummary("resolved_scroll_owner", owner);
+        }
+        if (scroll.phaseEnded()) {
             self.scroll_session_owner = null;
             self.scroll_session_owner_ptr = null;
-            if (phase_ended) {
-                return .ignored;
-            }
-            if (compatible_hit_target) |fallback_owner| {
-                self.scroll_session_owner = hit_handle;
-                self.scroll_session_owner_ptr = fallback_owner;
-                const event = Event{ .scroll = .{
-                    .x = x,
-                    .y = y,
-                    .dx = dx,
-                    .dy = dy,
-                    .is_momentum = is_momentum,
-                    .phase_ended = phase_ended,
-                    .is_trackpad = is_trackpad,
-                    .modifiers = modifiers,
-                } };
-                return self.dispatch(event, fallback_owner);
-            }
-            return .ignored;
         }
+        const target = owner orelse return .ignored;
+        return self.dispatch(.{ .scroll = scroll }, target);
+    }
 
-        // momentum 阶段：固定派发给已锁定的 momentum owner。
-        // 如果 momentum_owner_id 已被新手势清除（第 275 行），
-        // 说明旧 momentum 已被新手势中断，直接丢弃。
-        // 不 fallback 到 session_owner/hit，避免旧 momentum 干扰新手势目标。
-        if (registry_mode) {
-            const owner = self.resolveHandle(self.scroll_momentum_owner) orelse {
-                self.scroll_momentum_owner = null;
-                self.scroll_momentum_owner_ptr = null;
-                return .ignored;
-            };
-            const event = Event{ .scroll = .{
-                .x = x,
-                .y = y,
-                .dx = dx,
-                .dy = dy,
-                .is_momentum = is_momentum,
-                .phase_ended = phase_ended,
-                .is_trackpad = is_trackpad,
-                .modifiers = modifiers,
-            } };
-            return self.dispatch(event, owner);
+    /// registry 模式只存 handle（指针会悬垂）；无 registry 的单测模式只存指针。
+    fn setScrollSessionOwner(self: *EventDispatcher, node: ?*Node) void {
+        if (self.registry) |registry| {
+            self.scroll_session_owner = if (node) |n| registry.handleFor(n) else null;
+            self.scroll_session_owner_ptr = null;
+        } else {
+            self.scroll_session_owner = null;
+            self.scroll_session_owner_ptr = node;
         }
+    }
 
-        const momentum_owner_ptr = if (self.scroll_momentum_owner_ptr) |owner_ptr|
-            if (compatible_hit_target) |hit| if (nodesShareRoot(owner_ptr, hit)) owner_ptr else null else owner_ptr
+    /// 当前会话 owner；已销毁（或指针模式下与命中不在同一棵树）时返回 null。
+    fn scrollSessionOwner(self: *EventDispatcher, hit: ?*Node) ?*Node {
+        if (self.registry != null) return self.resolveHandle(self.scroll_session_owner);
+        const ptr = self.scroll_session_owner_ptr orelse return null;
+        if (hit) |h| if (!nodesShareRoot(ptr, h)) return null;
+        return ptr;
+    }
+
+    /// 惯性事件固定发给发起它的手势的 owner。owner 已被新手势清除（或节点已销毁）
+    /// 说明这段惯性已被打断，直接丢弃，不回退到命中目标。
+    fn dispatchMomentumScroll(self: *EventDispatcher, scroll: events.ScrollEvent, hit: ?*Node) EventResult {
+        const owner = if (self.registry != null)
+            self.resolveHandle(self.scroll_momentum_owner)
+        else if (self.scroll_momentum_owner_ptr) |ptr|
+            if (hit) |h| (if (nodesShareRoot(ptr, h)) ptr else null) else ptr
         else
             null;
-        const owner = momentum_owner_ptr orelse {
+        const target = owner orelse {
             self.scroll_momentum_owner = null;
             self.scroll_momentum_owner_ptr = null;
             return .ignored;
         };
+        if (scroll.momentum == .ended) {
+            self.scroll_momentum_owner = null;
+            self.scroll_momentum_owner_ptr = null;
+        }
+        return self.dispatch(.{ .scroll = scroll }, target);
+    }
 
-        const event = Event{ .scroll = .{
-            .x = x,
-            .y = y,
-            .dx = dx,
-            .dy = dy,
-            .is_momentum = is_momentum,
-            .phase_ended = phase_ended,
-            .is_trackpad = is_trackpad,
-            .modifiers = modifiers,
-        } };
-        return self.dispatch(event, owner);
+    /// 系统中断（窗口失焦等）时结束进行中的滚动：给手势 owner 补发 cancelled，
+    /// 给惯性 owner 补发惯性 ended，与真实设备的结束信号走同一条路径。
+    pub fn cancelScrollGesture(self: *EventDispatcher) void {
+        // 先把两个 owner 一次性取出并清空，再派发：处理器若重入滚动派发，
+        // 看到的是干净状态，且它建立的新会话不会被这里随后覆盖。
+        const session_owner = self.scrollSessionOwner(null);
+        const momentum_owner = if (self.registry != null)
+            self.resolveHandle(self.scroll_momentum_owner)
+        else
+            self.scroll_momentum_owner_ptr;
+        self.scroll_session_owner = null;
+        self.scroll_session_owner_ptr = null;
+        self.scroll_momentum_owner = null;
+        self.scroll_momentum_owner_ptr = null;
+        self.scroll_session_from_may_begin = false;
+        if (session_owner) |owner| {
+            _ = self.dispatch(.{ .scroll = .{ .x = 0, .y = 0, .dx = 0, .dy = 0, .phase = .cancelled } }, owner);
+        }
+        if (momentum_owner) |owner| {
+            _ = self.dispatch(.{ .scroll = .{ .x = 0, .y = 0, .dx = 0, .dy = 0, .momentum = .ended } }, owner);
+        }
     }
 
     fn resolveHandle(self: *EventDispatcher, handle: ?NodeHandle) ?*Node {
@@ -972,7 +849,7 @@ pub const EventDispatcher = struct {
         if (count == 0) return buf[0..0];
         if (count > buf.len) count = buf.len;
 
-        // 从 target 向上填充, 然后反转得到 root→target 顺序
+        // 从 target 向上填充, 然后反转得到 root->target 顺序
         var i: usize = 0;
         node = target;
         while (node != null and i < count) : (node = node.?.parent) {
@@ -994,7 +871,7 @@ fn resolveDispatchTarget(self: *EventDispatcher, handle: ?NodeHandle, raw: ?*Nod
     // 优先走 handle（防悬垂指针：node 可能已被 free）；
     // registry 里不存在时 fallback 到 raw 指针，避免 hit-test 产生的原始节点指针
     // 被丢弃导致 click/hover 无响应。
-    // v1 的思路是严格模式（handle 失效就丢），但会导致任何未 register 的节点事件丢失 —— 代价过高
+    // v1 的思路是严格模式（handle 失效就丢），但会导致任何未 register 的节点事件丢失，代价过高
     return self.resolveHandle(handle) orelse raw;
 }
 
@@ -1007,6 +884,27 @@ fn scrollOwnerDirection(node: *Node) ?core.ScrollDirectionHint {
         std.mem.eql(u8, name, "md.table.viewport") or
         std.mem.eql(u8, name, "LineVirtualList"))) return null;
     return node.behavior.events.scroll_direction_hint;
+}
+
+/// 诊断：命中节点的祖先里没有 ScrollArea / VirtualList（滚动会被丢掉）。
+fn logScrollHitWithoutScrollArea(hit: ?*Node, x: f32, y: f32) void {
+    const ht = hit orelse {
+        std.debug.print("[scroll-dbg] hitTest=null at ({d:.0},{d:.0})\n", .{ x, y });
+        return;
+    };
+    var p: ?*Node = ht;
+    while (p) |n| : (p = n.parent) {
+        if (n.meta.ownership.meta.component_name) |name| {
+            if (std.mem.eql(u8, name, "VirtualList") or std.mem.eql(u8, name, "ScrollArea")) return;
+        }
+    }
+    std.debug.print("[scroll-dbg] hit id={d} test_id={s} tag={s} at ({d:.0},{d:.0}): no ScrollArea ancestor\n", .{
+        ht.id,
+        ht.meta.ownership.meta.test_id orelse "(none)",
+        @tagName(ht.tag),
+        x,
+        y,
+    });
 }
 
 fn scrollOwnerAcceptsGesture(node: *Node, dx: f32, dy: f32) bool {
@@ -1113,7 +1011,7 @@ const HandlerTarget = struct {
 fn invokeHandler(registry: ?*const NodeRegistry, initial_node: *Node, event: Event, phase: EventPhase) EventResult {
     const target = HandlerTarget.init(registry, initial_node);
     var node = initial_node;
-    // capture 阶段真派发——root → target 路径下行调用 on_event_capture。
+    // capture 阶段真派发，root -> target 路径下行调用 on_event_capture。
     // 默认 null handler 节点零开销跳过；与 bubble 阶段独立，可单独 stop 链路。
     // 用于 focus trap、scroll lock、手势仲裁等"祖先抢先拦截"场景。
     if (phase == .capture) {
@@ -1218,7 +1116,7 @@ fn hitTestNode(node: *Node, x: f32, y: f32) ?*Node {
     return hitTestNodeRuntime(node, x, y, .pointer);
 }
 
-/// 命中测试（不要求节点有事件处理器）—— 单元测试 helper。
+/// 命中测试（不要求节点有事件处理器），单元测试 helper。
 fn hitTestNodeAny(node: *Node, x: f32, y: f32) ?*Node {
     return hitTestNodeRuntime(node, x, y, .inspect);
 }
@@ -1589,14 +1487,231 @@ test "EventDispatcher: scroll momentum keeps session owner despite hover target 
     ctx.root = root;
     ctx.layout();
     // 手指阶段命中 left，建立 scroll session owner
-    _ = dispatcher.dispatchScroll(20, 20, 0, -8, false, false, true, hitTestNode(root, 20, 20));
+    _ = dispatcher.dispatchScroll(.{ .x = 20, .y = 20, .dx = 0, .dy = -8, .phase = .began }, hitTestNode(root, 20, 20));
     // 手指抬起，将 session owner 转移到 momentum owner
-    _ = dispatcher.dispatchScroll(20, 20, 0, 0, false, true, true, hitTestNode(root, 20, 20));
+    _ = dispatcher.dispatchScroll(.{ .x = 20, .y = 20, .dx = 0, .dy = 0, .phase = .ended }, hitTestNode(root, 20, 20));
     // momentum 阶段指针移到 right，仍应派发给 left
-    _ = dispatcher.dispatchScroll(220, 20, 0, -6, true, false, true, hitTestNode(root, 220, 20));
+    _ = dispatcher.dispatchScroll(.{ .x = 220, .y = 20, .dx = 0, .dy = -6, .momentum = .changed }, hitTestNode(root, 220, 20));
 
     try std.testing.expectEqual(@as(u32, 3), counter.left);
     try std.testing.expectEqual(@as(u32, 0), counter.right);
+}
+
+fn scrollSessionFixture(ctx: *core.Cx, counts: *[2]u32) !*Node {
+    const root = try core.box(ctx, .{
+        .width = .{ .px = 300 },
+        .height = .{ .px = 120 },
+        .direction = .row,
+    }, .{});
+    for (counts) |*slot| {
+        const pane = try core.box(ctx, .{
+            .width = .{ .px = 150 },
+            .height = .{ .px = 120 },
+        }, .{});
+        pane.behavior.events.on_event = struct {
+            fn handler(event: Event, context: ?*anyopaque) EventResult {
+                switch (event) {
+                    .scroll => {
+                        const c: *u32 = @ptrCast(@alignCast(context.?));
+                        c.* += 1;
+                        return .stop;
+                    },
+                    else => return .ignored,
+                }
+            }
+        }.handler;
+        pane.behavior.events.event_context = slot;
+        try root.appendChild(std.testing.allocator, pane);
+    }
+    ctx.root = root;
+    ctx.layout();
+    return root;
+}
+
+fn scrollAt(dispatcher: *EventDispatcher, root: *Node, x: f32, phase: events.ScrollPhase, is_momentum: bool) void {
+    const ev: events.ScrollEvent = .{ .x = x, .y = 20, .dx = 0, .dy = -8, .phase = phase, .momentum = if (is_momentum) .changed else .none };
+    dispatcher.beginScrollEvent(ev);
+    _ = dispatcher.dispatchScroll(ev, hitTestNode(root, x, 20));
+}
+
+test "EventDispatcher: began starts a new session even if the previous gesture never ended" {
+    var dispatcher = EventDispatcher.init(std.testing.allocator);
+    defer dispatcher.deinit();
+    var ctx = try core.Cx.init(std.testing.allocator);
+    defer ctx.deinit();
+    dispatcher.setRegistry(&ctx.node_registry);
+    var counts = [2]u32{ 0, 0 };
+    const root = try scrollSessionFixture(ctx, &counts);
+
+    // 旧手势落在 left，ended 丢失
+    scrollAt(&dispatcher, root, 20, .began, false);
+    scrollAt(&dispatcher, root, 20, .changed, false);
+    // 新手势在 right 开始：began 重新按命中锁定
+    scrollAt(&dispatcher, root, 220, .began, false);
+    scrollAt(&dispatcher, root, 220, .changed, false);
+
+    // left：began + changed + 新手势开始时补发的 cancelled
+    try std.testing.expectEqual(@as(u32, 3), counts[0]);
+    try std.testing.expectEqual(@as(u32, 2), counts[1]);
+}
+
+test "EventDispatcher: changed keeps the gesture owner when the hit target moves" {
+    var dispatcher = EventDispatcher.init(std.testing.allocator);
+    defer dispatcher.deinit();
+    var ctx = try core.Cx.init(std.testing.allocator);
+    defer ctx.deinit();
+    dispatcher.setRegistry(&ctx.node_registry);
+    var counts = [2]u32{ 0, 0 };
+    const root = try scrollSessionFixture(ctx, &counts);
+
+    scrollAt(&dispatcher, root, 20, .began, false);
+    scrollAt(&dispatcher, root, 220, .changed, false);
+    scrollAt(&dispatcher, root, 220, .ended, false);
+
+    try std.testing.expectEqual(@as(u32, 3), counts[0]);
+    try std.testing.expectEqual(@as(u32, 0), counts[1]);
+}
+
+test "EventDispatcher: cancelled releases the owner without handing it to momentum" {
+    var dispatcher = EventDispatcher.init(std.testing.allocator);
+    defer dispatcher.deinit();
+    var ctx = try core.Cx.init(std.testing.allocator);
+    defer ctx.deinit();
+    dispatcher.setRegistry(&ctx.node_registry);
+    var counts = [2]u32{ 0, 0 };
+    const root = try scrollSessionFixture(ctx, &counts);
+
+    scrollAt(&dispatcher, root, 20, .began, false);
+    scrollAt(&dispatcher, root, 20, .cancelled, false);
+    scrollAt(&dispatcher, root, 20, .none, true); // 没有手势交出惯性：丢弃
+    try std.testing.expectEqual(@as(u32, 2), counts[0]);
+
+    // 取消后下一次滚动按命中派发，而不是旧 owner
+    scrollAt(&dispatcher, root, 220, .changed, false);
+    try std.testing.expectEqual(@as(u32, 1), counts[1]);
+}
+
+test "EventDispatcher: a new gesture cancels the previous one whose ended was lost" {
+    var dispatcher = EventDispatcher.init(std.testing.allocator);
+    defer dispatcher.deinit();
+    var ctx = try core.Cx.init(std.testing.allocator);
+    defer ctx.deinit();
+    dispatcher.setRegistry(&ctx.node_registry);
+
+    const Phases = struct { cancelled: u32 = 0, began: u32 = 0 };
+    var left_phases = Phases{};
+    var counts = [2]u32{ 0, 0 };
+    const root = try scrollSessionFixture(ctx, &counts);
+    const left = root.children.items[0];
+    left.behavior.events.on_event = struct {
+        fn handler(event: Event, context: ?*anyopaque) EventResult {
+            const p: *Phases = @ptrCast(@alignCast(context.?));
+            switch (event) {
+                .scroll => |sc| switch (sc.phase) {
+                    .cancelled => p.cancelled += 1,
+                    .began => p.began += 1,
+                    else => {},
+                },
+                else => {},
+            }
+            return .stop;
+        }
+    }.handler;
+    left.behavior.events.event_context = &left_phases;
+
+    // may_begin -> began 是同一个手势：不取消
+    scrollAt(&dispatcher, root, 20, .may_begin, false);
+    scrollAt(&dispatcher, root, 20, .began, false);
+    try std.testing.expectEqual(@as(u32, 0), left_phases.cancelled);
+    scrollAt(&dispatcher, root, 20, .changed, false);
+    // ended 丢失，新手势从 right 开始：left 收到补发的 cancelled
+    scrollAt(&dispatcher, root, 220, .began, false);
+    try std.testing.expectEqual(@as(u32, 1), left_phases.cancelled);
+    try std.testing.expectEqual(@as(u32, 1), counts[1]);
+}
+
+test "EventDispatcher: cancelScrollGesture still ends momentum when the cancel handler re-enters" {
+    var dispatcher = EventDispatcher.init(std.testing.allocator);
+    defer dispatcher.deinit();
+    var ctx = try core.Cx.init(std.testing.allocator);
+    defer ctx.deinit();
+    dispatcher.setRegistry(&ctx.node_registry);
+    var counts = [2]u32{ 0, 0 };
+    const root = try scrollSessionFixture(ctx, &counts);
+
+    const Probe = struct {
+        dispatcher: *EventDispatcher,
+        root: *Node,
+        momentum_ended_on_left: u32 = 0,
+    };
+    var probe = Probe{ .dispatcher = &dispatcher, .root = root };
+    const left = root.children.items[0];
+    const right = root.children.items[1];
+    left.behavior.events.on_event = struct {
+        fn handler(event: Event, context: ?*anyopaque) EventResult {
+            const p: *Probe = @ptrCast(@alignCast(context.?));
+            if (event == .scroll and event.scroll.momentum == .ended) p.momentum_ended_on_left += 1;
+            return .stop;
+        }
+    }.handler;
+    left.behavior.events.event_context = &probe;
+    right.behavior.events.on_event = struct {
+        fn handler(event: Event, context: ?*anyopaque) EventResult {
+            const p: *Probe = @ptrCast(@alignCast(context.?));
+            // 收到补发的 cancelled 时重入一次滚动派发
+            if (event == .scroll and event.scroll.phase == .cancelled) {
+                _ = p.dispatcher.dispatchScroll(.{ .x = 220, .y = 20, .dx = 0, .dy = -3, .phase = .changed }, hitTestNode(p.root, 220, 20));
+            }
+            return .stop;
+        }
+    }.handler;
+    right.behavior.events.event_context = &probe;
+
+    // left 的手势正常结束，惯性归 left
+    scrollAt(&dispatcher, root, 20, .began, false);
+    scrollAt(&dispatcher, root, 20, .ended, false);
+    // right 上的新手势 ended 丢失
+    scrollAt(&dispatcher, root, 220, .began, false);
+    // began 已经结束了 left 的惯性；重新给 left 一段惯性所有权来构造两者并存
+    dispatcher.scroll_momentum_owner = ctx.node_registry.handleFor(left);
+    probe.momentum_ended_on_left = 0;
+
+    dispatcher.cancelScrollGesture();
+    try std.testing.expectEqual(@as(u32, 1), probe.momentum_ended_on_left);
+}
+
+test "EventDispatcher: mouse wheel follows the hit target on every event" {
+    var dispatcher = EventDispatcher.init(std.testing.allocator);
+    defer dispatcher.deinit();
+    var ctx = try core.Cx.init(std.testing.allocator);
+    defer ctx.deinit();
+    dispatcher.setRegistry(&ctx.node_registry);
+    var counts = [2]u32{ 0, 0 };
+    const root = try scrollSessionFixture(ctx, &counts);
+
+    scrollAt(&dispatcher, root, 20, .none, false);
+    scrollAt(&dispatcher, root, 220, .none, false);
+
+    try std.testing.expectEqual(@as(u32, 1), counts[0]);
+    try std.testing.expectEqual(@as(u32, 1), counts[1]);
+}
+
+test "EventDispatcher: mouse wheel leaves no session for a later trackpad stream" {
+    var dispatcher = EventDispatcher.init(std.testing.allocator);
+    defer dispatcher.deinit();
+    var ctx = try core.Cx.init(std.testing.allocator);
+    defer ctx.deinit();
+    dispatcher.setRegistry(&ctx.node_registry);
+    var counts = [2]u32{ 0, 0 };
+    const root = try scrollSessionFixture(ctx, &counts);
+
+    scrollAt(&dispatcher, root, 20, .none, false);
+    // 没有 began 的触控板流（旧 harness 的形状）：按自己的命中锁定，不粘到滚轮目标
+    scrollAt(&dispatcher, root, 220, .changed, false);
+    scrollAt(&dispatcher, root, 220, .ended, false);
+
+    try std.testing.expectEqual(@as(u32, 1), counts[0]);
+    try std.testing.expectEqual(@as(u32, 2), counts[1]);
 }
 
 test "EventDispatcher: momentum owner missing should not fall back to current hover target" {
@@ -1634,8 +1749,8 @@ test "EventDispatcher: momentum owner missing should not fall back to current ho
     ctx.layout();
 
     // 建立 momentum owner = left1
-    _ = dispatcher.dispatchScroll(20, 20, 0, -8, false, false, true, hitTestNode(root1, 20, 20));
-    _ = dispatcher.dispatchScroll(20, 20, 0, -6, true, false, true, hitTestNode(root1, 20, 20));
+    _ = dispatcher.dispatchScroll(.{ .x = 20, .y = 20, .dx = 0, .dy = -8, .phase = .changed }, hitTestNode(root1, 20, 20));
+    _ = dispatcher.dispatchScroll(.{ .x = 20, .y = 20, .dx = 0, .dy = -6, .momentum = .changed }, hitTestNode(root1, 20, 20));
 
     // 新树里没有 left1，只有 right2；momentum 不应回退命中 right2
     const root2 = try core.box(ctx, .{
@@ -1661,7 +1776,7 @@ test "EventDispatcher: momentum owner missing should not fall back to current ho
     right2.behavior.events.event_context = &counter;
     try root2.appendChild(std.testing.allocator, right2);
 
-    const r = dispatcher.dispatchScroll(200, 20, 0, -5, true, false, true, hitTestNode(root2, 200, 20));
+    const r = dispatcher.dispatchScroll(.{ .x = 200, .y = 20, .dx = 0, .dy = -5, .momentum = .changed }, hitTestNode(root2, 200, 20));
     try std.testing.expectEqual(EventResult.ignored, r);
     try std.testing.expectEqual(@as(u32, 0), counter.right);
 
@@ -1829,7 +1944,7 @@ test "hitTest: ScrollArea with padding and nested sections" {
     std.debug.print("[TEST2] radio rect: ({d:.0},{d:.0},{d:.0},{d:.0})\n", .{ radio.rectFromWorldOrFallback().x, radio.rectFromWorldOrFallback().y, radio.rectFromWorldOrFallback().w, radio.rectFromWorldOrFallback().h });
     std.debug.print("[TEST2] circle rect: ({d:.0},{d:.0},{d:.0},{d:.0})\n", .{ circle.rectFromWorldOrFallback().x, circle.rectFromWorldOrFallback().y, circle.rectFromWorldOrFallback().w, circle.rectFromWorldOrFallback().h });
 
-    // hitTest 在 radio 区域 — 应命中 radio (tag=button)
+    // hitTest 在 radio 区域，应命中 radio (tag=button)
     const radio_global = radio.globalRect();
     const radio_center_x = radio_global.x + radio_global.w / 2;
     const radio_center_y = radio_global.y + radio_global.h / 2;
@@ -1906,11 +2021,11 @@ test "hitTestAny: positive z does not escape overflow_hidden ancestor clip" {
         overlay.setLayoutRect(.{ .x = 20, .y = 20, .w = r.w, .h = r.h });
     }
 
-    // clipper 之外、overlay 之内 → 不命中 overlay（旧实现命中它）。
+    // clipper 之外、overlay 之内 -> 不命中 overlay（旧实现命中它）。
     const outside = hitTestNodeAny(root, 50, 50);
     try std.testing.expect(outside != overlay);
     try std.testing.expect(outside == null or outside.? == root);
-    // clipper 之内的重叠区 → 命中 overlay。
+    // clipper 之内的重叠区 -> 命中 overlay。
     const inside = hitTestNodeAny(root, 30, 30);
     try std.testing.expect(inside != null);
     try std.testing.expectEqual(overlay, inside.?);
@@ -2061,7 +2176,7 @@ test "on_key_down: bubbles to parent" {
 
     ctx.layout();
 
-    // Dispatch to child — child has no handler, should bubble to parent's on_key_down
+    // Dispatch to child, child has no handler, should bubble to parent's on_key_down
     const result = dispatcher.dispatchKeyDown(child, .{ .key = .a, .modifiers = .{} });
     try std.testing.expectEqual(EventResult.handled, result);
     try std.testing.expect(parent_key_received);
@@ -2152,7 +2267,7 @@ test "PointerCapture: mouse_move goes to capture node" {
     // Set pointer capture to capture_node
     dispatcher.setPointerCapture(capture_node);
 
-    // Move mouse over normal_node area — should go to capture_node instead
+    // Move mouse over normal_node area, should go to capture_node instead
     _ = dispatcher.dispatchMouseMove(50, 50, hitTestNode(root, 50, 50));
     try std.testing.expect(capture_received);
     try std.testing.expect(!normal_received);
@@ -2193,7 +2308,7 @@ test "PointerCapture: auto release on mouse_up" {
     dispatcher.setPointerCapture(capture_node);
     try std.testing.expect(dispatcher.pointer_capture_handle != null);
 
-    // Mouse up — should go to capture_node and auto-release
+    // Mouse up, should go to capture_node and auto-release
     dispatcher.dispatchMouseUp(300, 200, hitTestNode(root, 300, 200));
     try std.testing.expect(up_received);
     try std.testing.expectEqual(@as(?NodeHandle, null), dispatcher.pointer_capture_handle);
@@ -2402,7 +2517,7 @@ test "EventDispatcher: registry mode with invalid handle falls back to raw targe
 
     const invalid_handle = NodeHandle{ .id = node.id, .generation = 999999 };
     try std.testing.expect(dispatcher.resolveHandle(invalid_handle) == null);
-    // fallback 到 raw → 返回 node 指针
+    // fallback 到 raw -> 返回 node 指针
     try std.testing.expect(resolveDispatchTarget(&dispatcher, invalid_handle, node) == node);
 }
 
@@ -2438,7 +2553,7 @@ test "PointerCapture: normal when no capture" {
     ctx.setViewport(400, 300);
     ctx.layout();
 
-    // No capture — normal dispatch
+    // No capture, normal dispatch
     try std.testing.expectEqual(@as(?NodeHandle, null), dispatcher.pointer_capture_handle);
     _ = dispatcher.dispatchMouseMove(50, 50, hitTestNode(root, 50, 50));
     try std.testing.expect(normal_received);
@@ -2507,7 +2622,7 @@ test "Cx: mouse_up carries release-time modifiers" {
     var probe = MouseUpProbe{};
     try mouseUpProbeCx(ctx, &probe);
 
-    // 验收 1：按住 ⇧ 按下 → 抬手时仍按住 ⇒ mouse_up.shift == true
+    // 验收 1：按住 ⇧ 按下 -> 抬手时仍按住 ⇒ mouse_up.shift == true
     ctx.handleMouseDownEx(50, 50, .left, .{ .shift = true });
     ctx.handleMouseUpEx(50, 50, .left, .{ .shift = true });
     try std.testing.expectEqual(@as(u32, 1), probe.up_count);
@@ -2520,8 +2635,8 @@ test "Cx: mouse_up reflects modifier released before lift, not press-time latch"
     var probe = MouseUpProbe{};
     try mouseUpProbeCx(ctx, &probe);
 
-    // 验收 2：按住 ⇧ 按下 → **抬手前松开 ⇧** ⇒ mouse_up.shift == false。
-    // 这条专门区分"复用 last_modifiers"的偷懒改法——那样会错误地是 true。
+    // 验收 2：按住 ⇧ 按下 -> **抬手前松开 ⇧** ⇒ mouse_up.shift == false。
+    // 这条专门区分"复用 last_modifiers"的偷懒改法，那样会错误地是 true。
     ctx.handleMouseDownEx(50, 50, .left, .{ .shift = true });
     ctx.handleMouseUpEx(50, 50, .left, .{});
     try std.testing.expect(!probe.up_modifiers.shift);
@@ -2756,8 +2871,8 @@ test "EventDispatcher: mouse down returns only a surviving target" {
 }
 
 test "dispatch: nested dispatch from handler must not clobber outer bubble path" {
-    // root→A→B, root→C→D。B 的 mouse_up handler 调 cx.setFocus(D)，触发嵌套的
-    // blur/focus dispatch（路径 root→C→D）。外层冒泡必须仍走 B→A→root，
+    // root->A->B, root->C->D。B 的 mouse_up handler 调 cx.setFocus(D)，触发嵌套的
+    // blur/focus dispatch（路径 root->C->D）。外层冒泡必须仍走 B->A->root，
     // 不能因共享路径缓冲被覆写而冒泡到 C。
     var ctx = try core.Cx.init(std.testing.allocator);
     defer ctx.deinit();

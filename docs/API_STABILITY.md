@@ -50,8 +50,8 @@ the returned struct**.
 
 ## Unstable (explicitly exempted in v1)
 
-- `ui.hit` (hit-test queries) — bound to internal index structures
-- `ui.path` (path geometry) — ~~pipeline Phase C unfinished~~ Phase C (cross-frame mesh
+- `ui.hit` (hit-test queries): bound to internal index structures
+- `ui.path` (path geometry): ~~pipeline Phase C unfinished~~ Phase C (cross-frame mesh
   cache: keyed by geometry hash + scale + stroke params; on a hit it skips
   flatten/earclip/stroke expand) landed on 2026-07-30; the API stays labeled Unstable
   for one more release of observation
@@ -81,8 +81,8 @@ the returned struct**.
 
 ## Naming conventions (v1 convergence decisions)
 
-- **Callbacks**: always `?core.HandlerRef`. **Actually converged on 2026-07-31** —
-  this entry previously claimed "already unified, Input is the exception"; measurement
+- **Callbacks**: always `?core.HandlerRef`. **Converged on 2026-07-31.**
+  This entry previously claimed "already unified, Input is the exception"; measurement
   showed a half-and-half split of 16 HandlerRef-style vs 17 bare `fn(T, *anyopaque)`,
   with incompatible signatures: migrating directly would **silently drop the payload**
   (callers still compile; the value is gone).
@@ -105,7 +105,7 @@ the returned struct**.
   generics: HandlerRef is stored in Node, and generics would turn `EventHandlers` into
   a comptime type parameter, polluting the types of the entire tree.
 
-  **Exception**: `ControlledProp(T)` keeps its bare function pointer — it is a comptime
+  **Exception**: `ControlledProp(T)` keeps its bare function pointer: it is a comptime
   generic container whose T can be any type, which conflicts with the trade-off above.
   See the header of `components/controlled.zig`.
 
@@ -114,7 +114,7 @@ the returned struct**.
 - **Text props**: the widget's primary content = `label` (Button/Chip); a form field's
   attached label = `label_text` (Input/Switch/ComboBox).
   Corrected 2026-07-31: this entry previously said "already consistent today"; in fact
-  `form/form_field.zig` used `label` for the attached label, contradicting the rule —
+  `form/form_field.zig` used `label` for the attached label, contradicting the rule;
   it has been renamed to `label_text`.
 
 - **mount-only props always take the `initial_` prefix** (added 2026-07-31).
@@ -129,7 +129,7 @@ the returned struct**.
   | Steps | `current` | `initial_current` |
   | Input | `value` | `initial_value` |
 
-  Exception: `Radio.checked` keeps its original name — it is a purely presentational
+  Exception: `Radio.checked` keeps its original name; it is a purely presentational
   leaf driven by RadioGroup on every render, a genuine render input rather than
   mount-only state.
 
@@ -137,7 +137,7 @@ the returned struct**.
 
 - **Imperative setter convention** (filled in 2026-07-31).
   A `state` exposed in the mount result must be paired with a write entry that
-  **actually works** — widgets where writing the state field directly does not repaint
+  **actually works**. Widgets where writing the state field directly does not repaint
   are a trap ("looks like it drives something but has no effect"). Added:
 
   | Widget | setter |
@@ -151,7 +151,7 @@ the returned struct**.
 
   Semantics unified: **programmatic sets do not fire on_change** (that is the semantics
   of user interaction); call the callback yourself if you need to notify.
-- **mount paradigms**: three coexist, each with its own role —
+- **mount paradigms**: three coexist, each with its own role:
   1. `Widget(props).mount(scope, cx)` (Builder; the primary form for single-node widgets)
   2. `mountXxx(props, scope, cx) -> XxxMount` (composite / multi-return nodes:
      ScrollArea, SelectHeadless, ComboBox, DataTable, NumberStepper, TagsInput, FileUpload)
@@ -161,7 +161,7 @@ the returned struct**.
 ## Escape hatch
 
 `Node.style.ensureExt()` and writing `behavior.events.*` directly are escape hatches
-kept deliberately — what is Stable is the **existence** of the fields; deep
+kept deliberately. What is Stable is the **existence** of the fields; deep
 customization done through them is not protected by semver.
 
 ## Known not supported (explicitly not promised in v1)
@@ -170,7 +170,7 @@ This is written down so users can judge "can this framework build my project" up
 instead of finding out only after stepping in. Everything below is an
 **architectural gap**, not a bug waiting to be fixed.
 
-### ~~RTL / bidirectional text editing~~ — **the deterministic path is supported as of 2026-08-01**
+### ~~RTL / bidirectional text editing~~: **the deterministic path is supported as of 2026-08-01**
 
 The macOS configuration path hands the whole text to a single CoreText `CTLine`.
 Static drawing, visual caret order in Input and Textarea, click hit-testing, cross-line
@@ -189,14 +189,14 @@ brackets, L1/L2), gated by the official full `BidiTest.txt` and
 fallback, run placement, and caret-x. CoreText results that are already in visual order
 are not re-reordered by the framework. The framework's own UAX #9 resolver handles
 portable text properties, paragraph base direction, deterministic mapping/tests, and
-the non-CoreText layers — it does not replace the macOS shaper.
+the non-CoreText layers; it does not replace the macOS shaper.
 
 This is not physical acceptance complete: candidate windows under real
 Arabic/Hebrew/CJK input sources, VoiceOver editing, and the storybook RTL pixel matrix
 are still `NOT RUN` at the current release revision. The degraded path without a Font provider is still usable, but its
 estimated coordinates are not part of the macOS production correctness claim.
 
-### ~~Grapheme cluster~~ — **supported as of 2026-07-31**
+### ~~Grapheme cluster~~: **supported as of 2026-07-31**
 
 `src/text_core/grapheme.zig` implements UAX #29 extended grapheme clusters
 (GB1-GB999: CRLF / Hangul syllables / Extend / ZWJ / SpacingMark / Prepend /
@@ -209,18 +209,18 @@ UCD: SpacingMark / Prepend for rare scripts may be missing, degrading to "one ex
 break" (the caret stops one extra cell; it does not crash).
 No legacy grapheme cluster definition and no ICU-style tailoring.
 
-### ~~Color emoji~~ — **supported as of 2026-07-31**
+### ~~Color emoji~~: **supported as of 2026-07-31**
 
 Color glyphs are detected from the font tables (sbix / COLR / CBDT +
 `kCTFontTraitColorGlyphs`) and rasterized as BGRA premultiplied; the atlas gains BGRA8
 pages coexisting with R8 grayscale pages (they share the page_index numbering; the
 format is uniquely determined by the number); the shader branches on the per-instance
-`is_color` flag — color output takes the sampled RGBA directly, without multiplying the
+`is_color` flag: color output takes the sampled RGBA directly, without multiplying the
 text color.
 
 The decision is per **font**, not per code point: the same code point may still be
 single-channel coverage in text-presentation (VS15) or in a monochrome font, and vice
-versa — what determines the rasterization result is whichever font CoreText fallback
+versa. What determines the rasterization result is whichever font CoreText fallback
 finally selects.
 
 ### Single-line Input length limit
@@ -232,7 +232,7 @@ the state, no longer copying the whole 2048-byte buffer. A failed snapshot alloc
 is a transactional no-op and does not corrupt existing history. For long text use
 `Textarea` (piece tree, no such limit).
 
-### Drag and drop — platform capability in both directions implemented, full product acceptance not complete
+### Drag and drop: platform capability in both directions implemented, full product acceptance not complete
 
 **Supported** (2026-07-31): dragging files from Finder / the browser into the window.
 Attach `on_drag_enter` / `on_drag_leave` / `on_drop` to any node and it becomes a drop
@@ -246,7 +246,7 @@ node.behavior.events.on_drop =
 ```
 
 ⚠ The `paths` slice is **valid only during the callback** (it points into the backend's
-per-frame buffer); you must dupe it yourself if you need to keep it — the same general
+per-frame buffer); you must dupe it yourself if you need to keep it. This is the same general
 rule as `invokeWithStr`.
 
 Per-node enter/leave is synthesized by the framework from the position stream (the

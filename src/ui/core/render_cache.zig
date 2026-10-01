@@ -39,7 +39,7 @@ pub const CachedRenderSlice = struct {
     /// 但整段替放（promoted cache hit）必须带上，否则命中缓存的帧 children
     /// 零裁剪画出去（Popover 内容溢出面板）。布局：
     ///   [self][clip_open][regular][sticky][overlay][clip_close][tail]
-    /// 按 band 的访问器（descendant-scoped 逐段替放）跳过这两段——那条路径
+    /// 按 band 的访问器（descendant-scoped 逐段替放）跳过这两段，那条路径
     /// 由 paint pass fresh 发射同一对 token。
     descendant_clip_open_count: u32 = 0,
     descendant_clip_close_count: u32 = 0,
@@ -59,14 +59,14 @@ pub const CachedRenderSlice = struct {
     cached_clip_id: u32 = std.math.maxInt(u32),
     // 下游回归注：根 id 三元组只守卫缓存根自身；子树**内部**的帧内序号平移
     // （effect/clip 条件分配 + 更早节点动画期分配集合变化）不靠 stamp 拦截，
-    // 而是替放时按 node_id 统一改写为本帧值 —— 见 render_engine
+    // 而是替放时按 node_id 统一改写为本帧值，见 render_engine
     // rewriteSplicedItemHeaders。
     /// promoted 缓存里的 begin_blur token **按值烘焙**了写入帧的 glass 参数，
     /// 而 ext.glass 的写入不 bump content_version，dirty 位又会被祖先的
     /// subtree replay 提前 markNodeSubtreeRenderedClean 消费（帧内两个缓存层
-    /// 抢一个 dirty 位）—— GlassBox interactive hover 的参数插值因此在真机上
+    /// 抢一个 dirty 位），GlassBox interactive hover 的参数插值因此在真机上
     /// 完全冻结（RPC 截图路径反而看不出来）。stamp 写入帧的 glass 参数哈希，
-    /// 参数变 → MISS 重录。maxInt = 无 glass。
+    /// 参数变 -> MISS 重录。maxInt = 无 glass。
     cached_glass_hash: u64 = std.math.maxInt(u64),
     world_bounds: ComputedRect = ComputedRect.init(0, 0, 0, 0),
     world_transform: Transform2D = .{},

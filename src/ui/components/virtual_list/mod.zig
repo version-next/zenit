@@ -1,6 +1,6 @@
 /// VirtualList Component
 ///
-/// 虚拟滚动列表组件 — 只渲染可见区域的 item 节点（+ overscan 缓冲），
+/// 虚拟滚动列表组件，只渲染可见区域的 item 节点（+ overscan 缓冲），
 /// 用 N 个实际节点高效呈现 3 万+ 条数据。
 ///
 /// 设计思路（综合 react-window / Flutter ListView.builder / floating-ui）：
@@ -70,8 +70,8 @@ pub const VirtualListProps = struct {
     content_width: ?f32 = null,
     /// 可选：按 item 返回高度（px）。给了它就进入**不等高模式**。
     ///
-    /// null（默认）→ 所有 item 用 `item_height`，与以前完全一致。
-    /// 非 null → 总高、可见范围、spacer、ensureVisible 全部改走前缀和。
+    /// null（默认）-> 所有 item 用 `item_height`，与以前完全一致。
+    /// 非 null -> 总高、可见范围、spacer、ensureVisible 全部改走前缀和。
     /// 回调必须是纯函数且对同一 index 稳定：它每帧会被调用若干次，返回值
     /// 若在同一帧内变化，滚动几何会自相矛盾。
     item_height_fn: ?*const fn (index: usize, user_context: ?*anyopaque) f32 = null,
@@ -81,10 +81,10 @@ pub const VirtualListProps = struct {
     /// **动态测量模式**：行高由内容自己决定，组件量出来再记账。
     ///
     /// 三种高度模式的取舍：
-    /// - 默认（都不设）→ 等高，`item_height`，O(1) 定位，最快。
-    /// - `item_height_fn` → 不等高但**高度可预先算出**（如 diff 行：代码行 20、
+    /// - 默认（都不设）-> 等高，`item_height`，O(1) 定位，最快。
+    /// - `item_height_fn` -> 不等高但**高度可预先算出**（如 diff 行：代码行 20、
     ///   hunk 头 28）。不需要测量，几何一次到位。
-    /// - `measure_items = true` → 不等高且**高度事先不知道**（如自动换行的
+    /// - `measure_items = true` -> 不等高且**高度事先不知道**（如自动换行的
     ///   评论、聊天气泡）。行先按 `estimate_item_height` 占位，布局后读回真实
     ///   高度并回填，同时补偿滚动位置。
     ///
@@ -92,8 +92,8 @@ pub const VirtualListProps = struct {
     measure_items: bool = false,
     /// 未测量行的占位高度。估得越准，滚动条抖动越小。
     estimate_item_height: f32 = 32,
-    /// 可选：index → 稳定 key。给了它，实测高度就跟着**数据**走而不是跟着
-    /// 位置走 —— 在头部插入一条时，后面所有行的实测值依然有效。
+    /// 可选：index -> 稳定 key。给了它，实测高度就跟着**数据**走而不是跟着
+    /// 位置走，在头部插入一条时，后面所有行的实测值依然有效。
     /// null = 用 index 本身（头部增删会让后续行重新测量）。
     item_key_fn: ?*const fn (index: usize, user_context: ?*anyopaque) measurements.ItemKey = null,
     /// 传给 `item_key_fn` 的上下文（null 时复用 render 的 user_context）。
@@ -138,10 +138,10 @@ pub const VirtualListState = struct {
     initialized: bool = false,
     /// 上一趟完整 rebind 有没有做完。growPool 失败、可见行拿不到 slot、
     /// reorderPoolNodes 失败三种情况都是"这一帧先降级、下一帧重试"，但 updateVisibleItems
-    /// 的提前返回只看 prev_start/prev_end —— 范围不变就永远不会重试，缺的行和错的
+    /// 的提前返回只看 prev_start/prev_end，范围不变就永远不会重试，缺的行和错的
     /// 顺序会一直停到用户滚动为止。置位后下一帧强制走完整趟。
     rebind_incomplete: bool = false,
-    /// 渲染回调是 void，失败只能 `catch return`——半截行没人重画（GLM 指出）。
+    /// 渲染回调是 void，失败只能 `catch return`，半截行没人重画（GLM 指出）。
     /// 回调在失败点调 `markPoolNodeRenderIncomplete(node)`：该 slot 当场解绑（子树清掉），
     /// 本趟标 incomplete，下一帧 updateVisibleItems 为同一 data index 重新取 slot 再调回调。
     /// 与 rebind_incomplete 分开记，因为 updateVisibleItems 末尾会用本趟结果覆盖 rebind_incomplete。
@@ -154,7 +154,7 @@ pub const VirtualListState = struct {
 
     /// 动态测量模式的几何账本（measure_items = false 时恒为 null）。
     measured: ?*Measurements = null,
-    /// 上一帧的 scroll_y —— 用来判定滚动方向，喂给复测锚定判据。
+    /// 上一帧的 scroll_y，用来判定滚动方向，喂给复测锚定判据。
     prev_scroll_y: f32 = 0,
     scroll_direction: measurements.ScrollDirection = .idle,
 
@@ -189,7 +189,7 @@ pub const VirtualListState = struct {
         return if (std.math.isFinite(h) and h > 0) h else self.props.item_height;
     }
 
-    /// [0, index) 这些项的高度之和 —— 即第 index 项的顶端 y。
+    /// [0, index) 这些项的高度之和，即第 index 项的顶端 y。
     pub fn offsetOf(self: *const VirtualListState, index: usize) f32 {
         if (self.measured) |m| {
             // 前缀和是缓存，读它需要可变引用；这里的 const 是"逻辑只读"。
@@ -270,7 +270,7 @@ pub const VirtualListState = struct {
     /// 核心: 每帧更新可见 item
     pub fn updateVisibleItems(self: *VirtualListState) void {
         // 动态测量模式：先把**上一次布局**量到的真实行高回填进账本，再算几何。
-        // 顺序很关键 —— 必须在 totalContentHeight() 之前，否则这一帧用的还是
+        // 顺序很关键，必须在 totalContentHeight() 之前，否则这一帧用的还是
         // 旧高度，spacer 与内容对不上，滚动会漂。
         self.collectMeasurements();
 
@@ -351,7 +351,7 @@ pub const VirtualListState = struct {
             start == self.prev_start and end == self.prev_end and self.initialized;
         if (retry_waiting) self.render_retry_wait -= 1;
         if (start == self.prev_start and end == self.prev_end and self.initialized and (!self.rebind_incomplete or retry_waiting)) {
-            // 可见范围没变 —— 等高/预知高度模式下这就完事了。
+            // 可见范围没变，等高/预知高度模式下这就完事了。
             // 但**测量模式**下还有一件事必须做：刚量到真高的行要把 .fit 钉成 px，
             // 且 spacer 变了就得重新布局。漏了这一步，行会一直停在 .fit 态，
             // 账本与实际渲染各算各的，滚动就开始漂。
@@ -369,7 +369,7 @@ pub const VirtualListState = struct {
         if (needed > self.pool_size) {
             // 可安全降级：growPool 是事务性的（内部 errdefer 回滚全部半成品分配，
             // 失败后 pool_size / pool_nodes / pool_bindings 保持扩容前的自洽状态）。
-            // 扩不了池只意味着这一帧可见行渲染得少些——下面 `findFreeSlot() orelse
+            // 扩不了池只意味着这一帧可见行渲染得少些，下面 `findFreeSlot() orelse
             // continue` 处理取不到 slot 的情况。**下一帧重试**靠 rebind_incomplete：
             // 池还能长（没到 max_pool_size）却没长够，就标记本趟不完整。
             self.growPool(needed) catch {};
@@ -401,7 +401,7 @@ pub const VirtualListState = struct {
             self.applySlotHeight(node, item_idx);
             node.style.overflow_hidden = false;
             self.clearSlotNode(node);
-            // 绑定到真实数据行 → 进 a11y 树。label 留空走子树文本 fallback，
+            // 绑定到真实数据行 -> 进 a11y 树。label 留空走子树文本 fallback，
             // 因为行内容完全由用户的 render_fn 决定，组件侧拿不到文本。
             node.behavior.interaction.a11y = .{ .role = .listitem };
             // 调用用户渲染函数填充内容
@@ -423,7 +423,7 @@ pub const VirtualListState = struct {
         self.prev_start = start;
         self.prev_end = end;
         self.initialized = true;
-        // 本趟回调里有 slot 报了"没画完"→ 之后强制再走完整趟（该 index 已解绑，会重新取 slot 重画），
+        // 本趟回调里有 slot 报了"没画完"-> 之后强制再走完整趟（该 index 已解绑，会重新取 slot 重画），
         // 间隔按连续失败趟数退避：1,3,7,15,31,60 帧
         self.rebind_incomplete = incomplete or self.render_retry_pending;
         if (self.render_retry_pending) {
@@ -488,8 +488,8 @@ pub const VirtualListState = struct {
     /// 动态测量：把上一次布局量到的真实行高读回账本。
     ///
     /// 时序说明（这是整个特性能成立的前提）：框架每帧是
-    /// `layout → tick(before_render hooks) → 若 hook 标脏则再 layout`。
-    /// 本函数在 hook 里跑，所以读到的 rect 来自本帧**第一次** layout —— 也就是
+    /// `layout -> tick(before_render hooks) -> 若 hook 标脏则再 layout`。
+    /// 本函数在 hook 里跑，所以读到的 rect 来自本帧**第一次** layout，也就是
     /// slot 以 `.fit` 撑开后的真实内容高度。回填后我们标脏，同帧第二次 layout
     /// 就会用修正后的几何出图，因此不会有"先错一帧再跳一下"的闪烁。
     fn collectMeasurements(self: *VirtualListState) void {
@@ -542,7 +542,7 @@ pub const VirtualListState = struct {
     fn applySlotHeight(self: *VirtualListState, node: *Node, index: usize) void {
         // 判据必须是 isMeasured 而不是 `measured != null`：`item_height_fn`
         // 模式同样持有账本（为了前缀和与二分），但它从不写 sizes，
-        // 于是 hasMeasurement() 恒为 false —— 走 `measured != null` 的话
+        // 于是 hasMeasurement() 恒为 false，走 `measured != null` 的话
         // **每一行**都会被打成 .fit，行高改由内容决定，而账本按回调值预留
         // 空间，两者对不上（实测：回调说 40px，实际渲染 10px）。
         if (self.isMeasured()) {
@@ -776,8 +776,8 @@ pub const VirtualListBuilder = struct {
         const p = self.props;
 
         // 账本对两种不等高模式都建：
-        //   measure_items → 估算占位 + 布局后回填实测
-        //   item_height_fn → 高度已知，直接当 estimate_fn 用、永不回填
+        //   measure_items -> 估算占位 + 布局后回填实测
+        //   item_height_fn -> 高度已知，直接当 estimate_fn 用、永不回填
         // 后者这样做不是为了"测量"，而是白得 Measurements 的**前缀和缓存与
         // 二分**。此前 item_height_fn 走的是每帧 O(n) 线性扫，5000+ 行的
         // diff 滚到深处会卡到 RPC 超时。
@@ -866,7 +866,7 @@ pub const VirtualListBuilder = struct {
         };
 
         // 计算池大小: viewport 能放多少行 + 2*overscan + 余量。
-        // 测量模式按估算行高算 —— 真实行高普遍更小时池会不够，但 growPool
+        // 测量模式按估算行高算，真实行高普遍更小时池会不够，但 growPool
         // 会在首帧按实际需要扩容，这里只求一个合理起点。
         const viewport_h = p.height orelse 400;
         // item_height = 0 / 负 / NaN 时除出 inf，@intFromFloat 直接 panic：两条分支同样钳到 >= 1。
@@ -945,7 +945,7 @@ pub const VirtualListBuilder = struct {
 
         // 使用 content.hooks.slots.anim_state 存储 VirtualListState 指针
         // （content 节点不使用动画功能，该字段安全可用）。
-        // 必须在初始渲染**之前**挂上——回调在首趟里就可能要经
+        // 必须在初始渲染**之前**挂上，回调在首趟里就可能要经
         // markPoolNodeRenderIncomplete(node) 沿 parent 反查 state。
         sa.content.meta.per_frame.hooks.slots.anim_state = @ptrCast(state);
         // 在 content 节点的 on_before_render 中每帧更新可见 item（hook 只在帧 tick 里跑，
@@ -972,13 +972,13 @@ fn vlBeforeRender(content_node: *Node) void {
 /// 更新 item_count（数据源变化时调用）
 pub fn updateItemCount(state: *VirtualListState, new_count: usize) void {
     state.props.item_count = new_count;
-    // 测量账本同步行数。注意 setCount **不清实测值** —— 它们是 key 域的，
+    // 测量账本同步行数。注意 setCount **不清实测值**，它们是 key 域的，
     // 行数变了旧 key 的高度依然有效（给了 item_key_fn 时尤其重要：
     // 头部插入一条不会让后面所有行重新测量）。
     if (state.measured) |m| {
         m.setCount(new_count);
         // `setCount` 见到行数没变会早退，于是 pending_min 不动、前缀和保持陈旧。
-        // 但本函数的契约是"数据源变化时调用" —— 数据换了而**行数恰好相同**
+        // 但本函数的契约是"数据源变化时调用"，数据换了而**行数恰好相同**
         // 是很常见的（diff 换一个同行数的文件、切 inline/side-by-side），此时
         // `item_height_fn` 的返回值多半也变了。不无条件标脏的话，
         // `itemHeight()` 读实时回调、`offsetOf()` 读旧缓存，几何自相矛盾
@@ -990,9 +990,9 @@ pub fn updateItemCount(state: *VirtualListState, new_count: usize) void {
     state.prev_start = 0;
     state.prev_end = 0;
     state.initialized = false;
-    // 回收所有节点 —— 关键：**也要清 children**，否则 caller 依赖 item 外部状态
+    // 回收所有节点，关键：**也要清 children**，否则 caller 依赖 item 外部状态
     // （例如 completion popup 里的 item.label 字符串）被改/被释放后，pool node 上旧
-    // children 的 text.content 会 dangling → 下次 layout/hit test 时 crash。
+    // children 的 text.content 会 dangling -> 下次 layout/hit test 时 crash。
     for (state.pool_bindings, 0..) |_, i| {
         state.pool_bindings[i] = null;
         state.clearSlotNode(state.pool_nodes[i]);
@@ -1023,13 +1023,13 @@ pub fn scrollIndexIntoView(
 
 /// `item_height_fn` 的返回值变了之后调用，让几何跟上。
 ///
-/// 为什么需要显式调用：账本会**缓存**前缀和，而回调不会 —— 调用方什么时候
+/// 为什么需要显式调用：账本会**缓存**前缀和，而回调不会，调用方什么时候
 /// 改了返回值（展开折叠块、切 side-by-side/inline、改字号），账本无从得知。
 /// 不调用的话 `itemHeight()` 读实时回调、`offsetOf()` / `totalContentHeight()`
 /// 读陈旧缓存，同一份几何自相矛盾，表现为行与行之间出现空洞或重叠。
 ///
 /// 只作废派生的前缀和，不碰实测值，因此在 `measure_items` 模式下调用也是
-/// 安全的（那里通常不需要 —— 实测回填自己会标脏）。
+/// 安全的（那里通常不需要，实测回填自己会标脏）。
 pub fn invalidateHeights(state: *VirtualListState) void {
     const m = state.measured orelse return;
     m.markAllDirty();
@@ -1043,8 +1043,8 @@ pub fn invalidateHeights(state: *VirtualListState) void {
     // 这里**不需要**重置 prev_start/prev_end/initialized。
     // 直觉上"行高变了、一屏能放的行数也变了，得强制下帧重算"，但
     // `visibleRange()` 每帧都是从账本现算的，`updateVisibleItems` 的提前返回
-    // 拿新算出的范围和 prev 比 —— 范围真变了就不会命中提前返回。
-    // 实测（100px→40px、100 行）：不重置也照样从 [0,2) 扩到 [0,5) 并绑满 5 行。
+    // 拿新算出的范围和 prev 比，范围真变了就不会命中提前返回。
+    // 实测（100px->40px、100 行）：不重置也照样从 [0,2) 扩到 [0,5) 并绑满 5 行。
     // 留着是三行永远不生效的死代码，反而误导人以为这里有状态要维护。
     syncContentHeight(state);
 }
@@ -1054,7 +1054,7 @@ pub fn invalidateHeights(state: *VirtualListState) void {
 ///
 /// 抽出来是因为**漏掉它的后果不可逆**：`scrollToIndex` / `ensureVisible` 走
 /// `scroll_area` 的 clamp，钳的是 `maxScrollY()`，而它派生自 `content_height`。
-/// 总高涨了但 content_height 还是旧的 → 目标位置被钳到旧的 max，下一帧
+/// 总高涨了但 content_height 还是旧的 -> 目标位置被钳到旧的 max，下一帧
 /// `updateVisibleItems` 虽然会修好 content_height，但**请求的位置已经丢了**，
 /// 列表就停在错误的行上不动了（实测：想去第 90 行，落在第 38 行）。
 ///
@@ -1074,12 +1074,12 @@ fn syncContentHeight(state: *VirtualListState) void {
 /// 作废第 index 行的实测高度，使其在下一帧重新测量。
 ///
 /// 内容变高/变矮（文本改了、展开了详情）时必须调用，否则该行会一直沿用
-/// 旧的实测值 —— 账本与实际内容对不上，后面所有行的位置都会偏。
+/// 旧的实测值，账本与实际内容对不上，后面所有行的位置都会偏。
 /// `refreshRange` 已经内置调用它，只有绕开 refreshRange 直接改内容时才需手调。
 pub fn invalidateMeasurement(state: *VirtualListState, index: usize) void {
     // 判据必须是 isMeasured 而不是 `measured != null`：`item_height_fn` 模式
     // 也持有账本，但它的行高是调用方给定的权威值。把那种行打回 .fit 等于让
-    // 内容自己决定高度，而该模式下没有任何路径会再把它钉回去 —— 行会永久
+    // 内容自己决定高度，而该模式下没有任何路径会再把它钉回去，行会永久
     // 停在内容高度上，与账本预留的空间对不上（实测：账本 40px，实际渲染 10px）。
     if (!state.isMeasured()) return;
     const m = state.measured orelse return;
@@ -1112,7 +1112,7 @@ pub fn invalidateAllMeasurements(state: *VirtualListState) void {
 /// 渲染回调里某一步失败时调用：`fn render(node, index, cx, ctx) void` 拿不到 state，
 /// 这里沿 pool node 的 parent（content 节点）反查。返回 false = 这不是本 VL 当前绑定的 pool node。
 /// 效果：该 slot 当场解绑（半截子树清掉、退出 a11y 树），下一帧为同一 index 重新取 slot 再调回调。
-/// 持续失败就持续重试（每帧一次，不封顶——封顶等于把半截行冻住）。
+/// 持续失败就持续重试（每帧一次，不封顶，封顶等于把半截行冻住）。
 pub fn markPoolNodeRenderIncomplete(node: *Node) bool {
     const content = node.parent orelse return false;
     // 身份校验先于类型断言：只有挂着 vlBeforeRender 的节点，anim_state 才是 *VirtualListState
@@ -1129,7 +1129,7 @@ pub fn refreshRange(state: *VirtualListState, start: usize, end: usize) void {
     for (state.pool_bindings, 0..) |binding, slot| {
         if (binding) |idx| {
             if (idx >= start and idx < end) {
-                // 内容要重画 → 旧的实测高度不再可信，退回 .fit 重测。
+                // 内容要重画 -> 旧的实测高度不再可信，退回 .fit 重测。
                 // 仅限**回填测量**模式：`item_height_fn` 模式的行高是调用方
                 // 给定的权威值，打回 .fit 会让行改由内容决定高度，且该模式下
                 // collectMeasurements 直接 return，没人再把它钉回去。
@@ -1144,7 +1144,7 @@ pub fn refreshRange(state: *VirtualListState, start: usize, end: usize) void {
                     state.render_fn(state.pool_nodes[slot], idx, state.cx);
                 }
                 // 内容变了但 rect 往往没变：不标脏的话 damage-tracking 渲染器
-                // 不会重绘该行 —— 表现为打字/IME 上屏后字不出现、光标却照常
+                // 不会重绘该行，表现为打字/IME 上屏后字不出现、光标却照常
                 // 前进（光标/选区节点每帧自己标脏）。
                 state.pool_nodes[slot].markLayoutDirty();
                 state.pool_nodes[slot].markRenderDirty();
@@ -1163,7 +1163,7 @@ pub fn ensureVisible(state: *VirtualListState, index: usize) void {
 const testing = std.testing;
 
 test {
-    // Zig 不会因为 `@import` 就收集子模块的 test —— 必须显式引用。
+    // Zig 不会因为 `@import` 就收集子模块的 test，必须显式引用。
     // 漏了这行，measurements.zig 的几何单测在 `zig build test` 里一个都不跑，
     // 而输出看起来照样全绿（本仓库踩过这个坑）。
     testing.refAllDecls(@This());
@@ -1196,7 +1196,7 @@ test "VirtualList: item_height = 0 / 负数时 mount 不 panic" {
 
 test "VirtualList: variable item heights drive offsets and visible range" {
     // 不等高模式：第 i 项高 (10 + i*10)，即 10/20/30/40/50…
-    // 这里断言的是"几何自洽"——总高、前缀和、可见范围三者必须来自同一套
+    // 这里断言的是"几何自洽"，总高、前缀和、可见范围三者必须来自同一套
     // 高度，否则 spacer 撑起的空间与内容实占空间对不上，滚动会漂移。
     const allocator = testing.allocator;
     var ctx = try Cx.init(allocator);
@@ -1243,7 +1243,7 @@ test "VirtualList: variable item heights drive offsets and visible range" {
 
     // 滚到第 2 项顶端（30）：起始项必须正好是 2。
     // 按等高（32）误算会得到 0，这正是不等高路径要修的。
-    // 注意视口 100 / 总高 150 → max_scroll=50，取 30 不会被钳制。
+    // 注意视口 100 / 总高 150 -> max_scroll=50，取 30 不会被钳制。
     st.scroll_state.scroll_y = 30;
     const r1 = st.visibleRange();
     try testing.expectEqual(@as(usize, 2), r1.start);
@@ -1254,7 +1254,7 @@ test "VirtualList: variable item heights drive offsets and visible range" {
 }
 
 /// 测量模式集成测试的公共装置：每行渲染一个**固定高度**的子节点，
-/// 高度由 index 决定（模拟"内容自己决定高度"）。组件事先并不知道这些值 ——
+/// 高度由 index 决定（模拟"内容自己决定高度"）。组件事先并不知道这些值,
 /// 它必须靠 layout 量出来。
 const MeasuredFixture = struct {
     /// 第 i 行的真实内容高度：10 / 60 / 10 / 60 …
@@ -1290,11 +1290,11 @@ test "VirtualList measured: heights start as estimates then converge to measured
     try root.appendChild(allocator, result.container);
     const st = result.state;
 
-    // 一帧都还没跑：全部按估算 → 100 * 20 = 2000。
+    // 一帧都还没跑：全部按估算 -> 100 * 20 = 2000。
     try testing.expect(st.isMeasured());
     try testing.expectEqual(@as(f32, 2000), st.totalContentHeight());
 
-    // 跑几帧：layout 撑开 .fit → hook 读回真高 → 标脏 → 再 layout。
+    // 跑几帧：layout 撑开 .fit -> hook 读回真高 -> 标脏 -> 再 layout。
     st.scroll_state.viewport_height = 200;
     var frame: usize = 0;
     while (frame < 5) : (frame += 1) {
@@ -1308,7 +1308,7 @@ test "VirtualList measured: heights start as estimates then converge to measured
     try testing.expectApproxEqAbs(@as(f32, 60), st.itemHeight(1), 0.5);
 
     // 总高 = 已测行的真高 + 未测行的估算，必须严格小于"全按 20 估"的 2000？
-    // 不一定 —— 真高均值 35 > 估算 20，所以总高应当**变大**。
+    // 不一定，真高均值 35 > 估算 20，所以总高应当**变大**。
     // 关键是它不再等于纯估算值，且已测部分精确。
     try testing.expect(st.totalContentHeight() != 2000);
     try testing.expectApproxEqAbs(@as(f32, 0), st.offsetOf(0), 0.01);
@@ -1342,7 +1342,7 @@ test "VirtualList measured: measured rows pin their slot height to px" {
         st.updateVisibleItems();
     }
 
-    // 量到之后 slot 必须从 .fit 钉成 px —— 一直 .fit 的话账本与实际渲染
+    // 量到之后 slot 必须从 .fit 钉成 px，一直 .fit 的话账本与实际渲染
     // 各算各的，spacer 撑起的空间会和内容实占空间对不上。
     var checked: usize = 0;
     for (st.pool_bindings, 0..) |binding, slot| {
@@ -1450,12 +1450,12 @@ test "VirtualList measured: scroll anchoring keeps the visible row stable" {
 
     // 锚定生效的判据：那一行相对视口顶端的位置**纹丝不动**。
     //
-    // 容差必须收紧到 1px —— 实测（关掉补偿做对照）漂移是 10px，
+    // 容差必须收紧到 1px，实测（关掉补偿做对照）漂移是 10px，
     // 松容差（比如 40px）会让"补偿完全没生效"也照样通过，测试就成了摆设。
     const after_delta = st.offsetOf(anchor_index) - st.scroll_state.scroll_y;
     try testing.expectApproxEqAbs(before_delta, after_delta, 1.0);
 
-    // 补偿的方向也要对：上方的行整体变高（估算 20 → 实测均值 35），
+    // 补偿的方向也要对：上方的行整体变高（估算 20 -> 实测均值 35），
     // scroll_y 必须**跟着变大**，否则"位置没动"可能只是因为什么都没发生。
     try testing.expect(st.scroll_state.scroll_y > 1000);
 }
@@ -1487,7 +1487,7 @@ test "VirtualList measured: refreshRange invalidates stale measurements" {
     }
     try testing.expect(st.measured.?.hasMeasurement(1));
 
-    // 内容变了 → 旧实测值必须作废，否则行高会一直沿用旧值。
+    // 内容变了 -> 旧实测值必须作废，否则行高会一直沿用旧值。
     refreshRange(st, 0, 5);
     try testing.expect(!st.measured.?.hasMeasurement(1));
 
@@ -1541,7 +1541,7 @@ test "VirtualList measured: updateItemCount keeps measurements and is leak-free"
 
 test "VirtualList: item_height_fn uses the ledger (prefix sums + binary search)" {
     // item_height_fn 也持有账本，为的是 O(log n) 定位而不是每帧 O(n) 线性扫。
-    // 5000+ 行的 diff 滚到深处时，线性扫会卡到 RPC 超时 —— 实测过。
+    // 5000+ 行的 diff 滚到深处时，线性扫会卡到 RPC 超时，实测过。
     //
     // 这里断言"账本存在且几何由它给出"，而不是直接测时间：时间断言在 CI 上
     // 不稳，而账本存在与否是二值的、能可靠转红。
@@ -1588,7 +1588,7 @@ test "VirtualList: item_height_fn uses the ledger (prefix sums + binary search)"
 
 /// `checked > 0` 的统一断言：循环体一次都没执行 = 断言全被跳过 = 测试假绿。
 ///
-/// 单写 `expect(checked > 0)` 的问题是失败时没有任何上下文 —— CI 上偶发一次
+/// 单写 `expect(checked > 0)` 的问题是失败时没有任何上下文，CI 上偶发一次
 /// 只能看到"某个 expect false"，分不清是**真的抓到 bug**还是池在内存压力下
 /// 没分配出节点（`growPool` 是 `catch {}`、`box` 是 `orelse continue`，
 /// 两者都会安静降级）。带上绑定数与池大小就能一眼区分。
@@ -1611,12 +1611,12 @@ fn expectSlotsChecked(checked: usize, state: *const VirtualListState) !void {
 /// 两者故意不等，这样"行高到底听谁的"才可观测。
 ///
 /// `tall` 是跨测试共享的可变状态（`item_height_fn` 的签名不带上下文，只能用
-/// 容器级 var）。每个用它的测试都必须 `begin()` —— 它同时做入口复位和
+/// 容器级 var）。每个用它的测试都必须 `begin()`，它同时做入口复位和
 /// `defer` 收尾复位。**不能用尾部赋值收尾**：断言失败会 early-return 跳过它，
 /// 把 tall=true 泄漏给下一个测试（Zig 按声明序跑，靠顺序侥幸是不可维护的）。
 const AuthoritativeHeight = struct {
     var tall: bool = false;
-    /// 用法：`defer AuthoritativeHeight.begin();`  —— 见上方说明。
+    /// 用法：`defer AuthoritativeHeight.begin();`，见上方说明。
     fn begin() void {
         tall = false;
     }
@@ -1646,7 +1646,7 @@ fn mountAuthoritative(scope: *Scope, ctx: *Cx, count: usize) !VirtualListBuilder
 test "VirtualList item_height_fn: rows keep the caller's height, not the content's" {
     // 回归：`item_height_fn` 也持有账本之后，applySlotHeight 的判据若写成
     // `measured != null`，会因为 hasMeasurement() 恒 false 而把**每一行**
-    // 打成 .fit —— 行高改由内容决定（10px），账本却按回调值（40px）预留空间，
+    // 打成 .fit，行高改由内容决定（10px），账本却按回调值（40px）预留空间，
     // 每行差 30px。这是该模式的默认路径，不需要任何额外调用就会中招。
     AuthoritativeHeight.begin();
     defer AuthoritativeHeight.begin();
@@ -1688,7 +1688,7 @@ test "VirtualList item_height_fn: rows keep the caller's height, not the content
 
 test "VirtualList item_height_fn: refreshRange does not collapse rows to content height" {
     // 回归：refreshRange 的判据若写成 `measured != null`，会把权威高度的行
-    // 打回 .fit；而该模式下 collectMeasurements 直接 return，没人再钉回去 ——
+    // 打回 .fit；而该模式下 collectMeasurements 直接 return，没人再钉回去,
     // 行永久停在内容高度上，且跑多少帧都不自愈。
     AuthoritativeHeight.begin();
     defer AuthoritativeHeight.begin();
@@ -1736,7 +1736,7 @@ test "VirtualList item_height_fn: refreshRange does not collapse rows to content
 }
 
 test "VirtualList item_height_fn: invalidateHeights rebuilds the cached prefix sums" {
-    // 回归：账本会缓存前缀和，而回调不会 —— 调用方改了返回值（展开折叠块、
+    // 回归：账本会缓存前缀和，而回调不会，调用方改了返回值（展开折叠块、
     // 切 side-by-side），账本无从得知。没有作废入口的话，itemHeight() 读实时
     // 回调、offsetOf()/totalContentHeight() 读陈旧缓存，几何自相矛盾。
     AuthoritativeHeight.begin();
@@ -1759,7 +1759,7 @@ test "VirtualList item_height_fn: invalidateHeights rebuilds the cached prefix s
     try testing.expectApproxEqAbs(@as(f32, 4000), st.totalContentHeight(), 0.01);
     try testing.expectApproxEqAbs(@as(f32, 40), st.offsetOf(1), 0.01);
 
-    // 调用方改了行高（40 → 100）。
+    // 调用方改了行高（40 -> 100）。
     AuthoritativeHeight.tall = true;
     invalidateHeights(st);
 
@@ -1781,7 +1781,7 @@ test "VirtualList item_height_fn: invalidateHeights rebuilds the cached prefix s
         checked += 1;
     }
     // 没有这一行的话，池若一行都没绑定，上面整个循环被跳过、断言全不执行，
-    // 测试照样"绿" —— 实测把 pool_bindings 全塞 null 就能骗过去。
+    // 测试照样"绿"，实测把 pool_bindings 全塞 null 就能骗过去。
     try expectSlotsChecked(checked, st);
 }
 
@@ -1789,7 +1789,7 @@ test "VirtualList item_height_fn: invalidate* APIs do not collapse authoritative
     // 回归：`invalidateMeasurement` / `invalidateAllMeasurements` 的守卫若写成
     // `measured != null`，会把权威高度的行打回 .fit 且永不自愈。
     //
-    // 这两个守卫此前**完全没有测试覆盖** —— 把它们同时改成 `if (false) return;`
+    // 这两个守卫此前**完全没有测试覆盖**，把它们同时改成 `if (false) return;`
     // 整个套件照样全绿（修了一半、只测了一半）。
     AuthoritativeHeight.begin();
     defer AuthoritativeHeight.begin();
@@ -1840,7 +1840,7 @@ test "VirtualList item_height_fn: invalidateHeights resyncs scroll bounds" {
     // 这个钳制是不可逆的：下一帧虽然修好 content_height，但请求的位置已经丢了，
     // 列表就停在错误的行上（实测：想去第 90 行，落在第 38 行）。
     //
-    // 这正是 invalidateHeights 文档里写的那个场景 —— 展开折叠块后
+    // 这正是 invalidateHeights 文档里写的那个场景，展开折叠块后
     // ensureVisible 到展开的那一行。
     AuthoritativeHeight.begin();
     defer AuthoritativeHeight.begin();
@@ -1860,7 +1860,7 @@ test "VirtualList item_height_fn: invalidateHeights resyncs scroll bounds" {
     st.updateVisibleItems();
     try testing.expectApproxEqAbs(@as(f32, 4000), st.scroll_state.content_height, 0.01);
 
-    // 行高 40 → 100，总高 4000 → 10000。
+    // 行高 40 -> 100，总高 4000 -> 10000。
     AuthoritativeHeight.tall = true;
     invalidateHeights(st);
 
@@ -1874,7 +1874,7 @@ test "VirtualList item_height_fn: invalidateHeights resyncs scroll bounds" {
 }
 
 test "VirtualList item_height_fn: updateItemCount refreshes geometry even when count is unchanged" {
-    // 回归 D1：`setCount` 见到行数没变会早退，pending_min 不动 → 前缀和陈旧。
+    // 回归 D1：`setCount` 见到行数没变会早退，pending_min 不动 -> 前缀和陈旧。
     // 但"数据源变了而行数恰好相同"很常见（diff 换同行数的文件、切 inline/
     // side-by-side），此时 item_height_fn 的返回值多半也变了。
     // 表现：itemHeight() 说 100、offsetOf() 还说 40，行重叠 + 滚动条短 2.5 倍。
@@ -1908,7 +1908,7 @@ test "VirtualList item_height_fn: updateItemCount refreshes geometry even when c
 }
 
 test "VirtualList measured: item_height_fn wins over measure_items" {
-    // 两者都给时以 item_height_fn 为准 —— 它更便宜且精确，无需测量往返。
+    // 两者都给时以 item_height_fn 为准，它更便宜且精确，无需测量往返。
     const allocator = testing.allocator;
     var ctx = try Cx.init(allocator);
     defer ctx.deinit();
@@ -2183,7 +2183,7 @@ test "VirtualList: ensureVisible" {
     result.state.scroll_state.content_height = 1000 * 32;
     result.state.scroll_state.viewport_height = 200;
 
-    // item 50 不在视口内 → 应该滚动
+    // item 50 不在视口内 -> 应该滚动
     ensureVisible(result.state, 50);
     const scroll_y = result.state.scroll_state.scroll_y;
     const item_top = 50 * 32;
@@ -2406,7 +2406,7 @@ test "VirtualList: runtime setOpacity keeps absolute+translate child at translat
     }
     try testing.expect(icon_node != null);
 
-    // hover 直写：运行时 setOpacity 0→1（下游应用 setTrackInk 的直写路径）。
+    // hover 直写：运行时 setOpacity 0->1（下游应用 setTrackInk 的直写路径）。
     icon_node.?.setOpacity(1.0);
     ctx.layout();
     _ = ctx.render();
@@ -2422,7 +2422,7 @@ test "VirtualList: runtime setOpacity keeps absolute+translate child at translat
         try testing.expect(found);
     }
 
-    // 再翻回 0 → 再翻到 1（re-hover 路径，残影正是这里复活）。
+    // 再翻回 0 -> 再翻到 1（re-hover 路径，残影正是这里复活）。
     // 翻 0 帧：图标不得再出现在命令流（残影 = 缓存 splice 把 stale 条目放行）。
     icon_node.?.setOpacity(0.0);
     ctx.layout();
@@ -2435,7 +2435,7 @@ test "VirtualList: runtime setOpacity keeps absolute+translate child at translat
             }
         }
     }
-    // 连续第二帧仍保持 0（缓存 splice 命中帧）——残影正是在"非重录帧"复活。
+    // 连续第二帧仍保持 0（缓存 splice 命中帧），残影正是在"非重录帧"复活。
     _ = ctx.render();
     {
         const commands = ctx.lowerForEncoderPaintTable();
@@ -2463,7 +2463,7 @@ test "VirtualList: runtime setOpacity keeps absolute+translate child at translat
 
 // ---------------------------------------------------------------------------
 // 降级之后必须能自愈。growPool / 取 slot / reorderPoolNodes 在 OOM 下
-// 都是"这一帧少画点"，但 updateVisibleItems 的提前返回只看可见范围有没有变 ——
+// 都是"这一帧少画点"，但 updateVisibleItems 的提前返回只看可见范围有没有变,
 // 范围不变就永远不重试，缺的行和错的顺序会停到用户滚动为止。
 // ---------------------------------------------------------------------------
 
@@ -2540,7 +2540,7 @@ test "VirtualList: growPool 失败后可见范围不变也会在下一帧重试�
 
 test "VirtualList: reorderPoolNodes 失败后下一帧重排（新 slot 不能留在 bottom_spacer 之后）" {
     // 先在一份干净的装置上量出"视口放大那一趟"用了多少次分配，再在另一份装置上
-    // 让最后一次分配失败 —— 最后一次分配落在 reorderPoolNodes 里
+    // 让最后一次分配失败，最后一次分配落在 reorderPoolNodes 里
     // （ensureTotalCapacity / replaceChildOrder），前面的扩池与绑定都已成功。
     const Fixture = struct {
         fn run(a: std.mem.Allocator, fail_at_from_end: ?usize, failing: *testing.FailingAllocator) !void {
@@ -2616,22 +2616,22 @@ test "VirtualList: 回调报 markPoolNodeRenderIncomplete 后该行解绑并在�
         .mount(scope, ctx, Probe.render);
     try root.appendChild(a, result.container);
     const st = result.state;
-    // mount 的首趟已经渲染了 5 行：index 1 失败一次（fail_left 2→1）并报未完成
+    // mount 的首趟已经渲染了 5 行：index 1 失败一次（fail_left 2->1）并报未完成
     try testing.expect(st.rebind_incomplete);
     try testing.expect(!st.isBound(1));
     try testing.expectEqual(@as(usize, 5), Probe.calls);
     st.scroll_state.viewport_height = 100;
-    // 退避：连续失败 1 趟 → 等 1 趟。这一趟只是等（范围没变），回调不被调
+    // 退避：连续失败 1 趟 -> 等 1 趟。这一趟只是等（范围没变），回调不被调
     try testing.expectEqual(@as(u16, 1), st.render_retry_wait);
     st.updateVisibleItems();
     try testing.expectEqual(@as(usize, 5), Probe.calls);
     try testing.expect(st.rebind_incomplete);
-    // 第二次真正重试（可见范围没变）：修复前提前返回、index 1 永远空着；现在重调回调，再失败一次（1→0）
+    // 第二次真正重试（可见范围没变）：修复前提前返回、index 1 永远空着；现在重调回调，再失败一次（1->0）
     st.updateVisibleItems();
     try testing.expectEqual(@as(usize, 6), Probe.calls);
     try testing.expect(st.rebind_incomplete);
     try testing.expect(!st.isBound(1));
-    // 连续失败 2 趟 → 等 3 趟
+    // 连续失败 2 趟 -> 等 3 趟
     try testing.expectEqual(@as(u16, 3), st.render_retry_wait);
     // 失败的 slot 已回收：子树清空、退出 a11y 树
     for (st.pool_nodes, 0..) |pn, slot| {
@@ -2640,7 +2640,7 @@ test "VirtualList: 回调报 markPoolNodeRenderIncomplete 后该行解绑并在�
             try testing.expect(pn.behavior.interaction.a11y == null);
         }
     }
-    // 等 3 趟（回调不被调），第 4 趟重试成功 → 绑上、不再 incomplete、退避归零
+    // 等 3 趟（回调不被调），第 4 趟重试成功 -> 绑上、不再 incomplete、退避归零
     for (0..3) |_| st.updateVisibleItems();
     try testing.expectEqual(@as(usize, 6), Probe.calls);
     try testing.expect(!st.isBound(1));
@@ -2656,6 +2656,6 @@ test "VirtualList: 回调报 markPoolNodeRenderIncomplete 后该行解绑并在�
     try testing.expectEqual(@as(usize, 5), rendered);
     // 其余 4 行各一次 + index 1 三次
     try testing.expectEqual(@as(usize, 7), Probe.calls);
-    // 不是本 VL 当前绑定的 pool node → false（root 不是 pool node）
+    // 不是本 VL 当前绑定的 pool node -> false（root 不是 pool node）
     try testing.expect(!markPoolNodeRenderIncomplete(root));
 }

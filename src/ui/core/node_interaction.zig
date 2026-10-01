@@ -1,4 +1,4 @@
-//! node_interaction — v0.12 §N3 god-object split: 从 node.zig 抽出
+//! node_interaction, v0.12 §N3 god-object split: 从 node.zig 抽出
 //! 交互/焦点/Hit-Test 子域（17 方法）。
 //!
 //! 范式同 §N1/§N2：Node-typed free function + @import("node.zig") 循环
@@ -9,7 +9,7 @@
 //!
 //! 跨子域依赖（生命周期 §N4 才抽，本刀先升 pub）：
 //!   - rectFromWorldOrFallback（已 §N1 前就 pub）
-//!   - releasePathGeometry / releaseCustomClipGeometry → §N3 升 pub
+//!   - releasePathGeometry / releaseCustomClipGeometry -> §N3 升 pub
 //!   - invalidateCustomClipGeometryCache（§N1 已升 pub，本刀随迁过来）
 //! ProviderFn 类型（HitProxyProviderFn/CustomClipGeometryProviderFn）
 //! 留 node.zig（Node struct 内 pub const，签名含 *const Node，无外部
@@ -214,7 +214,7 @@ pub fn markCustomDrawSubtree(self: *Node) void {
 }
 
 /// 冒泡标记 has_text_subtree（setText 非空时调用；appendChild 时由父链并入）。
-/// 保守不清位：删文本后保持 true —— collectContentFlags.has_text 的消费者
+/// 保守不清位：删文本后保持 true, collectContentFlags.has_text 的消费者
 /// （auto_stabilize_text / layerize text_with_transform_animation）只会因此
 /// 更保守，不会漏。
 pub fn markSubtreeText(self: *Node) void {
@@ -229,8 +229,8 @@ pub fn markSubtreeText(self: *Node) void {
 }
 
 /// 冒泡标记 has_before_render_subtree（addBeforeRender 时调用）。
-/// 保守不清位：hook 删除后保持 true → hasBeforeRenderHookSubtree 多算 true
-/// → 拒绝缓存，方向安全。
+/// 保守不清位：hook 删除后保持 true -> hasBeforeRenderHookSubtree 多算 true
+/// -> 拒绝缓存，方向安全。
 pub fn markSubtreeBeforeRenderHook(self: *Node) void {
     if (self.frame_state.state_bits.flags.has_before_render_subtree) return;
     self.frame_state.state_bits.flags.has_before_render_subtree = true;
@@ -242,7 +242,7 @@ pub fn markSubtreeBeforeRenderHook(self: *Node) void {
     }
 }
 
-/// 自增 clip_meta.epoch → 使 ensureCustomClipGeometry 缓存失效
+/// 自增 clip_meta.epoch -> 使 ensureCustomClipGeometry 缓存失效
 /// （dirty 子域 §N1 跨模块调）
 pub fn invalidateCustomClipGeometryCache(self: *Node) void {
     self.meta.per_frame.custom_hooks.clip_meta.epoch +%= 1;

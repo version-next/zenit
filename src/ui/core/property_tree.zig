@@ -1,4 +1,4 @@
-/// Property Trees — Transform / Clip / Effect / Scroll 的保留式数据结构。
+/// Property Trees, Transform / Clip / Effect / Scroll 的保留式数据结构。
 ///
 /// 设计参照 Chromium RenderingNG 的 4 棵 property tree：
 ///   transform / clip / effect / scroll
@@ -56,7 +56,7 @@ pub const TransformNode = struct {
 
 pub const ClipNode = struct {
     /// 该 clip 来自 tag==.scroll 的容器(ScrollArea/VirtualList)。
-    /// effect(玻璃/opacity 层)内部只发射这类 clip —— 全量发射会把
+    /// effect(玻璃/opacity 层)内部只发射这类 clip，全量发射会把
     /// Input 等小 clip 以错误投影裁没(placeholder 文字消失,实测)。
     from_scroll: bool = false,
     /// 父 clip 节点索引（INVALID_ID = 无父裁剪）
@@ -77,7 +77,7 @@ pub const ClipNode = struct {
     bounds_fallback: bool = false,
     /// CSS overflow 语义：clip 只裁 owner（`node_id`）的**后代**，owner 自己的
     /// shadow / background / border 不受自身 clip 约束（它们本来就画在 border-box
-    /// 上甚至之外——阴影被自身 overflow clip 裁成矩形，圆角外露出方形灰块）。
+    /// 上甚至之外，阴影被自身 overflow clip 裁成矩形，圆角外露出方形灰块）。
     /// 外部裁剪（external_clip_rects：宿主声明"本节点受此矩形裁剪"）要裁 owner
     /// 本身，此时为 false。lowering 在 item.node_id == node_id 时跳过本层。
     owner_content_exempt: bool = false,
@@ -118,7 +118,7 @@ pub const EffectNode = struct {
 
 // =========== Scroll Tree (Phase 2 新增；对齐 Chromium RenderingNG) ===========
 
-/// Scroll 节点 —— 用于复合层位移而非内容重画。
+/// Scroll 节点，用于复合层位移而非内容重画。
 /// 每个 overflow:scroll/auto 容器对应一个 ScrollNode；动画 / 拖拽时仅更新
 /// `scroll_offset`，下游 layer transform 由此 offset 应用，paint chunk 不变。
 pub const ScrollNode = struct {
@@ -140,7 +140,7 @@ pub const ScrollNode = struct {
 
 // =========== PropertyTree 容器 ===========
 
-/// 节点改动 epoch —— 跨帧保留模式下，调用方可以读这个值决定 layer 是否需要重建。
+/// 节点改动 epoch，跨帧保留模式下，调用方可以读这个值决定 layer 是否需要重建。
 pub const NodeEpoch = u64;
 
 pub const PropertyTree = struct {
@@ -311,7 +311,7 @@ test "PropertyTree: updateScrollOffset does not change structure epoch" {
     pt.updateScrollOffset(0, .{ .x = 0, .y = 100 });
     pt.updateScrollOffset(0, .{ .x = 0, .y = 200 });
 
-    // 结构 epoch 没变 —— layer 缓存可继续命中
+    // 结构 epoch 没变，layer 缓存可继续命中
     try testing.expectEqual(struct_at_anim, pt.last_structural_change);
     try testing.expectEqual(epoch_at_anim, pt.current_epoch);
 

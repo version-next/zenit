@@ -30,7 +30,7 @@ const VirtualListState = virtual_list.VirtualListState;
 const virtual_threshold: usize = 50;
 
 // ============================================================================
-// 样式层已析出到 styles.zig — mount/render 只消费，本文件不做视觉决策
+// 样式层已析出到 styles.zig, mount/render 只消费，本文件不做视觉决策
 // ============================================================================
 
 const styles = @import("styles.zig");
@@ -111,7 +111,7 @@ pub const TableState = struct {
     /// 各列表头的排序指示器节点（用于点击后刷新箭头）。
     /// 定长上界：超出的列不显示箭头（数据/排序本身仍正常），
     /// 不做动态分配是为了让 TableState 保持可按值快照。
-    /// 此前 SortDirection.indicator() **从未被调用** —— 点表头数据会重排，
+    /// 此前 SortDirection.indicator() **从未被调用**，点表头数据会重排，
     /// 但箭头永远是占位空格，用户看不出当前按哪列排序。
     sort_indicators: [MAX_SORT_INDICATORS]?*Node = [_]?*Node{null} ** MAX_SORT_INDICATORS,
     header_cells: [MAX_SORT_INDICATORS]?*Node = [_]?*Node{null} ** MAX_SORT_INDICATORS,
@@ -121,7 +121,7 @@ pub const TableState = struct {
     /// 程序化设置排序列与方向。
     ///
     /// 此前直接写 `state.sort_column` / `sort_direction` 不会刷新表头箭头
-    /// （刷新函数是私有的）—— 属于"暴露了 state 却没有生效的写入口"。
+    /// （刷新函数是私有的），属于"暴露了 state 却没有生效的写入口"。
     ///
     /// 不触发 on_sort（程序化设值非用户交互；需要通知请自行调用）。
     /// 注意：本函数只更新**排序状态与箭头**，实际数据重排由调用方在
@@ -322,7 +322,7 @@ fn mountDirectBody(
             .row_index = @intCast(row_i),
         };
 
-        // on_row_click：此前**声明了但全组件无人读取** —— 应用传进来的回调
+        // on_row_click：此前**声明了但全组件无人读取**，应用传进来的回调
         // 被静默吞掉，点行毫无反应。这里真正接到行节点上。
         if (p.on_row_click) |h| {
             row_node.style.cursor = .pointer;
@@ -362,7 +362,7 @@ fn mountDirectBody(
 
 // ========== 虚拟滚动模式 (大数据量) ==========
 
-/// 虚拟滚动行渲染上下文 — 传递给 VirtualList 的 render 回调
+/// 虚拟滚动行渲染上下文，传递给 VirtualList 的 render 回调
 const VirtualRowContext = struct {
     columns: []const ColumnDef,
     render_cell: ?CellRenderFn,
@@ -380,7 +380,7 @@ const VirtualRowContext = struct {
     /// 按 VirtualList 的 pool 节点指针索引，容量 = VirtualList.max_pool_size。
     /// 整表随 VirtualRowContext 一起分配/释放，行数无关。
     hover_slots: [virtual_list.max_pool_size]RowHoverCtx = [_]RowHoverCtx{.{}} ** virtual_list.max_pool_size,
-    /// 槽位 → 拥有它的 pool 节点（null = 未占用）
+    /// 槽位 -> 拥有它的 pool 节点（null = 未占用）
     hover_slot_owner: [virtual_list.max_pool_size]?*Node = [_]?*Node{null} ** virtual_list.max_pool_size,
     hover_slot_count: usize = 0,
 
@@ -460,7 +460,7 @@ fn mountVirtualBody(
     return .{ .container = vl_result.container, .vl_state = vl_result.state };
 }
 
-/// VirtualList 行渲染回调 — 每次 item 进入可见区域时调用
+/// VirtualList 行渲染回调，每次 item 进入可见区域时调用
 fn virtualRowRender(node: *Node, index: usize, cx: *Cx, user_context: ?*anyopaque) void {
     const vr_ctx: *VirtualRowContext = @ptrCast(@alignCast(user_context orelse return));
     const allocator = cx.allocator;
@@ -470,7 +470,7 @@ fn virtualRowRender(node: *Node, index: usize, cx: *Cx, user_context: ?*anyopaqu
     node.style.direction = .column;
     node.style.flex_shrink = 0;
 
-    // 行容器（水平排列 cells）— 底色规则与直接渲染路径共用 tableRowBg 的语义，
+    // 行容器（水平排列 cells），底色规则与直接渲染路径共用 tableRowBg 的语义，
     // 但 render 回调不访问 cx.tokens，用 VirtualRowContext 缓存的颜色
     const is_even = (index % 2 == 0);
     const row_bg = if (vr_ctx.striped and !is_even) vr_ctx.bg_secondary else Color.TRANSPARENT;
@@ -564,7 +564,7 @@ fn refreshSortIndicators(state: *TableState) void {
         if (node.getText()) |old| {
             var txt = old;
             txt.content = dir.indicator();
-            // indicator() 返回的是静态字面量，不是堆内容 —— 必须清 owned，
+            // indicator() 返回的是静态字面量，不是堆内容，必须清 owned，
             // 否则 Node.destroy 会 free 非堆指针。
             txt.owned = false;
             txt.inline_len = 0;
@@ -736,7 +736,7 @@ test "Table: virtual scrolling enabled for large datasets" {
     const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
     defer scope.dispose();
 
-    // 超过虚拟化阈值 → 启用 VirtualList
+    // 超过虚拟化阈值 -> 启用 VirtualList
     const result = try Table(.{
         .columns = &test_columns,
         .row_count = 1000,
@@ -810,7 +810,7 @@ test "Table: threshold boundary - 50 rows uses direct rendering" {
 
     try root.appendChild(std.testing.allocator, result.wrapper);
 
-    // 50 行 <= threshold → 直接渲染
+    // 50 行 <= threshold -> 直接渲染
     try std.testing.expect(result.vl_state == null);
 
     // body 有 50 行 + 49 分隔线 = 99 个子节点
@@ -838,7 +838,7 @@ test "Table: threshold boundary - 51 rows enables virtual scrolling" {
 
     try root.appendChild(std.testing.allocator, result.wrapper);
 
-    // 51 行 > threshold → 虚拟滚动
+    // 51 行 > threshold -> 虚拟滚动
     try std.testing.expect(result.vl_state != null);
     try std.testing.expectEqual(@as(usize, 51), result.vl_state.?.props.item_count);
 }
@@ -971,7 +971,7 @@ test "Table: 排序箭头随点击更新（indicator() 此前从未被调用）"
     const txt1 = ind1.getText() orelse return error.NoText;
     try std.testing.expectEqualStrings(" ", txt1.content);
 
-    // 再点同列 → desc
+    // 再点同列 -> desc
     st.sort_direction = st.sort_direction.toggle();
     refreshSortIndicators(st);
     const txt0b = (st.sort_indicators[0].?).getText().?;
@@ -1009,7 +1009,7 @@ test "Table.setSort: 程序化排序会刷新箭头（直接写字段则不会�
 
 test "Table(virtual, hoverable): 反复滚动不泄漏 hover 上下文" {
     // 红绿证据：旧实现每次行滚入视口都 `allocator.create(RowHoverCtx)` 且从不
-    // 释放。本用例用 testing.allocator（带泄漏检测）滚过上千行 —— 旧实现会以
+    // 释放。本用例用 testing.allocator（带泄漏检测）滚过上千行，旧实现会以
     // "memory address ... leaked" 失败；现在 hover ctx 是 VirtualRowContext 里
     // 按 pool 槽位复用的定长表，分配数与滚过的行数无关。
     var ctx = try Cx.init(std.testing.allocator);
@@ -1056,12 +1056,12 @@ test "Table(virtual, hoverable): 反复滚动不泄漏 hover 上下文" {
     }
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "table: mount 在任意分配点失败时不泄漏（sweep）" {
     try @import("../oom_sweep.zig").sweepMount("table", struct {
         fn m(scope: *Scope, cx: *Cx) anyerror!?*Node {

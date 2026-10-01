@@ -151,7 +151,7 @@ pub const BadgeBuilder = struct {
             display_text = "0";
         }
 
-        // 创建徽章 — 颜色/几何全部来自 recipe resolve 结果
+        // 创建徽章，颜色/几何全部来自 recipe resolve 结果
         const badge_height: f32 = if (resolved.height) |h| h.px else p.size.height();
         const node = try box(cx, .{
             .width = .{ .fit = .{} },
@@ -371,12 +371,12 @@ test "StatusBadge: with label" {
     try std.testing.expectEqual(@as(usize, 2), status_badge.children.items.len);
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "badge(text+status): mount 在任意分配点失败时不泄漏（sweep）" {
     const sw = @import("../oom_sweep.zig");
     try sw.sweepMount("badge(text+status)", struct {

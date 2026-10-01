@@ -1,17 +1,17 @@
-//! 可继承文本属性的 resolve —— 从 node.zig 析出（2026-08-05），
+//! 可继承文本属性的 resolve，从 node.zig 析出（2026-08-05），
 //! 延续 v0.12 god-object split 的 node_* sibling 约定。
 //!
 //! 这一簇是 node.zig 里唯一沿 **parent 链向上遍历** 的读路径，语义对标
 //! CSS inherited properties：每个属性取祖先链上最近的一个非 null 值
 //! （就近覆盖），节点自己的值优先级最高。与 node.zig 其余方法的区别很干净：
 //! 那些要么只读写 self、要么向**下**改子树（mark*Dirty 传播），
-//! 只有这里是向上读且完全无副作用 —— 不分配、不标脏、`*const Node` 入参。
+//! 只有这里是向上读且完全无副作用，不分配、不标脏、`*const Node` 入参。
 //!
 //! 一次遍历同时解三个属性（而不是三次独立遍历）是刻意的：文本节点每帧
 //! resolve，深树下三趟 parent 链是纯浪费；isComplete 提前退出让常见的
 //! “父节点就定义了全部三项”只走一层。
 //!
-//! 与 node.zig 循环 import 取 Node 类型 —— Zig 惰性求值，node_dirty.zig 等
+//! 与 node.zig 循环 import 取 Node 类型，Zig 惰性求值，node_dirty.zig 等
 //! 多个 sibling 早已这样做，成立。
 
 const node_mod = @import("node.zig");

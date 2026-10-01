@@ -71,7 +71,7 @@ pub const BreadcrumbBuilder = struct {
         errdefer cx.freeNode(container);
         container.meta.ownership.meta.component_name = "Breadcrumb";
         try core.bindScopeToNode(my_scope, container);
-        // 此前是 role=.none —— 投影层遇到 none + 不可 focus 会直接丢弃整个
+        // 此前是 role=.none，投影层遇到 none + 不可 focus 会直接丢弃整个
         // 节点，等于 Breadcrumb 在 AT 侧根本不存在。role=navigation + label
         // 才能让 AT 把它列进"页面地标"，用户可以直接跳过来看自己在哪一层。
         container.behavior.interaction.a11y = .{
@@ -97,7 +97,7 @@ pub const BreadcrumbBuilder = struct {
             // 最后一项是当前页（不可点），用 selected 标出来；前面的都是
             // 可点链接。AT 用户否则分不清哪一级是"我现在在这儿"。
             item_node.behavior.interaction.a11y = .{
-                // 当前页用 listitem 而不是 .none —— .none + 不可 focus 会被
+                // 当前页用 listitem 而不是 .none, .none + 不可 focus 会被
                 // 投影层整个丢掉，那"我现在在哪一层"就又没了。
                 .role = if (is_last) .listitem else .link,
                 .label = item.label_text,
@@ -202,7 +202,7 @@ test "Breadcrumb: single item" {
     try std.testing.expectEqual(@as(usize, 1), bc.children.items.len);
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "breadcrumb: mount 在任意分配点失败时不泄漏（sweep）" {
     const sw = @import("../oom_sweep.zig");
     try sw.sweepMount("breadcrumb", struct {

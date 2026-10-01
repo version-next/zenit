@@ -135,7 +135,7 @@ pub fn tickTransitions(node: *Node, slots: *types.TransitionSlots, allocator: Al
 
     slots.any_active = still_active;
     // composite 类属性统一走权威失效组合（markCompositePropDirty = interaction +
-    // composite + invalidateRenderCache）——与 node_animator / hooks / setter 一致。
+    // composite + invalidateRenderCache），与 node_animator / hooks / setter 一致。
     if (composite_changed) {
         node.markCompositePropDirty();
     } else {
@@ -171,22 +171,22 @@ fn dirtyHookDebugEnabled() bool {
 /// 背景：before_render_hook_affects_self_only 是**调用方担保**，而框架里存在
 /// 一批"无副作用写入口"（setBackgroundRaw / setOpacityRaw，生产代码 151 处），
 /// 它们不标脏、不 bump content_version。担保一旦说谎，跨帧缓存会复用陈旧
-/// DisplayItem —— transform 类写入有 property_tree 每帧重算兜底，但**颜色/
+/// DisplayItem, transform 类写入有 property_tree 每帧重算兜底，但**颜色/
 /// 不透明度这类烘焙进 item 的值没有兜底，画面会静默错到下一次真脏**。
 ///
 /// 稽核的判据必须**恰好等于威胁模型**，否则就会惩罚合法用法（两次交叉审查
 /// 各抓到一次，都已用探针复现）：
-///   - 只看"值变了"→ hook 自己 mount 一个新后代也会被判违约（新节点不存在
+///   - 只看"值变了"-> hook 自己 mount 一个新后代也会被判违约（新节点不存在
 ///     陈旧复用问题）。首个真实采纳者（编辑器 hook 每帧驱动 VirtualList
 ///     挂载/回收）会每帧崩。
-///   - 只看"值变了"→ 连 panic 文案推荐的修法（改走 setBackground，会标脏、
+///   - 只看"值变了"-> 连 panic 文案推荐的修法（改走 setBackground，会标脏、
 ///     缓存语义安全）也照样触发 panic，自相矛盾。
 /// 所以这里比对的是 **(节点身份, 绘制值, content_version) 三元组**，且只针对
 /// **跑 hook 之前就已存在**的节点：
 ///   - 新增节点：不参与（本帧全新构建，无陈旧可复用）；
 ///   - 消失节点：不参与（不会被复用）；
 ///   - 既存节点值变了**且 content_version 也变了**：合法（标脏写，缓存会失效）；
-///   - 既存节点值变了**而 content_version 没变**：**这才是违约** —— 未标脏的
+///   - 既存节点值变了**而 content_version 没变**：**这才是违约**，未标脏的
 ///     写入，跨帧缓存会复用陈旧值。
 const SelfScopeAuditEntry = struct {
     node: *Node,
@@ -199,13 +199,13 @@ const self_scope_audit_max: usize = 4096;
 
 /// 指纹覆盖面 = "烘焙进 DisplayItem 且**没有**每帧重算兜底"的那些值。
 ///
-/// 收进来：background rgba、opacity、border（宽/色/半径）—— 它们都是被直接
+/// 收进来：background rgba、opacity、border（宽/色/半径），它们都是被直接
 /// 写进 fill_rect/stroke_rect 的常量（display_list.zig:66-90 的 color/radius/
 /// shape 字段），缓存复用时原样replay，错了就一直错到下次真脏。
 ///
 /// **故意不收 transform/translate**：缓存 item 存的是 local 坐标 + transform_id，
 /// lower 时读当帧 property_tree 矩阵（每帧 clear 重建），平移天然自愈。
-/// 已实测：谎报的 hook 逐帧改后代 translate（7→56），drawn_x 每帧都跟得上、
+/// 已实测：谎报的 hook 逐帧改后代 translate（7->56），drawn_x 每帧都跟得上、
 /// 零陈旧。把它收进指纹只会制造误报，不会提高安全性。
 fn paintHashOf(node: *Node) u64 {
     var h: u64 = 1469598103934665603;
@@ -270,11 +270,11 @@ pub fn runBeforeRenderHook(node: *Node, hook: *const fn (*Node) void) bool {
     // ⚠️ 降频采样（2026-09-18）：这份稽核对**每个** self-only hook 都从渲染根
     // 遍历整棵树并对每个节点算 paint hash，跑 hook 前后各一遍。实测一屏
     // 代码块文档里每帧 38 次稽核、**遍历 143,564 个节点**，而 tick 本身只需
-    // 走 583 个 —— 放大 246 倍，br_tick 2.6ms → 19.2ms，Debug 下滚动直接掉帧。
+    // 走 583 个，放大 246 倍，br_tick 2.6ms -> 19.2ms，Debug 下滚动直接掉帧。
     //
     // 与同文件 assertLayoutSyncIntegrity 的处理一致：它也是纯诊断走树，
     // 早已降频为每 64 帧一次并在注释里写明理由（"每帧跑把 Debug 帧税抬高
-    // ~5ms，而这类回归是持续性的——采样 64 帧内必然命中"）。
+    // ~5ms，而这类回归是持续性的，采样 64 帧内必然命中"）。
     // 担保被违反同样是持续性的（每帧都会重复那次未标脏写入），采样必然命中。
     // ZENIT_SELF_SCOPE_AUDIT_EVERY_FRAME=1 恢复逐帧稽核（排查具体违约时用）。
     const audit_sampled = selfScopeAuditEveryFrameEnabled() or (g_debug_frame % 64 == 1);
@@ -286,7 +286,7 @@ pub fn runBeforeRenderHook(node: *Node, hook: *const fn (*Node) void) bool {
     var audit_overflow = false;
     if (audit) {
         collectSelfScopeAudit(renderRootOf(node), node, &audit_buf, &audit_count);
-        // 采样到上限说明树比缓冲大，样本不完整 → 放弃本次稽核而不是误判。
+        // 采样到上限说明树比缓冲大，样本不完整 -> 放弃本次稽核而不是误判。
         audit_overflow = audit_count >= self_scope_audit_max;
     }
 
@@ -410,8 +410,8 @@ pub fn tickBeforeRender(node: *Node, offset_x: f32, offset_y: f32, clip_opt: ?Co
     // 子树 hook 标志自愈折叠：组件层大量 `before_render.main =` 直赋值不经过
     // addBeforeRender（40+ 处），靠这里在 hook 真执行时置位 + 沿祖先冒泡，
     // 消化"绕过 setter 的写路径"（下一帧 render 的 hasBeforeRenderHookSubtree
-    // 一定看得到）。tick 在 render 之前全树执行，标志只增不减 → 语义是旧递归
-    // 实现的保守超集。旧实现对"已卸载 hook"会少算 true，本实现保持 true——
+    // 一定看得到）。tick 在 render 之前全树执行，标志只增不减 -> 语义是旧递归
+    // 实现的保守超集。旧实现对"已卸载 hook"会少算 true，本实现保持 true,
     // 消费方（缓存资格判定）只会因此更保守，方向安全。
     if (node.hasBeforeRenderHooks()) node.markSubtreeBeforeRenderHook();
 
@@ -514,12 +514,12 @@ pub fn tickBeforeRender(node: *Node, offset_x: f32, offset_y: f32, clip_opt: ?Co
     //
     // ⚠️ 迭代期 mutation 安全（2026-07-29 修，原为 segfault / UAF）：
     // 上面第 1 步跑的 before_render hook、以及第 0.5 步动画 tick 的**完成
-    // 回调**，都可以在本帧内销毁节点 —— 典型路径是
+    // 回调**，都可以在本帧内销毁节点，典型路径是
     // `animateOpacity(..., done)` 的 done 回调里 dispose 组件 scope，
     // scope cleanup 走 detachChild + freeNode（见 snapshot_layer.zig:136-144）。
-    // detachChild → removeChildIncremental 会**就地修改 node.children**，
+    // detachChild -> removeChildIncremental 会**就地修改 node.children**，
     // 于是原来的 `for (node.children.items)` 会：
-    //   - 迭代到已被 free 的 *Node（读到 0xaaaa… 毒值 → segfault），或
+    //   - 迭代到已被 free 的 *Node（读到 0xaaaa… 毒值 -> segfault），或
     //   - 因数组左移而漏掉/重复访问兄弟节点。
     // 用**下标 + 每轮重读 items** 的方式迭代，并在每轮校验当前槽位仍是
     // 我们预期的那个子节点；若本轮发生了删除（长度变短或槽位换人），
@@ -543,7 +543,7 @@ pub fn tickBeforeRender(node: *Node, offset_x: f32, offset_y: f32, clip_opt: ?Co
             continue;
         }
 
-        // opacity == 0 且无钩子且自身无活跃 transition/animation → 完全不可见，跳过子树渲染递归。
+        // opacity == 0 且无钩子且自身无活跃 transition/animation -> 完全不可见，跳过子树渲染递归。
         // 但仍要补 tick 子树深处的活跃 transition/animation：否则 hidden subtree 里的 active slot
         // 永远不会被推进到 complete，slots.any_active 永驻 true，让 hasPendingSceneWork() 每帧
         // 返回 true，整个 app 卡在 60fps 持续 redraw（quick-open 等隐藏面板的 Input border_color
@@ -566,7 +566,7 @@ pub fn tickBeforeRender(node: *Node, offset_x: f32, offset_y: f32, clip_opt: ?Co
         const child_w = child_rect.w;
         const child_h = child_rect.h;
 
-        // 如果子节点有尺寸、没有钩子、非 sticky、无 translate 偏移、且完全在视口外 → 跳过整棵子树
+        // 如果子节点有尺寸、没有钩子、非 sticky、无 translate 偏移、且完全在视口外 -> 跳过整棵子树
         // sticky 节点不能被跳过：其 sticky_offset 需要每帧重新计算
         // translate 节点不能被跳过：translate 用于滚动，AABB 不反映实际可见区域
         const child_has_translate = child_tx != 0 or child_ty != 0;

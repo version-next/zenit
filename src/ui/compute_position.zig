@@ -83,7 +83,7 @@ pub const SizeOptions = struct {
 };
 
 /// Autosize: 把当前 placement 下 viewport 能容纳的最大宽/高作为浮层的 commit 约束。
-/// 和 `size` 的区别 ——
+/// 和 `size` 的区别,
 ///   - `size` 是 **advisory**：只写 middleware_data.size，caller 读了可以自己决定是否采用
 ///   - `autosize` 是 **committing**：写 middleware_data.autosize 的同时，caller
 ///     在 layout pass 应直接把这个值作为 max_width/max_height 的硬上限，超出走滚动
@@ -126,7 +126,7 @@ pub const SizeData = struct {
     available_height: f32,
 };
 
-/// autosize middleware 的输出 —— caller 应用这些值作为浮层 layout 的硬上限。
+/// autosize middleware 的输出，caller 应用这些值作为浮层 layout 的硬上限。
 pub const AutosizeData = struct {
     committed_max_width: f32,
     committed_max_height: f32,
@@ -147,7 +147,7 @@ pub const ComputePositionConfig = struct {
     middleware: []const Middleware = &.{},
     /// 群组协同布局：上下文里"已被前序 popover 占用的矩形"列表。
     /// flip / shift / autosize 三个 middleware 会把这些 rect 当作不可侵入的"软边界"：
-    ///   - flip：候选 placement 与任一 excluded rect 重叠 → 视为溢出，触发翻面/fallback
+    ///   - flip：候选 placement 与任一 excluded rect 重叠 -> 视为溢出，触发翻面/fallback
     ///   - shift：cross-axis 推回时把 excluded rect 当墙，把 popover 推到外面
     ///   - autosize：available_width/height 计算扣除被 excluded rect 占用的部分
     /// 元素必须是绝对屏幕坐标（与 viewport 同坐标空间）。空 = 退化为单 popover 行为，零开销。
@@ -256,7 +256,7 @@ pub fn flipPlacement(
 
 /// Group-aware flip：在经典 flip / fallback 基础上，把"候选 placement 与任一 excluded rect 重叠"
 /// 视为该 placement 不可用（等价于无穷大溢出，强制 fallback）。
-/// excluded_rects 空 → 行为完全等同 flipPlacement。
+/// excluded_rects 空 -> 行为完全等同 flipPlacement。
 pub fn flipPlacementGroupAware(
     preferred: Placement,
     fallbacks: []const Placement,
@@ -267,7 +267,7 @@ pub fn flipPlacementGroupAware(
     padding: f32,
     excluded: []const Rect,
 ) Placement {
-    // 计算给定 placement 的"effective overflow"：viewport main-axis overflow + 重叠 excluded rect → 加 INF
+    // 计算给定 placement 的"effective overflow"：viewport main-axis overflow + 重叠 excluded rect -> 加 INF
     const score = struct {
         fn s(p: Placement, ref: Rect, flt: Rect, vp: Rect, mo: f32, pad: f32, ex: []const Rect) f32 {
             const ov = computeOverflow(p, ref, flt, vp, mo, pad);
@@ -323,7 +323,7 @@ pub fn computePosition(reference: Rect, floating: Rect, viewport: Rect, config: 
         }
     }
 
-    // Resolve offset 值 —— derivable 用 (placement, reference, floating) 算实际数值。
+    // Resolve offset 值，derivable 用 (placement, reference, floating) 算实际数值。
     const resolveMain = struct {
         fn r(opts: OffsetOptions, p: Placement, ref: Rect, flt: Rect) f32 {
             return opts.main_axis.resolve(.{ .placement = p, .reference = ref, .floating = flt });
@@ -528,7 +528,7 @@ fn excludedShrinkWidth(placement: Placement, reference: Rect, viewport: Rect, pa
                 // 简化：只看 er 是否在 popover 可能落的 y 带（以 reference 为中心 + popover 高度）
                 // 这里粗略用 er.y..er.y+er.h 跟 reference 的 vertical 重叠
                 if (er.y + er.h <= reference.y or er.y >= reference.y + reference.h) {
-                    // 完全错开 reference vertical band → 不影响 popover
+                    // 完全错开 reference vertical band -> 不影响 popover
                     // （注意：popover 实际比 reference 高，这里粗略不精确，但够用）
                 }
                 if (er.x + er.w > min_left) min_left = er.x + er.w;
@@ -560,7 +560,7 @@ fn excludedShrinkHeight(placement: Placement, reference: Rect, viewport: Rect, p
     return switch (side) {
         .top => blk: {
             // popover 在 reference 上方，可用 height 范围 [viewport.y, reference.y]
-            // 找出最靠下的 excluded.bottom（在 popover 区域内）→ 把可用空间推回
+            // 找出最靠下的 excluded.bottom（在 popover 区域内）-> 把可用空间推回
             var min_top = viewport.y;
             for (excluded) |er| {
                 if (er.y + er.h <= viewport.y) continue;
@@ -642,13 +642,13 @@ test "flip fallbacks: preferred fits — returns preferred" {
 }
 
 test "flip fallbacks: preferred overflows — tries fallback list in order" {
-    // viewport 240x160, reference at (200, 50, 30, 20) — 右边只剩 10px，放不下 120 wide
+    // viewport 240x160, reference at (200, 50, 30, 20)，右边只剩 10px，放不下 120 wide
     const reference = Rect.init(200, 50, 30, 20);
     const floating = Rect.init(0, 0, 120, 60);
     const viewport = Rect.init(0, 0, 240, 160);
     const middleware = [_]Middleware{
         .{ .offset = .{ .main_axis = .{ .static = 4 } } },
-        // right 放不下 → 试 bottom → bottom 有 60 高 + 100 available 应当 fit
+        // right 放不下 -> 试 bottom -> bottom 有 60 高 + 100 available 应当 fit
         .{ .flip = .{ .fallback_placements = &.{ .bottom_start, .top_start } } },
     };
     const result = computePosition(reference, floating, viewport, .{
@@ -691,7 +691,7 @@ test "flip fallbacks: 空 fallback list — 退回经典 2-way flip" {
         .placement = .right_start,
         .middleware = &middleware,
     });
-    // right 溢出 → 2-way flip 尝试 opposite = left_start
+    // right 溢出 -> 2-way flip 尝试 opposite = left_start
     try std.testing.expectEqual(Placement.left_start, result.placement);
 }
 
@@ -783,7 +783,7 @@ test "computePosition: autosize applies after flip decides final placement" {
 // ============================================================================
 
 test "group-aware flip: bottom_start 被前序 popover 占住 → 翻到 top_start" {
-    // anchor 中央，bottom 方向被前序 popover 占了 → flip 应当走 top
+    // anchor 中央，bottom 方向被前序 popover 占了 -> flip 应当走 top
     const reference = Rect.init(100, 100, 80, 32);
     const floating = Rect.init(0, 0, 120, 60);
     const viewport = Rect.init(0, 0, 600, 400);
@@ -810,7 +810,7 @@ test "group-aware flip: 多个 fallback 都被 excluded 占住 → 退回最不�
     const floating = Rect.init(0, 0, 120, 60);
     const viewport = Rect.init(0, 0, 600, 400);
 
-    // bottom 和 top 都占了 → fallback list 里只剩 right
+    // bottom 和 top 都占了 -> fallback list 里只剩 right
     const excluded = [_]Rect{
         Rect.init(100, 140, 120, 60), // bottom 区
         Rect.init(100, 30, 120, 60), // top 区
@@ -825,7 +825,7 @@ test "group-aware flip: 多个 fallback 都被 excluded 占住 → 退回最不�
         .middleware = &middleware,
         .excluded_rects = &excluded,
     });
-    // bottom_start collides → top_start collides → remaining side with least overflow wins.
+    // bottom_start collides -> top_start collides -> remaining side with least overflow wins.
     try std.testing.expectEqual(Placement.left_start, result.placement);
 }
 
@@ -834,7 +834,7 @@ test "group-aware shift main_axis: popover 被推出 excluded rect" {
     const floating = Rect.init(0, 0, 120, 30);
     const viewport = Rect.init(0, 0, 600, 400);
 
-    // bottom_start 默认落在 (100, 132)。前序 popover 在 (100, 130, 120, 40) → 重叠
+    // bottom_start 默认落在 (100, 132)。前序 popover 在 (100, 130, 120, 40) -> 重叠
     const excluded = [_]Rect{
         Rect.init(100, 130, 120, 40),
     };
@@ -874,7 +874,7 @@ test "group-aware autosize: bottom available_height 扣除 excluded rect 占用"
     try std.testing.expect(result.middleware_data.autosize != null);
     const a = result.middleware_data.autosize.?;
     // 原始 height = 400 - 70 - 8 = 322
-    // excluded.y=200，从 ref_bottom=70 起算，max_bottom 被推到 200 → recovered=130, original=322 → 322-(322-130)=130
+    // excluded.y=200，从 ref_bottom=70 起算，max_bottom 被推到 200 -> recovered=130, original=322 -> 322-(322-130)=130
     try std.testing.expect(a.committed_max_height < 322);
     try std.testing.expect(a.committed_max_height >= 120);
     try std.testing.expect(a.committed_max_height <= 140);

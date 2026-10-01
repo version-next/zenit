@@ -1,14 +1,14 @@
-/// Path Tessellator — CPU 端路径细分
+/// Path Tessellator, CPU 端路径细分
 ///
 /// 将 PathGeometry（Bezier 路径命令流）展平为折线轮廓（contour）列表。
 /// 每条 contour 是一组 f32 顶点（x,y 交叉排列），代表一个封闭或开放子路径。
 ///
 /// 支持：
 ///   move_to / line_to / quad_to（二次 Bezier） / close
-///   cubic_to —— D1 阶段用控制点折线近似，D4 阶段替换为自适应细分
+///   cubic_to, D1 阶段用控制点折线近似，D4 阶段替换为自适应细分
 ///
 /// 内存模型：flatten 的结果写入 tessellator 持有的复用 buffer
-/// （vertex_pool / contours_buf），返回借用切片——调用方不释放，
+/// （vertex_pool / contours_buf），返回借用切片，调用方不释放，
 /// 下一次 flatten 调用即失效。tessellator 销毁时需调 deinit。
 ///
 /// Zig 0.15 注意：std.ArrayList 是无 allocator 字段的新 API，
@@ -43,7 +43,7 @@ pub const PathTessellator = struct {
     allocator: Allocator,
     /// 所有 contour 顶点连续存放的复用池；flatten 返回的切片借用于此
     vertex_pool: std.ArrayList(f32) = .{},
-    /// contour 的 (start, len, closed) 记录——顶点写入 pool 期间 pool 可能
+    /// contour 的 (start, len, closed) 记录，顶点写入 pool 期间 pool 可能
     /// 扩容搬迁，故先记 span，flatten 末尾再物化为指向 pool 的切片
     spans: std.ArrayList(Span) = .{},
     contours_buf: std.ArrayList(Contour) = .{},
@@ -354,7 +354,7 @@ test "close 后无 move_to 的 line_to 从子路径起点续画（不从原点�
     var tess = PathTessellator.init(alloc);
     defer tess.deinit();
 
-    // M50,50 L60,50 L60,60 Z L70,70 —— SVG 语义：第二段从 (50,50) 开始
+    // M50,50 L60,50 L60,60 Z L70,70, SVG 语义：第二段从 (50,50) 开始
     const cmds = [_]TestPathCommand{
         .{ .move_to = .{ .x = 50, .y = 50 } },
         .{ .line_to = .{ .x = 60, .y = 50 } },

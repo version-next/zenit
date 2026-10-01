@@ -1,16 +1,16 @@
-/// DocCursor — 通用文档光标
+/// DocCursor，通用文档光标
 ///
 /// 基于字节偏移的光标系统，支持选区和行列映射。
 ///
 /// 泛型参数 Doc: 任何提供以下 API 的文档类型:
-///   totalLength() → usize
-///   offsetToLineCol(offset) → LineCol
-///   lineColToOffset(line, col) → usize
-///   lineCount() → usize
-///   getLineStart(line) → usize
-///   getLineEnd(line) → usize
-///   getByteAt(offset) → ?u8
-///   deleteRange(start, len) → !void   (唯一的 mut 操作)
+///   totalLength() -> usize
+///   offsetToLineCol(offset) -> LineCol
+///   lineColToOffset(line, col) -> usize
+///   lineCount() -> usize
+///   getLineStart(line) -> usize
+///   getLineEnd(line) -> usize
+///   getByteAt(offset) -> ?u8
+///   deleteRange(start, len) -> !void   (唯一的 mut 操作)
 /// 行列坐标
 pub const LineCol = struct {
     line: usize,
@@ -19,7 +19,7 @@ pub const LineCol = struct {
 
 const grapheme = @import("grapheme.zig");
 
-/// DocCursor — 通用文档光标
+/// DocCursor，通用文档光标
 /// Doc: 任何提供 totalLength/offsetToLineCol/lineColToOffset/lineCount/getLineStart/getLineEnd/getByteAt/deleteRange 的类型
 pub fn DocCursor(comptime Doc: type) type {
     return struct {
@@ -277,7 +277,7 @@ pub fn DocCursor(comptime Doc: type) type {
                 // 连续跳过，遇 ASCII 分隔符或表意字符停止。
                 // 历史 bug：这里曾用 `b >= 0x80` 一刀切 break，2 字节字符上
                 // 光标原地不动（Alt+Right 失灵）。continuation byte（0x80-0xBF）
-                // 在本扫描域内只可能属于 2 字节字符——表意 lead 已先停住。
+                // 在本扫描域内只可能属于 2 字节字符，表意 lead 已先停住。
                 while (p < total) {
                     const b = doc.getByteAt(p) orelse break;
                     if (b < 0x80 and isWordSeparator(b)) break;
@@ -313,12 +313,12 @@ pub fn DocCursor(comptime Doc: type) type {
         // ===== Subword 导航 =====
         //
         // Subword 把一个 word 内部按 camelCase / snake_case / letter↔digit 进一步切分。
-        // 例："getUserName_v2" → ["get", "User", "Name", "_", "v", "2"]
+        // 例："getUserName_v2" -> ["get", "User", "Name", "_", "v", "2"]
         //
         // 边界判定规则（相邻两字节 p, c）：
         //   1. 原 word 边界仍然是 subword 边界（isWordSeparator 切分）
-        //   2. lower→Upper / Upper→lower（`aB` → `a|B`；`AB`+`a` → `AB|a` 需要向前看）
-        //   3. letter ↔ digit（`v2` → `v|2`）
+        //   2. lower->Upper / Upper->lower（`aB` -> `a|B`；`AB`+`a` -> `AB|a` 需要向前看）
+        //   3. letter ↔ digit（`v2` -> `v|2`）
         //   4. 字符 ↔ `_` 或 `-`
         //
         // multi-byte 字符按"每个字符是独立 subword 边界"对待（类似 CJK 词模型）。
@@ -332,13 +332,13 @@ pub fn DocCursor(comptime Doc: type) type {
             return .other;
         }
 
-        /// 判断从 p → c 之间是否存在 subword 边界（同 word 内部）。
+        /// 判断从 p -> c 之间是否存在 subword 边界（同 word 内部）。
         /// 要求 p 和 c 都是 ASCII 词字符（调用前需过滤分隔符）。
         fn isSubwordBoundaryAscii(p: u8, c: u8) bool {
             const pc = byteClass(p);
             const cc = byteClass(c);
             if (pc == cc) return false;
-            // lower → Upper（camelCase 首字母）
+            // lower -> Upper（camelCase 首字母）
             if (pc == .lower and cc == .upper) return true;
             // letter ↔ digit
             const p_is_letter = pc == .lower or pc == .upper;
@@ -481,14 +481,14 @@ pub fn DocCursor(comptime Doc: type) type {
                 while (line > 0 and !isBlankLine(doc, line - 1)) : (line -= 1) {}
                 // line 停在段首
             } else {
-                // 当前是空行 → 跳过连续空行
+                // 当前是空行 -> 跳过连续空行
                 while (line > 0 and isBlankLine(doc, line - 1)) : (line -= 1) {}
                 // 再跳过上一段
                 while (line > 0 and !isBlankLine(doc, line - 1)) : (line -= 1) {}
             }
 
             const target = doc.getLineStart(line);
-            // 若未移动（已经在段首且光标就在行首）→ 尝试再往上一段
+            // 若未移动（已经在段首且光标就在行首）-> 尝试再往上一段
             if (target == self.offset and line > 0) {
                 var l2 = line - 1;
                 while (l2 > 0 and isBlankLine(doc, l2)) : (l2 -= 1) {}
@@ -593,7 +593,7 @@ test "DocCursor 组合记号与肤色修饰符不被拆开" {
 // ===== 2 字节脚本（希腊/西里尔/拉丁扩展）词导航回归 =====
 //
 // 历史 bug：nextWordBoundary/wordBoundsAt 只把 >= 0xE0（3/4 字节）当 multi-byte，
-// 2 字节 lead（0xC2-0xDF）落进 ASCII 词路径后又被 `b >= 0x80` 立即 break——
+// 2 字节 lead（0xC2-0xDF）落进 ASCII 词路径后又被 `b >= 0x80` 立即 break,
 // 光标原地不动（Alt+Right 失灵）、双击选词返回空范围。
 
 test "DocCursor 词导航：希腊/西里尔词按整词跳，不原地卡住" {

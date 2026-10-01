@@ -1,4 +1,4 @@
-//! Null Backend —— 无设备的确定性参考实现。
+//! Null Backend，无设备的确定性参考实现。
 //!
 //! ## 它存在的理由
 //!
@@ -6,7 +6,7 @@
 //! 只有一个实现时，没人能回答这个问题：`gpu.Backend.*` 的签名到底是
 //! backend-neutral 的，还是无意中把 Metal 语义焊死在了里面？
 //!
-//! 本后端就是那个答案。它**与 Metal 后端共用同一份渲染器代码**——
+//! 本后端就是那个答案。它**与 Metal 后端共用同一份渲染器代码**,
 //! `src/render`、`src/ui`、`src/zenit_app` 一行不改，只把 `-Dgpu-backend=null`
 //! 打开。能编译通过，抽象才算被证伪过一次；编译不过的地方，就是抽象漏了。
 //!
@@ -30,7 +30,7 @@ const alloc = std.heap.page_allocator;
 
 /// 每像素字节数。`gpu.TextureFormat` 本身不带这个查询（Metal 后端靠
 /// `conv.zig` 转成 MTLPixelFormat 后由 Metal 负责），Null 后端要自己算
-/// 分配大小，故在此补一张最小映射表——只覆盖渲染器实际用到的格式。
+/// 分配大小，故在此补一张最小映射表，只覆盖渲染器实际用到的格式。
 fn bytesPerPixel(format: gpu.TextureFormat) u32 {
     return switch (format) {
         .r8_unorm, .r8_snorm, .r8_uint, .r8_sint => 1,
@@ -43,7 +43,7 @@ fn bytesPerPixel(format: gpu.TextureFormat) u32 {
 }
 
 // ============================================================================
-// 诊断计数器 —— 让"抽象被跑过"这件事可观测
+// 诊断计数器，让"抽象被跑过"这件事可观测
 // ============================================================================
 
 /// 跨后端一致的实例统计。测试用它断言资源被成对释放（泄漏检测）。
@@ -99,7 +99,7 @@ pub const Buffer = struct {
 
 pub const TextureBinding = struct {
     /// 不透明标识。Metal 后端这里是 `*MTLTexture`；Null 后端用一个单调 id，
-    /// 语义上只需要"可比较"——`eql` 是渲染器唯一依赖的性质。
+    /// 语义上只需要"可比较", `eql` 是渲染器唯一依赖的性质。
     id: u64,
     width: u32,
     height: u32,
@@ -347,7 +347,7 @@ pub const Instance = struct {
 pub const ShaderFunction = struct {
     /// 函数名的稳定副本。Metal 后端这里是 `*MTLFunction`；Null 后端保留名字，
     /// 让 pipeline 创建能做出有意义的区分（也顺带证明按"名字"而非"对象地址"
-    /// 标识 shader 是可行的——见 pipeline.zig 里 PSO 缓存翻车的教训）。
+    /// 标识 shader 是可行的，见 pipeline.zig 里 PSO 缓存翻车的教训）。
     name: [64]u8 = [_]u8{0} ** 64,
     name_len: usize = 0,
 
@@ -357,7 +357,7 @@ pub const ShaderFunction = struct {
 };
 
 pub const ShaderModule = struct {
-    /// 源码长度。Null 后端不编译 MSL——它只需要证明"模块→函数"的生命周期
+    /// 源码长度。Null 后端不编译 MSL，它只需要证明"模块->函数"的生命周期
     /// 契约成立。真正的第二个**图形**后端才需要另一套 shader 源，那是比
     /// 本任务大得多的工程（见 RHI_SECOND_BACKEND_ASSESSMENT.md §四）。
     source_len: usize,
@@ -470,7 +470,7 @@ pub fn createRenderPipeline(device: *Device, desc: RenderPipelineDescriptor) !Re
 }
 
 // ============================================================================
-// 命令编码 —— pass 状态机是本后端最有价值的部分
+// 命令编码，pass 状态机是本后端最有价值的部分
 // ============================================================================
 
 const PassKind = enum { none, render, blit };
@@ -645,7 +645,7 @@ pub const BlitPass = struct {
         destination_y: u32,
     ) !void {
         self.assertActive();
-        // 与 Metal 后端逐字对齐的区域校验——这条契约在 Null 后端下可确定性测试。
+        // 与 Metal 后端逐字对齐的区域校验，这条契约在 Null 后端下可确定性测试。
         if (width == 0 or height == 0 or
             source_x > source.width or width > source.width - source_x or
             source_y > source.height or height > source.height - source_y or
@@ -738,7 +738,7 @@ pub const Surface = struct {
     format: ?gpu.TextureFormat = null,
     extent: gpu.Extent3D = .{ .width = 0, .height = 0, .depth = 1 },
 
-    /// 平台句柄被忽略——这正是 `*anyopaque` 签名的意义：Null 后端不需要
+    /// 平台句柄被忽略，这正是 `*anyopaque` 签名的意义：Null 后端不需要
     /// 知道 CAMetalLayer 是什么。
     pub fn init(layer: *anyopaque) Surface {
         _ = layer;
@@ -786,7 +786,7 @@ pub const Surface = struct {
 // ============================================================================
 
 /// Metal 后端用 `dispatch_semaphore_t`（Darwin 专属）。接口本身没泄漏类型，
-/// 所以这里用可移植的 `std.Thread.Semaphore` 即可——这也顺带证明了
+/// 所以这里用可移植的 `std.Thread.Semaphore` 即可，这也顺带证明了
 /// FrameSync 的抽象是干净的。
 pub const FrameSync = struct {
     sem: std.Thread.Semaphore,

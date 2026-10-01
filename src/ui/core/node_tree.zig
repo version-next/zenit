@@ -1,4 +1,4 @@
-//! node_tree — v0.12 §N5 god-object split（最后一刀，最高耦合 4/5）：
+//! node_tree, v0.12 §N5 god-object split（最后一刀，最高耦合 4/5）：
 //! 从 node.zig 抽出树结构子域（7 方法 + structure callback 单元）。
 //!
 //! 范式同 §N1-§N4：Node-typed free function + @import("node.zig") 循环
@@ -6,7 +6,7 @@
 //!
 //! 留最后切因耦合最高：appendChild/removeChild 调 dirty(§N1)/
 //! lifecycle.fireCleanupCallbacks(§N4)/interaction.markCustomDrawSubtree
-//! (§N3)——前 4 刀已稳定这些接口，此时切阻力最小。
+//! (§N3)，前 4 刀已稳定这些接口，此时切阻力最小。
 //!
 //! structure callback 单元（StructureKind/StructureNotifyFn/
 //! g_structure_notify/setStructureNotifyCallback）整体搬，node.zig
@@ -31,11 +31,11 @@ var g_structure_notify: ?StructureNotifyFn = null;
 /// 把一次父子链变更同步给节点所属 World 的 elements 表。
 ///
 /// P0-3 阶段 3：优先直连 `world_ref`；null（cx-less mock）时退回旧全局回调。
-/// 语义与原 core.zig:onNodeStructure 逐行一致 —— 含 append 前的 reparent
+/// 语义与原 core.zig:onNodeStructure 逐行一致，含 append 前的 reparent
 /// unlink（child 已有 parent 时必须先摘链，否则父子链表会串）。
 fn syncWorldStructure(parent: anytype, child: anytype, kind: StructureKind) void {
     if (parent.element_id_raw == 0xFFFFFFFF or child.element_id_raw == 0xFFFFFFFF) return;
-    // 用 parent 的 owner —— append 后 child 归属 parent 所在 World。
+    // 用 parent 的 owner, append 后 child 归属 parent 所在 World。
     if (parent.world_ref) |w| {
         const parent_eid = world_mod.ElementId.fromRaw(parent.element_id_raw);
         const child_eid = world_mod.ElementId.fromRaw(child.element_id_raw);
@@ -95,7 +95,7 @@ pub fn appendChild(self: *Node, allocator: Allocator, child: *Node) !void {
     if (child.parent) |old_parent| old_parent.removeChildRetained(child);
     self.children.appendAssumeCapacity(child);
     child.parent = self;
-    // 子节点有 custom_draw → 冒泡标记
+    // 子节点有 custom_draw -> 冒泡标记
     if (child.frame_state.state_bits.flags.has_custom_draw_subtree) {
         self.markCustomDrawSubtree();
     }
@@ -116,7 +116,7 @@ pub fn appendChild(self: *Node, allocator: Allocator, child: *Node) !void {
 /// 不创建/销毁节点，不触发 runtime registry rebuild，只标记 order/layout dirty。
 /// World.elements 的兄弟链表必须同步重排（appendChild/removeChild* 都同步，
 /// 这里曾漏掉）：渲染主路径今天走 Node.children 暂无消费者，但 P3 迁移的
-/// 既定方向是读 World 链表——沉默的表间分叉在那天会变成绘制顺序错乱。
+/// 既定方向是读 World 链表，沉默的表间分叉在那天会变成绘制顺序错乱。
 pub fn replaceChildOrder(self: *Node, allocator: Allocator, ordered_children: []const *Node) !void {
     if (std.mem.eql(*Node, self.children.items, ordered_children)) return;
 
@@ -162,7 +162,7 @@ pub fn replaceChildOrder(self: *Node, allocator: Allocator, ordered_children: []
 
 /// 从父节点移除子节点，递归触发 onCleanup。
 /// 注意: 不释放 child 内存。调用者需手动 `cx.freeNode(child)` 释放。
-/// on_cleanup 是一次性消费（触发即摘除）——detach 后重挂同一节点请走
+/// on_cleanup 是一次性消费（触发即摘除），detach 后重挂同一节点请走
 /// removeChildRetained，它不触发也不消费 cleanup。
 pub fn removeChild(self: *Node, child: *Node) void {
     removeChildInternal(self, child, true);

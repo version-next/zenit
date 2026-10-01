@@ -1,7 +1,7 @@
 //! Input / Textarea 样式层
 //!
 //! error 态用 ConditionalStyle 的 `invalid` 条件表达：resolve 链
-//! （base ← hover ← focus ← invalid）保证 error 边框压过 hover/focus——
+//! （base <- hover <- focus <- invalid）保证 error 边框压过 hover/focus,
 //! 与既有语义逐条等价（error 时抑制交互态的边框变化）。
 //! 编辑器逻辑（光标/IME/滚动）不在此层，这里只有取色与文本样式声明。
 const core = @import("../../core.zig");
@@ -10,7 +10,7 @@ const Color = core.Color;
 const ConditionalStyle = core.ConditionalStyle;
 
 // ============================================================================
-// 边框取色 — 单一来源
+// 边框取色，单一来源
 // ============================================================================
 
 /// Input 静息边框色：danger > 有值 border_strong > 空值 input_border。
@@ -20,7 +20,7 @@ pub fn restingBorderColor(t: *const theme.ThemeTokens, has_error: bool, has_valu
     return if (has_value) t.color.border_strong else t.color.input_border;
 }
 
-/// 边框条件样式：resting 由调用方给定（Input 与 Textarea 静息色不同——
+/// 边框条件样式：resting 由调用方给定（Input 与 Textarea 静息色不同,
 /// Input 按有无值取 border_strong/input_border，Textarea 恒 input_border）。
 pub fn borderConditional(t: *const theme.ThemeTokens, resting: Color) ConditionalStyle {
     return .{
@@ -31,7 +31,7 @@ pub fn borderConditional(t: *const theme.ThemeTokens, resting: Color) Conditiona
     };
 }
 
-/// 交互时点边框色：hover/focus → accent，invalid 压过一切交互态。
+/// 交互时点边框色：hover/focus -> accent，invalid 压过一切交互态。
 pub fn borderColor(t: *const theme.ThemeTokens, resting: Color, hovered: bool, focused: bool, has_error: bool) Color {
     const resolved = borderConditional(t, resting).resolve(.{
         .is_hovered = hovered,
@@ -43,7 +43,7 @@ pub fn borderColor(t: *const theme.ThemeTokens, resting: Color, hovered: bool, f
 }
 
 /// hover 边框效果的生效条件（Input 与 Textarea 共同 gating：
-/// 聚焦或 error 时抑制 hover 变色——focus/error 的边框优先）。
+/// 聚焦或 error 时抑制 hover 变色，focus/error 的边框优先）。
 pub fn hoverBorderApplies(focused: bool, has_error: bool) bool {
     return !focused and !has_error;
 }
@@ -114,7 +114,7 @@ pub fn textareaBackground(t: *const theme.ThemeTokens, disabled: bool) Color {
 }
 
 /// Textarea mount 初始边框：danger > disabled separator > border_strong。
-/// 注意与失焦后的静息色（input_border）刻意不同——历史行为，保持。
+/// 注意与失焦后的静息色（input_border）刻意不同，历史行为，保持。
 pub fn textareaInitialBorderColor(t: *const theme.ThemeTokens, has_error: bool, disabled: bool) Color {
     if (has_error) return t.color.danger;
     if (disabled) return t.color.separator;

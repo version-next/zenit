@@ -345,7 +345,7 @@ test "Spacer: fills space" {
     try std.testing.expectEqual(@as(f32, 1), spacer.style.flex);
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "vstack: mount 在任意分配点失败时不泄漏（sweep）" {
     try @import("../oom_sweep.zig").sweepMount("vstack", struct {
         fn m(scope: *Scope, cx: *Cx) anyerror!?*Node {

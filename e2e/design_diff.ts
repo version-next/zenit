@@ -1,5 +1,5 @@
 /**
- * design_diff.ts — 设计稿 vs 实现 的结构化像素比对。
+ * design_diff.ts，设计稿 vs 实现 的结构化像素比对。
  *
  * 改动后请跑 `--self-test`（6 个用例）。
  *
@@ -10,8 +10,8 @@
  *
  * 设计目标：输出必须能直接驱动下一步修改。所以不只给分数，还给：
  *   - 网格热力图：哪一块差（8x8 网格 + ASCII 可视化）
- *   - 边缘投影差：行/列内容边界的偏移量 → 直接对应 padding/gap/位置错误
- *   - 主色差异：调色板比对 → 直接对应用错 token
+ *   - 边缘投影差：行/列内容边界的偏移量 -> 直接对应 padding/gap/位置错误
+ *   - 主色差异：调色板比对 -> 直接对应用错 token
  *
  * 用法:
  *   bun e2e/design_diff.ts DESIGN.png ACTUAL.png [--json] [--grid N] [--top N]
@@ -27,7 +27,7 @@ import { decodePng, type DecodedPng } from "./png";
  *
  * 这一步是必须的，不是可选优化：pencil 的 `export_nodes` 导出的组件 PNG
  * 通常带透明背景，透明像素的 RGB 往往是 (0,0,0)。若直接比 RGB，设计稿会被
- * 当成"黑底"，而应用截图是白底 —— 结果是 ~99% 像素差 + RMSE 250 的假报警，
+ * 当成"黑底"，而应用截图是白底，结果是 ~99% 像素差 + RMSE 250 的假报警，
  * 而两张图人眼看几乎一样。实测踩过这个坑，故有下面的 self-test 兜底。
  */
 export function flattenOnto(png: DecodedPng, matte: [number, number, number]): DecodedPng {
@@ -258,7 +258,7 @@ export function compare(
   actualPng: DecodedPng,
   opts: { grid: number; threshold: number; top: number; matte?: [number, number, number] },
 ): DiffReport {
-  // 先按 alpha 合成到同一底色 —— 必须在重采样与任何差值之前做。
+  // 先按 alpha 合成到同一底色，必须在重采样与任何差值之前做。
   const matte = opts.matte ?? [255, 255, 255];
   const designFlat = flattenOnto(designPng, matte);
   const actualFlat = flattenOnto(actualPng, matte);
@@ -366,7 +366,7 @@ function selfTest(): void {
     return out;
   };
 
-  // 1. 相同图 → 满分、无提示
+  // 1. 相同图 -> 满分、无提示
   const white = solid(64, 64, [255, 255, 255]);
   const a = withRect(white, 10, 10, 20, 20, [0, 0, 0]);
   const same = compare(a, a, { grid: 8, threshold: 8, top: 3 });
@@ -374,7 +374,7 @@ function selfTest(): void {
   if (same.score !== 100) throw new Error(`identical score should be 100, got ${same.score}`);
   if (same.hints.length !== 0) throw new Error("identical image should yield no hints");
 
-  // 2. 纯位移 → 必须报出正确方向与量级
+  // 2. 纯位移 -> 必须报出正确方向与量级
   const shifted = withRect(white, 16, 10, 20, 20, [0, 0, 0]);
   const shiftRep = compare(a, shifted, { grid: 8, threshold: 8, top: 3 });
   if (shiftRep.offset.x !== 6) throw new Error(`expected x offset 6, got ${shiftRep.offset.x}`);
@@ -388,19 +388,19 @@ function selfTest(): void {
   if (scaled.comparedAt !== "64x64") throw new Error("resample target should be actual size");
   if (scaled.changedRatio > 0.05) throw new Error(`2x-scaled identical content should match, got ${scaled.changedRatio}`);
 
-  // 4. 变色 → 必须报调色板问题
+  // 4. 变色 -> 必须报调色板问题
   const red = withRect(white, 10, 10, 20, 20, [220, 30, 30]);
   const colorRep = compare(a, red, { grid: 8, threshold: 8, top: 3 });
   if (colorRep.paletteIssues.length === 0) throw new Error("palette diff should flag a recolor");
   if (!colorRep.hints.some((s) => s.includes("颜色偏差"))) throw new Error("color hint missing");
 
-  // 5. 内容尺寸差 → 必须报宽度差
+  // 5. 内容尺寸差 -> 必须报宽度差
   const wider = withRect(white, 10, 10, 34, 20, [0, 0, 0]);
   const widthRep = compare(a, wider, { grid: 8, threshold: 8, top: 3 });
   if (!widthRep.hints.some((s) => s.includes("内容宽度差"))) throw new Error("width hint missing");
 
   // 6. 回归：透明背景的设计稿 vs 白底截图，必须判为「几乎一致」。
-  //    这是实测踩过的真坑 —— 修复前此用例报 0.8/100、98.9% 差异像素。
+  //    这是实测踩过的真坑，修复前此用例报 0.8/100、98.9% 差异像素。
   const rgbaTransparentBg = (w2: number, h2: number): DecodedPng => {
     const pixels = new Uint8Array(w2 * h2 * 4); // 全 0 = 透明且 RGB 为黑
     for (let y = 10; y < 30; y++) {
@@ -428,7 +428,7 @@ function main(): void {
 
   // 手动解析 positional：--json 是布尔 flag，--grid/--top/--threshold 各带一个值。
   // 旧实现 `args.filter(a => !a.startsWith("--"))` 会把 flag 的值也算进 positional
-  // （如 `--grid 8` 的 `8`），导致 `--json --grid 8` 被误判为 3 个 positional → exit 64。
+  // （如 `--grid 8` 的 `8`），导致 `--json --grid 8` 被误判为 3 个 positional -> exit 64。
   const valueFlags = new Set(["--grid", "--top", "--threshold"]);
   const positional: string[] = [];
   for (let i = 0; i < args.length; i++) {

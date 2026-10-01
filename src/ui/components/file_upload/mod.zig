@@ -1,13 +1,13 @@
-/// FileUpload — 文件选择区（B5）
+/// FileUpload，文件选择区（B5）
 ///
 /// 文件对话框：
 ///   - `on_browse` 未提供时，"Browse…" 默认走原生 NSOpenPanel
 ///     （`cx.openFilePanel`，system_sdk `file_dialog` capability；headless/无
 ///     SDK 环境下静默 no-op）。注意 runModal 同步阻塞帧循环。
 ///   - `on_browse` 提供时优先（宿主自行调起对话框/自定义来源，用
-///     `state.addFile(path)` 程序化回填）——e2e/storybook 走此路径。
+///     `state.addFile(path)` 程序化回填），e2e/storybook 走此路径。
 ///   - 文件列表行 + × 移除
-/// 拖放：提示区即 drop target —— 从 Finder 拖文件进来会逐条 addFile，
+/// 拖放：提示区即 drop target，从 Finder 拖文件进来会逐条 addFile，
 /// 悬停期间换边框/底色高亮。窗口内元素互拖（reorder）仍不支持。
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -48,7 +48,7 @@ const RemoveCtx = struct {
 };
 
 /// 移除后释放 path：行节点的 TextProps / a11y label 仍借用这段字节，而 freeNode 在
-/// reactive / tick 深度里只是排队 —— 必须排进与 freeNode 同一条延迟队列，节点在前、path 在后。
+/// reactive / tick 深度里只是排队，必须排进与 freeNode 同一条延迟队列，节点在前、path 在后。
 const DeferredBytes = struct {
     entry: DeferredEntry = .{},
     alloc: Allocator,
@@ -162,14 +162,14 @@ fn onRemoveClick(ctx: *anyopaque) void {
     c.state.removeSlot(c.slot);
 }
 
-/// 默认 Browse：原生打开文件面板 → addFile 回填。
+/// 默认 Browse：原生打开文件面板 -> addFile 回填。
 /// 无 SDK / 不支持 / 取消 / 出错时 no-op。
 fn onNativeBrowse(ctx: *anyopaque) void {
     const state: *FileUploadState = @ptrCast(@alignCast(ctx));
     var path_buf: [1024]u8 = undefined;
     const path = core.platform_services.openFilePanel(state.cx.system_sdk, &path_buf) orelse return;
     // 用户已经在原生面板里明确选了文件：失败静默 no-op 会让文件凭空不出现，
-    // 与「取消选择」无法区分（取消走上面的 orelse return）。回调无法传播 → panic。
+    // 与「取消选择」无法区分（取消走上面的 orelse return）。回调无法传播 -> panic。
     state.addFile(path) catch @panic("OOM: FileUpload 无法添加原生面板选中的文件");
 }
 
@@ -208,7 +208,7 @@ pub fn mountFileUpload(props: FileUploadProps, scope: *Scope, cx: *Cx) !FileUplo
 
     const state = try my_scope.allocator.create(FileUploadState);
     // sweep：adoptResource 失败当场跑 cleanup、之后任何一步失败也会经 scope 级联跑到它，
-    // 而 cleanup 会遍历 files 释放 path —— state 此刻还没初始化（0xaa），必须先把 files 清空。
+    // 而 cleanup 会遍历 files 释放 path, state 此刻还没初始化（0xaa），必须先把 files 清空。
     state.files = [_]?FileEntry{null} ** 32;
     try my_scope.adoptResource(@ptrCast(state), struct {
         fn cleanup(ptr: *anyopaque, alloc: Allocator) void {
@@ -348,12 +348,12 @@ test "FileUpload: 拖入多行路径逐条添加 + 悬停高亮复位" {
     try testing.expect(!fu.state.drop_hover);
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "file_upload: mount 在任意分配点失败时不泄漏（sweep）" {
     const sw = @import("../oom_sweep.zig");
     try sw.sweepMount("file_upload", struct {

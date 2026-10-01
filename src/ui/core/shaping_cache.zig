@@ -1,4 +1,4 @@
-//! ShapingCache —— Phase 6 (text_hash, font, width) → cached GlyphRun
+//! ShapingCache, Phase 6 (text_hash, font, width) -> cached GlyphRun
 //!
 //! TextShaper.shape() 在 CoreText 后端单次 ~10-100µs；同文本第二次 shape 是
 //! 浪费。ShapingCache 用 (content_hash, font_id, max_width) 三元组 key 缓存
@@ -56,7 +56,7 @@ pub const ShapingKey = struct {
     }
 };
 
-/// Cache entry —— owned glyph + cluster slices（arena allocated）
+/// Cache entry, owned glyph + cluster slices（arena allocated）
 pub const Entry = struct {
     key: ShapingKey,
     /// arena-allocated glyph 序列
@@ -127,7 +127,7 @@ pub const ShapingCache = struct {
     allocator: std.mem.Allocator,
     /// arena for glyph/cluster slices；每次 evict + cache.deinit 时整 arena 重置
     arena: std.heap.ArenaAllocator,
-    /// HashMap key → entry index
+    /// HashMap key -> entry index
     map: std.HashMapUnmanaged(ShapingKey, Entry, KeyContext, 80),
     visual_map: std.HashMapUnmanaged(ShapingKey, VisualEntry, KeyContext, 80),
     capacity: u32,
@@ -155,7 +155,7 @@ pub const ShapingCache = struct {
         self.current_frame +%= 1;
     }
 
-    /// 查询 cache。命中 → 返回 GlyphRun + bump last_used_frame；未命中 → null。
+    /// 查询 cache。命中 -> 返回 GlyphRun + bump last_used_frame；未命中 -> null。
     pub fn lookup(self: *ShapingCache, key: ShapingKey) ?GlyphRun {
         if (self.map.getPtr(key)) |entry| {
             entry.last_used_frame = self.current_frame;
@@ -353,7 +353,7 @@ test "ShapingCache: batch eviction keeps recently-used, drops stale" {
         _ = cache.lookup(k1);
     }
 
-    // 容量已满；插入 k5 触发批量驱逐 —— stale 的 k2/k3/k4 被清，k1 幸存
+    // 容量已满；插入 k5 触发批量驱逐，stale 的 k2/k3/k4 被清，k1 幸存
     try cache.insert(k5, empty_glyphs, empty_clusters, m, .ltr, 0);
     try testing.expect(cache.lookup(k1) != null);
     try testing.expect(cache.lookup(k2) == null);

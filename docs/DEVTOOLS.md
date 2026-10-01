@@ -2,8 +2,8 @@
 
 zenit ships two complementary dev tools (`ui.devtools`):
 
-1. **Panel** — a full DevTools in its own window (four views — Elements /
-   Components / Console / Performance — plus Layout/Style/State/Events/Render/Trace
+1. **Panel**: a full DevTools in its own window (four views, Elements /
+   Components / Console / Performance, plus Layout/Style/State/Events/Render/Trace
    detail pages):
 
    ```zig
@@ -19,7 +19,7 @@ zenit ships two complementary dev tools (`ui.devtools`):
    open "zig-out/DevTools Probe.app"
    ```
 
-2. **Overlay** — a hover inspector inside the app window (dashed outline + a
+2. **Overlay**: a hover inspector inside the app window (dashed outline + a
    size/component-name label):
 
    ```zig
@@ -63,29 +63,29 @@ troubleshooting, see [Console and the DevTools Console](CONSOLE.md).
 
 - **Refresh model**: DevTools is a passive observer, driven by its own
   keep-alive polling (10Hz on the Performance page, 4Hz on the others). It does
-  not — and does not need to — redraw at the target's frame rate; the charts
+  not, and does not need to, redraw at the target's frame rate; the charts
   read the cross-frame history ring on the target Cx.
 - **FPS semantics (rolling window)**: the monitor continuously samples deltas
-  of `target.frame_count` into 100ms wall-clock buckets — `FPS:` shows a
+  of `target.frame_count` into 100ms wall-clock buckets. `FPS:` shows a
   rolling mean over the last ~1s and naturally drops to 0 when the target stops
   producing frames. This is Chrome-FPS-meter semantics: the chart always rolls
   forward; it never freezes a snapshot of "the last N rendered frames" on
   screen.
 - **idle annotation**: when the target produces no frame for more than ~0.7s,
-  the FPS row shows `FPS: 0 — idle (not rendering)` and switches to a secondary
-  color. This is the normal state of power-saving frame stops, not a stall; it
-  is also what lets the panel tell "a steady 60fps" apart from "not rendering
-  at all".
+  the FPS row shows `FPS: idle (rendering minimized)` and switches to a
+  secondary color. When nothing changes, zenit lowers the frame rate as far as
+  it can, so this is the expected idle state, not a stall. It also lets the
+  panel tell "a steady 60fps" apart from "idle".
 - **Bar chart**: a scrolling chart of 64 100ms buckets (a ≈6.4s window).
   Buckets with frames draw the bucket's average frame time (green ≤ 1.1× the
   refresh period < yellow ≤ 1.5× < red); buckets without frames are a 2px
-  neutral baseline — an idle period shows up as the chart rolling out a flat
+  neutral baseline: an idle period shows up as the chart rolling out a flat
   line, not freezing. The baseline is the current display refresh period
   (`display_refresh_hz` is polled every frame, so it keeps up when you drag
   across mixed ProMotion/60Hz displays).
 - **Cx-side frame-interval history** (`frame_interval_history_us`): samples
   only real rendered frames, clamps to ≥ the refresh period, and drops
-  >500ms idle-resume intervals — consumed by P95-style statistics; the panel
+  >500ms idle-resume intervals, consumed by P95-style statistics; the panel
   chart no longer plots it directly.
 - **Timing row**: the target's layout / render command-generation times (CPU
   wall clock, backfilled every frame by the `zenit_app` renderer). For finer
@@ -137,7 +137,7 @@ regression.
 
 - `ui.perf_overlay` is a standalone counter for hosts that bring their own
   render loop (bypassing the `zenit_app` runtime); the framework does **not**
-  feed it data. It is a process-level singleton — multi-window hosts should
+  feed it data. It is a process-level singleton, so multi-window hosts should
   keep their own state or read the Cx-side facilities directly.
 - While a DevTools window is open, it is a persistent low-frequency wakeup
   source (10Hz/4Hz self-polling); that is a deliberate trade-off for live
@@ -160,7 +160,7 @@ what each covers"; it does not cover troubleshooting methodology.
 |---|---|
 | `ZENIT_DEBUG_CMDSTREAM` | Print command-stream signatures per frame; pin down whether "draws wrong / doesn't draw" happens at record or replay time |
 | `ZENIT_DEBUG_DLIST` | Dump display-list contents |
-| `ZENIT_DEBUG_SURFDUMP` | Dump surfaces layer by layer — the primary tool for overlay/compositing issues |
+| `ZENIT_DEBUG_SURFDUMP` | Dump surfaces layer by layer; the primary tool for overlay/compositing issues |
 | `ZENIT_DEBUG_LAYER` | Layer-tree structure logging |
 | `ZENIT_DEBUG_PREPASS` / `ZENIT_DEBUG_PASSCOUNT` | Pre-pass trip count and pass count |
 | `ZENIT_DEBUG_TEXCREATE` | Texture-creation logging (chasing texture leaks / duplicate creation) |
@@ -191,7 +191,7 @@ whether that optimization introduced it.
 `ZENIT_DEBUG_GLASS_RT`, `ZENIT_GLASS_NOPAD`.
 
 > When changing glass-related code, note: **e2e pixel assertions cannot catch
-> problems like "the wrong shader was used"** — you must eyeball the
+> problems like "the wrong shader was used"**: you must eyeball the
 > screenshots.
 
 ### Hit testing / interaction

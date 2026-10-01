@@ -153,7 +153,7 @@ pub const CardBuilder = struct {
         card.meta.ownership.meta.component_name = "Card";
         // 整卡可点（.interactive(true) / .onClick(...)）时必须进 tab 序并对 AT
         // 报角色，否则纯键盘用户 Tab 不到、VoiceOver 直接跳过整个卡片
-        // —— WCAG 2.1.1（键盘）与 4.1.2（名称/角色/值）双 A 级失败。
+        // WCAG 2.1.1（键盘）与 4.1.2（名称/角色/值）双 A 级失败。
         // label 用 title 兜底；没有 title 时 a11y 投影会借子树文本（见
         // core.zig 的 label fallback），所以这里不强行造名字。
         if (p.interactive) {
@@ -166,7 +166,7 @@ pub const CardBuilder = struct {
         }
         try core.bindScopeToNode(my_scope, card);
 
-        // Hover 高亮（Scope 版本）— hover 目标色来自 recipe 的 hover 态
+        // Hover 高亮（Scope 版本），hover 目标色来自 recipe 的 hover 态
         if (p.hoverable or p.interactive) {
             if (!p.selected) {
                 const hovered = cs.resolve(.{ .is_hovered = true });
@@ -373,12 +373,12 @@ test "CardGrid: basic" {
     try std.testing.expectEqual(core.FlexWrap.wrap, grid.style.flex_wrap());
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "card: mount 在任意分配点失败时不泄漏（sweep）" {
     try @import("../oom_sweep.zig").sweepMount("card", struct {
         fn m(scope: *Scope, cx: *Cx) anyerror!?*Node {

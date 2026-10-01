@@ -1,4 +1,4 @@
-//! Markdown 样式层 — 全部由 MarkdownOptions 参数化（markdown 刻意不依赖 theme，
+//! Markdown 样式层，全部由 MarkdownOptions 参数化（markdown 刻意不依赖 theme，
 //! 颜色/字号从 opts 注入）。mod.zig 的 emitter 只消费这些函数。
 const core = @import("../../core.zig");
 const Padding = core.Padding;

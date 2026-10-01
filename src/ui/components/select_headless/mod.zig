@@ -1,4 +1,4 @@
-//! Select Headless — Radix-style 解耦组件 (v0.7 已 GA)
+//! Select Headless, Radix-style 解耦组件 (v0.7 已 GA)
 //!
 //! 旧 `components/select.zig` (monolithic + MAX_OPTIONS=64 硬上限) 已删除；
 //! 此目录是唯一 Select 实现。
@@ -45,7 +45,7 @@ pub const TriggerSlotCtx = mount.TriggerSlotCtx;
 pub const ItemSlotCtx = mount.ItemSlotCtx;
 
 // mount.zig / state_machine.zig 的 test 此前没有任何 test 块引用，
-// test-ui 从未收集过它们（含 mount.zig 里 3 个既有测试）——显式挂上。
+// test-ui 从未收集过它们（含 mount.zig 里 3 个既有测试），显式挂上。
 test {
     _ = mount;
     _ = sm;

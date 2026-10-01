@@ -1,10 +1,10 @@
-//! Line breaking — UAX #14 简化版
+//! Line breaking, UAX #14 简化版
 //!
 //! 用 UAX #14 line-break-class 体系做断行判定（取代旧的 ASCII 标点 +
 //! "isCJK 之后允许断" hack）。
 //!
 //! 实现范围：
-//! - codepoint → line-break class（覆盖最常见 18 类）
+//! - codepoint -> line-break class（覆盖最常见 18 类）
 //! - canBreakBetween(prev, next)：极简 pair 表
 //! - findBreakOpportunities(text, out)：返回所有 byte-position 处可断点
 //!
@@ -65,7 +65,7 @@ pub const LineBreakClass = enum(u8) {
     ex,
     /// Other (unclassified)
     xx,
-    /// Infix separator (. , ; :) — UAX #14 IS
+    /// Infix separator (. , ; :), UAX #14 IS
     is,
 };
 
@@ -138,7 +138,7 @@ pub fn isCJK(codepoint: u21) bool {
 ///
 /// 规则（UAX #14 子集，按重要性排序）：
 /// 1. \n / \r / BK 后必断（其实是 mandatory）
-/// 2. SP 之后 + 非 CL/CP/IS 等 → 可断
+/// 2. SP 之后 + 非 CL/CP/IS 等 -> 可断
 /// 3. WJ / GL / ZWJ / NBSP 周围不断
 /// 4. AL/NU 之间不断（同质连续不断）
 /// 5. ID（CJK）每个字符前后都可断（除非紧跟标点）

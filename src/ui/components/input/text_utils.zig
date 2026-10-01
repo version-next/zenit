@@ -1,6 +1,6 @@
 /// Text Utilities for Input Component
 ///
-/// 纯函数——UTF-8 编解码、CJK 检测、文本宽度估算/测量、字符分类。
+/// 纯函数，UTF-8 编解码、CJK 检测、文本宽度估算/测量、字符分类。
 /// 无 UI 依赖。
 const std = @import("std");
 const builtin = @import("builtin");
@@ -255,10 +255,10 @@ pub fn utf8MeasuredAdvance(text: []const u8, char_width: f32, font_size: f32, fo
     return utf8MeasuredAdvanceCx(null, text, char_width, font_size, font_weight);
 }
 
-/// cx-aware variant — 走 cx.shapeText (GlyphRun pipeline + ShapingCache)
+/// cx-aware variant，走 cx.shapeText (GlyphRun pipeline + ShapingCache)
 /// 替代直调 platform 桥。cx == null 时降级到旧路径 (utf8MeasuredAdvance 兼容)。
 /// 失败 (NoFontProvider / FontLookupFailed / OOM) 静默 fallback 到 platform 桥
-/// 或 ASCII 估算 — 避免 caller 错误处理。
+/// 或 ASCII 估算，避免 caller 错误处理。
 pub fn utf8MeasuredAdvanceCx(cx_ref: ?*core.Cx, text: []const u8, char_width: f32, font_size: f32, font_weight: u16) f32 {
     if (text.len == 0) return 0;
     if (cx_ref) |cx| {
@@ -271,7 +271,7 @@ pub fn utf8MeasuredAdvanceCx(cx_ref: ?*core.Cx, text: []const u8, char_width: f3
         })) |run| {
             return run.total_advance;
         } else |_| {
-            // shape 失败（典型 NoFontProvider / FontLookupFailed）→ 降级
+            // shape 失败（典型 NoFontProvider / FontLookupFailed）-> 降级
         }
     }
     if (measureTextWidthPlatform(text, font_size, font_weight)) |w| return w;

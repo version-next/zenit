@@ -1,4 +1,4 @@
-//! EditableText — shell-free editable text.
+//! EditableText, shell-free editable text.
 //!
 //! This component deliberately reuses Input's editing engine while omitting
 //! ControlShell, borders, backgrounds, focus rings, padding and overflow fade.

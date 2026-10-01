@@ -1,6 +1,6 @@
-//! DisplayItem → GpuDraw direct encoder
+//! DisplayItem -> GpuDraw direct encoder
 //!
-//! DisplayItem → GpuDraw 直译路径。
+//! DisplayItem -> GpuDraw 直译路径。
 //! encodeDisplayItem 把单个 DisplayItem 直接产出 GpuDraw（一对一或一对多）。
 //!
 //! Batcher：encodeStream 顺序处理 DisplayItem 序列，输出 GpuDraw 序列；
@@ -22,7 +22,7 @@ pub const GpuDraw = gpu_draw_mod.GpuDraw;
 pub const PipelineId = gpu_draw_mod.PipelineId;
 pub const BlendMode = gpu_draw_mod.BlendMode;
 
-/// DisplayItemKind → PipelineId 映射。每种 kind 对应一个固定 pipeline；
+/// DisplayItemKind -> PipelineId 映射。每种 kind 对应一个固定 pipeline；
 /// backend 在初始化时注册这些 pipeline 进 table，PipelineId 是 1-based。
 pub fn pipelineForKind(kind: DisplayItemKind) PipelineId {
     return switch (kind) {
@@ -57,7 +57,7 @@ pub fn encodeOne(item: DisplayItem, layer_id_raw: u32) GpuDraw {
     };
 }
 
-/// 批量编码：DisplayItem 序列 → GpuDraw 序列，相邻可合并的合到 instance_count++。
+/// 批量编码：DisplayItem 序列 -> GpuDraw 序列，相邻可合并的合到 instance_count++。
 /// 返回写入 out 的 GpuDraw 数量。out 长度需 >= items.len。
 pub fn encodeStream(
     items: []const DisplayItem,

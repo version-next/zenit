@@ -1,4 +1,4 @@
-//! 同级绘制带（paint band）—— 渲染与命中测试共用的唯一事实来源。
+//! 同级绘制带（paint band），渲染与命中测试共用的唯一事实来源。
 //!
 //! `z_index` 只表达"同一父节点下兄弟之间的绘制与命中顺序"（每个节点都是
 //! 自己子节点的 stacking context），**不影响裁剪**：裁剪永远由祖先
@@ -6,13 +6,13 @@
 //! （`cx.ensurePopoverPortalRoot()` / OverlayStack）。
 //!
 //! 兄弟顺序 = 先按 `siblingZ`（负 z 钳到 0）稳定排序，再按
-//! `regular → sticky → positive_z` 三个带依次遍历。等价于按
+//! `regular -> sticky -> positive_z` 三个带依次遍历。等价于按
 //! `siblingOrderKey` 的 (band, z) 字典序稳定排序。
 //! render_engine（`sortSubtreeChildrenByZ` + `childPasses`）与 hit_runtime
 //! （`paintOrderedChildren` + 三带遍历）都必须经由这里，否则 paint_order
 //! 与像素会错位（方案 sticky-zindex-clip-decoupling-plan.md §5.2）。
 //!
-//! 与 node.zig 循环 import 取 Node 类型 —— 同 node_inherit.zig 等 sibling。
+//! 与 node.zig 循环 import 取 Node 类型，同 node_inherit.zig 等 sibling。
 
 const node_mod = @import("node.zig");
 

@@ -40,7 +40,7 @@ pub const TabsVariant = enum {
     tab,
 };
 
-/// Tabs 尺寸 — 统一使用 ControlSize 4 档
+/// Tabs 尺寸，统一使用 ControlSize 4 档
 pub const TabsSize = theme.ControlSize;
 
 /// Tab 项目
@@ -59,7 +59,7 @@ const styles = @import("styles.zig");
 pub const TabsSlotRecipe = styles.TabsSlotRecipe;
 
 // ============================================================================
-// TabsState — 内部状态
+// TabsState，内部状态
 // ============================================================================
 
 pub const TabsState = struct {
@@ -126,7 +126,7 @@ const TabsRenderContext = struct {
 };
 
 // ============================================================================
-// tabsBeforeRender — highlight box + 文字样式更新
+// tabsBeforeRender, highlight box + 文字样式更新
 // ============================================================================
 
 /// 更新 tab 后代节点的文字颜色、图标 tint 和 font_weight
@@ -224,7 +224,7 @@ fn tabsBeforeRender(node: *Node) void {
             // aria-selected 必须跟着 active_index 走：VoiceOver 在 tablist 里
             // 靠 selected 位判断"当前是第几个标签页"，只在 mount 写一次的话
             // 切页后播报的永远是初始那一个。注意这里放在 is_disabled 判断
-            // 之外——禁用的 tab 同样需要正确的 selected 位。
+            // 之外，禁用的 tab 同样需要正确的 selected 位。
             if (tab_node.behavior.interaction.a11y) |*a| a.selected = is_active;
 
             if (!is_disabled) {
@@ -283,7 +283,7 @@ fn tabsKeyDown(key: core.KeyCode, _: core.Modifiers, context: ?*anyopaque) Event
     return .handled;
 }
 
-/// 关闭按钮：触发 on_close(tab id)，并 stop 冒泡——否则点 × 会冒泡到 tab_node 把它激活。
+/// 关闭按钮：触发 on_close(tab id)，并 stop 冒泡，否则点 × 会冒泡到 tab_node 把它激活。
 fn tabCloseHandler(event: Event, context: ?*anyopaque) EventResult {
     const ctx: *TabClickContext = @ptrCast(@alignCast(context orelse return .ignored));
     switch (event) {
@@ -367,7 +367,7 @@ pub const TabsBuilder = struct {
 
         // Scope 分配 TabsState
         const state = try my_scope.allocator.create(TabsState);
-        // 到下面 registerResource 之前 state 无人持有 ——
+        // 到下面 registerResource 之前 state 无人持有,
         // my_scope.allocator 不是 arena，dispose 只释放已登记的资源。
         // 中间的 blk 初始化与 signal 创建都可失败（sidebar sweep index 27 实测）。
         var state_registered = false;
@@ -427,7 +427,7 @@ pub const TabsBuilder = struct {
 
         const is_underline = p.variant == .underline;
 
-        // tab_row: 所有 tab + highlight_box 的行容器 — 几何/背景全部来自 root slot
+        // tab_row: 所有 tab + highlight_box 的行容器，几何/背景全部来自 root slot
         const tab_row = try box(cx, .{
             .position = .relative,
             .direction = .row,
@@ -456,7 +456,7 @@ pub const TabsBuilder = struct {
         // highlight_box 作为 tab_row 的第一个子节点（index 0）
         const highlight_box = try adoptTabChild(cx, allocator, tab_row, try box(cx, hl_style, .{}));
         // 选中态的唯一可观测出口：它的 translate_x 指向当前 active tab。
-        // e2e 要断言「点击真的切换了视觉选中态」，只靠 on_change 回调不够 ——
+        // e2e 要断言「点击真的切换了视觉选中态」，只靠 on_change 回调不够,
         // setActive 的去重守卫会让 active_index 坏掉时回调照常触发。
         highlight_box.meta.ownership.meta.test_id = "tabs.highlight";
         highlight_box.meta.ownership.meta.component_name = "TabHighlight";
@@ -597,7 +597,7 @@ fn buildTab(
     errdefer cx.freeNode(tab_node);
     if (!is_disabled) tab_node.style.cursor = .pointer;
 
-    // 容器已是 role=tablist，但此前每个 tab 自身没有任何 a11y 声明——AT 看到的
+    // 容器已是 role=tablist，但此前每个 tab 自身没有任何 a11y 声明，AT 看到的
     // 是一个空 tablist，既不知道有几个标签页，也读不出哪个是当前页。
     // role=tab + label + selected 三者缺一不可。
     tab_node.behavior.interaction.a11y = .{
@@ -666,7 +666,7 @@ fn buildTab(
         badge_style.font_size = null;
         var badge_node = try box(cx, badge_style, .{});
         // 关键：badge_text 指向栈上 badge_buf，函数返回后即失效。必须 setContent
-        // 拷贝（同 Badge 组件做法），否则跨帧渲染时 content 指针悬空 → 只画出 accent 圆点、数字不绘。
+        // 拷贝（同 Badge 组件做法），否则跨帧渲染时 content 指针悬空 -> 只画出 accent 圆点、数字不绘。
         var badge_txt = core.TextProps{
             .content = "",
             .color = badge_fg,
@@ -756,7 +756,7 @@ pub const TabPanelBuilder = struct {
 };
 
 // ============================================================================
-// EditorTabs — VSCode 风格文件标签
+// EditorTabs, VSCode 风格文件标签
 // ============================================================================
 
 pub const EditorTabItem = struct {
@@ -970,7 +970,7 @@ test "Tabs: pill active tab text styling" {
     try root.appendChild(std.testing.allocator, tabs_node);
 
     // children = [highlight_box, tab_a, tab_b]
-    // active tab: tab → [label_wrapper] → [ghost(h=0), label_node(text)]
+    // active tab: tab -> [label_wrapper] -> [ghost(h=0), label_node(text)]
     const active_tab = tabs_node.children.items[1]; // skip highlight
     const active_label_wrapper = active_tab.children.items[0];
     try std.testing.expect(active_label_wrapper.children.items.len >= 2);
@@ -1040,7 +1040,7 @@ test "Tabs: small size" {
     try root.appendChild(std.testing.allocator, tabs_node);
 
     // children = [highlight_box, tab_a, tab_b]
-    // tab → [label_wrapper] → [label_node(text)]
+    // tab -> [label_wrapper] -> [label_node(text)]
     const first_tab = tabs_node.children.items[1]; // skip highlight
     const label_wrapper = first_tab.children.items[0];
     try std.testing.expect(label_wrapper.children.items.len >= 2);
@@ -1107,7 +1107,7 @@ test "Tabs: with badge" {
     // tab 应该有 label + badge = 2 children
     try std.testing.expectEqual(@as(usize, 2), first_tab.children.items.len);
 
-    // 回归：badge 文本曾指向栈上 buffer，函数返回后悬空 → 渲染只剩 accent 圆点、
+    // 回归：badge 文本曾指向栈上 buffer，函数返回后悬空 -> 渲染只剩 accent 圆点、
     // 数字不绘。改用 setInlineContent 拷进 inline 存储后，content 必须仍是 "5"。
     const badge_node = first_tab.children.items[1];
     try std.testing.expect(badge_node.getText() != null);
@@ -1182,7 +1182,7 @@ test "Tabs: before_render updates on active change" {
         if (cb_opt) |cb| cb(tabs_node);
     }
 
-    // 验证文本颜色切换: tab → [label_wrapper] → [ghost, label_node(text)]
+    // 验证文本颜色切换: tab -> [label_wrapper] -> [ghost, label_node(text)]
     const tab_b_wrapper = tabs_node.children.items[2].children.items[0];
     const tab_b_label = tab_b_wrapper.children.items[1]; // skip ghost
     try std.testing.expect(tab_b_label.getText() != null);
@@ -1436,7 +1436,7 @@ test "Tabs: 点关闭按钮触发 on_close 且不激活该 tab；方向键在可
     try std.testing.expectEqual(@as(usize, 2), rec.changed);
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }

@@ -172,7 +172,7 @@ pub const BlendOperation = enum(c_ulong) {
 /// 翻车：descriptor 里的 shader 函数只能按 `MTLFunction` **对象地址**指纹，
 /// 而调用点（ensureBlurPipeline / buildGlassPipeline 等）建完 PSO 就
 /// `defer func.deinit()` 释放函数与 ShaderModule。地址随即被 ObjC 回收复用，
-/// 于是 glass 的 descriptor 与先建的 Kawase blur descriptor **指纹相同** ——
+/// 于是 glass 的 descriptor 与先建的 Kawase blur descriptor **指纹相同**,
 /// 缓存把 blur PSO 当成 glass PSO 返回，玻璃退化成一坨不折射的乳白圆盘。
 ///
 /// 关键教训：e2e 当时仍报 87/87 全绿（像素断言抓不住"用错 shader"），
@@ -182,7 +182,7 @@ pub const BlendOperation = enum(c_ulong) {
 /// 整个 storybook 生命周期（41 组件 / 87 个 e2e 场景 / 全部 glass+blur 场景）：
 ///   PSO 累计只建 **10 次、总计 1.26ms**（单次最贵 0.44ms，其余 0.03~0.15ms），
 ///   且**零次重复**。
-/// 评审 §B3 假设的"同一组合在多个 renderer 里重复编译"不成立——各调用点
+/// 评审 §B3 假设的"同一组合在多个 renderer 里重复编译"不成立，各调用点
 /// 早有 `if (pipeline != null) return` + PersistentGpuCache 跨帧持久去重
 /// （见 command_encoder.zig 的 PersistentGpuCache）。缓存的收益上限是这
 /// 一次性的 1.26ms（不在帧路径上），代价却是整块 glass 渲染错误：负收益。

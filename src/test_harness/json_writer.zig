@@ -1,4 +1,4 @@
-/// json_writer — 轻量 JSON writer（无第三方依赖）
+/// json_writer，轻量 JSON writer（无第三方依赖）
 ///
 /// 支持 object/array/string/number/bool/null 的流式写入。
 const std = @import("std");
@@ -59,7 +59,7 @@ pub const JsonWriter = struct {
             self.after_key = false;
             return;
         }
-        // 普通值（array 元素 或 这是不可能的情况 — object 中 value 总是跟在 key 后面）
+        // 普通值（array 元素 或 这是不可能的情况，object 中 value 总是跟在 key 后面）
         if (self.depth > 0 and self.depth < 64) {
             if (self.needs_comma[self.depth]) {
                 self.writeByte(',');

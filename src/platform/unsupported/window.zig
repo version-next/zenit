@@ -83,9 +83,8 @@ pub const UnsupportedWindow = struct {
         y: f32,
         dx: f32,
         dy: f32,
-        is_momentum: bool,
-        phase_ended: bool,
-        is_trackpad: bool,
+        phase: u8,
+        momentum: u8,
     };
 
     /// IME replacementRange 哨兵：与 macos 平台保持同一 API 形状。
@@ -185,7 +184,7 @@ pub const UnsupportedWindow = struct {
         return 60.0;
     }
 
-    /// 无平台窗口，返 1 —— 保持"单窗口"语义，不是 0（0 是 a11y 的通配键）。
+    /// 无平台窗口，返 1，保持"单窗口"语义，不是 0（0 是 a11y 的通配键）。
     pub fn getWindowId(self: *UnsupportedWindow) u32 {
         _ = self;
         return 1;

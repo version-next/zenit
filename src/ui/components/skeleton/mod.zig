@@ -123,7 +123,7 @@ pub const SkeletonBuilder = struct {
         errdefer cx.freeNode(container);
         container.meta.ownership.meta.component_name = "Skeleton";
         try core.bindScopeToNode(my_scope, container);
-        // 只有外层容器报 loading —— buildSingle 出来的子骨架不带 a11y，
+        // 只有外层容器报 loading, buildSingle 出来的子骨架不带 a11y，
         // 否则 AT 会把"正在加载"念 N 遍。
         container.behavior.interaction.a11y = loadingA11y();
 
@@ -256,12 +256,12 @@ test "Skeleton: no animation" {
     try std.testing.expect(sk.meta.per_frame.hooks.before_render.main == null);
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "skeleton(count=3): mount 在任意分配点失败时不泄漏（sweep）" {
     const sw = @import("../oom_sweep.zig");
     try sw.sweepMount("skeleton(count=3)", struct {

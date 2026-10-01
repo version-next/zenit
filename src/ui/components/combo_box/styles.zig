@@ -1,4 +1,4 @@
-/// ComboBox — 样式层
+/// ComboBox，样式层
 ///
 /// 具名样式函数与共享几何常量；业务逻辑/State/portal 挂载在 mod.zig。
 const core = @import("../../core.zig");
@@ -44,7 +44,7 @@ pub fn comboItemStyle(t: *const theme.ThemeTokens) core.BoxStyle {
     };
 }
 
-/// 空态行 — 与 option 行同款几何但初始收起（height 0）
+/// 空态行，与 option 行同款几何但初始收起（height 0）
 pub fn comboEmptyStyle(t: *const theme.ThemeTokens) core.BoxStyle {
     var s = comboItemStyle(t);
     s.justify = .center;
@@ -68,7 +68,7 @@ pub fn comboEmptyTextStyle(t: *const theme.ThemeTokens) core.TextProps {
     };
 }
 
-/// 键盘/hover 高亮行背景 — 运行时由 highlight 逻辑驱动
+/// 键盘/hover 高亮行背景，运行时由 highlight 逻辑驱动
 pub fn comboHighlightBg(t: *const theme.ThemeTokens) core.Color {
     return t.color.list_hover_bg;
 }

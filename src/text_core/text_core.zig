@@ -1,4 +1,4 @@
-/// text_core — 通用文本数据结构层
+/// text_core，通用文本数据结构层
 ///
 /// 与编辑器无关、与语言无关的纯算法库：
 /// PieceTable / PieceTree / SumTree / FenwickTree / WrapMap / DocCursor / Anchor / Clock / Point
@@ -44,7 +44,7 @@ pub const FenwickTree = @import("fenwick_tree.zig").FenwickTree;
 pub const prepared_wrap_line = @import("prepared_wrap_line.zig");
 pub const PreparedWrapLine = prepared_wrap_line.PreparedWrapLine;
 
-// WrapMap — 通用 Soft Wrap 映射
+// WrapMap，通用 Soft Wrap 映射
 pub const wrap_map = @import("wrap_map.zig");
 pub const WrapMap = wrap_map.WrapMap;
 pub const MeasureFn = wrap_map.MeasureFn;
@@ -53,7 +53,7 @@ pub const DisplayLineInfo = wrap_map.DisplayLineInfo;
 pub const DisplayPoint = wrap_map.DisplayPoint;
 pub const BufferLineRange = wrap_map.BufferLineRange;
 
-// DocCursor — 通用文档光标
+// DocCursor，通用文档光标
 // Grapheme cluster 边界（UAX #29）
 pub const grapheme = @import("grapheme.zig");
 pub const text_coordinate_corpus = @import("text_coordinate_corpus.zig");
@@ -93,6 +93,6 @@ pub const dimensions = @import("dimensions.zig");
 
 test {
     std.testing.refAllDecls(@This());
-    // refAllDecls 不保证递归收集子模块里的 test —— 显式引用才算数
+    // refAllDecls 不保证递归收集子模块里的 test，显式引用才算数
     _ = @import("utf8.zig");
 }

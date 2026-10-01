@@ -1,4 +1,4 @@
-//! Notifier —— 应用内全局提醒（设计稿 § 16 · In-App Notifications）。
+//! Notifier，应用内全局提醒（设计稿 § 16 · In-App Notifications）。
 //!
 //! 一条提醒 = 一个 Card 对象；渲染层每帧只根据它算 transform 与 alpha，
 //! 所有时间量都从 born / left_at / deadline 三个墙钟派生的时间戳推导。
@@ -12,6 +12,9 @@
 //! ④ 悬停 = 对整组外接矩形（外扩 18px）逐帧做命中测试，不用进出事件。
 //!    退场期间冻结展开状态；退场结束后按指针真实坐标重新判定。
 //! ⑥ z 序与层序相反：层序 0（最新、最靠近锚点）z 最高。
+//!
+//! 文案提示（hint，16.13）是卡片的轻量形态（kind = .hint）：一句话的玻璃胶囊，
+//! 与卡片进同一个堆叠，见 hint.zig 与 Notifier.hint。
 //!
 //! 通知中心（历史、勿扰、铃铛入口）是业务层：宿主在自己调用 show 的地方记历史、
 //! 决定是否弹出，并通过 Listener 事件得知关闭 / 到期 / 按钮操作。
@@ -33,6 +36,7 @@ pub const model = @import("model.zig");
 pub const styles = @import("styles.zig");
 const card_mod = @import("card.zig");
 const Card = card_mod.Card;
+const hint_mod = @import("hint.zig");
 const M = styles.Metrics;
 const Spec = model.Spec;
 
@@ -44,6 +48,9 @@ pub const Action = card_mod.Action;
 pub const Progress = card_mod.Progress;
 pub const Strings = card_mod.Strings;
 pub const NotificationCard = Card;
+pub const Hint = hint_mod.Hint;
+pub const HintMark = hint_mod.Mark;
+pub const HintKeycap = hint_mod.Keycap;
 
 pub const Id = u64;
 
@@ -74,6 +81,9 @@ pub const Notification = struct {
     duration_ms: ?u32 = null,
     /// 覆盖生命条显示（默认：有时限且非 progress 时显示）。
     life_bar: ?bool = null,
+    /// kind = .hint：行首标记与键帽行（title 为胶囊正文）。一般用 Notifier.hint 构造。
+    hint_mark: HintMark = .none,
+    keycap: ?HintKeycap = null,
 };
 
 pub const EventKind = enum {
@@ -387,7 +397,7 @@ pub const Notifier = struct {
         return id;
     }
 
-    /// 原地转换：改写 kind / tone / title / body，重置 life，换图标 —— 不销毁、
+    /// 原地转换：改写 kind / tone / title / body，重置 life，换图标，不销毁、
     /// 不重建卡片，born 不变，不重放入场（16.6）。
     pub fn update(self: *Notifier, id: Id, n: Notification) !void {
         const card = self.findLive(id) orelse return error.NotificationNotFound;
@@ -453,6 +463,39 @@ pub const Notifier = struct {
         return self.paused;
     }
 
+    // ── 文案提示（16.13）──
+
+    /// 弹出一条文案提示（36 高玻璃胶囊），与卡片进同一个堆叠。
+    /// 传入已存在的 id 时原地转换（进行中 -> 成功）。按钮点击走 `.action` 事件，
+    /// 宿主没有在回调里原地转换它时，点过即收起。
+    pub fn hint(self: *Notifier, h: Hint) !Id {
+        const actions: []const Action = if (h.action) |*a| a[0..1] else &.{};
+        return self.show(.{
+            .id = h.id,
+            .kind = .hint,
+            .tone = hint_mod.toneOf(h.mark),
+            .title = h.text,
+            .actions = actions,
+            .duration_ms = h.duration_ms,
+            .hint_mark = h.mark,
+            .keycap = h.keycap,
+        });
+    }
+
+    /// 等同于点最新一条带按钮的文案提示的按钮：宿主在 ⌘Z 等快捷键里先调它，
+    /// 返回 true 表示已被提示消费（没有这样的提示时返回 false，⌘Z 回到编辑器自己的撤销栈）。
+    pub fn triggerHintAction(self: *Notifier) bool {
+        var newest: ?*Card = null;
+        for (self.cards.items) |card| {
+            if (card.leaving or card.spec.kind != .hint or card.spec.actions.len == 0) continue;
+            if (newest == null or card.seq > newest.?.seq) newest = card;
+        }
+        const card = newest orelse return false;
+        onButton(card, 0);
+        self.cx.requestRedraw();
+        return true;
+    }
+
     /// 取卡片（测试 id、埋点、截图断言用）。
     pub fn cardForId(self: *Notifier, id: Id) ?*Card {
         for (self.cards.items) |card| if (card.id == id) return card;
@@ -484,10 +527,13 @@ pub const Notifier = struct {
         if (n.kind == .undo and actions.len == 0) {
             actions = &.{.{ .label = self.strings.undo, .primary = true, .tag = "undo" }};
         }
-        const auto_sticky = n.kind == .progress or n.reply or n.tone == .@"error" or
+        const is_hint = n.kind == .hint;
+        const hint_duration = hint_mod.durationOf(n.hint_mark, n.keycap != null, actions.len > 0);
+        const auto_sticky = if (is_hint) hint_duration == null else n.kind == .progress or n.reply or n.tone == .@"error" or
             (n.kind == .default and n.tone == .violet and actions.len > 0);
         const sticky = n.sticky or (n.duration_ms == null and auto_sticky);
         const duration: u32 = n.duration_ms orelse switch (n.kind) {
+            .hint => hint_duration orelse 0,
             .undo => model.Durations.undo,
             .progress => model.Durations.progress_done,
             .default => switch (n.tone) {
@@ -498,9 +544,21 @@ pub const Notifier = struct {
             },
         };
 
-        const owned_actions = try arena.alloc(Action, @min(actions.len, 2));
+        // 胶囊只放一个按钮。
+        const owned_actions = try arena.alloc(Action, @min(actions.len, @as(usize, if (is_hint) 1 else 2)));
         for (owned_actions, actions[0..owned_actions.len]) |*dst, src| {
-            dst.* = .{ .label = try arena.dupe(u8, src.label), .primary = src.primary, .tag = try arena.dupe(u8, src.tag) };
+            dst.* = .{
+                .label = try arena.dupe(u8, src.label),
+                .primary = src.primary,
+                .tag = try arena.dupe(u8, src.tag),
+                .shortcut = try arena.dupe(u8, src.shortcut),
+            };
+        }
+        var keycap = n.keycap;
+        if (keycap) |*k| {
+            k.prefix = try arena.dupe(u8, k.prefix);
+            k.key = try arena.dupe(u8, k.key);
+            k.suffix = try arena.dupe(u8, k.suffix);
         }
         var progress = n.progress;
         if (progress) |*p| {
@@ -522,7 +580,9 @@ pub const Notifier = struct {
                 .reply = n.reply,
                 .quote = if (n.quote) |q| try arena.dupe(u8, q) else null,
                 .progress = progress,
-                .life_bar = n.life_bar orelse (!sticky and n.kind != .progress),
+                .life_bar = !is_hint and (n.life_bar orelse (!sticky and n.kind != .progress)),
+                .hint_mark = n.hint_mark,
+                .keycap = keycap,
             },
             .sticky = sticky,
             .duration_ms = duration,
@@ -616,8 +676,11 @@ pub const Notifier = struct {
         const old_spec = card.spec;
         card.spec = r.spec;
         const params = self.buildParams();
+        const form_changed = (old_spec.kind == .hint) != (r.spec.kind == .hint);
+        if (form_changed) card_mod.applyShellForm(card, params);
         const new_content = card_mod.buildContent(card, params) catch |err| {
             card.spec = old_spec;
+            if (form_changed) card_mod.applyShellForm(card, params);
             return err;
         };
         var old_content = card.content;
@@ -693,7 +756,7 @@ pub const Notifier = struct {
     }
 
     // ────────────────────────────────────────────────────────────────────
-    // 事件（按钮 / 关闭）—— 点击发生在事件栈里，挪到下一帧处理：处理可能
+    // 事件（按钮 / 关闭），点击发生在事件栈里，挪到下一帧处理：处理可能
     // 移除被点的按钮本身（原地转换换掉按钮区）。
     // ────────────────────────────────────────────────────────────────────
 
@@ -804,7 +867,13 @@ pub const Notifier = struct {
                         self.settleUndo(card);
                         self.emit(.{ .id = b.id, .kind = .undo, .tag = "undo", .index = b.index });
                     } else {
+                        const revision = card.revision;
                         self.emit(.{ .id = b.id, .kind = .action, .tag = action.tag, .index = b.index });
+                        if (self.closed) return;
+                        // 文案提示：宿主没在回调里原地转换它，点过即收起。
+                        if (self.findLive(b.id)) |c| {
+                            if (c == card and c.spec.kind == .hint and c.revision == revision) self.beginLeave(c, false);
+                        }
                     }
                 },
             }
@@ -921,7 +990,7 @@ pub const Notifier = struct {
         const self = notifierOf(card) orelse return .ignored;
         if (card.leaving or card.dragging and !card.scroll_dragging) return .ignored;
         // 惯性阶段不驱动（松手判定已在静默超时里完成）。
-        if (ev.is_momentum) return if (card.scroll_dragging) .stop else .ignored;
+        if (ev.isMomentum()) return if (card.scroll_dragging) .stop else .ignored;
         if (!card.scroll_dragging and @abs(ev.dx) <= @abs(ev.dy) * 1.2) return .ignored;
         card.scroll_dragging = true;
         card.dragging = true;
@@ -929,7 +998,7 @@ pub const Notifier = struct {
         card.spring_pending = false;
         card.drag_dx += ev.dx;
         card.last_scroll_wall_ms = std.time.milliTimestamp();
-        if (ev.phase_ended) self.releaseDrag(card);
+        if (ev.phaseEnded()) self.releaseDrag(card);
         self.container.markRenderDirty();
         return .stop;
     }
@@ -952,7 +1021,7 @@ pub const Notifier = struct {
     fn springBack(self: *Notifier, card: *Card) void {
         card.dragging = false;
         card.scroll_dragging = false;
-        // 从显示位置（橡皮筋阻尼后）弹回，而不是原始位移——否则反方向拖动松手时先跳后回。
+        // 从显示位置（橡皮筋阻尼后）弹回，而不是原始位移，否则反方向拖动松手时先跳后回。
         card.drag_dx = model.constrainSwipe(self.options.position, card.drag_dx);
         card.spring_from = card.drag_dx;
         card.spring_at_ms = if (self.in_frame) self.last_now_ms else null;
@@ -1019,6 +1088,7 @@ pub const Notifier = struct {
                 card.crossfade_at_ms = now;
             }
             card.natural_height = h;
+            card.natural_width = if (card.spec.kind == .hint) card.content.root.rectFromWorldOrFallback().w else self.options.width;
         }
 
         // 2. 悬停：对整组外接矩形 +18px 做命中测试；退场期间冻结。
@@ -1027,7 +1097,7 @@ pub const Notifier = struct {
             if (card.leaving) any_leaving = true;
         }
         // 指针停在角标 / 全部清除圆钮上时冻结展开状态：它们的位置跟着堆叠外沿走，
-        // 若照常判定，展开 → 控件上移离开指针 → 收起 → 控件回到指针下 … 来回闪烁。
+        // 若照常判定，展开 -> 控件上移离开指针 -> 收起 -> 控件回到指针下 … 来回闪烁。
         if (!any_leaving and !self.pointerOverControls()) {
             const want = self.hitTestStack() or self.anyDragging();
             if (want != self.hovered) self.setHovered(want, now);
@@ -1088,7 +1158,7 @@ pub const Notifier = struct {
         if (self.isAnimating(now)) {
             self.cx.requestRedraw();
             // 容器挂在 portal 根下（不在 cx.root 里）：portal 树的 before_render 遍历
-            // 按它自己的脏位门控——不标脏，下一帧本 hook 不执行，动画停在半路（实测：
+            // 按它自己的脏位门控，不标脏，下一帧本 hook 不执行，动画停在半路（实测：
             // 退场卡片停在淡出中途、永不回收）。容器自身不绘制、子树走缓存，开销很小。
             self.container.markRenderDirty();
         } else if (self.cards.items.len > 0) {
@@ -1110,7 +1180,7 @@ pub const Notifier = struct {
             if (card.follow_y.active) return true;
             if (card.close_alpha > 0.001 and card.close_alpha < 0.999) return true;
             // 旋转指示器常转；生命条 / 倒计时环在计时（未暂停）时每帧推进。
-            if (card.spec.lead == .spinner) return true;
+            if (card.content.spinner != null) return true;
             if (!self.paused and !card.sticky) return true;
         }
         return false;
@@ -1217,6 +1287,7 @@ pub const Notifier = struct {
             const exit = if (card.leaving) model.exitMotion(card.exitElapsed(now)) else null;
             inputs[i] = .{
                 .height = card.natural_height,
+                .width = if (card.natural_width > 0) card.natural_width else W,
                 .weight = if (exit) |x| (if (card.hold_space) 1 else x.weight) else 1,
                 .leaving = card.leaving,
                 .quiet = card.spec.tone == .quiet and card.spec.lead == .dot,
@@ -1266,7 +1337,7 @@ pub const Notifier = struct {
             const enter = model.enterMotion(age);
             const exit = if (card.leaving) model.exitMotion(card.exitElapsed(now)) else null;
 
-            // 近锚点边 → 卡片顶边。
+            // 近锚点边 -> 卡片顶边。
             const top: f32 = switch (position.vAnchor()) {
                 .top => area_y + inset + o.offset,
                 .bottom => area_y + area_h - inset - o.offset - o.clip_height,
@@ -1302,7 +1373,15 @@ pub const Notifier = struct {
                 if (p >= 1) card.crossfade_at_ms = null;
             }
 
-            const x_pos = base_x + dx;
+            // 胶囊比卡片窄：按停靠方向对齐到卡片列（居中 / 贴左 / 贴右）。
+            // 可见宽度：折叠态后层收拢到最前那张的宽度，展开时恢复自身宽度。
+            const cw = if (o.clip_width > 0) o.clip_width else W;
+            const align_dx: f32 = switch (position.hAlign()) {
+                .left => 0,
+                .center => (W - cw) / 2,
+                .right => W - cw,
+            };
+            const x_pos = base_x + align_dx + dx;
             const y_pos = y + dy;
             applyCard(card, pal, .{
                 .x = x_pos,
@@ -1313,15 +1392,16 @@ pub const Notifier = struct {
                 .glass_alpha = o.glass_alpha,
                 .content_alpha = content_alpha,
                 .clip_height = o.clip_height,
+                .clip_width = cw,
                 .rank = @intCast(@min(i, 60)),
                 .now = now,
                 .age = age,
             });
 
             // 命中矩形：盒子尺寸围绕中心收缩，按视觉尺寸记录。
-            const vis_w = W * o.scale * scale;
+            const vis_w = cw * o.scale * scale;
             const vis_h = o.clip_height * scale;
-            card.rect_x = x_pos + (W - vis_w) / 2;
+            card.rect_x = x_pos + (cw - vis_w) / 2;
             card.rect_y = y_pos + (o.clip_height - vis_h) / 2;
             card.rect_w = vis_w;
             card.rect_h = vis_h;
@@ -1343,7 +1423,8 @@ pub const Notifier = struct {
         const dt: f32 = @floatCast(@max(0, @min(64, now - self.last_frame_ms)));
         self.last_frame_ms = now;
         for (order[0..n]) |card| {
-            const want: f32 = if (self.hovered and !card.leaving and card.rect_visible and card.content.root.getOpacity() > 0.5) 1 else 0;
+            // 文案提示没有关闭钮（横扫仍可关）。
+            const want: f32 = if (self.hovered and card.spec.kind != .hint and !card.leaving and card.rect_visible and card.content.root.getOpacity() > 0.5) 1 else 0;
             const step = dt / @as(f32, @floatCast(Spec.close_fade_ms));
             card.close_alpha = if (want > card.close_alpha) @min(want, card.close_alpha + step) else @max(want, card.close_alpha - step);
             applyClose(card, pal, card == ptr_card);
@@ -1399,11 +1480,17 @@ pub const Notifier = struct {
         const pill_rect = self.pill.rectFromWorldOrFallback();
         const clear_rect = self.clear_btn.rectFromWorldOrFallback();
         if (shown > 0) {
-            // 角标与圆钮作为一组居中；圆钮不在时角标自己居中。
+            // 角标与圆钮作为一组，按停靠方向对齐到卡片列：居中停靠居中，左右停靠贴边
+            // （文案提示胶囊比卡片窄且贴边，居中会让角标悬在胶囊旁边的空处）。
             const pill_w: f32 = if (want > 0) pill_rect.w else 0;
             const clear_w: f32 = if (want_clear > 0) clear_rect.w else 0;
             const gap: f32 = if (pill_w > 0 and clear_w > 0) M.clear_gap else 0;
-            const px = base_x + (W - (pill_w + gap + clear_w)) / 2;
+            const group_w = pill_w + gap + clear_w;
+            const px = switch (self.options.position.hAlign()) {
+                .left => base_x,
+                .center => base_x + (W - group_w) / 2,
+                .right => base_x + W - group_w,
+            };
             const py = if (self.options.position.pillAbove()) min_y - M.pill_gap - M.pill_height else max_y + M.pill_gap;
             if (@abs(self.pill.style.translate_x - px) > 0.001 or @abs(self.pill.style.translate_y - py) > 0.001) {
                 self.pill.style.translate_x = px;
@@ -1424,7 +1511,7 @@ pub const Notifier = struct {
         if (self.clear_alpha < 0.5 and self.clear_armed) self.clear_armed = false;
         const reveal_target: f32 = if (self.clear_armed) 1 else 0;
         const rstep = dt / @as(f32, @floatCast(Spec.clear_reveal_ms));
-        // 夹在目标值上：已到目标时不能按收回方向再走一步（空闲唤醒帧 dt 大，曾把 1 砍到 0.68 → 周期性闪烁）。
+        // 夹在目标值上：已到目标时不能按收回方向再走一步（空闲唤醒帧 dt 大，曾把 1 砍到 0.68 -> 周期性闪烁）。
         self.clear_reveal_t = if (reveal_target > self.clear_reveal_t) @min(reveal_target, self.clear_reveal_t + rstep) else @max(reveal_target, self.clear_reveal_t - rstep);
         const label_w = self.clear_label.rectFromWorldOrFallback().w + 8; // + margin 5 / 3
         const rw = label_w * model.enterEase(self.clear_reveal_t);
@@ -1453,13 +1540,14 @@ const Frame = struct {
     glass_alpha: f32,
     content_alpha: f32,
     clip_height: f32,
+    clip_width: f32,
     rank: u8,
     now: f64,
     age: f64,
 };
 
 /// 逐帧写 opacity：值变了才写；从不可见变为可见按一次性状态切换标脏（作废渲染缓存，
-/// 否则 opacity 0 时被跳过绘制的子树会被当作干净子树沿用空的显示内容——实测：悬停
+/// 否则 opacity 0 时被跳过绘制的子树会被当作干净子树沿用空的显示内容，实测：悬停
 /// 暂停后原地转换的新内容层整块不显示）；其余按动画帧标脏（保留 surface 复用）。
 fn animOpacity(node: *Node, value: f32) void {
     const old = node.getOpacity();
@@ -1529,6 +1617,8 @@ fn applyCard(card: *Card, pal: *const styles.Palette, f: Frame) void {
         s.markSizingDirty();
     }
 
+    applyClipWidth(card, f.clip_width);
+
     // 内容层（折叠后层隐藏 / 原地转换交叉淡入）+ 分层错峰入场。
     const c = &card.content;
     const content_a = model.clamp01(f.content_alpha);
@@ -1537,19 +1627,23 @@ fn applyCard(card: *Card, pal: *const styles.Palette, f: Frame) void {
     applyStagger(card, f.age);
 
     // 图标弹入（入场与原地换图标共用曲线）。
-    if (card.icon_pop_at_ms) |t0| {
+    if (card.icon_pop_at_ms) |t0| icon: {
+        const lead = c.lead orelse {
+            card.icon_pop_at_ms = null;
+            break :icon;
+        };
         const dur: f64 = if (t0 == card.born_ms) Spec.enter_ms else Spec.icon_pop_ms;
         const pop = model.iconPop(f.now - t0, dur);
-        if (c.lead.style.ext) |e| {
+        if (lead.style.ext) |e| {
             e.scale_x = pop.scale;
             e.scale_y = pop.scale;
             e.rotate = pop.rotate_deg * std.math.pi / 180.0;
-        } else if (c.lead.style.ensureExtFallible(card.allocator)) |e| {
+        } else if (lead.style.ensureExtFallible(card.allocator)) |e| {
             e.scale_x = pop.scale;
             e.scale_y = pop.scale;
             e.rotate = pop.rotate_deg * std.math.pi / 180.0;
         } else |_| {}
-        c.lead.markCompositeAnimFrameDirty();
+        lead.markCompositeAnimFrameDirty();
         if (f.now - t0 >= dur) card.icon_pop_at_ms = null;
     }
 
@@ -1577,10 +1671,41 @@ fn applyCard(card: *Card, pal: *const styles.Palette, f: Frame) void {
             secs.setTextContent(card.allocator, txt) catch {};
         }
         // 倒计时环只在计时推进时重画（悬停暂停时静止）。
-        if (card.life.frozen_remaining_ms == null) c.lead.markRenderDirty();
+        if (card.life.frozen_remaining_ms == null) if (c.lead) |l| l.markRenderDirty();
     }
-    if (card.spec.lead == .spinner) c.lead.children.items[0].markRenderDirty();
+    if (c.spinner) |sp| sp.markRenderDirty();
     updateTimestamp(card);
+}
+
+/// 可见宽度偏离自然宽度时把外壳钉成固定宽（surface 跟随，内容居中、超出被裁掉）；
+/// 回到自然宽度时恢复原来的尺寸规则（卡片满宽 / 胶囊随内容）。
+fn applyClipWidth(card: *Card, clip_w: f32) void {
+    const p = card.positioner;
+    const s = card.surface;
+    const is_hint = card.spec.kind == .hint;
+    const natural = card.natural_width;
+    if (natural <= 0) return;
+    if (@abs(clip_w - natural) > 0.5) {
+        if (p.style.width != .px or @abs(p.style.width.px - clip_w) > 0.25) {
+            p.style.width = .fixed(@max(0, clip_w));
+            p.markSizingDirty();
+        }
+        if (is_hint and s.style.width != .grow) {
+            s.style.width = .fill();
+            s.style.align_items = .center;
+            s.markSizingDirty();
+        }
+    } else if (is_hint) {
+        if (p.style.width != .fit or s.style.width != .fit) {
+            p.style.width = .{ .fit = .{} };
+            s.style.width = .{ .fit = .{} };
+            p.markSizingDirty();
+            s.markSizingDirty();
+        }
+    } else if (p.style.width != .px or @abs(p.style.width.px - natural) > 0.25) {
+        p.style.width = .fixed(natural);
+        p.markSizingDirty();
+    }
 }
 
 fn applyStagger(card: *Card, age: f64) void {
@@ -1640,7 +1765,8 @@ fn updateTimestamp(card: *Card) void {
         .hours => |h| card_mod.formatCount(&buf, s.hours_ago, h),
         .days => |d| card_mod.formatCount(&buf, s.days_ago, d),
     };
-    card.content.timestamp.setTextContent(card.allocator, label) catch {};
+    const ts = card.content.timestamp orelse return;
+    ts.setTextContent(card.allocator, label) catch {};
 }
 
 fn appendOwned(cx: *Cx, parent: *Node, child: *Node) !void {
@@ -1655,6 +1781,7 @@ fn appendOwned(cx: *Cx, parent: *Node, child: *Node) !void {
 test {
     _ = @import("model.zig");
     _ = @import("styles.zig");
+    _ = @import("hint.zig");
 }
 
 const testing = std.testing;
@@ -1684,7 +1811,7 @@ const TestRig = struct {
         self.ctx.deinit();
     }
 
-    /// 推进帧时钟并跑一帧（layout → before_render）。
+    /// 推进帧时钟并跑一帧（layout -> before_render）。
     fn step(self: *TestRig, now_ms: f64) void {
         self.ctx.frame_time_ms = now_ms;
         self.ctx.layout();
@@ -1878,6 +2005,145 @@ test "Notifier: undo action settles in place and reports the event" {
     try testing.expectApproxEqAbs(@as(f64, 2400), rig.card(id).life.remaining(220), 1e-6);
 }
 
+test "Notifier: hint 胶囊与卡片进同一个堆叠，宽度随内容并居中于卡片列" {
+    var rig = try TestRig.init(.bottom_center);
+    defer rig.deinit();
+    const card_id = try rig.n.show(.{ .tone = .warning, .title = "Disk almost full", .sticky = true });
+    const hint_id = try rig.n.hint(.{ .text = "Saved", .mark = .success });
+    rig.step(0);
+    rig.step(1000);
+    try testing.expectEqual(@as(usize, 2), rig.n.count());
+    const h = rig.card(hint_id);
+    try testing.expect(h.measured);
+    try testing.expectApproxEqAbs(@as(f32, styles.HintMetrics.height), h.natural_height, 0.5);
+    try testing.expect(h.natural_width > 0 and h.natural_width < Spec.card_width);
+    // 最新的胶囊在最前（贴锚点），卡片折叠在它后面。
+    const c = rig.card(card_id);
+    try testing.expect(h.rank < c.rank);
+    const card_center = c.rect_x + c.rect_w / 2;
+    try testing.expectApproxEqAbs(card_center, h.rect_x + h.rect_w / 2, 0.5);
+    // 胶囊没有生命条、没有关闭钮。
+    try testing.expectEqual(@as(f32, 0), rig.card(hint_id).lifebar.style.height.px);
+    rig.ctx.mouse_x = h.rect_x + h.rect_w / 2;
+    rig.ctx.mouse_y = h.rect_y + h.rect_h / 2;
+    var t: f64 = 1016;
+    while (t < 1600) : (t += 16) rig.step(t);
+    try testing.expect(rig.n.hovered);
+    // 悬停时卡片出现关闭钮，胶囊不出现。
+    try testing.expect(c.close_alpha > 0.99);
+    try testing.expectEqual(@as(f32, 0), h.close_alpha);
+}
+
+test "Notifier: hint 按钮点过即收起；宿主原地转换时保留；triggerHintAction 转发 ⌘Z" {
+    var rig = try TestRig.init(.bottom_center);
+    defer rig.deinit();
+    const Sink = struct {
+        var actions: usize = 0;
+        var replace: bool = false;
+        fn cb(_: ?*anyopaque, n: *Notifier, e: Event) void {
+            if (e.kind != .action) return;
+            actions += 1;
+            if (replace) _ = n.hint(.{ .id = e.id, .text = "Undone" }) catch {};
+        }
+    };
+    Sink.actions = 0;
+    Sink.replace = false;
+    rig.n.setListener(.{ .callback = Sink.cb });
+    const undo = Action{ .label = "Undo", .shortcut = "⌘Z", .tag = "undo-replace" };
+    const a = try rig.n.hint(.{ .text = "Replaced 8", .mark = .success, .action = undo });
+    rig.step(0);
+    rig.step(100);
+    try testing.expect(rig.card(a).content.buttons[0] != null);
+    try testing.expectApproxEqAbs(@as(f64, 4000), rig.card(a).life.remaining(0), 1e-6);
+    try testing.expect(rig.n.triggerHintAction());
+    rig.step(200);
+    try testing.expectEqual(@as(usize, 1), Sink.actions);
+    try testing.expect(rig.card(a).leaving);
+    // 已在退场：⌘Z 回到宿主自己的撤销栈。
+    try testing.expect(!rig.n.triggerHintAction());
+
+    Sink.replace = true;
+    const b = try rig.n.hint(.{ .text = "Replaced 3", .action = undo });
+    rig.step(300);
+    rig.step(400);
+    Notifier.onButton(rig.card(b), 0);
+    rig.step(500);
+    try testing.expectEqual(@as(usize, 2), Sink.actions);
+    try testing.expect(!rig.card(b).leaving);
+    try testing.expect(rig.card(b).content.buttons[0] == null);
+}
+
+test "Notifier: 左右停靠时角标组贴边对齐（不再悬在卡片列中间）" {
+    for ([_]Position{ .bottom_left, .bottom_right, .bottom_center }) |pos| {
+        var rig = try TestRig.init(pos);
+        defer rig.deinit();
+        _ = try rig.n.hint(.{ .text = "Focus mode", .keycap = .{ .key = "Esc" } });
+        _ = try rig.n.hint(.{ .text = "Saved", .mark = .success });
+        rig.step(0);
+        var t: f64 = 16;
+        while (t < 800) : (t += 16) rig.step(t);
+        const pill = rig.n.pill;
+        const pw = pill.rectFromWorldOrFallback().w;
+        const clear_right = rig.n.clear_btn.style.translate_x + rig.n.clear_btn.rectFromWorldOrFallback().w;
+        try testing.expect(pw > 0);
+        switch (pos) {
+            .bottom_left => try testing.expectApproxEqAbs(Spec.edge_inset, pill.style.translate_x, 0.5),
+            .bottom_right => try testing.expectApproxEqAbs(1200 - Spec.edge_inset, clear_right, 0.5),
+            else => try testing.expectApproxEqAbs(@as(f32, 600), (pill.style.translate_x + clear_right) / 2, 0.5),
+        }
+    }
+}
+
+test "Notifier: 折叠时后层胶囊宽度收拢到最前那条，展开时过渡回自身宽度" {
+    var rig = try TestRig.init(.bottom_right);
+    defer rig.deinit();
+    const wide = try rig.n.hint(.{ .text = "Focus mode on", .keycap = .{ .prefix = "press", .key = "Esc", .suffix = "to exit" } });
+    const narrow = try rig.n.hint(.{ .text = "Saved", .mark = .success });
+    var t: f64 = 0;
+    while (t < 800) : (t += 16) rig.step(t);
+    const back = rig.card(wide);
+    const front = rig.card(narrow);
+    try testing.expect(back.natural_width > front.natural_width + 40);
+    // 折叠：后层可见宽 = 最前那条的宽（右停靠时右沿对齐，不从左侧露出）。
+    try testing.expectApproxEqAbs(front.natural_width, back.positioner.style.width.px, 0.5);
+    // 比较缩放前的布局框（后层另有折叠缩放，以中心为原点）。
+    const front_right = front.positioner.style.translate_x + front.natural_width;
+    const back_right = back.positioner.style.translate_x + back.positioner.style.width.px;
+    try testing.expectApproxEqAbs(front_right, back_right, 0.5);
+    // 展开：过渡中途介于两者之间，结束后恢复自身宽度（尺寸规则回到 fit）。
+    rig.ctx.mouse_x = front.rect_x + front.rect_w / 2;
+    rig.ctx.mouse_y = front.rect_y + front.rect_h / 2;
+    rig.step(t);
+    try testing.expect(rig.n.hovered);
+    rig.step(t + Spec.expand_ms / 2);
+    const mid = back.positioner.style.width.px;
+    try testing.expect(mid > front.natural_width + 5 and mid < back.natural_width - 5);
+    rig.step(t + Spec.expand_ms + 16);
+    rig.step(t + Spec.expand_ms + 32);
+    try testing.expect(back.positioner.style.width == .fit);
+    try testing.expectApproxEqAbs(back.natural_width, back.rect_w, 0.5);
+}
+
+test "Notifier: 卡片与胶囊之间原地转换切换外壳，进行中常驻、完成后按成功计时" {
+    var rig = try TestRig.init(.bottom_center);
+    defer rig.deinit();
+    const id = try rig.n.hint(.{ .text = "Exporting PDF…", .mark = .loading });
+    rig.step(0);
+    rig.step(100);
+    try testing.expect(rig.card(id).sticky);
+    try testing.expect(rig.card(id).content.spinner != null);
+    try testing.expect(rig.card(id).positioner.style.width == .fit);
+    _ = try rig.n.hint(.{ .id = id, .text = "Exported PDF", .mark = .success });
+    rig.step(200);
+    try testing.expect(!rig.card(id).sticky);
+    try testing.expectApproxEqAbs(@as(f64, 2000), rig.card(id).life.remaining(200), 1e-6);
+    try rig.n.update(id, .{ .tone = .info, .title = "Export finished", .body = "notes.pdf", .sticky = true });
+    rig.step(300);
+    try testing.expect(rig.card(id).positioner.style.width == .px);
+    try testing.expectApproxEqAbs(Spec.card_width, rig.card(id).natural_width, 0.5);
+    try testing.expect(rig.card(id).natural_height > styles.HintMetrics.height);
+}
+
 test "Notifier: teardown with scope first releases cards, content scopes and buttons once" {
     var rig = try TestRig.init(.bottom_center);
     const id = try rig.n.show(.{ .tone = .@"error", .title = "Upload failed", .actions = &.{ .{ .label = "Retry", .primary = true }, .{ .label = "Logs" } } });
@@ -1981,7 +2247,7 @@ test "Notifier: right-anchored stack only flings rightward; trackpad swipe relea
     // 双指横扫：累计 dx，静默 140ms 视为松手。
     var i: usize = 0;
     while (i < 6) : (i += 1) {
-        _ = Notifier.scrollHandler(.{ .dx = 20, .dy = 0, .x = 0, .y = 0, .is_momentum = false, .phase_ended = false, .is_trackpad = true, .modifiers = .{} }, @ptrCast(c));
+        _ = Notifier.scrollHandler(.{ .dx = 20, .dy = 0, .x = 0, .y = 0, .phase = .changed, .modifiers = .{} }, @ptrCast(c));
     }
     try testing.expect(c.scroll_dragging);
     rig.step(1520);
@@ -2036,7 +2302,7 @@ test "Notifier: mouse drag takes over a trackpad swipe without jumping or auto-r
     const c = rig.card(id);
     var i: usize = 0;
     while (i < 3) : (i += 1) {
-        _ = Notifier.scrollHandler(.{ .dx = 20, .dy = 0, .x = 0, .y = 0, .is_momentum = false, .phase_ended = false, .is_trackpad = true, .modifiers = .{} }, @ptrCast(c));
+        _ = Notifier.scrollHandler(.{ .dx = 20, .dy = 0, .x = 0, .y = 0, .phase = .changed, .modifiers = .{} }, @ptrCast(c));
     }
     Notifier.dragCallback(fakeDrag(.start, 10), @ptrCast(c));
     try testing.expectApproxEqAbs(@as(f32, 70), c.drag_dx, 1e-4);
@@ -2141,7 +2407,7 @@ test "Notifier: clear-all button appears with 2+ cards and dismisses every card 
 
 test "Notifier: armed clear-all stays fully revealed across idle wake frames" {
     // 实测闪烁：展开完成后空闲停帧，每 1s 唤醒一帧刷新时间戳；该帧 dt 大，
-    // 进度在「已到目标」时仍按收回方向减一步（1 → 0.68），文字变淡、整组重新居中。
+    // 进度在「已到目标」时仍按收回方向减一步（1 -> 0.68），文字变淡、整组重新居中。
     var rig = try TestRig.init(.bottom_center);
     defer rig.deinit();
     _ = try rig.n.show(.{ .title = "one", .sticky = true });
@@ -2210,7 +2476,7 @@ test "Notifier: resting the pointer on the clear-all button does not oscillate t
 // 同时生效，只有注入分配失败才走得到。每个注入点一个独立 GPA：泄漏看
 // deinit()==.leak，二次释放由 GPA 安全检查报错（test 里 log.err 即失败）。
 
-/// 被 sweep 的一次完整使用：init → 两条提醒（带正文与操作按钮）→ 同 id 原地转换。
+/// 被 sweep 的一次完整使用：init -> 两条提醒（带正文与操作按钮）-> 同 id 原地转换。
 fn oomSweepUse(scope: *Scope, ctx: *Cx) !void {
     const n = try Notifier.init(scope, ctx, .{ .position = .bottom_right });
     _ = try n.show(.{ .tone = .success, .title = "Saved", .body = "3 files synced" });

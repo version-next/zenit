@@ -2,7 +2,7 @@
 //!
 //! 宿主经 `App.setFontSelector` 换上自己的 selector 后，真正画字/测量走的是
 //! `renderer.fonts`（宿主那份），而此前 scale 变化只更新内建
-//! `app.font_selector` —— 换屏后宿主字体停在旧 scale（糊 / bearing 错位）。
+//! `app.font_selector`，换屏后宿主字体停在旧 scale（糊 / bearing 错位）。
 //! 同理 setFontSelector 装上时也必须立刻对齐当前 scale，否则首屏就是错的。
 //!
 //! 泛型于 selector 类型（只要求 `setScaleFactor(f32)`），便于脱离 Metal/

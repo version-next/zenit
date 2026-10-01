@@ -9,7 +9,7 @@ const std = @import("std");
 const gpu = @import("../gpu.zig");
 const mtl = @import("metal_bindings.zig");
 
-/// BindGroupLayout — 描述一组绑定的布局
+/// BindGroupLayout，描述一组绑定的布局
 ///
 /// 存储每个 binding slot 的类型和可见性信息，用于验证和 pipeline 创建。
 pub const BindGroupLayout = struct {
@@ -30,7 +30,7 @@ pub const BindGroupLayout = struct {
     }
 };
 
-/// PipelineLayout — 组合多个 BindGroupLayout
+/// PipelineLayout，组合多个 BindGroupLayout
 pub const PipelineLayout = struct {
     bind_group_layouts: []const BindGroupLayout,
     label: ?[]const u8 = null,
@@ -63,7 +63,7 @@ pub const BoundResource = union(enum) {
     },
 };
 
-/// BindGroup — 一组已绑定的资源
+/// BindGroup，一组已绑定的资源
 ///
 /// 在 Metal 中，setBindGroup 会被展开为一系列 setVertexBuffer/setFragmentTexture 调用。
 /// binding 号直接映射到 Metal 的 buffer/texture/sampler index。

@@ -1,4 +1,4 @@
-/// Animation Module — Zenit UI 动画系统
+/// Animation Module, Zenit UI 动画系统
 ///
 /// 架构分层:
 ///

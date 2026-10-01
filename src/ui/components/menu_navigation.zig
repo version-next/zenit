@@ -1,9 +1,9 @@
-//! 菜单键盘导航的共享纯逻辑 —— 供 Menu / DropdownMenu 复用。
+//! 菜单键盘导航的共享纯逻辑，供 Menu / DropdownMenu 复用。
 //!
 //! 背景：`nextEnabledIndex`（跳过 separator 和 disabled 项的循环查找）此前
 //! 在三个地方各写了一份：`menu/mod.zig`、`dropdown_menu/mod.zig`，以及一个
 //! 全仓零引用的死文件 `menu_core.zig`。两个活实现当时逐字节相同，但没有任何
-//! 机制保证它们继续保持一致——改一份忘另一份，Menu 和 DropdownMenu 的键盘
+//! 机制保证它们继续保持一致，改一份忘另一份，Menu 和 DropdownMenu 的键盘
 //! 行为就会分叉，而两边各自的测试都会继续绿。
 //!
 //! 这里只抽真正共享的那一个函数。Menu 与 DropdownMenu 的 item 类型不同

@@ -1,4 +1,4 @@
-/// Phase L0: Scene Runtime — 节点级保留式元数据
+/// Phase L0: Scene Runtime，节点级保留式元数据
 ///
 /// 每帧在 renderNodeTransform 中为可见节点写入 SceneNodeRuntime，
 /// 当前阶段仅记录不消费，为后续 Phase 统一 render/hit/devtools 奠定基础。
@@ -34,7 +34,7 @@ pub fn displayPayloadSubtreeStrategyUsesSelfEffectSpace(strategy: DisplayPayload
     return switch (strategy) {
         .none, .simple => false,
         // self_blur 与 self_scale/self_safe_effect 不同：backdrop_blur 的 GPU consumer
-        // (applyBackdropBlur) 不 push offscreen layer 来提供"父节点 → 子节点"的 world translation。
+        // (applyBackdropBlur) 不 push offscreen layer 来提供"父节点 -> 子节点"的 world translation。
         // 若把 children 命令转成 button-local 坐标，主 pass 上就会画到 (button_local) 而非 (button_world+local)。
         // 因此 self_blur 必须保留 absolute world 坐标。
         .self_blur => false,
@@ -94,7 +94,7 @@ pub const SceneNodeRuntime = struct {
     promoted_surface_transform: Transform2D = .{},
     /// Frame-flags for the promoted surface cache. Layout mirrors
     /// `layer_tree.LayerFrameFlags` (kept inline here to avoid a cyclic
-    /// import — `layer_tree` already imports `scene_runtime`).
+    /// import, `layer_tree` already imports `scene_runtime`).
     promoted_surface_flags: PromotedSurfaceFrameFlags = .{},
 };
 

@@ -17,7 +17,7 @@ const memo_mod = @import("memo.zig");
 /// 设计要点:
 /// - 不使用 Arena，用普通 allocator 逐个分配（因为需要独立销毁）
 /// - SignalOwner 保留为共享的依赖追踪上下文（current_effect、is_tracking、batch_ctx）
-/// - dispose() 顺序：子 Scope → cleanups → Effect 从 Signal subscribers 中移除 → 释放内存
+/// - dispose() 顺序：子 Scope -> cleanups -> Effect 从 Signal subscribers 中移除 -> 释放内存
 const context_mod = @import("context.zig");
 
 pub const ALIVE_SENTINEL: u32 = 0x5C0E_A11E;
@@ -61,7 +61,7 @@ pub const Scope = struct {
     /// 创建 Scope
     pub fn init(allocator: Allocator, parent: ?*Scope, owner: *SignalOwner) !*Scope {
         const scope = try allocator.create(Scope);
-        // Scope 用 caller 的 allocator（非 owner arena）——父注册失败不回收
+        // Scope 用 caller 的 allocator（非 owner arena），父注册失败不回收
         // 就是真泄漏（实测 416B/次）
         errdefer allocator.destroy(scope);
         scope.* = .{
@@ -130,7 +130,7 @@ pub const Scope = struct {
         // 的所有其它字段访问）。放在 disposeNow 而不是 dispose：这里才是两条
         // 路径（同步 / deferred）共同的销毁入口，末尾会 allocator.destroy(self)。
         // 不查的话，二次进入读到的 `disposed` 可能是 0xaa 覆写值（非 0 ⇒ true），
-        // double dispose 退化成静默 early-return —— 与 Node 那条同型。
+        // double dispose 退化成静默 early-return，与 Node 那条同型。
         if (self.alive_sentinel != ALIVE_SENTINEL) {
             @panic("Scope.disposeNow: scope 已被释放（double dispose）或内存已损坏");
         }
@@ -168,7 +168,7 @@ pub const Scope = struct {
         self.cleanups.deinit(self.allocator);
 
         // 3. 清理 Effects：注销 graph node（自动断 source/observer 边）+ 释放
-        // 单轨清理路径——graph.destroyNode 处理所有 cleanup；
+        // 单轨清理路径，graph.destroyNode 处理所有 cleanup；
         // 不再遍历 effect.dependencies / signal.subscribers 列表。
         for (self.effects.items) |effect| {
             if (effect.graph_node_raw != 0xFFFFFFFF) {
@@ -266,8 +266,8 @@ pub const Scope = struct {
 
     /// 注册通用资源（dispose 时由 destroyFn(ptr, allocator) 释放）
     ///
-    /// ⚠️ 登记本身可失败（resources 扩容）。失败时 ptr 仍归调用方——绝大多数调用方
-    /// 是「create → 初始化 → registerResource」三步，第三步失败就把对象漏掉了
+    /// ⚠️ 登记本身可失败（resources 扩容）。失败时 ptr 仍归调用方，绝大多数调用方
+    /// 是「create -> 初始化 -> registerResource」三步，第三步失败就把对象漏掉了
     /// （全仓扫出 65 处）。除非你在登记前后另有 errdefer，否则用 adoptResource。
     pub fn registerResource(self: *Scope, ptr: *anyopaque, destroyFn: ResourceDestroyFn) !void {
         try self.resources.append(self.allocator, .{ .ptr = ptr, .destroyFn = destroyFn });
@@ -464,7 +464,7 @@ test "Scope: dispose stops effects" {
         count.set(1);
         try std.testing.expectEqual(@as(i32, 2), effect_run_count);
 
-        // 销毁 Scope → Effect 被清理
+        // 销毁 Scope -> Effect 被清理
         scope.dispose();
     }
 
@@ -788,7 +788,7 @@ test "Scope: parent dispose handles cross-scope signal dependencies" {
 
 test "allocation campaign: Scope/Memo/Effect 构造路径 OOM 不泄漏不半注册" {
     // 逐 fail-index 扫描三条构造路径。testing.allocator 在测试尾自动查泄漏，
-    // FailingAllocator 首中后永久失败——所以每轮独立建整套 owner/scope。
+    // FailingAllocator 首中后永久失败，所以每轮独立建整套 owner/scope。
     // 锁的性质：构造失败时 (a) caller-allocator 内存全部归还（Scope 路径曾
     // 实测漏 416B）；(b) 注册表不留半注册态（graph_node_raw 仍 0xFFFFFFFF
     // 的 EffectBase）；(c) 已建的 graph node 被回退。
@@ -803,7 +803,7 @@ test "allocation campaign: Scope/Memo/Effect 构造路径 OOM 不泄漏不半注
         defer owner.deinit();
 
         // pushTracking 在 OOM 时按治理策略 @panic（tracking 栈失步不可恢复），
-        // 不属于本测试要锁的性质——预热容量让它在本测试内永不分配
+        // 不属于本测试要锁的性质，预热容量让它在本测试内永不分配
         owner.graph.tracking_stack.ensureTotalCapacity(alloc, 8) catch continue;
 
         const scope = Scope.init(alloc, null, owner) catch continue;
@@ -852,7 +852,7 @@ test "Scope: adoptResource 登记失败时当场跑 destroyFn，不留孤儿也�
     const scope = try Scope.init(a, null, owner);
     defer scope.dispose();
 
-    // 第一次：resources 首次扩容那一步失败 → 对象必须被 destroyFn 收掉，错误抛回。
+    // 第一次：resources 首次扩容那一步失败 -> 对象必须被 destroyFn 收掉，错误抛回。
     const first = try a.create(u64);
     first.* = 1;
     failing.fail_index = failing.alloc_index;
@@ -861,7 +861,7 @@ test "Scope: adoptResource 登记失败时当场跑 destroyFn，不留孤儿也�
     try std.testing.expectEqual(@as(usize, 1), Probe.destroyed);
     try std.testing.expectEqual(@as(usize, 0), scope.resources.items.len);
 
-    // 第二次：成功 → 归 scope，dispose 时恰好释放一次。
+    // 第二次：成功 -> 归 scope，dispose 时恰好释放一次。
     const second = try a.create(u64);
     second.* = 2;
     try scope.adoptResource(@ptrCast(second), Probe.destroy);

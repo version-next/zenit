@@ -1,5 +1,5 @@
 /**
- * e2e/watcher.ts — HMR 体验薄壳：监听 .zig 变更 → 重跑 scenario → 自动验收报告
+ * e2e/watcher.ts, HMR 体验薄壳：监听 .zig 变更 -> 重跑 scenario -> 自动验收报告
  *
  * 这是「保存即自动验收」的最后一环，骑在 scenario_runner 之上，不另造执行逻辑。
  *

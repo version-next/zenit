@@ -1,9 +1,9 @@
 /// Theme Token 系统
 ///
 /// 三层颜色架构：
-///   Layer 1 — Base Colors:    原始色阶 (olive/neutral/sage/earth/rose/slate × 50-900)
-///   Layer 2 — Semantic Colors: 语义 token，从 base 映射，描述"作用"而非具体值
-///   Layer 3 — Component Colors: 从语义层再映射，描述具体组件用途
+///   Layer 1, Base Colors:    原始色阶 (olive/neutral/sage/earth/rose/slate × 50-900)
+///   Layer 2, Semantic Colors: 语义 token，从 base 映射，描述"作用"而非具体值
+///   Layer 3, Component Colors: 从语义层再映射，描述具体组件用途
 ///
 /// 用法:
 ///   const t = cx.tokens;
@@ -14,7 +14,7 @@ const Color = core.Color;
 const Shadow = core.Shadow;
 
 // ============================================================================
-// Layer 1 — Base Color Palettes (色阶原始值，不随主题变化)
+// Layer 1, Base Color Palettes (色阶原始值，不随主题变化)
 // ============================================================================
 
 /// Olive 橄榄绿色阶 (品牌主色)
@@ -95,13 +95,13 @@ pub const slate = struct {
 };
 
 // ============================================================================
-// Layer 2 & 3 — Semantic + Component Color Tokens (随主题变化)
+// Layer 2 & 3, Semantic + Component Color Tokens (随主题变化)
 // ============================================================================
 
 /// 明暗判别（对标 CSS color-scheme / Panda 的 _dark 条件所依附的根状态）。
 ///
 /// 用途边界：主题差异优先走 token 层整体换（light/dark 是两套完整 token 值，
-/// 样式函数天然拿到正确值）；scheme 只做逃生舱——个别样式确实要按明暗分支、
+/// 样式函数天然拿到正确值）；scheme 只做逃生舱，个别样式确实要按明暗分支、
 /// 又不值得铸 token 时，在样式函数里 `if (t.scheme == .dark)`。
 /// 不要在 ConditionalStyle 里加 dark 条件：两个 dark 值来源会打架。
 pub const ColorScheme = enum { light, dark };
@@ -126,12 +126,12 @@ pub const ThemeTokens = struct {
 /// 语义 + 组件颜色 Token
 ///
 /// 分三区：
-///   [Semantic / Background]  — 描述层级和用途的背景色
-///   [Semantic / Foreground]  — 文本、图标颜色
-///   [Semantic / Brand]       — 品牌色、交互强调色
-///   [Semantic / Status]      — success/warning/error/info
-///   [Semantic / Border]      — 边框、焦点环
-///   [Component]              — 具体组件专属 token
+///   [Semantic / Background]，描述层级和用途的背景色
+///   [Semantic / Foreground]，文本、图标颜色
+///   [Semantic / Brand]，品牌色、交互强调色
+///   [Semantic / Status], success/warning/error/info
+///   [Semantic / Border]，边框、焦点环
+///   [Component]，具体组件专属 token
 pub const ColorTokens = struct {
     // ── Semantic / Background ──────────────────────────────────────────────
     /// 页面/窗口底层背景（最深）
@@ -309,10 +309,10 @@ pub const BorderWidthScale = struct {
     thick: f32 = 2,
 };
 
-/// 统一控件尺寸 — Button / Input / Select / ComboBox / DatePicker / DateRangePicker / Tabs / Chip 共享
+/// 统一控件尺寸，Button / Input / Select / ComboBox / DatePicker / DateRangePicker / Tabs / Chip 共享
 /// 4 档: XS / SM / MD / LG（默认 md）
 ///
-/// 纯 key enum。具体度量经主题读取: `tokens.control.get(size)` → `ControlMetrics`。
+/// 纯 key enum。具体度量经主题读取: `tokens.control.get(size)` -> `ControlMetrics`。
 pub const ControlSize = enum {
     xs,
     sm,
@@ -320,7 +320,7 @@ pub const ControlSize = enum {
     lg,
 };
 
-/// 单个控件档位的完整度量 — ControlSize 一档对应一份
+/// 单个控件档位的完整度量，ControlSize 一档对应一份
 ///
 /// **高度合同**：控件外框高度不是 token，而是由内容自然撑出：
 ///
@@ -357,13 +357,13 @@ pub const ControlMetrics = struct {
     }
 
     /// 由度量推导出的外框高度（padding_y × 2 + 行高）。
-    /// 只供测量/断言/定位计算读取，**不要**把它写回 style.height —— 高度由布局 fit 得出。
+    /// 只供测量/断言/定位计算读取，**不要**把它写回 style.height，高度由布局 fit 得出。
     pub fn derivedHeight(self: ControlMetrics) f32 {
         return self.padding_y * 2 + self.lineHeightPx();
     }
 };
 
-/// 控件尺度比例尺 — 挂在 ThemeTokens.control 上，主题可整体替换控件尺度
+/// 控件尺度比例尺，挂在 ThemeTokens.control 上，主题可整体替换控件尺度
 ///
 /// 推导（line_height 统一 1.25，二进制精确，行高与外框高度都是精确值）:
 ///   xs: 12 × 1.25 = 15   + 2.5 × 2  = 20
@@ -452,12 +452,12 @@ pub const ShadowTokens = struct {
 // Light 主题
 // ============================================================================
 
-/// Light 预设 — 基于 VSCode 主题 "Mac Classic" (mac-classic-light-color-theme.json)
+/// Light 预设，基于 VSCode 主题 "Mac Classic" (mac-classic-light-color-theme.json)
 pub const light = ThemeTokens{
     .name = "light",
     .scheme = .light,
     .color = .{
-        // Background — 来自 Mac Classic light
+        // Background，来自 Mac Classic light
         .bg_base = Color.hex(0xF5F5F5), // activityBar/statusBar/tabs background
         .bg_primary = Color.hex(0xFFFFFF), // editor.background
         .bg_secondary = Color.hex(0xF7F7F7), // sideBar.background / panel.background
@@ -473,7 +473,7 @@ pub const light = ThemeTokens{
         .fg_disabled = Color.hex(0xBBBBBB), // input.placeholderForeground
         .fg_inverse = Color.hex(0xFFFFFF), // statusBar.debuggingForeground
 
-        // Brand — Mac Classic 用深棕黑 #1C1612 作为强调色；辅以 focusBorder #6699CC
+        // Brand, Mac Classic 用深棕黑 #1C1612 作为强调色；辅以 focusBorder #6699CC
         .accent = Color.hex(0x1C1612), // activityBar.activeBorder / tab.activeBorderTop
         .accent_hover = Color.hex(0x2A2320), // badge.background
         .accent_subtle = Color.hex(0xE4EDFA), // list.activeSelectionBackground
@@ -544,7 +544,7 @@ pub const light = ThemeTokens{
 // Dark 主题
 // ============================================================================
 
-/// Dark 预设 — 基于 VSCode 主题 "Mac Classic Dark" (mac-classic-dark-color-theme.json)
+/// Dark 预设，基于 VSCode 主题 "Mac Classic Dark" (mac-classic-dark-color-theme.json)
 pub const dark = ThemeTokens{
     .name = "dark",
     .scheme = .dark,
@@ -565,7 +565,7 @@ pub const dark = ThemeTokens{
         .fg_disabled = Color.hex(0x7E746D), // input.placeholderForeground
         .fg_inverse = Color.hex(0x141820), // 反色
 
-        // Brand — Mac Classic Dark 用暖米色 #C7BBB3 作为强调；辅以冷蓝 #6699CC
+        // Brand, Mac Classic Dark 用暖米色 #C7BBB3 作为强调；辅以冷蓝 #6699CC
         .accent = Color.hex(0xC7BBB3), // activityBar.activeBorder / panelTitle.activeBorder
         .accent_hover = Color.hex(0xE8E0DA), // tab.activeBorderTop
         .accent_subtle = Color.hex(0x2A3450), // list.activeSelectionBackground
@@ -627,16 +627,16 @@ pub const dark = ThemeTokens{
     },
 };
 
-/// v0.9-§E (2026-05-13): High-contrast 主题 — WCAG AAA 对比度 (≥7:1)。
+/// v0.9-§E (2026-05-13): High-contrast 主题，WCAG AAA 对比度 (≥7:1)。
 /// 背景纯黑/纯白，前景反色；强调色用纯黄 #FFFF00 / 纯青 #00FFFF。
 /// 适用于视觉障碍用户 + 高对比度系统设置。
 pub const high_contrast = ThemeTokens{
     .name = "high_contrast",
-    // 纯黑底 → dark。此前 devtools/theme_schema 靠 name 子串嗅探 "dark"，
-    // 把 high_contrast 误判为 light —— scheme 字段就是为了终结这类嗅探。
+    // 纯黑底 -> dark。此前 devtools/theme_schema 靠 name 子串嗅探 "dark"，
+    // 把 high_contrast 误判为 light, scheme 字段就是为了终结这类嗅探。
     .scheme = .dark,
     .color = .{
-        // Background — 纯黑底
+        // Background，纯黑底
         .bg_base = Color.hex(0x000000),
         .bg_primary = Color.hex(0x000000),
         .bg_secondary = Color.hex(0x000000),
@@ -645,20 +645,20 @@ pub const high_contrast = ThemeTokens{
         .bg_active = Color.hex(0x0000FF),
         .bg_inset = Color.hex(0x000000),
 
-        // Foreground — 纯白文字 (对比 21:1)
+        // Foreground，纯白文字 (对比 21:1)
         .fg_primary = Color.hex(0xFFFFFF),
         .fg_secondary = Color.hex(0xFFFFFF),
         .fg_tertiary = Color.hex(0xC0C0C0), // 12:1
         .fg_disabled = Color.hex(0x808080), // 4.6:1 (disabled 允许 AA 而非 AAA)
         .fg_inverse = Color.hex(0x000000),
 
-        // Brand — 纯黄强调 (对比 19.6:1 vs 黑)
+        // Brand，纯黄强调 (对比 19.6:1 vs 黑)
         .accent = Color.hex(0xFFFF00),
         .accent_hover = Color.hex(0xFFFFC0),
         .accent_subtle = Color.hex(0x404000),
         .accent_muted = Color.hex(0x202000),
 
-        // Status — 高饱和纯色
+        // Status，高饱和纯色
         .success = Color.hex(0x00FF00), // 15.3:1
         .success_subtle = Color.hex(0x003300),
         .warning = Color.hex(0xFFFF00), // 19.6:1
@@ -670,7 +670,7 @@ pub const high_contrast = ThemeTokens{
         .info_subtle = Color.hex(0x003333),
         .status_fg = Color.hex(0x000000),
 
-        // Border — 纯白边框 (清晰可见)
+        // Border，纯白边框 (清晰可见)
         .border = Color.hex(0xFFFFFF),
         .border_strong = Color.hex(0xFFFFFF),
         .border_focus = Color.hex(0xFFFF00),

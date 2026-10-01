@@ -1,13 +1,13 @@
-//! NSAccessibility Router — Phase 6 a11y_tree → 平台 bridge 路由
+//! NSAccessibility Router, Phase 6 a11y_tree -> 平台 bridge 路由
 //!
 //! 把 AccessibilityTree 的 dirty 队列转换为平台 bridge 调用：
-//! - role/state/value 变化 → bridge.notifyPropertyChange
-//! - focus 变化 → bridge.notifyFocusChange
-//! - live region announce → bridge.announceText
-//! - structure 变化 → bridge.notifyChildrenChanged（重新拉 children）
+//! - role/state/value 变化 -> bridge.notifyPropertyChange
+//! - focus 变化 -> bridge.notifyFocusChange
+//! - live region announce -> bridge.announceText
+//! - structure 变化 -> bridge.notifyChildrenChanged（重新拉 children）
 //!
 //! ObjC 端已实装（不是 stub）：native/macos/window_bridge.m 的
-//! ZenitA11yElement 实现了完整 NSAccessibility 协议 —— roles/subroles、
+//! ZenitA11yElement 实现了完整 NSAccessibility 协议，roles/subroles、
 //! value/min/max、focus 读写、hit test、table 协议（rows/columns/cells/
 //! header）、AXTextArea 全套（selectedTextRange / frameForRange /
 //! rangeForLine / insertionPointLineNumber），含 UTF-8↔UTF-16 偏移换算。
@@ -40,8 +40,8 @@ pub const PlatformBridge = struct {
         notify_focus: *const fn (ctx: *anyopaque, id: ElementId, node: ?A11yNode) void,
         notify_children_changed: *const fn (ctx: *anyopaque, id: ElementId) void,
         announce: *const fn (ctx: *anyopaque, id: ElementId, text_hash: u64, live: tree_mod.LiveRegion) void,
-        /// aria-activedescendant 变化 → 平台投 AXSelectedChildren
-        /// (NSAccessibility) 或 IA2_STATE_ACTIVE (Windows IA2)。可选: null → 跳过。
+        /// aria-activedescendant 变化 -> 平台投 AXSelectedChildren
+        /// (NSAccessibility) 或 IA2_STATE_ACTIVE (Windows IA2)。可选: null -> 跳过。
         notify_active_descendant: ?*const fn (ctx: *anyopaque, container: ElementId, active: ElementId) void = null,
     };
 
@@ -367,7 +367,7 @@ test "router: active_descendant change → notifyActiveDescendant" {
     try testing.expectEqual(@as(usize, 1), bridge.active_desc_calls.items.len);
     try testing.expect(bridge.active_desc_calls.items[0].active.eql(opt_b));
 
-    // 不变 → 不投递
+    // 不变 -> 不投递
     bridge.active_desc_calls.clearRetainingCapacity();
     try tree.upsert(.{ .element = container, .role = .combobox, .active_descendant = opt_b });
     flushToBridge(&tree, bridge.bridge());

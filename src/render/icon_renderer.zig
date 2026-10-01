@@ -70,13 +70,13 @@ const MAX_CACHE_BYTES = 32 * 1024 * 1024;
 
 /// icon 批次诊断计数器（累计）。
 ///
-/// 审查报告 P2 担心"每个图标一个独立 texture + 只合并**连续**相同 texture →
+/// 审查报告 P2 担心"每个图标一个独立 texture + 只合并**连续**相同 texture ->
 /// 大型 icon grid 会退化成逐图标 draw"。实测（storybook 全 51 项 e2e）：
 /// 累计 draws=274 / instances=370 = **0.74 draws/icon**，即多数相邻图标
 /// 已被成功合批，最坏局部是 4 draws/4 icons。
 ///
 /// 之所以**没有**改成"按 texture id 排序后再合批"：icon 走 alpha blending
-/// （见下方 blend_state），重排会改变重叠图标的绘制顺序 → 视觉回归。
+/// （见下方 blend_state），重排会改变重叠图标的绘制顺序 -> 视觉回归。
 /// 真正的解法是 R8 atlas / texture array（让所有图标共用一张纹理，
 /// 天然单批次），那是独立的较大改动，留待后续。
 /// 这两个计数器用于在做那件事之前/之后量化收益，也便于回归监控。
@@ -87,7 +87,7 @@ pub const IconRenderer = struct {
     allocator: std.mem.Allocator,
     device: *gpu.Backend.Device,
     pipeline: gpu.Backend.RenderPipeline,
-    /// Triple-buffered uniform buffers —— 必须与 instance buffers 一样按帧轮转。
+    /// Triple-buffered uniform buffers，必须与 instance buffers 一样按帧轮转。
     /// 曾经是**单个** buffer 而每帧把 uniform_write_offset 归零：三帧在飞时第 N+1
     /// 帧会覆写 GPU 尚未消费的第 N 帧 viewport/clip/scale，表现为偶发闪烁/错误裁剪。
     uniform_buffers: [BUFFER_COUNT]gpu.Backend.Buffer,
@@ -99,7 +99,7 @@ pub const IconRenderer = struct {
 
     /// 溢出实例缓冲（每帧槽位各一个，随需增长后**保留**）。
     ///
-    /// 旧实现在 MAX_INSTANCES 用尽后对**每一批**都 createBuffer + destroy ——
+    /// 旧实现在 MAX_INSTANCES 用尽后对**每一批**都 createBuffer + destroy,
     /// 重内容帧每帧多次 driver 分配（走驱动，非 malloc）。改为按帧槽位持有
     /// 一个可增长的 buffer：容量够就直接复用，不够才重建一次。槽位随
     /// current_buffer 轮转，因此不会覆写 GPU 尚在消费的在飞帧数据。
@@ -166,7 +166,7 @@ pub const IconRenderer = struct {
         });
         errdefer pipeline.deinit();
 
-        // errdefer 必须在循环外——循环体内的 errdefer 随迭代作用域失效（死代码）
+        // errdefer 必须在循环外，循环体内的 errdefer 随迭代作用域失效（死代码）
         var uniform_buffers: [BUFFER_COUNT]gpu.Backend.Buffer = undefined;
         var uniform_created: usize = 0;
         errdefer for (uniform_buffers[0..uniform_created]) |*ub| ub.destroy();
@@ -362,7 +362,7 @@ pub const IconRenderer = struct {
             var it = self.cache.iterator();
             while (it.next()) |entry| {
                 // 本帧用过的 mask 不能驱逐：尚未 flush 的实例仍按 slot_id 引用它，
-                // 而 createMaskTexture 会立刻复用刚空出的槽位 —— 这些实例就会画成
+                // 而 createMaskTexture 会立刻复用刚空出的槽位，这些实例就会画成
                 // 新图标的 mask（glyph_atlas.forceEvictOldestPage 同款守卫）。
                 if (entry.value_ptr.last_used_frame >= self.frame_index) continue;
                 if (entry.value_ptr.last_used_frame < oldest_frame) {
@@ -442,7 +442,7 @@ pub const IconRenderer = struct {
     pub fn render(self: *IconRenderer, render_pass: *gpu.Backend.RenderPass) !void {
         if (self.instances.items.len == 0) return;
 
-        // 溢出**不能** clamp 到最后一槽 —— 那会让本批及后续 draw 别名同一块随后
+        // 溢出**不能** clamp 到最后一槽，那会让本批及后续 draw 别名同一块随后
         // 被覆写的内存，静默画错。宁可丢掉这一批并计数告警。
         const uniform_buffer, const uniform_byte_offset = blk: {
             if (self.uniform_write_offset < MAX_UNIFORM_UPDATES) {

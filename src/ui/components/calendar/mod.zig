@@ -62,11 +62,11 @@ pub const CalendarState = struct {
     cx: *Cx,
     scope: *Scope,
     cell_size: f32,
-    /// 键盘导航游标 — 在 grid 上的当前 "focused day"。
+    /// 键盘导航游标，在 grid 上的当前 "focused day"。
     /// null = 还没用键盘导航过 (鼠标用户)。第一次按方向键时 lazy 初始化:
-    /// 优先 selected_date → today_date → view_year/month 1 号。
+    /// 优先 selected_date -> today_date -> view_year/month 1 号。
     keyboard_cursor: ?SimpleDate = null,
-    /// a11y: grid 容器 value_text（"March 2026"）的持久存储 —— a11y 投影每帧
+    /// a11y: grid 容器 value_text（"March 2026"）的持久存储，a11y 投影每帧
     /// 读这个 slice，栈上 buf 会悬垂。
     month_a11y_buf: [24]u8 = undefined,
     month_a11y_len: usize = 0,
@@ -102,11 +102,11 @@ pub const CalendarState = struct {
         rebuildGrid(self) catch @panic("OOM: Calendar.selectDate 重建日期网格失败（选中态已改，不重建会让状态与画面永久不一致）");
     }
 
-    /// 键盘事件入口 — 返回 true 表示事件被消耗。
-    /// 处理 ←/→ 跨日、↑/↓ 跨周、PageUp/PageDown 跨月、Home/End 行首尾、Enter 选中。
+    /// 键盘事件入口，返回 true 表示事件被消耗。
+    /// 处理 <-/-> 跨日、↑/↓ 跨周、PageUp/PageDown 跨月、Home/End 行首尾、Enter 选中。
     pub fn handleKey(self: *CalendarState, key: core.KeyCode) bool {
         const cursor = self.keyboard_cursor orelse blk: {
-            // lazy init：选中 → today → 当前视图月 1 号
+            // lazy init：选中 -> today -> 当前视图月 1 号
             const init = self.selected_date orelse self.today_date orelse SimpleDate{
                 .year = self.view_year,
                 .month = self.view_month,
@@ -382,7 +382,7 @@ pub const CalendarBuilder = struct {
     }
 };
 
-/// Calendar 键盘 handler — 转给 state.handleKey
+/// Calendar 键盘 handler，转给 state.handleKey
 fn calendarKeyHandler(key: core.KeyCode, _: core.Modifiers, context: ?*anyopaque) core.EventResult {
     const state: *CalendarState = @ptrCast(@alignCast(context orelse return .ignored));
     return if (state.handleKey(key)) .stop else .ignored;
@@ -465,7 +465,7 @@ fn daysInMonth(year: u16, month: u8) u8 {
     return days[month - 1];
 }
 
-/// 计算某天是星期几 (0=Sunday) — Zeller 公式简化
+/// 计算某天是星期几 (0=Sunday), Zeller 公式简化
 fn dayOfWeek(year: u16, month: u8, day: u8) u8 {
     var y: i32 = @intCast(year);
     var m: i32 = @intCast(month);
@@ -475,7 +475,7 @@ fn dayOfWeek(year: u16, month: u8, day: u8) u8 {
     }
     const d: i32 = @intCast(day);
     const w = @mod(d + @divFloor(13 * (m + 1), 5) + y + @divFloor(y, 4) - @divFloor(y, 100) + @divFloor(y, 400), 7);
-    // Zeller: 0=Sat, 1=Sun, ..., 6=Fri → 转换为 0=Sun
+    // Zeller: 0=Sat, 1=Sun, ..., 6=Fri -> 转换为 0=Sun
     const dow: i32 = @mod(w + 6, 7);
     return @intCast(dow);
 }
@@ -598,7 +598,7 @@ fn buildGrid(state: *CalendarState) !void {
     }
 
     // a11y: grid 容器 value_text 跟随视图月份（月份切换后 AT 能读到新值），
-    // active_descendant 跟随键盘游标（方向键移动 → dirty 通知 → AT 焦点跟走）。
+    // active_descendant 跟随键盘游标（方向键移动 -> dirty 通知 -> AT 焦点跟走）。
     const month_lbl = formatMonthYear(state.view_year, state.view_month, &state.month_a11y_buf);
     state.month_a11y_len = month_lbl.len;
     if (state.container.behavior.interaction.a11y) |*a| {
@@ -867,7 +867,7 @@ test "Calendar: render emits day numbers for visible month" {
 }
 
 // ============================================================================
-// v0.7 §2.5 — Calendar keyboard navigation tests
+// v0.7 §2.5, Calendar keyboard navigation tests
 // ============================================================================
 
 test "addDays handles month rollover forward + backward" {
@@ -907,7 +907,7 @@ test "handleKey arrow keys 移动 cursor (lazy init from today/selected)" {
     }).mount(scope, ctx);
     try root.appendChild(std.testing.allocator, r.wrapper);
 
-    // 第一次按 right → 应初始化 cursor 到 selected (15) 然后 +1 = 16
+    // 第一次按 right -> 应初始化 cursor 到 selected (15) 然后 +1 = 16
     try std.testing.expect(r.state.handleKey(.right));
     try std.testing.expect(r.state.keyboard_cursor != null);
     try std.testing.expectEqual(@as(u8, 16), r.state.keyboard_cursor.?.day);
@@ -986,11 +986,11 @@ test "handleKey Home/End 跳到本周首/尾" {
     try root.appendChild(std.testing.allocator, r.wrapper);
 
     try std.testing.expect(r.state.handleKey(.home));
-    // Home: 跳到本周日 (dow=0) → 3-15
+    // Home: 跳到本周日 (dow=0) -> 3-15
     try std.testing.expectEqual(@as(u8, 15), r.state.keyboard_cursor.?.day);
 
     try std.testing.expect(r.state.handleKey(.end));
-    // End: 跳到本周六 (dow=6) → 3-21
+    // End: 跳到本周六 (dow=6) -> 3-21
     try std.testing.expectEqual(@as(u8, 21), r.state.keyboard_cursor.?.day);
 }
 
@@ -1027,7 +1027,7 @@ test "handleKey Enter 提交选中 + 触发 on_select" {
     try std.testing.expect(r.state.handleKey(.right));
     try std.testing.expectEqual(@as(u8, 14), r.state.keyboard_cursor.?.day);
 
-    // Enter → selectDate
+    // Enter -> selectDate
     try std.testing.expect(r.state.handleKey(.@"return"));
     try std.testing.expectEqual(@as(u32, 1), On.fired);
     try std.testing.expectEqual(@as(u8, 14), r.state.selected_date.?.day);
@@ -1098,7 +1098,7 @@ test "a11y: Calendar grid/cell 语义 + 月份切换/键盘游标跟随且可撤
         try testing.expectEqual(std.hash.Wyhash.hash(0, "March 15, 2026"), n.label_hash);
     }
 
-    // 方向键移动 → 重建后 active_descendant 指向游标 cell（AT 焦点跟着走）
+    // 方向键移动 -> 重建后 active_descendant 指向游标 cell（AT 焦点跟着走）
     try testing.expect(r.state.handleKey(.right)); // 15 → 16
     ctx.layout();
     _ = ctx.render();
@@ -1110,7 +1110,7 @@ test "a11y: Calendar grid/cell 语义 + 月份切换/键盘游标跟随且可撤
         // 旧选中 cell 已随 rebuild 换代，但选中态仍在（15 号仍 selected）
     }
 
-    // 月份切换 → 容器 value 更新；切回 → 撤回到原值
+    // 月份切换 -> 容器 value 更新；切回 -> 撤回到原值
     r.state.nextMonth();
     ctx.layout();
     _ = ctx.render();
@@ -1121,12 +1121,12 @@ test "a11y: Calendar grid/cell 语义 + 月份切换/键盘游标跟随且可撤
     try testing.expectEqual(std.hash.Wyhash.hash(0, "March 2026"), ctx.accessibility_tree.get(grid_eid).?.text_hash);
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "calendar: mount 在任意分配点失败时不泄漏（sweep）" {
     try @import("../oom_sweep.zig").sweepMount("calendar", struct {
         fn m(scope: *Scope, cx: *Cx) anyerror!?*Node {

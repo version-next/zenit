@@ -3,7 +3,7 @@
 //! `appendChildrenFromTuple` helper used by all container builders.
 //!
 //! Extracted from `core.zig` to keep that file focused on the `Cx` runtime.
-//! These functions take `cx: anytype` (a `*core.Cx`) — using anytype avoids
+//! These functions take `cx: anytype` (a `*core.Cx`), using anytype avoids
 //! a build-time import cycle between core.zig (which re-exports the builders)
 //! and this file (which would otherwise need to `@import("../core.zig")`).
 //!
@@ -30,14 +30,14 @@ const HandlerRef = types.HandlerRef;
 const GridTrackSize = types.GridTrackSize;
 const GridConfig = types.GridConfig;
 
-/// 统一的节点创建入口 —— **不依赖进程级全局**。
+/// 统一的节点创建入口，**不依赖进程级全局**。
 ///
 /// P0-3：`Node.create` 靠 `g_node_create_hook` + `g_active_world` 这对全局
 /// 把节点注册到 World；多个 Cx 并存时它会注册到"最后一个 init 的 Cx"，
 /// 而不是调用者自己的那个。builder 手上本来就有 cx，没有理由绕全局。
 ///
 /// 用 `@hasField` 探测是为了兼容 cx 为 anytype 的既有签名（少数测试传的是
-/// 精简 mock，没有 world/world_id 字段）—— 那种情况退回旧路径。
+/// 精简 mock，没有 world/world_id 字段），那种情况退回旧路径。
 fn createNode(cx: anytype, tag: types.ElementTag, style: Style) !*Node {
     const CxT = @TypeOf(cx.*);
     if (@hasField(CxT, "world") and @hasField(CxT, "world_id")) {
@@ -78,7 +78,7 @@ fn boxWithOrigin(
     // node 建好之后到 return 之前，它是一棵无人持有的游离子树：
     // appendChildrenFromTuple 里的任何一次分配失败都会让它整棵泄漏。
     // 消费方下游编辑器做 mount 路径的逐分配点 OOM 注入时，
-    // 交叉 review 把「box 自身是否事务化」列为待验证前提 —— 查证结果是**不是**，
+    // 交叉 review 把「box 自身是否事务化」列为待验证前提，查证结果是**不是**，
     // 这里补上。box 是全仓库最高频的构造入口，这一处覆盖面很大。
     errdefer cx.freeDetachedNodeAfterScopeDispose(node);
     cx.linkNodeToWorld(node);
@@ -93,7 +93,7 @@ pub fn box(cx: anytype, style: BoxStyle, children_tuple: anytype) !*Node {
 }
 
 // ============================================================================
-// Styled builders —— 主题安全的具名样式函数消费端
+// Styled builders，主题安全的具名样式函数消费端
 //
 // `styles.zig` 约定的消费入口：样式是 `fn (*const ThemeTokens) BoxStyle` 纯函数，
 // mount 时求值一次，同时挂 on_theme hook；`Cx.setTheme` 全树遍历会带新 tokens
@@ -167,7 +167,7 @@ fn textThemeHookFor(comptime style_fn: fn (*const theme.ThemeTokens) TextStyle) 
         fn hook(n: *Node, t: *const theme.ThemeTokens, allocator: std.mem.Allocator) void {
             _ = allocator;
             const s = style_fn(t);
-            // getText → 改样式字段 → setText 原样写回：content 指针不变，
+            // getText -> 改样式字段 -> setText 原样写回：content 指针不变，
             // ContentTable.setText 的指针守卫保证不误 free owned 内容。
             var props = n.getText() orelse return;
             props.color = s.color;
@@ -237,7 +237,7 @@ fn textWithOrigin(
     });
     errdefer cx.freeNode(node);
     // Content lifetime contract: builder 内部 take ownership 避免 caller 误用
-    // frame_arena dupe (下一帧 reset → content 悬垂)。
+    // frame_arena dupe (下一帧 reset -> content 悬垂)。
     // - ≤16 bytes: 走 inline_buf，零额外 alloc
     // - >16 bytes: cx.allocator.dupe，并设 owned=true 让 Node.destroy 释放
     var t = types.TextProps{

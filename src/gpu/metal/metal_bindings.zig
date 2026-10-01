@@ -403,7 +403,7 @@ pub extern "c" fn metal_texture_replace_region(texture: *MTLTexture, x: c_uint, 
 pub extern "c" fn metal_texture_replace_region_level(texture: *MTLTexture, x: c_uint, y: c_uint, width: c_uint, height: c_uint, mipLevel: c_ulong, bytes: [*]const u8, bytesPerRow: c_uint) void;
 pub extern "c" fn metal_texture_read_bgra8(texture: *MTLTexture, out_bytes: [*]u8, bytes_per_row: c_uint, width: c_uint, height: c_uint) c_int;
 
-// 图像写出（image_bridge.m）— 把 RGBA8 像素编码成 PNG 落盘。
+// 图像写出（image_bridge.m），把 RGBA8 像素编码成 PNG 落盘。
 // 返回 0 成功，负数失败。用于 e2e 截图验证。
 pub extern "c" fn macos_write_png_from_rgba(path_cstr: [*:0]const u8, rgba: [*]const u8, width: c_uint, height: c_uint, bytes_per_row: c_uint) c_int;
 
@@ -594,7 +594,7 @@ pub extern "c" fn metal_compute_encoder_dispatch_threadgroups(encoder: *MTLCompu
 // GPU Frame Synchronization (dispatch_semaphore)
 // ============================================================================
 
-/// dispatch_semaphore_t — GCD 信号量，用于 CPU/GPU 帧同步
+/// dispatch_semaphore_t, GCD 信号量，用于 CPU/GPU 帧同步
 pub const dispatch_semaphore_t = *anyopaque;
 
 /// 创建信号量（初始值 = value）
@@ -607,7 +607,7 @@ pub extern "c" fn dispatch_semaphore_wait(dsema: dispatch_semaphore_t, timeout: 
 pub extern "c" fn dispatch_semaphore_signal(dsema: dispatch_semaphore_t) c_long;
 
 /// 释放 dispatch 对象。dispatch_semaphore_t 在 Zig 侧是裸 extern 指针，
-/// 不受 ARC 管辖——create 后必须显式 release，否则每个 FrameSync 生命周期
+/// 不受 ARC 管辖，create 后必须显式 release，否则每个 FrameSync 生命周期
 /// 泄漏一个信号量对象（多窗口反复开关线性累积）。
 pub extern "c" fn dispatch_release(object: dispatch_semaphore_t) void;
 

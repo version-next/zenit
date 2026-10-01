@@ -124,7 +124,7 @@ pub const ModalBuilder = struct {
         // barrier 节点作为 overlay（包含 dialog 的容器）
         const barrier = ol.barrier.?;
         // overlay() 把 focus_scope 配在 ol.content 上，但本组件不用 ol.content，
-        // 真正 pushScope 的是 barrier —— 不在 barrier 上配，trap/auto_focus 全是空操作。
+        // 真正 pushScope 的是 barrier，不在 barrier 上配，trap/auto_focus 全是空操作。
         barrier.setFocusScope(.{ .trap = true, .auto_focus = true });
         barrier.meta.ownership.meta.component_name = "Modal";
         try core.bindScopeToNode(my_scope, barrier);
@@ -194,7 +194,7 @@ pub const ModalBuilder = struct {
             const fm = &cx.focus_manager;
             const scope_pushed = try my_scope.createSignal(bool, false);
             // 打开状态下直接卸载（Show 切走 / 父 scope dispose）不会再跑 visible
-            // effect 的 pop 分支 → focus scope 栈残留指向已释放 barrier 的条目。
+            // effect 的 pop 分支 -> focus scope 栈残留指向已释放 barrier 的条目。
             const scope_guard = try my_scope.allocator.create(FocusScopeGuard);
             scope_guard.* = .{ .fm = fm, .pushed = scope_pushed, .barrier = barrier, .barrier_id = barrier.id };
             try my_scope.adoptResource(@ptrCast(scope_guard), FocusScopeGuard.destroy);
@@ -539,7 +539,7 @@ test "Modal: long title wraps instead of overflowing dialog" {
     const title_rect = title_box.rectFromWorldOrFallback();
     const dialog_rect = result.dialog.rectFromWorldOrFallback();
 
-    // 标题盒宽被约束在 dialog 内（旧行为：fit 内容宽 → 水平溢出 dialog）
+    // 标题盒宽被约束在 dialog 内（旧行为：fit 内容宽 -> 水平溢出 dialog）
     try std.testing.expect(title_rect.w <= dialog_rect.w);
     // 折行后高度超过单行（14px * 1.4 ≈ 19.6；旧行为固定 20px 裁掉第二行）
     try std.testing.expect(title_rect.h > 30);
@@ -563,7 +563,7 @@ test "Modal: no title" {
     try std.testing.expectEqual(@as(usize, 1), result.dialog.children.items.len);
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }

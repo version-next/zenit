@@ -21,10 +21,6 @@ const debug = @import("debug.zig");
 const logScroll = debug.logScroll;
 const render_engine = @import("../../core/render_engine/mod.zig");
 
-fn saturatingIncrementFrameCounter(counter: *u32) void {
-    if (counter.* < std.math.maxInt(u32)) counter.* += 1;
-}
-
 fn syncScrollbarFrame(node: *Node, x: f32, y: f32, w: f32, h: f32) bool {
     const cur = node.rectFromWorldOrFallback();
     const rect_changed =
@@ -70,7 +66,7 @@ pub fn scrollbarBeforeRender(container: *Node) void {
         if (content_r.w > 0) state.content_width = content_r.w;
     }
 
-    // 窗口 resize 后，maxScroll 可能变小甚至归零 → re-clamp 防止卡住
+    // 窗口 resize 后，maxScroll 可能变小甚至归零 -> re-clamp 防止卡住
     const max_y = state.maxScrollY();
     if (state.scroll_y > max_y) {
         state.scroll_y = max_y;
@@ -84,34 +80,7 @@ pub fn scrollbarBeforeRender(container: *Node) void {
         content.markCompositePropDirty();
     }
 
-    saturatingIncrementFrameCounter(&state.scroll_event_idle_frames);
-    saturatingIncrementFrameCounter(&state.tail_idle_frames);
-    saturatingIncrementFrameCounter(&state.momentum_idle_frames);
-    if (state.phase_end_guard_frames > 0) state.phase_end_guard_frames -= 1;
-
     const now_ms = render_engine.current_frame_time_ms;
-
-    // 超时释放 user_scrolling:
-    // - 鼠标滚轮: 较短超时（wheel_release_frames，默认 10 帧）
-    // - 触摸板 fallback: 较长超时（30 帧 ≈ 0.5s），防止 phase_ended 丢失导致永久卡住
-    if (state.user_scrolling) {
-        saturatingIncrementFrameCounter(&state.scroll_idle_frames);
-        const timeout = if (state.is_trackpad_session)
-            ScrollState.scroll_tuning.wheel_release_frames * 3 // 触摸板 fallback: ~30 帧
-        else
-            ScrollState.scroll_tuning.wheel_release_frames; // 鼠标滚轮: ~10 帧
-
-        if (state.scroll_idle_frames > timeout) {
-            state.user_scrolling = false;
-            state.is_trackpad_session = false;
-            logScroll("timeout release: idle_frames={d} trackpad={} bonus_y={d:.2} bonus_x={d:.2}", .{
-                state.scroll_idle_frames,
-                state.is_trackpad_session,
-                state.bonus_y,
-                state.bonus_x,
-            });
-        }
-    }
 
     // 收集重绘需求，最后统一调用一次 markRenderDirty，避免多次向上冒泡标记
     var needs_redraw = false;
@@ -243,7 +212,7 @@ pub fn scrollbarBeforeRender(container: *Node) void {
     }
 }
 
-/// 滚动条节点的事件处理器 — hitTest 直接命中 scrollbar thumb，坐标天然正确
+/// 滚动条节点的事件处理器，hitTest 直接命中 scrollbar thumb，坐标天然正确
 pub fn scrollbarEventHandler(event: Event, context: ?*anyopaque) EventResult {
     const ctx: *const ScrollEventCtx = @ptrCast(@alignCast(context.?));
     const state = ctx.state;
@@ -392,25 +361,27 @@ pub fn computeHorizontalScrollbarMetrics(state: *const ScrollState, v_clearance:
 
 // ========== 拖拽 ==========
 
-/// 鼠标像素增量 → scroll_y 增量（track 像素 : content 像素 的比例换算）
+/// 鼠标像素增量 -> scroll_y 增量（track 像素 : content 像素 的比例换算）
 fn applyScrollbarDrag(state: *ScrollState, content: *Node, mouse_dy: f32) void {
     const bar_h = state.scrollbarHeight();
     const track_h = state.viewport_height - bar_h - 4;
     if (track_h <= 0) return;
     const max = state.maxScrollY();
     state.scroll_y = std.math.clamp(state.scroll_y + mouse_dy / track_h * max, 0, max);
+    state.input_serial +%= 1;
     state.onScrollActivity();
     content.style.translate_y = state.contentTranslateY();
     content.markCompositeAnimFrameDirty();
 }
 
-/// 鼠标像素增量 → scroll_x 增量（track 像素 : content 像素 的比例换算）
+/// 鼠标像素增量 -> scroll_x 增量（track 像素 : content 像素 的比例换算）
 fn applyHScrollbarDrag(state: *ScrollState, content: *Node, mouse_dx: f32) void {
     const bar_w = state.hScrollbarWidth();
     const track_w = state.viewport_width - bar_w - 4;
     if (track_w <= 0) return;
     const max = state.maxScrollX();
     state.scroll_x = std.math.clamp(state.scroll_x + mouse_dx / track_w * max, 0, max);
+    state.input_serial +%= 1;
     state.onScrollActivity();
     content.style.translate_x = state.contentTranslateX();
     content.markCompositeAnimFrameDirty();

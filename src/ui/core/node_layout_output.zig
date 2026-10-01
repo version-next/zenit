@@ -1,4 +1,4 @@
-//! node_layout_output — v0.10 §L: NodeLayoutOutput 及子 struct 的独立定义。
+//! node_layout_output, v0.10 §L: NodeLayoutOutput 及子 struct 的独立定义。
 //!
 //! 从 node.zig 抽出，让 node.zig 与 layout_output_table.zig 都能引用而不
 //! 形成 import 环（types.zig 不可承载 LayoutArtifacts，因 text_layout.zig

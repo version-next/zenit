@@ -1,4 +1,4 @@
-//! DataTable 样式层 — 全部视觉决策集中在这里，mod.zig 的 mount 只消费。
+//! DataTable 样式层，全部视觉决策集中在这里，mod.zig 的 mount 只消费。
 const core = @import("../../core.zig");
 const Padding = core.Padding;
 

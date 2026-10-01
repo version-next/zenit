@@ -192,7 +192,7 @@ pub const GlassBoxBuilder = struct {
         try core.bindScopeToNode(my_scope, root);
 
         // 分层：root wrapper 只持 shadow，glass 落在 in-flow 的 surface 子节点。
-        // ① glass 节点自带 shadow 会把 promoted surface bounds 撑大 → 合成出
+        // ① glass 节点自带 shadow 会把 promoted surface bounds 撑大 -> 合成出
         //    矩形切块（框架 bug）；② absolute surface 会让 backdrop 采样错位。
         const surface = try core.adoptChild(cx, allocator, root, try box(cx, .{
             .width = .{ .grow = .{} },
@@ -369,7 +369,7 @@ pub const AdaptiveGlassBoxState = struct {
     last_width: f32 = -1,
     last_height: f32 = -1,
     last_style: ?ResolvedGlassBoxStyle = null,
-    // interactive 状态（hover/press → 玻璃响应）
+    // interactive 状态（hover/press -> 玻璃响应）
     interactive: bool = false,
     /// boost 插值期间挂起了 surface 的渲染缓存（收敛帧恢复并补录）。
     boost_cache_suppressed: bool = false,
@@ -443,9 +443,9 @@ fn interactiveGlassEventHandler(event: Event, context: ?*anyopaque) EventResult 
 }
 
 /// scroll-edge 的 blur 渐变 stops：边缘处满糊（1），fade_width 处回落到
-/// 玻璃自身的基底糊度 `base_blur_level`——**不能**回落到 0。
+/// 玻璃自身的基底糊度 `base_blur_level`, **不能**回落到 0。
 ///
-/// stop strength 是绝对 blur_level（0 = 纯 sharp）。早先写成 1 → 0，玻璃
+/// stop strength 是绝对 blur_level（0 = 纯 sharp）。早先写成 1 -> 0，玻璃
 /// 条在 fade 带以外的整段被渐变判成 sharp：内容一滚动，玻璃下的文字就
 /// 锐利透出（2026-09-29 用户报告 GlassMotion scroll-edge「滚动后 blur 失效」）。
 /// scroll-edge 是在玻璃基底之上**追加**边缘糊化，不是削掉玻璃本身的磨砂。
@@ -467,7 +467,7 @@ fn glassBoxBeforeRender(node: *Node) void {
     // 逐 glass 亮度：按 surface node id 精确匹配自己那块背景的实测值（槽 key =
     // 拥有者 node id，滚动/布局变化下恒定），无匹配退回全局均值。这让每块玻璃
     // 适配**自己**的背景：面板背景随面板一起滚，亮度天然滚动不变；早先全局
-    // 单值随视口内容构成摆动 → 全体换装/变透明。
+    // 单值随视口内容构成摆动 -> 全体换装/变透明。
     const measured_lum: ?f32 = blk: {
         for (state.cx.backdrop_luminance_regions[0..state.cx.backdrop_luminance_region_count]) |reg| {
             if (reg.node_id == state.surface.id) break :blk reg.lum;
@@ -512,7 +512,7 @@ fn glassBoxBeforeRender(node: *Node) void {
         const h = lerp(m.from[3], m.to[3], t);
         node.style.width = .{ .px = w };
         node.style.height = .{ .px = h };
-        // 每帧路径不拿 abort 兜底 —— 分配失败就跳过这一帧，下一帧再来
+        // 每帧路径不拿 abort 兜底，分配失败就跳过这一帧，下一帧再来
         const ext = node.style.ensureExtFallible(state.allocator) catch return;
         ext.inset = .{ .left = .{ .px = x }, .top = .{ .px = y } };
         // width/height 的 World 同步走 sizing-dirty（markLayoutDirty 不重读 style，
@@ -576,7 +576,7 @@ fn glassBoxBeforeRender(node: *Node) void {
         state.live_luminance,
     );
 
-    // scroll-edge effect：滚动位置 → 目标强度，插值平滑后写进玻璃参数
+    // scroll-edge effect：滚动位置 -> 目标强度，插值平滑后写进玻璃参数
     if (state.scroll_edge) |binding| {
         const scroll_amount = switch (binding.edge) {
             .top => binding.scroll.effectiveScrollY(),
@@ -593,7 +593,7 @@ fn glassBoxBeforeRender(node: *Node) void {
         } else {
             state.edge_strength = target;
         }
-        // 映射到 blur_gradient：edge=起点边 → CSS 方向（top ≡ to_bottom），
+        // 映射到 blur_gradient：edge=起点边 -> CSS 方向（top ≡ to_bottom），
         // fade_width（逻辑 px）换算成占节点尺寸的 stop 百分比
         const extent: f32 = switch (binding.edge) {
             .top, .bottom => height,
@@ -620,12 +620,12 @@ fn glassBoxBeforeRender(node: *Node) void {
         resolved.glass.center_thickness += 1.6 * b;
         resolved.glass.warp_gain *= 1.0 + 0.15 * b;
         // 可见性主通道：玻璃 tint 增浓 + 背景/边框提亮。纯参数 boost（specular/
-        // intensity/thickness/warp）在中小面板上的像素差 ≤4/通道，肉眼不可见——
+        // intensity/thickness/warp）在中小面板上的像素差 ≤4/通道，肉眼不可见,
         // 原实现的可见反馈其实来自那个害人的 1.2% scale；bg/border 提亮又大半
-        // 被玻璃合成盖住（实测 hover→press 仅 maxΔ35）。glass_tint 直接参与
+        // 被玻璃合成盖住（实测 hover->press 仅 maxΔ35）。glass_tint 直接参与
         // 玻璃合成，是真正的可见旋钮。提亮量随 boost 插值，press 最亮。
-        // hover 段（b≤0.45）：提亮。press 段（b>0.45）：Apple 惯例压暗——
-        // 提亮通道在已亮的 hover 态上边际递减（实测 hover→press 仅 maxΔ37），
+        // hover 段（b≤0.45）：提亮。press 段（b>0.45）：Apple 惯例压暗,
+        // 提亮通道在已亮的 hover 态上边际递减（实测 hover->press 仅 maxΔ37），
         // 压暗不会被洗掉，press 一眼可辨。
         resolved.background = lerpColor(resolved.background, Color.rgba(255, 255, 255, 140), 0.8 * @min(b, 0.45));
         resolved.border_color = lerpColor(resolved.border_color, Color.rgba(255, 255, 255, 245), 0.8 * @min(b, 0.45));
@@ -662,7 +662,7 @@ fn applyAdaptiveGlass(node: *Node, state: *AdaptiveGlassBoxState, resolved: Reso
         .radius = state.radius,
     };
 
-    // 每帧路径不拿 abort 兜底（sweep 实测 mount 期 OOM 直接 signal 6）——失败就跳过这一帧
+    // 每帧路径不拿 abort 兜底（sweep 实测 mount 期 OOM 直接 signal 6），失败就跳过这一帧
     const ext = surface.style.ensureExtFallible(state.allocator) catch return;
     ext.corner_radius = CornerRadius.uniform(state.radius);
     ext.glass = resolved.glass;
@@ -671,7 +671,7 @@ fn applyAdaptiveGlass(node: *Node, state: *AdaptiveGlassBoxState, resolved: Reso
     root_ext.corner_radius = CornerRadius.uniform(state.radius);
     root_ext.setShadow(resolved.shadow);
     // 刻意无微放大：任何非 1 的 scale 会让 root 走 opacity-layer offscreen
-    // 合成，而 backdrop_blur 玻璃在 offscreen surface 内采不到背景 → hover 时
+    // 合成，而 backdrop_blur 玻璃在 offscreen surface 内采不到背景 -> hover 时
     // 整个面板（blur+子内容）消失只剩壳（实测；同 nav lens "glass+scale" 禁忌
     // 注释）。交互响应全部走玻璃参数场（specular/intensity/thickness/warp），
     // 待框架支持 glass 进 scaled surface 后再恢复 1.2% 微放大。
@@ -715,13 +715,13 @@ fn resolvedGlassBoxStyle(
 
     // backdrop 亮度：有实测（luminance 降采样回读）用实测，否则 theme 近似。
     // darkness 是**连续**因子（0=亮 1=暗）。⚠ 不允许任何硬阈值离散翻转：
-    // 实测 luminance 是**全窗口**单点值，滚动改变视口内容构成就会摆动——
+    // 实测 luminance 是**全窗口**单点值，滚动改变视口内容构成就会摆动,
     // 早先 `is_dark_theme = darkness > 0.55` 让滚动跨阈值时所有玻璃在
     // "白底/tint 深底"之间整体换装（下游应用验收实拍）。色相/背景/阴影全部
     // 改为随 dark_factor 连续混合，摆动只表现为轻微渐变。
     const lum = live_luminance orelse relativeLuminance(tokens.color.bg_primary);
     const darkness = norm01(0.5 - lum, 0.0, 0.35);
-    // 平滑的深色权重：darkness 0.35→0.75 之间线性过渡（原阈值 0.55 居中）。
+    // 平滑的深色权重：darkness 0.35->0.75 之间线性过渡（原阈值 0.55 居中）。
     const dark_factor = norm01(darkness - 0.35, 0.0, 0.4);
     const is_dark_theme = dark_factor > 0.5; // 仅存量非视觉分支（specular 角度）使用
     const base_background_alpha: f32 = lerp(12.0, 34.0, darkness);
@@ -753,7 +753,7 @@ fn resolvedGlassBoxStyle(
             emphasis_bias * 6,
     );
 
-    // Apple .clear：材质本体几乎不遮挡背景 —— tint/雾化大幅降低、折射保留，
+    // Apple .clear：材质本体几乎不遮挡背景，tint/雾化大幅降低、折射保留，
     // 可读性交给下层 dimming（HIG：亮媒体上叠 35% 黑）与文本自身。
     const is_clear = variant == .clear;
     const clear_scale: f32 = if (is_clear) 0.30 else 1.0;
@@ -1023,7 +1023,7 @@ test "GlassBox: interactive hover/press 提升玻璃参数且不引入 scale" {
     const resting = g.children.items[0].style.glass_params().?;
     const state: *AdaptiveGlassBoxState = @ptrCast(@alignCast(g.meta.per_frame.hooks.slots.anim_state.?));
 
-    // press → boost 插值收敛后参数提升
+    // press -> boost 插值收敛后参数提升
     _ = interactiveGlassEventHandler(.{ .mouse_enter = {} }, @ptrCast(state));
     _ = interactiveGlassEventHandler(.{ .mouse_down = .{ .x = 0, .y = 0, .button = .left } }, @ptrCast(state));
     var i: usize = 0;
@@ -1032,11 +1032,11 @@ test "GlassBox: interactive hover/press 提升玻璃参数且不引入 scale" {
     const pressed = g.children.items[0].style.glass_params().?;
     try std.testing.expect(pressed.specular_opacity > resting.specular_opacity);
     try std.testing.expect(pressed.glass_intensity > resting.glass_intensity);
-    // 守护断言：interactive 绝不能写非 1 scale——会把 glass 推上 offscreen
+    // 守护断言：interactive 绝不能写非 1 scale，会把 glass 推上 offscreen
     // 合成路径，hover 时整块内容消失（storybook 实测）。
     try std.testing.expectEqual(@as(f32, 1.0), g.style.scale_x());
 
-    // 释放 + 移出 → 回落
+    // 释放 + 移出 -> 回落
     _ = interactiveGlassEventHandler(.{ .mouse_up = .{ .x = 0, .y = 0, .button = .left } }, @ptrCast(state));
     _ = interactiveGlassEventHandler(.{ .mouse_leave = {} }, @ptrCast(state));
     i = 0;
@@ -1046,14 +1046,14 @@ test "GlassBox: interactive hover/press 提升玻璃参数且不引入 scale" {
     try std.testing.expectEqual(@as(f32, 1.0), g.style.scale_x());
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "GlassBox: scroll-edge 渐变 stops 不低于玻璃基底糊度" {
-    // 回归：stops 曾是 1 → 0，滚动后玻璃条 fade 带以外整段变 sharp。
+    // 回归：stops 曾是 1 -> 0，滚动后玻璃条 fade 带以外整段变 sharp。
     for ([_]f32{ 0.25, 0.68, 0.83, 1.0 }) |bl| {
         const stops = scrollEdgeStops(28, 44, bl);
         try std.testing.expectEqual(@as(f32, 0), stops[0].pos);

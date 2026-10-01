@@ -567,7 +567,7 @@ test "DeferredScheduler: nextReadyDelayNs reports nearest pending deadline witho
 
     try testing.expectEqual(@as(?u64, 100), scheduler.nextReadyDelayNs(0));
     try testing.expectEqual(@as(?u64, 30), scheduler.nextReadyDelayNs(70));
-    // 已到期 → 0（应立即唤醒）
+    // 已到期 -> 0（应立即唤醒）
     try testing.expectEqual(@as(?u64, 0), scheduler.nextReadyDelayNs(100));
     // 只读：查询不消费任务
     try testing.expectEqual(@as(u32, 0), runs);

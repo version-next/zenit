@@ -8,13 +8,13 @@
 ///
 /// 1. **两级缓存、两套键域**。
 ///    - `sizes`：按 **item key** 存实测高度。key 由调用方给（默认 = index）。
-///      用 key 而不是 index，是为了让「列表头部插入一条」不作废后面所有测量 ——
+///      用 key 而不是 index，是为了让「列表头部插入一条」不作废后面所有测量,
 ///      key 跟着数据走，prepend 后旧行的实测高度依然有效。
 ///    - `layout`：按 **index** 存前缀和 (start, size)。它是位置性的，会被重建。
 ///
 /// 2. **增量前缀和**。任何一次测量只把 `pending_min` 往前推；重建时保留
 ///    `[0, pending_min)` 不动，从 `pending_min` 往后重走一遍。不是线段树，
-///    就是 O(n-min) 的前向重走 —— 因为循环体极廉价，而 min 通常在视口附近。
+///    就是 O(n-min) 的前向重走，因为循环体极廉价，而 min 通常在视口附近。
 ///
 /// 3. **滚动锚定**。视口"上方"的行从估算高变成实测高时，必须同步补偿
 ///    scroll_y，否则用户正在看的内容会被上方的高度差顶得上下乱跳。
@@ -45,7 +45,7 @@ pub const MeasureOutcome = struct {
     scroll_adjustment: f32 = 0,
 };
 
-/// 滚动方向 —— 复测时用来抑制"向上滚动时行高抖动引发的连锁位移"。
+/// 滚动方向，复测时用来抑制"向上滚动时行高抖动引发的连锁位移"。
 pub const ScrollDirection = enum { forward, backward, idle };
 
 pub const Options = struct {
@@ -56,7 +56,7 @@ pub const Options = struct {
     estimate_ctx: ?*anyopaque = null,
     /// 固定估算值（estimate_fn == null 时用）。
     estimate: f32 = 32,
-    /// item → 稳定 key。null = 用 index 本身。
+    /// item -> 稳定 key。null = 用 index 本身。
     key_fn: ?*const fn (index: usize, ctx: ?*anyopaque) ItemKey = null,
     key_ctx: ?*anyopaque = null,
     /// 行间距（加在每行之后，但不计入该行的 end）。
@@ -69,18 +69,18 @@ pub const Measurements = struct {
     allocator: Allocator,
     opts: Options,
 
-    /// key → 实测高度。**只有实测**会进这里；估算值永远不写入，
+    /// key -> 实测高度。**只有实测**会进这里；估算值永远不写入，
     /// 否则无法区分"量过的 32px"和"猜的 32px"，首测/复测判据就废了。
     sizes: std.AutoHashMapUnmanaged(ItemKey, f32) = .{},
 
-    /// index → 前缀和。长度恒等于 opts.count（rebuild 时对齐）。
+    /// index -> 前缀和。长度恒等于 opts.count（rebuild 时对齐）。
     layout: []Measurement = &.{},
 
     /// 自上次重建以来最早的脏 index。null = 干净。
     pending_min: ?usize = null,
 
     /// 已施加但尚未被滚动状态"消化"的补偿量。判首测/复测方位时必须把它算进
-    /// 去 —— 否则同一帧内连续两次测量会各自基于旧位置做判断。
+    /// 去，否则同一帧内连续两次测量会各自基于旧位置做判断。
     pending_adjustment: f32 = 0,
 
     pub fn init(allocator: Allocator, opts: Options) Measurements {
@@ -117,7 +117,7 @@ pub const Measurements = struct {
         return self.sizes.contains(self.keyOf(index));
     }
 
-    /// 行数变化。**不清 sizes** —— 它是 key 域的，行数变了旧 key 的高度依然有效
+    /// 行数变化。**不清 sizes**，它是 key 域的，行数变了旧 key 的高度依然有效
     /// （这正是 prepend 便宜的原因）。但前缀和是位置性的，必须整体重建。
     pub fn setCount(self: *Measurements, count: usize) void {
         if (self.opts.count == count) return;
@@ -133,11 +133,11 @@ pub const Measurements = struct {
 
     /// 作废整张前缀和，但**保留实测值**。
     ///
-    /// 用于 `estimate_fn` 的返回值本身变了的场合 —— 典型是 VirtualList 的
+    /// 用于 `estimate_fn` 的返回值本身变了的场合，典型是 VirtualList 的
     /// `item_height_fn` 模式：行高由调用方的回调给定，回调什么时候改返回值
     /// 账本无从得知。没有这个入口的话，`sizeOf` 读到的是实时回调值、而
     /// `offsetOf` / `totalHeight` 读的是陈旧缓存，同一份几何会自相矛盾
-    /// （实测：回调 10→100 后 itemHeight=100 但 totalHeight 仍是旧的 1000）。
+    /// （实测：回调 10->100 后 itemHeight=100 但 totalHeight 仍是旧的 1000）。
     ///
     /// 与 `resetMeasurements` 的区别：那个丢实测值、退回估算；这个只丢派生的
     /// 前缀和，实测值不动。
@@ -165,12 +165,12 @@ pub const Measurements = struct {
     /// 滚动锚定判据（照搬 TanStack，两条规则按"是否首测"分流）：
     ///
     /// - **首测**：只要该项**顶端**在视口线之上 (`start < anchor`) 就补偿。
-    ///   理由：这一整块此前都是估算的，估算→实测的差值必须两个方向都修正。
+    ///   理由：这一整块此前都是估算的，估算->实测的差值必须两个方向都修正。
     ///
     /// - **复测**：只有该项**整体**在视口线之上 (`end <= anchor`) 才补偿，
     ///   且向上滚动时不补偿。理由：一个跨着视口线的行（顶在线上、底在线下，
     ///   例如流式增长的聊天气泡）是在**锚点下方**变高的，补偿反而会把视口
-    ///   往下拽 —— 每次增长拽一次，表现为"内容一直往下溜"。
+    ///   往下拽，每次增长拽一次，表现为"内容一直往下溜"。
     pub fn applyMeasurement(
         self: *Measurements,
         index: usize,
@@ -188,7 +188,7 @@ pub const Measurements = struct {
         const old_size = prev orelse self.estimateOf(index);
         const delta = measured - old_size;
         if (@abs(delta) < 0.01) {
-            // 值没变，但首测仍需记账 —— 否则每帧都会被当成"首次测量"，
+            // 值没变，但首测仍需记账，否则每帧都会被当成"首次测量"，
             // 复测判据永远走不到。
             if (is_first_measure) {
                 self.sizes.put(self.allocator, key, measured) catch return .{};
@@ -226,7 +226,7 @@ pub const Measurements = struct {
         if (self.layout.len != count) {
             const grown = self.allocator.realloc(self.layout, count) catch {
                 // 分配失败：保持旧表不动并强制下帧重试。几何会暂时偏差，
-                // 但不会 UB —— 所有读取点都对 layout.len 做了边界检查。
+                // 但不会 UB，所有读取点都对 layout.len 做了边界检查。
                 self.pending_min = 0;
                 return;
             };
@@ -235,7 +235,7 @@ pub const Measurements = struct {
             // 表长变了，新增的尾巴是**未初始化内存**，必须重走。
             // 起点取「旧长度」与「已有脏点」的较小者：
             // 旧长度之后是新内存（必须写），脏点之后是失效数据（必须重算）。
-            // 注意不能写成 `pending_min orelse count` —— pending_min 为 null
+            // 注意不能写成 `pending_min orelse count`, pending_min 为 null
             // （表本来是干净的）时那会得到 count，循环一格都不走，新尾巴就
             // 保持未初始化，读出来是随机浮点数。
             const from = @min(old_len, count);
@@ -313,7 +313,7 @@ pub const Measurements = struct {
         const first = self.findNearest(clamped_y);
 
         // 收尾用前向线性扫描（不是第二次二分）：可见行数很少，且与
-        // TanStack 语义一致 —— end 严格小于视口下沿才继续推进。
+        // TanStack 语义一致，end 严格小于视口下沿才继续推进。
         const limit = clamped_y + viewport_h;
         var last = first;
         while (last < count - 1 and self.layout[last].end() < limit) {
@@ -348,7 +348,7 @@ test "measurements: measured sizes override estimates" {
     _ = m.applyMeasurement(1, 40, 0, .idle);
     try testing.expectEqual(@as(f32, 10), m.sizeAt(0));
     try testing.expectEqual(@as(f32, 40), m.sizeAt(1));
-    // 1 变高 30 → 后面所有 start 都后移 30。
+    // 1 变高 30 -> 后面所有 start 都后移 30。
     try testing.expectEqual(@as(f32, 50), m.offsetOf(2));
     try testing.expectEqual(@as(f32, 70), m.totalHeight());
 }
@@ -359,7 +359,7 @@ test "measurements: incremental rebuild keeps clean prefix" {
     m.ensureBuilt();
     try testing.expectEqual(@as(?usize, null), m.pending_min);
 
-    // 只动第 50 项 → pending_min 必须正好是 50，不是 0。
+    // 只动第 50 项 -> pending_min 必须正好是 50，不是 0。
     _ = m.applyMeasurement(50, 30, 0, .idle);
     try testing.expectEqual(@as(?usize, 50), m.pending_min);
     m.ensureBuilt();
@@ -406,7 +406,7 @@ test "measurements: binary search finds row covering scroll offset" {
     // 项 i 占 [10i, 10i+10)。
     try testing.expectEqual(@as(usize, 0), m.findNearest(0));
     try testing.expectEqual(@as(usize, 0), m.findNearest(9.9));
-    // 恰好落在项顶端 → 起始项是**该项**，不是前一项（右端开区间）。
+    // 恰好落在项顶端 -> 起始项是**该项**，不是前一项（右端开区间）。
     try testing.expectEqual(@as(usize, 3), m.findNearest(30));
     try testing.expectEqual(@as(usize, 3), m.findNearest(35));
     try testing.expectEqual(@as(usize, 9), m.findNearest(9999));
@@ -415,7 +415,7 @@ test "measurements: binary search finds row covering scroll offset" {
 test "measurements: range covers viewport with variable heights" {
     var m = Measurements.init(testing.allocator, .{ .count = 6, .estimate = 10 });
     defer m.deinit();
-    // 高度 10/50/10/10/10/10 → start 0/10/60/70/80/90
+    // 高度 10/50/10/10/10/10 -> start 0/10/60/70/80/90
     _ = m.applyMeasurement(1, 50, 0, .idle);
 
     const r = m.range(0, 60);
@@ -441,7 +441,7 @@ test "measurements: first measure above fold adjusts scroll" {
     defer m.deinit();
     m.ensureBuilt();
 
-    // 视口在 y=500。项 10 (start=100) 完全在上方，首测变高 +20 → 补偿 +20。
+    // 视口在 y=500。项 10 (start=100) 完全在上方，首测变高 +20 -> 补偿 +20。
     const out = m.applyMeasurement(10, 30, 500, .idle);
     try testing.expect(out.changed);
     try testing.expectEqual(@as(f32, 20), out.scroll_adjustment);
@@ -453,7 +453,7 @@ test "measurements: first measure below fold does not adjust scroll" {
     defer m.deinit();
     m.ensureBuilt();
 
-    // 项 80 (start=800) 在视口 (y=100) 下方 → 变高不该动滚动位置。
+    // 项 80 (start=800) 在视口 (y=100) 下方 -> 变高不该动滚动位置。
     const out = m.applyMeasurement(80, 50, 100, .idle);
     try testing.expect(out.changed);
     try testing.expectEqual(@as(f32, 0), out.scroll_adjustment);
@@ -464,13 +464,13 @@ test "measurements: re-measure of fold-straddling item does not drag viewport" {
     defer m.deinit();
     m.ensureBuilt();
 
-    // 先首测项 10 → 100..160（跨过视口线 150）。
+    // 先首测项 10 -> 100..160（跨过视口线 150）。
     _ = m.applyMeasurement(10, 60, 0, .idle);
     m.consumeAdjustment();
     m.ensureBuilt();
     try testing.expectEqual(@as(f32, 100), m.offsetOf(10));
 
-    // 复测：它跨着视口线 150（100 <= 150 < 160）——在锚点**下方**变高，
+    // 复测：它跨着视口线 150（100 <= 150 < 160），在锚点**下方**变高，
     // 补偿会把视口往下拽，所以必须不补偿。
     const out = m.applyMeasurement(10, 80, 150, .forward);
     try testing.expect(out.changed);
@@ -500,11 +500,11 @@ test "measurements: pending_adjustment participates in the anchor comparison" {
     defer m.deinit();
     m.ensureBuilt();
 
-    // 项 30 = [300,310)。视口线 295 时它在下方 → 不补偿。
+    // 项 30 = [300,310)。视口线 295 时它在下方 -> 不补偿。
     const a = m.applyMeasurement(30, 20, 295, .idle);
     try testing.expectEqual(@as(f32, 0), a.scroll_adjustment);
 
-    // 但若已有 +20 未消化的补偿，实际锚点是 315 > 300 → 该补偿。
+    // 但若已有 +20 未消化的补偿，实际锚点是 315 > 300 -> 该补偿。
     var m2 = Measurements.init(testing.allocator, .{ .count = 100, .estimate = 10 });
     defer m2.deinit();
     m2.ensureBuilt();
@@ -540,7 +540,7 @@ test "measurements: item keys survive prepend" {
     Ctx.ids = &[_]u64{ 99, 100, 101, 102 };
     m.setCount(4);
     m.ensureBuilt();
-    // 实测值跟着 key 走，没有因为 index 平移而丢失 —— 这就是 prepend 便宜的原因。
+    // 实测值跟着 key 走，没有因为 index 平移而丢失，这就是 prepend 便宜的原因。
     try testing.expectEqual(@as(f32, 55), m.sizeAt(1));
     // 新插入的行还没测过，走估算。
     try testing.expectEqual(@as(f32, 10), m.sizeAt(0));

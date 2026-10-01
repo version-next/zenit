@@ -1,7 +1,7 @@
-/// storybook — 集中展示 + e2e 验证所有 zenit 组件
+/// storybook，集中展示 + e2e 验证所有 zenit 组件
 ///
 /// 布局 master-detail：左侧组件列表（可点行），右侧 content 面板按选中项切换。
-/// 点击左行只切换右面板（无长滚动页）—— e2e 永远只操作当前可见的那一个组件。
+/// 点击左行只切换右面板（无长滚动页），e2e 永远只操作当前可见的那一个组件。
 ///
 /// 架构：
 ///   - 每个组件一条 WIDGETS 注册项：{ key, title, buildFn }
@@ -145,7 +145,7 @@ const WIDGETS = [_]WidgetSpec{
     .{ .key = "secsvg", .title = "Security / SVG", .build = stories.buildSecuritySvg },
     .{ .key = "secopacity", .title = "Security / Opacity", .build = stories.buildSecurityOpacity },
     .{ .key = "sectext", .title = "Security / Text", .build = stories.buildSecurityText },
-    .{ .key = "interaction-lifecycle", .title = "Interaction Lifecycle", .build = stories.buildInteractionLifecycle },
+    .{ .key = "interactionlifecycle", .title = "Interaction Lifecycle", .build = stories.buildInteractionLifecycle },
     .{ .key = "teardownstress", .title = "Lifecycle Stress", .build = stories.buildTeardownStress },
 };
 
@@ -175,7 +175,7 @@ const NAV_SECTIONS = [_]NavSection{
 const COMPONENT_COUNT_LABEL = std.fmt.comptimePrint("{d} COMPONENTS", .{WIDGETS.len});
 const STORY_COUNT_LABEL = std.fmt.comptimePrint("{d} STORIES", .{WIDGETS.len});
 
-// 每个面板一个可见性 Signal(bool)。点某行 → 该行 signal 设 true、其余设 false。
+// 每个面板一个可见性 Signal(bool)。点某行 -> 该行 signal 设 true、其余设 false。
 // Show 接受 *Signal(bool)（不接受 Memo），故用一组 signal 而非单个 active 索引。
 const VisSignals = [WIDGETS.len]*ui.Signal(bool);
 
@@ -202,7 +202,7 @@ const RowCtx = struct {
 const NAV_ENTRY_COUNT = WIDGETS.len + NAV_SECTIONS.len;
 
 /// 侧边栏搜索：按标题 / key 做不区分大小写的子串过滤。
-/// 用框架原生 display:none 隐藏不匹配的行与空分组标题 —— 节点始终在树上，
+/// 用框架原生 display:none 隐藏不匹配的行与空分组标题，节点始终在树上，
 /// 不重排 children、不需要在销毁时恢复。
 const NavFilter = struct {
     allocator: std.mem.Allocator,
@@ -382,9 +382,9 @@ fn mountUI(cx: *ui.Cx, scope: *ui.Scope) anyerror!*ui.Node {
     try sidebar.appendChild(allocator, library_meta);
 
     // nav 列表放进 ScrollArea：组件数超过窗口高度时可滚动（鼠标滚轮/触控板）。
-    // width/height 留空 → 容器默认 grow，吃掉 "Components" header 下方剩余高度。
+    // width/height 留空 -> 容器默认 grow，吃掉 "Components" header 下方剩余高度。
     // e2e 的 clickTestId 走 test harness scroll-into-view（命令执行前把目标滚进视口），
-    // 故滚出视口的行依旧可点 —— 见 src/test_harness/command_executor.zig。
+    // 故滚出视口的行依旧可点，见 src/test_harness/command_executor.zig。
     const nav_scroll = try ui.widgets.mountScrollArea(.{
         .direction = .vertical,
         .padding = .{ .top = 0, .right = 10, .bottom = 12, .left = 10 },
@@ -497,7 +497,7 @@ fn mountUI(cx: *ui.Cx, scope: *ui.Scope) anyerror!*ui.Node {
         visuals.rows[i] = row;
         visuals.indicators[i] = indicator;
         visuals.labels[i] = label;
-        // 点击 → 仅本行 signal true
+        // 点击 -> 仅本行 signal true
         const rc = try allocator.create(RowCtx);
         rc.* = .{ .vis = vis, .visuals = visuals, .index = @intCast(i) };
         try scope.registerResource(@ptrCast(rc), struct {

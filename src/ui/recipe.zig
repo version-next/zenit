@@ -1,19 +1,19 @@
-/// Recipe — 样式配方系统
+/// Recipe，样式配方系统
 ///
 /// 灵感来自 Panda CSS (cva/sva) 和 CVA (Class Variance Authority)，
 /// 用 Zig comptime 实现零运行时开销的声明式样式变体。
 ///
 /// 三层架构：
-///   1. ConditionalStyle — 带交互条件的样式包 (对标 Panda Conditions: _hover/_active/_disabled)
-///   2. recipe()          — 单节点配方 (对标 CVA cva())
-///   3. slotRecipe()      — 多部件配方 (对标 Panda sva())
+///   1. ConditionalStyle，带交互条件的样式包 (对标 Panda Conditions: _hover/_active/_disabled)
+///   2. recipe()，单节点配方 (对标 CVA cva())
+///   3. slotRecipe()，多部件配方 (对标 Panda sva())
 ///
 /// CSS Transition 解析器：
-///   4. transition()      — comptime 解析 CSS 风格的 transition 字符串
+///   4. transition(), comptime 解析 CSS 风格的 transition 字符串
 ///
 /// 用法示例：
 /// ```zig
-/// // CSS transition 字符串 → 编译期解析
+/// // CSS transition 字符串 -> 编译期解析
 /// node.applyTransition(allocator, comptime transition("background 200ms ease-out, opacity 150ms"));
 ///
 /// // Recipe 定义
@@ -39,7 +39,7 @@ pub const InteractionState = types.InteractionState;
 pub const ThemeTokens = theme.ThemeTokens;
 
 // ============================================================================
-// 1. ConditionalStyle — 带交互条件的样式包
+// 1. ConditionalStyle，带交互条件的样式包
 // ============================================================================
 
 /// 一个声明式样式包，同时描述 base + 七种条件态。
@@ -47,9 +47,9 @@ pub const ThemeTokens = theme.ThemeTokens;
 /// 对标 Panda CSS 的 Conditions 系统：
 ///   css({ bg: "red.500", _hover: { bg: "red.700" }, _disabled: { opacity: 0.5 } })
 /// 条件位收录 Panda 内置条件里组件库有真实消费者的子集：
-///   _hover/_active/_focus/_disabled + _checked(→selected)/_expanded/_invalid。
+///   _hover/_active/_focus/_disabled + _checked(->selected)/_expanded/_invalid。
 /// 刻意不收：_dark（主题差异走 token 层整体换 + 样式函数内 t.scheme 判别，
-/// 不做样式级条件——两个 dark 值来源会打架）、group/peer hover（需事件系统
+/// 不做样式级条件，两个 dark 值来源会打架）、group/peer hover（需事件系统
 /// 支持，另案）、伪元素/媒体查询（无 CSS 引擎对应物）。
 ///
 /// 替代当前 ControlVariant 的 6 个独立方法（background/hoverBackground/activeBackground/...），
@@ -68,14 +68,14 @@ pub const ConditionalStyle = struct {
     /// focus 态
     focus: ?StyleOverride = null,
     /// 校验失败态（链上排交互态之后：error 视觉需压过 hover/focus，
-    /// 对齐 Input 既有语义——error 时抑制 focus/hover 的边框变化）
+    /// 对齐 Input 既有语义，error 时抑制 focus/hover 的边框变化）
     invalid: ?StyleOverride = null,
     /// disabled 态（disabled 时其余条件态全部不叠加）
     disabled: ?StyleOverride = null,
 
     /// 运行时解析：根据交互/组件状态 merge 出最终 StyleOverride
     ///
-    /// 优先级链: base ← selected ← expanded ← hover ← active ← focus ← invalid ← disabled(短路)
+    /// 优先级链: base <- selected <- expanded <- hover <- active <- focus <- invalid <- disabled(短路)
     /// - selected/expanded 是持久底态，交互态叠其上（hover 高亮可叠在选中行上）；
     /// - invalid 压过交互态；disabled 与其余互斥（不叠加任何条件态）。
     pub fn resolve(self: ConditionalStyle, state: InteractionState) StyleOverride {
@@ -192,7 +192,7 @@ pub const ConditionalStyle = struct {
 };
 
 // ============================================================================
-// 2. recipe() — 单节点配方 (对标 CVA cva())
+// 2. recipe()，单节点配方 (对标 CVA cva())
 // ============================================================================
 
 /// comptime Recipe 工厂函数
@@ -207,7 +207,7 @@ pub const ConditionalStyle = struct {
 ///   - derived(variants, tokens) -> ConditionalStyle（可选）: 跨维度组合逻辑，
 ///     拿到完整 Variants，承载单维度 resolver 表达不了的"连续函数型组合"
 ///     （如 padding = f(size, icon 模式)）。约定：derived 只产出几何字段
-///     （padding/radius/height/width/gap 等），**禁碰 background** ——
+///     （padding/radius/height/width/gap 等），**禁碰 background**,
 ///     background 三态取色走 bgColors()，derived 写入会污染动画取色。
 ///   - compounds: tuple of { matches: fn(Variants) -> bool, style: fn(tokens) -> ConditionalStyle }（可选）
 pub fn recipe(comptime Config: type) type {
@@ -218,7 +218,7 @@ pub fn recipe(comptime Config: type) type {
     return struct {
         pub const Variants = Config.Variants;
 
-        /// 核心 resolve — 对标 CVA 的 resolve(props)
+        /// 核心 resolve，对标 CVA 的 resolve(props)
         ///
         /// 合并优先级: base < variants < derived < compounds（后者覆盖前者）
         pub fn resolve(variants: Variants, tokens: *const ThemeTokens) ConditionalStyle {
@@ -238,12 +238,12 @@ pub fn recipe(comptime Config: type) type {
                 }
             }
 
-            // Step 2.5: derived — 跨维度组合（拿完整 Variants）
+            // Step 2.5: derived，跨维度组合（拿完整 Variants）
             if (@hasDecl(Config, "derived")) {
                 result = result.merge(Config.derived(variants, tokens));
             }
 
-            // Step 3: compound variants — AND 匹配
+            // Step 3: compound variants, AND 匹配
             if (@hasDecl(Config, "compounds")) {
                 inline for (Config.compounds) |compound| {
                     if (compound.matches(variants)) {
@@ -263,7 +263,7 @@ pub fn recipe(comptime Config: type) type {
 }
 
 // ============================================================================
-// 3. slotRecipe() — 多部件配方 (对标 Panda sva())
+// 3. slotRecipe()，多部件配方 (对标 Panda sva())
 // ============================================================================
 
 /// comptime SlotRecipe 工厂函数
@@ -294,7 +294,7 @@ pub fn slotRecipe(comptime Config: type) type {
         pub const Slots = Config.Slots;
         pub const Variants = Config.Variants;
 
-        /// 核心 resolve — 返回每个 slot 的 ConditionalStyle
+        /// 核心 resolve，返回每个 slot 的 ConditionalStyle
         pub fn resolve(variants: Variants, tokens: *const ThemeTokens) Slots {
             // Step 1: base
             var result: Slots = if (@hasDecl(Config, "base"))
@@ -316,7 +316,7 @@ pub fn slotRecipe(comptime Config: type) type {
                 }
             }
 
-            // Step 2.5: derived — 跨维度组合（拿完整 Variants，约定同 recipe）
+            // Step 2.5: derived，跨维度组合（拿完整 Variants，约定同 recipe）
             if (@hasDecl(Config, "derived")) {
                 const derived_slots: Slots = Config.derived(variants, tokens);
                 inline for (std.meta.fields(Slots)) |sf| {
@@ -344,7 +344,7 @@ pub fn slotRecipe(comptime Config: type) type {
 }
 
 // ============================================================================
-// 4. transition() — CSS 风格的 transition 字符串 comptime 解析器
+// 4. transition(), CSS 风格的 transition 字符串 comptime 解析器
 // ============================================================================
 
 /// 解析结果：一组 (属性, 配置) 对
@@ -359,29 +359,29 @@ pub const TransitionEntry = struct {
 ///   "background 200ms ease-out"
 ///   "background 200ms ease-out, opacity 150ms"
 ///   "background 200ms, opacity 150ms linear"
-///   "all 200ms ease-out"               ← 所有可过渡属性
-///   "background 0.2s ease-in-out"       ← 秒单位
-///   "background 200ms"                  ← 省略 easing → 默认 ease-out-quad
-///   "background"                        ← 省略 duration → 默认 150ms
+///   "all 200ms ease-out"               <- 所有可过渡属性
+///   "background 0.2s ease-in-out"       <- 秒单位
+///   "background 200ms"                  <- 省略 easing -> 默认 ease-out-quad
+///   "background"                        <- 省略 duration -> 默认 150ms
 ///
-/// 属性名映射 (CSS → TransitionProp):
-///   background / background-color / bg    → .background
-///   opacity                               → .opacity
-///   border-color                          → .border_color
-///   border-width                          → .border_width
-///   translate-x / translateX / transform-x → .translate_x
-///   translate-y / translateY / transform-y → .translate_y
-///   scale-x / scaleX                      → .scale_x
-///   scale-y / scaleY                      → .scale_y
-///   rotate / rotation                     → .rotate
-///   corner-radius / border-radius         → .corner_radius
-///   all                                   → 所有 11 个属性
+/// 属性名映射 (CSS -> TransitionProp):
+///   background / background-color / bg    -> .background
+///   opacity                               -> .opacity
+///   border-color                          -> .border_color
+///   border-width                          -> .border_width
+///   translate-x / translateX / transform-x -> .translate_x
+///   translate-y / translateY / transform-y -> .translate_y
+///   scale-x / scaleX                      -> .scale_x
+///   scale-y / scaleY                      -> .scale_y
+///   rotate / rotation                     -> .rotate
+///   corner-radius / border-radius         -> .corner_radius
+///   all                                   -> 所有 11 个属性
 ///
-/// Easing 名映射 (CSS → Easing):
-///   linear                                → .linear
-///   ease / ease-out / ease-in / ease-in-out → quad 版本
-///   ease-out-cubic / ease-in-cubic / ...   → 对应 Easing 枚举
-///   spring / bounce                       → ease_out_back / ease_out_bounce
+/// Easing 名映射 (CSS -> Easing):
+///   linear                                -> .linear
+///   ease / ease-out / ease-in / ease-in-out -> quad 版本
+///   ease-out-cubic / ease-in-cubic / ...   -> 对应 Easing 枚举
+///   spring / bounce                       -> ease_out_back / ease_out_bounce
 ///
 /// 示例:
 /// ```zig
@@ -435,7 +435,7 @@ fn parseTransition(comptime input: []const u8) [countTransitionEntries(input)]Tr
             };
 
             if (eqlIgnoreCase(prop_str, "all")) {
-                // "all" → 展开为所有 11 个属性
+                // "all" -> 展开为所有 11 个属性
                 const all_props = [_]TransitionProp{
                     .background,   .opacity,     .border_color,
                     .translate_x,  .translate_y, .scale_x,
@@ -539,13 +539,13 @@ fn parseDurationValue(comptime token: []const u8) ?f32 {
         if (endsWith(token, "ms")) {
             return parseFloat(token[0 .. token.len - 2]);
         } else if (endsWith(token, "s") and !isAlpha(token[0])) {
-            // "0.2s" → 200ms
+            // "0.2s" -> 200ms
             if (parseFloat(token[0 .. token.len - 1])) |secs| {
                 return secs * 1000;
             }
             return null;
         } else {
-            // 纯数字 → 当作 ms
+            // 纯数字 -> 当作 ms
             if (isDigit(token[0])) {
                 return parseFloat(token);
             }
@@ -568,7 +568,7 @@ fn findEasing(comptime tokens: Tokens) Easing {
 }
 
 fn parseEasingName(comptime name: []const u8) ?Easing {
-    // cubic-bezier(x1,y1,x2,y2) — 括号内逗号分隔，无空格
+    // cubic-bezier(x1,y1,x2,y2)，括号内逗号分隔，无空格
     if (name.len > 13 and eqlIgnoreCase(name[0..13], "cubic-bezier(") and name[name.len - 1] == ')') {
         const inner = name[13 .. name.len - 1];
         const params = parseBezierParams(inner);
@@ -1081,7 +1081,7 @@ test "ConditionalStyle: bgColors" {
 }
 
 test "ConditionalStyle: bgColors 继承" {
-    // hover 没指定 bg → 继承 normal
+    // hover 没指定 bg -> 继承 normal
     const s = ConditionalStyle{
         .base = .{ .background = Color.hex(0xFF0000) },
         .hover = .{ .opacity = 0.8 },
@@ -1158,7 +1158,7 @@ test "recipe: compound variants" {
             }.resolve,
         };
 
-        // compound: danger + sm → 特殊文本颜色
+        // compound: danger + sm -> 特殊文本颜色
         pub const compounds = .{
             .{
                 .matches = struct {
@@ -1177,17 +1177,17 @@ test "recipe: compound variants" {
 
     const tokens = &theme.dark;
 
-    // 非 compound 组合 → 无额外样式
+    // 非 compound 组合 -> 无额外样式
     const primary_md = CompoundRecipe.resolve(.{ .variant = .primary, .size = .md }, tokens);
     try std.testing.expect(primary_md.base.text_color == null);
 
-    // compound 匹配 → danger + sm 有特殊 text_color
+    // compound 匹配 -> danger + sm 有特殊 text_color
     const danger_sm = CompoundRecipe.resolve(.{ .variant = .danger, .size = .sm }, tokens);
     try std.testing.expect(danger_sm.base.text_color != null);
     try std.testing.expectEqual(Color.hex(0xFFFF00), danger_sm.base.text_color.?);
     try std.testing.expectEqual(Color.hex(0xFF0000), danger_sm.base.background.?); // variant 的 bg 也在
 
-    // danger + md → compound 不匹配
+    // danger + md -> compound 不匹配
     const danger_md = CompoundRecipe.resolve(.{ .variant = .danger, .size = .md }, tokens);
     try std.testing.expect(danger_md.base.text_color == null);
 }

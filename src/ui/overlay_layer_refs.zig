@@ -1,4 +1,4 @@
-//! overlay 层对 trigger / anchor 目标的「弱引用 + 代次存活校验」—— 从
+//! overlay 层对 trigger / anchor 目标的「弱引用 + 代次存活校验」，从
 //! `overlay_stack.zig` 析出。
 //!
 //! ## 为什么搬
@@ -18,30 +18,30 @@
 //! resolve 的三段语义就是**存活判定的全部不变量**，任何一条砍掉都会复活
 //! 悬垂指针：
 //!
-//!   1. `cached == null`            → 没缓存指针，无从校验 → null
-//!   2. 无 registry                 → 没有校验能力。返回 cached 本身：
+//!   1. `cached == null`            -> 没缓存指针，无从校验 -> null
+//!   2. 无 registry                 -> 没有校验能力。返回 cached 本身：
 //!                                     此时无人调用过 trackNode（registry
 //!                                     由 setRegistry 注入，push 前必设），
 //!                                     指针生命周期由测试 caller 用
 //!                                     defer destroy 保证。
-//!   3. `h == null`                 → 从未 track 过（trackNode 在 registry
-//!                                     缺失/OOM 时返回 null）→ null。
+//!   3. `h == null`                 -> 从未 track 过（trackNode 在 registry
+//!                                     缺失/OOM 时返回 null）-> null。
 //!                                     **这条必须判 null 而不是回退 cached**：
 //!                                     track 失败意味着没有代次可查，直接
 //!                                     信 cached 就是回到悬垂指针。
-//!   4. registry.resolve(h) 命中    → 代次一致，活着 → 返回
+//!   4. registry.resolve(h) 命中    -> 代次一致，活着 -> 返回
 //!   5. resolve 落空但 isCurrentIdentity
-//!      (h, cached) 仍真           → 节点还没进本帧 registry 快照
+//!      (h, cached) 仍真           -> 节点还没进本帧 registry 快照
 //!                                     （trackGeneration 已建立身份），
-//!                                     是暂态而非悬垂 → 返回 cached
-//!   6. 其余                         → 节点已释放或同 id 换了对象 → null
+//!                                     是暂态而非悬垂 -> 返回 cached
+//!   6. 其余                         -> 节点已释放或同 id 换了对象 -> null
 //!
 //! ## 接口切在哪 / 不搬什么
 //!
 //! 切在「单节点的存活判定」。不搬：
 //!   - `OverlayLayer` 结构本身（它聚合了动画、z 序、focus 等层的全部状态，
 //!     拆走等于把层状态机撕成两半）；
-//!   - `handleOutsideClick` 的判定顺序（content → trigger → barrier →
+//!   - `handleOutsideClick` 的判定顺序（content -> trigger -> barrier ->
 //!     未知区域，这是整栈语义，见 overlay_stack.zig 内注释）；
 //!   - `nestedParentZ`（要遍历整栈的 ordered 索引）。
 //!
@@ -63,7 +63,7 @@ const NodeHandle = hit_runtime.NodeHandle;
 const NodeRegistry = hit_runtime.NodeRegistry;
 
 /// 把裸节点指针换成带代次的 handle。registry 缺失或 trackGeneration 失败
-/// （OOM）时返回 null —— 调用方存 null，之后 resolve 永远判死，绝不回退
+/// （OOM）时返回 null，调用方存 null，之后 resolve 永远判死，绝不回退
 /// 到裸指针。这是整条链上唯一允许「降级为不可用」的点，且降级方向是
 /// 安全侧（不解析），不是危险侧（信旧指针）。
 pub fn trackNode(registry: ?*NodeRegistry, node: ?*Node) ?NodeHandle {
@@ -74,7 +74,7 @@ pub fn trackNode(registry: ?*NodeRegistry, node: ?*Node) ?NodeHandle {
 }
 
 /// 见模块头「三段语义」清单。cached 为 null 直接判死，不做任何 registry
-/// 查询 —— 没有 cached 就没有可回退的对象。
+/// 查询，没有 cached 就没有可回退的对象。
 pub fn resolveTrackedNode(registry: ?*const NodeRegistry, handle: ?NodeHandle, cached: ?*Node) ?*Node {
     const node = cached orelse return null;
     const registry_ = registry orelse return node;

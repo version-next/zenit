@@ -1,4 +1,4 @@
-/// 节点命令式动画 — animateNode
+/// 节点命令式动画，animateNode
 ///
 /// 直接对节点属性发起命令式动画，支持多属性并行，冲突自动覆盖 (overwrite)。
 /// 与 TransitionSlots (声明式) 互补：TransitionSlots 是 "设了 transition 后属性变化自动过渡"，
@@ -82,7 +82,7 @@ pub const NodeAnimations = struct {
 
     /// 添加或替换属性动画（同属性自动 overwrite）。
     /// 若同 prop 已有正在跑的 controller，先取它的 current_value + velocity
-    /// 调新 controller.seed —— interruption-safe，避免 hover/active 切换时数值跳变。
+    /// 调新 controller.seed, interruption-safe，避免 hover/active 切换时数值跳变。
     pub fn set(self: *NodeAnimations, prop: AnimatableProp, ctrl: AnimationController) void {
         if (ctrl.isScopeRetiring()) return;
         var accepted = ctrl.cloneForNode();
@@ -113,7 +113,7 @@ pub const NodeAnimations = struct {
             }
         }
         // 新增。满额时先驱逐一个已终结条目（completed/idle 的最终值早已写进
-        // style，条目只是等外部 restart 的占位）——此前静默丢弃新动画，而
+        // style，条目只是等外部 restart 的占位），此前静默丢弃新动画，而
         // animateNode 在 set 之前已把 from 值写进节点：节点被永久钉在 from，
         // 比不调用还糟。
         if (self.count >= max_entries) {
@@ -273,7 +273,7 @@ pub const NodeAnimations = struct {
         switch (entry.prop) {
             .opacity => {
                 // generic over MockNode (plain .style.opacity field)
-                // vs real Node (字段已删 → setOpacityRaw 路由 World.paint_state)。
+                // vs real Node (字段已删 -> setOpacityRaw 路由 World.paint_state)。
                 if (comptime @hasDecl(@TypeOf(node.*), "setOpacityRaw")) {
                     node.setOpacityRaw(v);
                 } else {
@@ -348,7 +348,7 @@ pub const NodeAnimations = struct {
     /// 获取节点当前属性值
     pub fn getCurrentPropValue(node: anytype, prop: AnimatableProp) f32 {
         return switch (prop) {
-            // real Node 字段已删 → getOpacity 路由 World；
+            // real Node 字段已删 -> getOpacity 路由 World；
             // MockNode/TestNode 仍有 plain .style.opacity 字段。
             .opacity => if (comptime @hasDecl(@TypeOf(node.*), "getOpacity"))
                 node.getOpacity()
@@ -366,7 +366,7 @@ pub const NodeAnimations = struct {
             .width => switch (node.style.width) {
                 .px => |v| v,
                 // node 是 generic (anytype)，MockNode 有 frame_state.rect 字段；
-                // 真 Node 的字段已删 — 走 rectFromWorldOrFallback。comptime 分支。
+                // 真 Node 的字段已删，走 rectFromWorldOrFallback。comptime 分支。
                 else => if (comptime @hasDecl(@TypeOf(node.*), "rectFromWorldOrFallback"))
                     node.rectFromWorldOrFallback().w
                 else
@@ -735,7 +735,7 @@ test "NodeAnimations: completion callback can switch height back to fit" {
 }
 
 // ============================================================================
-// v0.7 §2.3 — NodeAnimations.set 自动 seed (interrupt-safe) tests
+// v0.7 §2.3, NodeAnimations.set 自动 seed (interrupt-safe) tests
 // ============================================================================
 
 test "tween 中断 — 新 controller 从 old current_value 起步，无跳变" {
@@ -744,7 +744,7 @@ test "tween 中断 — 新 controller 从 old current_value 起步，无跳变" 
     var node = MockNode{};
     node.style.opacity = 0;
 
-    // 第 1 段：0 → 1，duration 1s，linear
+    // 第 1 段：0 -> 1，duration 1s，linear
     anims.set(.opacity, AnimationController.initTween(.{
         .from = 0,
         .to = 1,
@@ -769,7 +769,7 @@ test "tween 中断 — 新 controller 从 old current_value 起步，无跳变" 
     // 而不是跳到 from=0
     setTestTime(1316.0); // +16ms 一帧
     _ = anims.tick(&node, std.testing.allocator, 1316.0);
-    // 0.5s 内从 v_at_interrupt → 0；16ms 后大约走 16/500 ≈ 3% 的路 ≈ 0.291
+    // 0.5s 内从 v_at_interrupt -> 0；16ms 后大约走 16/500 ≈ 3% 的路 ≈ 0.291
     // 总之绝不应该跳到 0 附近（误差应远小于 v_at_interrupt 的 50%）
     try std.testing.expect(node.style.opacity > v_at_interrupt * 0.85);
     try std.testing.expect(node.style.opacity < v_at_interrupt * 1.01);
@@ -802,7 +802,7 @@ test "spring 中断 — velocity 续衔，不视觉抖动" {
         .mass = 1,
     }));
 
-    // 第一 tick 之后 opacity 不应跳变 — seed 接管使新 spring 从 v_at_interrupt 起步
+    // 第一 tick 之后 opacity 不应跳变，seed 接管使新 spring 从 v_at_interrupt 起步
     setTestTime(1116.0);
     _ = anims.tick(&node, std.testing.allocator, 1116.0);
     // 误差容忍 30% (spring 一帧内有惯性 + damping，但绝对不能跳到 from=0)
@@ -837,7 +837,7 @@ test "currentVelocity — spring 0 起步速度 = 0" {
 
 test "NodeAnimations: 槽满时驱逐已终结条目而非静默丢弃新动画" {
     // 回归：set 满额后无 else 静默丢弃，而 animateNode 已提前把 from 写进
-    // 节点 style —— 节点被永久钉在 from。当前 13 个 prop < 16 槽，公开 API
+    // 节点 style，节点被永久钉在 from。当前 13 个 prop < 16 槽，公开 API
     // 尚打不满；手工构造满额态锁住驱逐语义，防 prop 扩容后地雷复活。
     setTestTime(1000.0);
     var anims = NodeAnimations{};

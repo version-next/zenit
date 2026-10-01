@@ -38,8 +38,8 @@ network.info("GET {s} -> {d}", .{ url, status });
 network.warn("retry {d}", .{attempt});
 ```
 
-`ScopedConsole` is only a lightweight reference to its parent Console. It — like
-pointers obtained from `cx.console()` — must not outlive the owning `Cx`. Before
+`ScopedConsole` is only a lightweight reference to its parent Console. Like
+pointers obtained from `cx.console()`, it must not outlive the owning `Cx`. Before
 closing a window, stop or `join` any worker that may still write logs.
 
 ## Opening the DevTools Console
@@ -140,7 +140,7 @@ cx.console().writeAt(.err, @src(), "invalid response: {s}", .{reason});
 
 Rows that carry a source location display `file.zig:line`. Clicking it reuses the
 DevTools source launcher. The application must configure the source roots and the
-editor at startup — see [DEVTOOLS.md](DEVTOOLS.md#goto-source):
+editor at startup; see [DEVTOOLS.md](DEVTOOLS.md#goto-source):
 
 ```zig
 ui.devtools.source_link.configure(.{
@@ -154,7 +154,7 @@ ui.devtools.source_link.configure(.{
 
 If `writeAt` was not called, the source launcher is not configured, or the
 corresponding source cannot be found on the build machine, the log still displays
-normally — it just is not clickable.
+normally, it just is not clickable.
 
 ## API reference
 
@@ -209,7 +209,7 @@ log.timeEnd("load");
 | `scoped(name)` | Returns a lightweight `ScopedConsole` bound to a scope. |
 
 Groups are isolated per writer thread; counters and timers are isolated per
-`scope + label`. Every public write method may be called from a worker thread —
+`scope + label`. Every public write method may be called from a worker thread.
 Console uses the same internal lock to assign the globally monotonic `seq` to each
 event.
 

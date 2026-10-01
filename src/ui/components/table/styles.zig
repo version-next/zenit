@@ -1,4 +1,4 @@
-//! Table 样式层 — 全部视觉决策集中在这里，mod.zig 的 mount/render 只消费。
+//! Table 样式层，全部视觉决策集中在这里，mod.zig 的 mount/render 只消费。
 //! 直接渲染与虚拟滚动两条路径共用同一组样式函数。
 const core = @import("../../core.zig");
 const Color = core.Color;

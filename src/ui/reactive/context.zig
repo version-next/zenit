@@ -1,4 +1,4 @@
-/// Context — 通用跨层级依赖注入
+/// Context，通用跨层级依赖注入
 ///
 /// 基于 Scope 树向上查找，零额外分配（栈内 8 slot）。
 ///
@@ -26,7 +26,7 @@ fn typeId(comptime T: type) usize {
     return @intFromPtr(&S.token);
 }
 
-/// 泛型 Context — 通过类型参数自动选择不同的 slot
+/// 泛型 Context，通过类型参数自动选择不同的 slot
 pub fn Context(comptime T: type) type {
     return struct {
         /// 在当前 scope 注册一个 context 值

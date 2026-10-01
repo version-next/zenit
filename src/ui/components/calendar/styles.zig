@@ -1,4 +1,4 @@
-//! Calendar 样式层 — 具名样式函数与样式常量（zenit-styling-revamp）。
+//! Calendar 样式层，具名样式函数与样式常量（zenit-styling-revamp）。
 //! 迁移自 mount/buildGrid 的内联样式；数值原样保留。
 //! mod.zig 只消费这些函数的返回值，不做内联样式与颜色决策。
 const core = @import("../../core.zig");
@@ -88,7 +88,7 @@ pub fn weekRowStyle(cell_size: f32) core.BoxStyle {
     };
 }
 
-/// 日期格状态旗标 → dayCellStyle/dayTextStyle 的视觉决策输入
+/// 日期格状态旗标 -> dayCellStyle/dayTextStyle 的视觉决策输入
 pub const DayCellFlags = struct {
     selected: bool,
     today: bool,

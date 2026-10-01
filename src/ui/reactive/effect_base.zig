@@ -6,9 +6,9 @@ const std = @import("std");
 /// - SignalOwner 需要统一管理所有 Effect
 /// - 通过虚函数表实现多态
 ///
-/// 单轨追踪——依赖关系全部走 ReactiveGraph（src/ui/reactive/graph.zig）。
+/// 单轨追踪，依赖关系全部走 ReactiveGraph（src/ui/reactive/graph.zig）。
 /// 旧 dependencies / addDependency / clearDependencies / removeDependencyPointer
-/// 全部删除——graph.sources 是唯一依赖源。
+/// 全部删除，graph.sources 是唯一依赖源。
 pub const EffectBase = struct {
     /// 虚函数表
     vtable: *const VTable,
@@ -66,8 +66,8 @@ pub const EffectBase = struct {
 
     /// 运行 Effect 并重新收集依赖,带重入保护
     ///
-    /// runWithTrackingFast —— 跳过 graph.clearSources/pushTracking 设置。
-    /// 仅由 graph.recomputeNode → graphRecomputeCb 路径调用——graph 已经做了
+    /// runWithTrackingFast，跳过 graph.clearSources/pushTracking 设置。
+    /// 仅由 graph.recomputeNode -> graphRecomputeCb 路径调用，graph 已经做了
     /// 这两步。省去 1k fanout 下每 effect ~30 ns 的重复 push/pop。
     pub fn runWithTrackingFast(self: *EffectBase, owner: anytype) void {
         if (self.is_running) {
@@ -108,9 +108,9 @@ pub const EffectBase = struct {
         }
     }
 
-    /// 单轨追踪——push/pop graph.tracking_stack + clearSources。
+    /// 单轨追踪，push/pop graph.tracking_stack + clearSources。
     /// 用于 (a) 创建时初次 run（effect.zig:50/75）和 (b) batch.flush 路径（batch.zig:93）。
-    /// graph.recomputeNode → graphRecomputeCb 路径请用 runWithTrackingFast 跳过重复设置。
+    /// graph.recomputeNode -> graphRecomputeCb 路径请用 runWithTrackingFast 跳过重复设置。
     pub fn runWithTracking(self: *EffectBase, owner: anytype, allocator: std.mem.Allocator) void {
         if (self.is_running) {
             self.needs_rerun = true;
@@ -131,12 +131,12 @@ pub const EffectBase = struct {
         while (true) {
             self.needs_rerun = false;
 
-            // 设置当前 Effect (兼容 untrack 检测——signal.get 还需要 owner.current_effect)
+            // 设置当前 Effect (兼容 untrack 检测，signal.get 还需要 owner.current_effect)
             const prev_effect = owner.current_effect;
             owner.current_effect = self;
             defer owner.current_effect = prev_effect;
 
-            // 单轨追踪：push graph node，让 signal.get → graph.trackRead 加边
+            // 单轨追踪：push graph node，让 signal.get -> graph.trackRead 加边
             const has_graph = comptime @hasField(@TypeOf(owner.*), "graph");
             const has_node = has_graph and self.graph_node_raw != 0xFFFFFFFF;
             if (has_node) {

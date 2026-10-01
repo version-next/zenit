@@ -33,7 +33,7 @@ pub fn fallbackFontRefSize(font_ref: *anyopaque) f32 {
 }
 
 /// fallback CTFontRef 的稳定身份（PS 名+size+traits hash）。
-/// 指针不稳定，身份稳定 —— 见 coretext_bridge.m 同名函数的注释。
+/// 指针不稳定，身份稳定，见 coretext_bridge.m 同名函数的注释。
 pub fn fallbackFontRefIdentityHash(font_ref: *anyopaque) u64 {
     return ct.coretext_font_identity_hash(font_ref);
 }
@@ -50,10 +50,10 @@ pub const FontSystem = struct {
     allocator: std.mem.Allocator,
     /// "system" family 的实际映射目标。zenit_app 解析 fallback_families 后
     /// 写入（如 "Helvetica Neue"）。不设置时 "system" 交给 CoreText descriptor
-    /// 兜底——macOS 上会解析成 **Helvetica**，与渲染用字（FontSelector 的
+    /// 兜底，macOS 上会解析成 **Helvetica**，与渲染用字（FontSelector 的
     /// fallback_families 首选）不同：拉丁 kerning 有 ~1% 细差；且两个基字体的
     /// fallback 级联对 🈶 一类带框符号 emoji 会解析到不同字体（PingFang 16px
-    /// vs Apple Color Emoji ~21px）——光标/选区与实际字形错位的根源。
+    /// vs Apple Color Emoji ~21px），光标/选区与实际字形错位的根源。
     /// slice 需比 FontSystem 活得久（family 字符串常量即可）。
     default_family: ?[]const u8 = null,
 
@@ -229,7 +229,7 @@ pub const Font = struct {
         }
 
         // Copy pixels to Zig-managed memory（彩色是 BGRA，4 字节/像素）
-        // alloc 失败也必须归还 C 侧位图——GPA 看不见 C 分配，这是生产后端的
+        // alloc 失败也必须归还 C 侧位图，GPA 看不见 C 分配，这是生产后端的
         // OOM 净泄漏路径
         errdefer ct.coretext_free_bitmap(c_pixels);
         const pixel_count = width * height * (if (is_color) @as(u32, 4) else 1);
@@ -250,7 +250,7 @@ pub const Font = struct {
         };
     }
 
-    /// 码点 → 字形索引（该字体内）。0 = 该字体不含此码点。
+    /// 码点 -> 字形索引（该字体内）。0 = 该字体不含此码点。
     pub fn glyphIndexForCodepoint(self: *const Font, codepoint: u32) u32 {
         return ct.coretext_font_get_glyph_index(self.ct_font, @intCast(codepoint));
     }
@@ -469,7 +469,7 @@ pub const TextShaper = struct {
             };
         }
 
-        // Free C-allocated glyphs (does not release fallback_font_ref — ownership transferred above)
+        // Free C-allocated glyphs (does not release fallback_font_ref, ownership transferred above)
         ct.coretext_free_shaped_glyphs(c_glyphs);
 
         return glyphs;

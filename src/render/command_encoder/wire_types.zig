@@ -31,7 +31,7 @@ pub const TextRasterControls = struct {
     shader_snap: bool,
 };
 
-/// 唯一的 policy → 绘制控制推导点。exhaustive switch：新增模式必须显式决策，
+/// 唯一的 policy -> 绘制控制推导点。exhaustive switch：新增模式必须显式决策，
 /// 禁止回退成 `policy != 0` 的布尔折叠。
 pub fn textRasterControls(policy_byte: u8) TextRasterControls {
     const mode: TextRasterMode = switch (policy_byte) {

@@ -73,7 +73,7 @@ pub const BindGroup = bind_group_mod.BindGroup;
 pub const PipelineLayout = bind_group_mod.PipelineLayout;
 
 // ============================================================================
-// 帧同步原语 — 平台无关的 CPU/GPU 同步接口
+// 帧同步原语，平台无关的 CPU/GPU 同步接口
 // Metal: dispatch_semaphore_t
 // Vulkan (future): VkFence + VkSemaphore
 // ============================================================================
@@ -88,14 +88,14 @@ pub const FrameSync = struct {
         };
     }
 
-    /// 等待 — CPU 阻塞直到有可用的 buffer slot
+    /// 等待，CPU 阻塞直到有可用的 buffer slot
     pub fn waitForNextFrame(self: *FrameSync) void {
         if (self.semaphore) |sem| {
             _ = metal_bindings.dispatch_semaphore_wait(sem, metal_bindings.DISPATCH_TIME_FOREVER);
         }
     }
 
-    /// 注册 GPU 完成回调 — 在 command buffer 完成后 signal
+    /// 注册 GPU 完成回调，在 command buffer 完成后 signal
     pub fn signalOnCompletion(self: *FrameSync, cmd_buffer: *const CommandBuffer) void {
         if (self.semaphore) |sem| {
             metal_bindings.metal_command_buffer_add_completed_handler(cmd_buffer.raw, sem, &signalCallback);
@@ -110,7 +110,7 @@ pub const FrameSync = struct {
     }
 
     /// 释放信号量。调用前必须先 drain（对未平衡的 semaphore release 会
-    /// 触发 GCD 断言崩溃——dispatch_semaphore 要求释放时 value >= 初始值）。
+    /// 触发 GCD 断言崩溃，dispatch_semaphore 要求释放时 value >= 初始值）。
     pub fn deinit(self: *FrameSync) void {
         if (self.semaphore) |sem| {
             metal_bindings.dispatch_release(sem);

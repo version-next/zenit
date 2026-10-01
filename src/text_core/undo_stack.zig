@@ -54,7 +54,7 @@ pub const UndoStack = struct {
 
     /// 推入新操作（同时清空 redo 栈）。
     /// 所有权：成功时 op（含其 text）归栈所有；返回错误时所有权仍在调用方
-    /// （但 redo 栈已被清空 —— redo 失效是保守且无害的）。
+    /// （但 redo 栈已被清空，redo 失效是保守且无害的）。
     pub fn push(self: *UndoStack, op: Operation) !void {
         // 清空 redo 栈
         for (self.redo_stack.items) |*redo_op| {
@@ -208,7 +208,7 @@ test "UndoStack: undo/redo 返回的 op 所有权归调用方,与栈内副本不
 
     var undone = stack.undo() orelse return error.TestUnexpectedResult;
     // 调用方释放自己那份。若返回值与 redo 栈共享同一 text 指针，
-    // 后续 redo/deinit 会二次释放 —— testing.allocator 抓 double free。
+    // 后续 redo/deinit 会二次释放，testing.allocator 抓 double free。
     undone.deinit(std.testing.allocator);
 
     try std.testing.expect(stack.canRedo());

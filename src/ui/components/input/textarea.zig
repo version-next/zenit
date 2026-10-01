@@ -1,6 +1,6 @@
 const ImeReplacement = @import("ime_replacement.zig").ImeReplacement;
 const ImeText = @import("ime_text.zig").ImeText;
-/// Textarea — 独立多行文本编辑组件
+/// Textarea，独立多行文本编辑组件
 ///
 /// 完全独立于 TextInputState，直接使用 TextareaDocument + DocCursor + WrapMap。
 /// 支持：多行编辑、软换行、IME 中文输入、选区、Undo/Redo、VirtualList 虚拟滚动。
@@ -1067,8 +1067,8 @@ pub const TextareaState = struct {
 
     fn markDirty(self: *TextareaState) void {
         self.dirty = true;
-        // cx.render() 零脏帧 fast-path 跳过 textareaBeforeRender → state.dirty
-        // 永不被读 + VirtualList 不刷新 → 视觉文本不更新（同 password 之前的 bug）。
+        // cx.render() 零脏帧 fast-path 跳过 textareaBeforeRender -> state.dirty
+        // 永不被读 + VirtualList 不刷新 -> 视觉文本不更新（同 password 之前的 bug）。
         // 把 container node 标 layout dirty 让 fast-path 失效。
         if (self.input_container_node) |n| n.markLayoutDirty();
         if (self.cursor_node) |n| n.markRenderDirty();
@@ -1462,11 +1462,11 @@ fn textareaBeforeRender(node: *Node) void {
     }
     state.last_blink_visible = blink_visible;
 
-    // 拖拽：cursor 更新走 textareaEventHandler.mouse_move → state.handleMouseDrag。
+    // 拖拽：cursor 更新走 textareaEventHandler.mouse_move -> state.handleMouseDrag。
     // 这里只清理 pressed_node==null 时 stale is_dragging。
-    // 不能在 before_render 里读 cx.mouse_x/y 重算 cursor —— 那个值只有 mouse_move
+    // 不能在 before_render 里读 cx.mouse_x/y 重算 cursor，那个值只有 mouse_move
     // 才更新；mouse_down 后到第一个 mouse_move 之间用到的是上一帧的 stale 坐标，
-    // 在 e2e 或 程序合成 click 场景下还停在 (0,0) → cursor 直接被踢到 doc 开头。
+    // 在 e2e 或 程序合成 click 场景下还停在 (0,0) -> cursor 直接被踢到 doc 开头。
     if (state.is_dragging) {
         if (state.cx_ref) |cx| {
             if (cx.pressed_node == null) state.is_dragging = false;
@@ -2299,7 +2299,7 @@ pub const TextareaBuilder = struct {
             .color = Color.rgba(0, 0, 0, textarea_inner_shadow_alpha),
             .edges = .{ .top = true, .bottom = true, .left = false, .right = false },
         };
-        // Selection underlay —— 必须在文本(vl.container)之前 append:
+        // Selection underlay，必须在文本(vl.container)之前 append:
         // 选区色块要画在字形下面。之前选区挂在文本之后的 overlay 里,
         // paint order 反转,选中的字直接被色块盖没。
         const underlay = try box(cx, .{ .width = .{ .grow = .{} }, .height = .{ .grow = .{} }, .position = .absolute }, .{});
@@ -2315,7 +2315,7 @@ pub const TextareaBuilder = struct {
 
         try textarea_node.appendChild(allocator, vl.container);
 
-        // Overlay(preedit 下划线 + 光标——这两个要在文本之上)
+        // Overlay(preedit 下划线 + 光标，这两个要在文本之上)
         const overlay = try box(cx, .{ .width = .{ .grow = .{} }, .height = .{ .grow = .{} }, .position = .absolute }, .{});
         const oe = overlay.style.ensureExtPanic(allocator);
         oe.inset = .{ .top = .{ .px = 0 }, .left = .{ .px = 0 }, .right = .{ .px = 0 }, .bottom = .{ .px = 0 } };

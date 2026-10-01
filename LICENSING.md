@@ -6,7 +6,7 @@ granted below.
 zenit is **dual-licensed**. You may use it under **either** of the following,
 at your choice:
 
-1. **GNU General Public License, version 3 only** (`GPL-3.0-only`) — the full
+1. **GNU General Public License, version 3 only** (`GPL-3.0-only`): the full
    text is in [`LICENSE`](LICENSE).
 2. **A commercial license** from the copyright holder.
 
@@ -17,8 +17,8 @@ SPDX expression for zenit's own source:
 
 | Your situation | License |
 |---|---|
-| Open-source project released under GPL-3.0 (or a GPL-3.0-compatible license, distributed as a whole under GPL-3.0) | GPL-3.0 — free |
-| Personal study, evaluation, internal experiments that are never distributed | GPL-3.0 — free |
+| Open-source project released under GPL-3.0 (or a GPL-3.0-compatible license, distributed as a whole under GPL-3.0) | GPL-3.0, free |
+| Personal study, evaluation, internal experiments that are never distributed | GPL-3.0, free |
 | Closed-source / proprietary application, SDK or product that links zenit | **Commercial license required** |
 | You want to ship an app built on zenit without publishing its full source under GPL-3.0 | **Commercial license required** |
 | You want to modify zenit and keep the modifications private while distributing them | **Commercial license required** |
@@ -64,7 +64,7 @@ redistributing zenit means redistributing them under their own terms:
 ```
   src/ui/icons_oss/*.svg
   src/ui/icons_common/*.svg
-                          Lucide icon set — ISC License.
+                          Lucide icon set, ISC License.
                           Copyright (c) for the Lucide icons and contributors.
                           Full text: src/ui/icons_oss/LICENSE
                           (Some Lucide icons derive from the Feather project,
@@ -73,7 +73,7 @@ redistributing zenit means redistributing them under their own terms:
                           This is the set used for open-source builds.
 
   private/zenit-icons-untitled/icons/*.svg
-                          Untitled UI icon set — used under a PAID license
+                          Untitled UI icon set, used under a PAID license
                           that does NOT permit redistribution of the raw SVG
                           files. This optional internal build profile and its
                           generated module MUST NOT be published in a public
@@ -81,7 +81,7 @@ redistributing zenit means redistributing them under their own terms:
                           default to Lucide, but source-tree exclusion is still
                           required. See the private package README.
 
-  vendor/unicode/         Unicode Character Database — Unicode License V3.
+  vendor/unicode/         Unicode Character Database, Unicode License V3.
                           Copyright (c) Unicode, Inc.
                           Full text: vendor/unicode/LICENSE.txt
 ```

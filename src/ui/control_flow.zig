@@ -1,7 +1,7 @@
 /// 保留模式控制流原语
 ///
-/// Show: 条件渲染 — condition 为 true 时挂载内容，false 时卸载并销毁
-/// For: 列表渲染 — 根据 data Signal 增量渲染列表（key-based diff）
+/// Show: 条件渲染，condition 为 true 时挂载内容，false 时卸载并销毁
+/// For: 列表渲染，根据 data Signal 增量渲染列表（key-based diff）
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const core = @import("core.zig");
@@ -15,7 +15,7 @@ const clearNodeScopes = core.clearNodeScopes;
 /// 控制流（Show / For / Match）内部错误上报。
 ///
 /// 这些回调由 reactive effect 驱动，签名不能返回 error，历史上一律
-/// `catch return` —— 于是 OOM / 构建失败被**完全吞掉**：UI 悄悄少一块，
+/// `catch return`，于是 OOM / 构建失败被**完全吞掉**：UI 悄悄少一块，
 /// 没有日志、没有计数，排查时无从下手（审查报告 §3）。
 ///
 /// 在不改回调签名的前提下，至少做到：(1) 打日志带上出错位置与原始 error；
@@ -24,7 +24,7 @@ const clearNodeScopes = core.clearNodeScopes;
 pub var control_flow_error_count: u64 = 0;
 
 /// 测试期静音开关：Zig test runner 把 `std.log.err` 视为测试失败，
-/// 而"错误被上报"恰恰是我们要断言的行为 —— 故给测试留一个静音旁路，
+/// 而"错误被上报"恰恰是我们要断言的行为，故给测试留一个静音旁路，
 /// 计数照常自增。
 pub var control_flow_suppress_error_log: bool = false;
 
@@ -38,8 +38,8 @@ fn reportControlFlowError(site: []const u8, err: anyerror) void {
 }
 
 /// 挂载失败时回收一棵尚未交付的子树，顺序与正常卸载一致：
-/// 摘 hook 状态 → dispose scope（cleanup 此刻还能看到活节点）→ 清节点上的
-/// scope 指针 → destroyDetached（回收 ElementTable slot、清 Cx 裸引用）。
+/// 摘 hook 状态 -> dispose scope（cleanup 此刻还能看到活节点）-> 清节点上的
+/// scope 指针 -> destroyDetached（回收 ElementTable slot、清 Cx 裸引用）。
 /// 不能用 node.destroy：它既跳过上述清理，又在 scope dispose 之前就释放了节点。
 fn discardUnmountedSubtree(cx: *Cx, child_scope: *Scope, node: *Node) void {
     hooks.invalidateSubtreeHookState(node);
@@ -49,7 +49,7 @@ fn discardUnmountedSubtree(cx: *Cx, child_scope: *Scope, node: *Node) void {
     cx.destroyDetached(node);
 }
 
-/// For 的"建一个新条目"公共路径：childScope → render → append 三步，
+/// For 的"建一个新条目"公共路径：childScope -> render -> append 三步，
 /// 任一步失败都逐级回滚（原实现是三行各自 `catch return`，
 /// 后一步失败会漏掉前一步产出的 scope / node）。
 /// 成功时把条目写进 new_entries 并转移所有权。
@@ -85,7 +85,7 @@ fn appendForEntry(
 
 /// 只重排 For 管理的那一段子节点，parent 里的其它兄弟（标题、Show 节点等）
 /// 原位保留。原实现把 parent.children 整体替换成 For 条目列表，
-/// replaceChildOrder 会把不在列表里的兄弟全部摘下 —— 它们成了无人释放的孤儿。
+/// replaceChildOrder 会把不在列表里的兄弟全部摘下，它们成了无人释放的孤儿。
 ///
 /// 段位置用"段前的非 For 兄弟个数"表示：有 For 节点仍挂着时以其实际位置为准
 /// （兄弟可能被其它控制流增删），列表曾为空时沿用上次记录值。
@@ -126,7 +126,7 @@ fn reorderForSegment(s: anytype) !void {
     try parent.replaceChildOrder(s.alloc, order.items);
 }
 
-/// Show — 条件渲染
+/// Show，条件渲染
 ///
 /// 当 condition Signal 为 true 时，调用 buildFn 创建子树并挂载到 parent；
 /// 为 false 时，销毁子 Scope + 从 parent 移除子节点。
@@ -192,7 +192,7 @@ pub fn Show(
             const s = c.state;
 
             if (cond and s.child_node == null) {
-                // 创建。三步都可能失败，且**后一步失败时前一步的产物无人回收** ——
+                // 创建。三步都可能失败，且**后一步失败时前一步的产物无人回收**,
                 // 原实现三行各自 `catch return`：第 2 行失败漏掉 child_scope，
                 // 第 3 行失败则 node + scope 双双泄漏，且 UI 静默少一块、无任何日志。
                 // 改为逐级 errdefer 回滚，失败时至少不留垃圾。
@@ -216,7 +216,7 @@ pub fn Show(
                 s.parent_node.markLayoutDirty();
                 s.cx_ptr.needs_redraw = true;
             } else if (!cond and s.child_node != null) {
-                // 销毁 — 先 dispose scope 再清除 scope 指针再 destroy node
+                // 销毁，先 dispose scope 再清除 scope 指针再 destroy node
                 const old = s.child_node.?;
                 hooks.invalidateSubtreeHookState(old);
                 if (s.child_scope) |cs| {
@@ -226,7 +226,7 @@ pub fn Show(
                 s.cx_ptr.detachChild(s.parent_node, old);
                 // 必须走 cx.freeNode 而非 node.destroy：后者不回收 ElementTable
                 // slot（destroyElement 只在 freeNode 里调），且绕过 tick_depth
-                // 延迟释放守卫 —— before_render 里 set signal 会同步 drain 到
+                // 延迟释放守卫，before_render 里 set signal 会同步 drain 到
                 // 这里，此刻直接 free 会让上层遍历栈解引用已释放节点。
                 s.cx_ptr.freeNode(old);
                 s.child_scope = null;
@@ -238,13 +238,13 @@ pub fn Show(
     }.update);
 }
 
-/// For 控制流 options（v0.7 §2.4 拆出 — key_fn 强制 + eq_props_fn 可选）
+/// For 控制流 options（v0.7 §2.4 拆出，key_fn 强制 + eq_props_fn 可选）
 ///
 /// 三类函数职责分离:
-/// - `key_fn`: item → 唯一 key (必填)。**身份**判定，决定哪两个 item 是 "同一个"。
+/// - `key_fn`: item -> 唯一 key (必填)。**身份**判定，决定哪两个 item 是 "同一个"。
 ///   推荐 `item.id` / `item.hash()`；不能用 index（增删时 index shift 会误匹配）。
 /// - `render_fn`: 渲染 fn (必填)。child_scope 持有 reactive 资源，回收时自动 dispose。
-/// - `eq_props_fn`: prev vs next 是否 **props 等价** (可选)。缺省 null → eqlValue
+/// - `eq_props_fn`: prev vs next 是否 **props 等价** (可选)。缺省 null -> eqlValue
 ///   智能比较（[]const u8 比内容 / NaN bytewise / 嵌套 struct 递归）。
 ///   true 时复用旧 node（不 rerender），false 时 destroy + create。
 ///   caller 注 fast-path: 只比关键字段、跳过 cached_handle 等内部字段，或
@@ -257,7 +257,7 @@ pub fn ForOpts(comptime T: type) type {
     };
 }
 
-/// For — 列表渲染
+/// For，列表渲染
 ///
 /// 根据 items slice Signal 增量渲染列表。
 /// 用 opts.key_fn 提取每 item 唯一 key 做身份匹配；opts.eq_props_fn 判 props
@@ -358,16 +358,16 @@ pub fn For(
             const s = c.state;
 
             // Key-based diff: 保留 key 相同的条目，只销毁/创建变化的
-            // 1. 旧条目 → HashMap<key, index>
+            // 1. 旧条目 -> HashMap<key, index>
             var old_map = std.AutoHashMap(u64, usize).init(s.alloc);
             defer old_map.deinit();
             for (s.entries.items, 0..) |entry, i| {
-                // 不可降级：old_map 缺条目 → 已存在的 key 被当成新建，
+                // 不可降级：old_map 缺条目 -> 已存在的 key 被当成新建，
                 // 旧节点在步骤 3 被销毁而新节点重复创建 = 静默 UI 错乱。
                 old_map.put(entry.key, i) catch @panic("OOM: For keyed reconcile old_map.put");
             }
 
-            // 2. 遍历新 items — 匹配的复用，不匹配的创建
+            // 2. 遍历新 items，匹配的复用，不匹配的创建
             var new_entries: std.ArrayList(ItemEntry) = .{};
             var reused = std.AutoHashMap(usize, void).init(s.alloc); // 标记被复用的旧索引
             defer reused.deinit();
@@ -394,7 +394,7 @@ pub fn For(
                         @import("reactive/eq.zig").eqlValue(@TypeOf(item), item, old_entry.item);
                     if (can_reuse) {
                         new_entries.append(s.alloc, old_entry) catch @panic("OOM: For keyed reconcile new_entries.append");
-                        // 不可降级：漏标 reused → 步骤 3 会销毁一个仍挂在
+                        // 不可降级：漏标 reused -> 步骤 3 会销毁一个仍挂在
                         // new_entries 里的节点，留下悬垂 node 指针。
                         reused.put(old_idx, {}) catch @panic("OOM: For keyed reconcile reused.put");
                         continue;
@@ -426,7 +426,7 @@ pub fn For(
                 s.cx_ptr.freeNode(entry.node);
             }
 
-            // 4. 替换 entries —— 必须无条件、且先于任何可失败的步骤：步骤 2/3
+            // 4. 替换 entries，必须无条件、且先于任何可失败的步骤：步骤 2/3
             //    已释放旧节点，若在这之前 `catch return`，s.entries 会留着悬垂
             //    节点（下次 diff double free），new_entries 则整批泄漏。
             s.entries.deinit(s.alloc);
@@ -440,7 +440,7 @@ pub fn For(
     }.update);
 }
 
-/// Match — 枚举/整数条件切换
+/// Match，枚举/整数条件切换
 ///
 /// 类似 SolidJS 的 <Switch>/<Match>，根据枚举或整数 Signal 值切换子树。
 /// value 变化时，销毁旧子树，调用 buildFn 创建新子树。
@@ -562,7 +562,7 @@ pub fn Match(
         state.child_node = node;
     }
 
-    // Effect: 响应 value 变化 → 销毁旧子树 + 创建新子树
+    // Effect: 响应 value 变化 -> 销毁旧子树 + 创建新子树
     try scope.createEffect(.{
         .value = value,
         .state = state,
@@ -571,7 +571,7 @@ pub fn Match(
             const new_val = c.value.get();
             const s = c.state;
 
-            // 同值不切换 (v0.7 §2.4: eqlValue 替代 std.meta.eql — 正确处理 NaN /
+            // 同值不切换 (v0.7 §2.4: eqlValue 替代 std.meta.eql，正确处理 NaN /
             // []const u8 / 嵌套 struct，避免 Match(T=string) 时 ptr-equality 误判)
             if (@import("reactive/eq.zig").eqlValue(@TypeOf(new_val), new_val, s.current_value) and s.child_node != null) return;
             s.current_value = new_val;
@@ -867,7 +867,7 @@ test "Match: enum switch" {
         }
     }.build);
 
-    // 初始: alpha → 1 个子节点
+    // 初始: alpha -> 1 个子节点
     try std.testing.expectEqual(@as(usize, 1), parent.children.items.len);
 
     // 切换到 beta
@@ -888,7 +888,7 @@ test "Match: enum switch" {
 }
 
 // ============================================================================
-// v0.7 §2.4 — For 控制流 key-only + eq_props_fn tests
+// v0.7 §2.4, For 控制流 key-only + eq_props_fn tests
 // ============================================================================
 
 test "For eq_props_fn=true 强制复用，key 命中即不重建" {
@@ -917,7 +917,7 @@ test "For eq_props_fn=true 强制复用，key 命中即不重建" {
                 return try Node.create(c.allocator, c.nextId(), .box, .{ .width = .{ .px = 10 }, .height = .{ .px = 10 } });
             }
         }.r,
-        // 强制永远 reuse — 即使 payload 变了也不重建（caller 用 reactive signal 自管脏）
+        // 强制永远 reuse，即使 payload 变了也不重建（caller 用 reactive signal 自管脏）
         .eq_props_fn = struct {
             fn eq(_: Item, _: Item) bool {
                 return true;
@@ -928,7 +928,7 @@ test "For eq_props_fn=true 强制复用，key 命中即不重建" {
     const node_1 = parent.children.items[0];
     const node_2 = parent.children.items[1];
 
-    // payload 改变 — 但 eq_props_fn=true 强制复用
+    // payload 改变，但 eq_props_fn=true 强制复用
     const v2 = [_]Item{ .{ .id = 1, .payload = 999 }, .{ .id = 2, .payload = 888 } };
     items.set(&v2);
 
@@ -975,8 +975,8 @@ test "For eq_props_fn=false 强制重建，每次 update 都换 node" {
 
     // 改 payload，让 signal.set 检测到不等触发 effect。key 仍然=1，
     // 默认走 eqlValue 会重建（payload 变了）；这里我们用 eq_props_fn=false 来
-    // 验 caller 显式 override —— 即使 eq_props_fn 总返 false 也成立重建。
-    // 反向 case 是 "payload 不变 + eq_props_fn=false" — 信号检测到等会短路，
+    // 验 caller 显式 override，即使 eq_props_fn 总返 false 也成立重建。
+    // 反向 case 是 "payload 不变 + eq_props_fn=false"，信号检测到等会短路，
     // effect 永不跑，所以无法在 fixture 内独立测；先用 payload 变化 + 强制 false
     // 验 "eq_props_fn 真被调"。
     const v2 = [_]Item{.{ .id = 1, .payload = 999 }};
@@ -1024,12 +1024,12 @@ test "For eq_props_fn 选择性比较字段（忽略 cached_handle）" {
 
     const node_1 = parent.children.items[0];
 
-    // cached_handle 变了，但 label 没变 → 复用
+    // cached_handle 变了，但 label 没变 -> 复用
     const v2 = [_]Item{.{ .id = 1, .label = 10, .cached_handle = 0xDEAD }};
     items.set(&v2);
     try std.testing.expectEqual(node_1, parent.children.items[0]);
 
-    // label 真变了 → 重建
+    // label 真变了 -> 重建
     const v3 = [_]Item{.{ .id = 1, .label = 20, .cached_handle = 0xDEAD }};
     items.set(&v3);
     try std.testing.expect(parent.children.items[0] != node_1);
@@ -1061,27 +1061,27 @@ test "For 默认 eq_props_fn=null 走 eqlValue (与历史行为一致)" {
                 return try Node.create(c.allocator, c.nextId(), .box, .{ .width = .{ .px = 10 }, .height = .{ .px = 10 } });
             }
         }.r,
-        // eq_props_fn = null → 走 eqlValue 默认 (内容比较)
+        // eq_props_fn = null -> 走 eqlValue 默认 (内容比较)
     });
 
     const node_1 = parent.children.items[0];
 
-    // 不同 ptr 但内容相同的 []const u8 — std.meta.eql 会误判不等 → 重建；
-    // eqlValue 比内容 → 视作等 → 复用
+    // 不同 ptr 但内容相同的 []const u8, std.meta.eql 会误判不等 -> 重建；
+    // eqlValue 比内容 -> 视作等 -> 复用
     var name_buf: [16]u8 = undefined;
     @memcpy(name_buf[0..5], "alpha");
     const v2 = [_]Item{.{ .id = 1, .name = name_buf[0..5] }};
     items.set(&v2);
     try std.testing.expectEqual(node_1, parent.children.items[0]);
 
-    // 真改名 → 重建
+    // 真改名 -> 重建
     const v3 = [_]Item{.{ .id = 1, .name = "beta" }};
     items.set(&v3);
     try std.testing.expect(parent.children.items[0] != node_1);
 }
 
 // ============================================================================
-// v0.8 §2.3 — For focus restoration e2e
+// v0.8 §2.3, For focus restoration e2e
 // ============================================================================
 //
 // v0.7 §2.4 退出标准里 "focus restoration on rerender: infrastructure 就位...
@@ -1092,7 +1092,7 @@ test "For 默认 eq_props_fn=null 走 eqlValue (与历史行为一致)" {
 // 3. items signal.set 新数组 (相同 key, 不同 payload)
 // 4. 断言: (a) Node ptr 没变 (eq_props_fn 真生效)；(b) cx.isFocused 仍 true
 //
-// 如果 For 没复用同 Node ptr → focus_manager 的 focused_node 指向被销毁的 Node →
+// 如果 For 没复用同 Node ptr -> focus_manager 的 focused_node 指向被销毁的 Node ->
 // isFocused = false 或 segfault；这一刀真验 "key + eq_props_fn 的复用是
 // reactive focus restoration 的基础设施"。
 // ============================================================================
@@ -1134,7 +1134,7 @@ test "For eq_props_fn=true 时 reactive rerender 保持焦点" {
                 return n;
             }
         }.r,
-        // 强制 reuse — caller 用 reactive signal 自管脏，eq_props_fn=true
+        // 强制 reuse, caller 用 reactive signal 自管脏，eq_props_fn=true
         // 让 key 命中即不重建
         .eq_props_fn = struct {
             fn eq(_: Item, _: Item) bool {
@@ -1150,7 +1150,7 @@ test "For eq_props_fn=true 时 reactive rerender 保持焦点" {
     ctx.setFocus(node_2_before);
     try std.testing.expect(ctx.isFocused(node_2_before));
 
-    // 改 payload —— signal 检测到不等触发 effect，For 走 reuse 分支
+    // 改 payload, signal 检测到不等触发 effect，For 走 reuse 分支
     const v2 = [_]Item{
         .{ .id = 1, .payload = 999 },
         .{ .id = 2, .payload = 888 },
@@ -1162,7 +1162,7 @@ test "For eq_props_fn=true 时 reactive rerender 保持焦点" {
     const node_2_after = parent.children.items[1];
     try std.testing.expectEqual(node_2_before, node_2_after);
 
-    // (b) 焦点仍贴在原 Node 上 — focus_manager 的 focused_node 没失效
+    // (b) 焦点仍贴在原 Node 上，focus_manager 的 focused_node 没失效
     try std.testing.expect(ctx.isFocused(node_2_after));
 }
 
@@ -1207,7 +1207,7 @@ test "反向 case — eq_props_fn=false 时 Node 被销毁，焦点丢失" {
     ctx.setFocus(node_1_before);
     try std.testing.expect(ctx.isFocused(node_1_before));
 
-    // 改 payload —— eq_props_fn=false 触发重建
+    // 改 payload, eq_props_fn=false 触发重建
     const v2 = [_]Item{.{ .id = 1, .payload = 999 }};
     items.set(&v2);
 
@@ -1219,7 +1219,7 @@ test "反向 case — eq_props_fn=false 时 Node 被销毁，焦点丢失" {
 
 test "control flow: build failure is reported, not silently swallowed" {
     // 审查报告 §3：Show/For/Match 的 effect 回调历史上一律 `catch return`，
-    // OOM/构建失败被**完全吞掉** —— UI 悄悄少一块，无日志无计数。
+    // OOM/构建失败被**完全吞掉**, UI 悄悄少一块，无日志无计数。
     // 现在至少会计数 + 打日志（真正的 error boundary 需 effect 层支持
     // error sink，属后续工作）。本测试锁住"不再静默"这条不变量。
     const ctx = try Cx.init(std.testing.allocator);
@@ -1242,7 +1242,7 @@ test "control flow: build failure is reported, not silently swallowed" {
         }
     }.build);
 
-    // 翻开条件 → effect 触发 build → 必然失败。
+    // 翻开条件 -> effect 触发 build -> 必然失败。
     visible.set(true);
 
     // 关键断言：失败被**记录**了（而不是静默 return）。
@@ -1253,7 +1253,7 @@ test "control flow: build failure is reported, not silently swallowed" {
 
 // 回归：Show/For/Switch 拆除子树必须走 cx.freeNode，而不是 node.destroy。
 //
-// node.destroy 只释放 Node 本身，不回收 ElementTable slot ——
+// node.destroy 只释放 Node 本身，不回收 ElementTable slot,
 // world.destroyElement 唯一的调用点在 Cx.freeNode 里。修复前每次 Show
 // 切换都漏一个 element slot（外加 interaction / dirty_set / content /
 // paint_state / layout_output 五张镜像表的残留行）。ElementTable index
@@ -1302,24 +1302,24 @@ test "regression: Show 反复切换不泄漏 ElementTable slot" {
 //
 // batch1 把 For 的 keyed reconcile 里 old_map.put / reused.put /
 // new_entries.append / appendForEntry 的 `catch {}` / `catch return` 全部
-// 改成了 @panic（漏标 reused → 步骤 3 会 dispose/free 一个仍挂在
+// 改成了 @panic（漏标 reused -> 步骤 3 会 dispose/free 一个仍挂在
 // new_entries 里的节点 = 悬垂指针 / double free）。
 //
 // @panic 无法在进程内捕获。实测确认：只要 FailingAllocator 打中 reconcile
 // 内任一分配点，进程直接 abort（signal 6，panic 文案
 // "OOM: For keyed reconcile old_map.put"）。而 For 的首次挂载本身就是走
-// reconcile effect 完成的（栈：effect.runImpl → update → old_map.put），
-// 所以**无法**构造「挂载成功、随后 reconcile 才遇 OOM」的进程内场景 ——
+// reconcile effect 完成的（栈：effect.runImpl -> update -> old_map.put），
+// 所以**无法**构造「挂载成功、随后 reconcile 才遇 OOM」的进程内场景,
 // 任何打中 reconcile 的 fail_index 都会在挂载阶段就 abort。
 //
 // 因此这里不做 fail_index 遍历（那只会让测试自杀），而是用**充足内存**
 // 跑一遍混合 keyed diff，锁住那些 @panic 所保护的可观测后果：
 // 复用 / 重建 / 新建 / 删除 四种分支同时发生后，parent 子节点必须与
-// items 一一对应 —— 少了说明漏标 reused 导致旧节点被误销毁（悬垂），
+// items 一一对应，少了说明漏标 reused 导致旧节点被误销毁（悬垂），
 // 多了说明同 key 被重复创建。double free / 泄漏则由 GPA 在 deinit 处暴露。
 //
 // 反向验证（已实测）：把复用分支的 `reused.put(...)` 整行删掉（模拟漏标），
-// 本测试在「id=1 必须是同一个 Node 对象」那条断言上 abort —— 因为漏标导致
+// 本测试在「id=1 必须是同一个 Node 对象」那条断言上 abort，因为漏标导致
 // 仍在使用的节点被步骤 3 销毁。变异可编译，是真红不是编译错。
 // 注意充足内存下 `catch {}` 与 `@panic` 行为相同（那行永不失败），所以
 // 能让本测试变红的是漏标本身，而这正是那些 @panic 要防的后果。
@@ -1593,7 +1593,7 @@ test "For: 首次挂载 entries/appendChild 失败不泄漏节点、不留半截
 // ----- For 与同 parent 兄弟共存 -----
 //
 // For 的 effect 每次（含首次）都 replaceChildOrder(parent, 仅 For 条目)，
-// 而 replaceChildOrder 会摘掉不在列表里的所有子节点 —— 同一 parent 下的
+// 而 replaceChildOrder 会摘掉不在列表里的所有子节点，同一 parent 下的
 // 标题 / Show 节点被静默摘下成孤儿（不渲染 + 永不释放）。
 test "For: 与同 parent 的前后兄弟共存，增删重排都不摘兄弟" {
     const Item = struct { id: u64 };
@@ -1678,11 +1678,11 @@ test "For: 与同 parent 的前后兄弟共存，增删重排都不摘兄弟" {
 // 步骤 2/3 已释放旧节点后，重排若 OOM，原实现 `catch return` 跳过了
 // entries 替换：s.entries 留着已释放节点（下次 diff 再 free = double free），
 // new_entries 与新建节点整批泄漏。
-// 触发方式：key 相同但 props 变化 → 步骤 2 释放旧节点并调 render 重建；
+// 触发方式：key 相同但 props 变化 -> 步骤 2 释放旧节点并调 render 重建；
 // render 末尾武装 FailingAllocator，让随后的重排分配失败。（被删条目的
 // scope/node cleanup 在 reactive 回调内会延迟到 effect 之后，不能用来武装。）
 // new_entries 初始容量 ≥ 2（cache_line / @sizeOf(ItemEntry)），重建条目的
-// append 不再分配，失败必然落在重排上 —— 下面断言错误计数确认打中了。
+// append 不再分配，失败必然落在重排上，下面断言错误计数确认打中了。
 test "For: 旧节点已释放后重排 OOM 不留悬垂 entries、不泄漏" {
     const Item = struct { id: u64, v: u32 };
     const H = struct {

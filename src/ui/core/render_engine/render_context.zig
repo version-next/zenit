@@ -1,4 +1,4 @@
-/// RenderContext — render engine 的显式上下文，替代 cx: anytype 上帝对象
+/// RenderContext, render engine 的显式上下文，替代 cx: anytype 上帝对象
 ///
 /// 所有 mod.zig / node_style_render.zig / text_render.zig 的渲染函数
 /// 统一使用 *RenderContext 代替 anytype，实现编译期类型检查与子模块独立可测试。
@@ -38,13 +38,13 @@ pub const RenderContext = struct {
     frame_allocator: std.mem.Allocator,
     viewport: types.Size,
     perf: *hit_runtime_mod.PerfCounters,
-    /// GlyphRun pipeline — render engine 通过 ShapingCache 走 GlyphRun
+    /// GlyphRun pipeline, render engine 通过 ShapingCache 走 GlyphRun
     /// 替代 measureTextWidthByFontKind 直调 platform 桥。null 时 caller fallback
     /// 到旧 text_layout 路径。
     /// Paint-order 前缀不变式（display_list raw 顺序 == paint 顺序的全局保证）：
     /// prebuild 两个 pass 按 paint 顺序走，一旦遇到**必须留给 paint pass fresh
     /// emit** 的内容（transform 子树、overlay hook 重定位、own 不可表示……），
-    /// 此后 paint 顺序里的任何内容都不得再 prebuild —— 否则后画的内容先落
+    /// 此后 paint 顺序里的任何内容都不得再 prebuild，否则后画的内容先落
     /// display_list，fresh 内容追加在表尾，出现"旋转的 ◇ 浮在 z=30500 浮层
     /// 之上"一类穿透。prebuild 内容永远是 paint 顺序的一个**前缀**。
     /// 每帧 beginRetainedFrame 复位。
@@ -53,7 +53,7 @@ pub const RenderContext = struct {
     /// boundary, either as an ancestor or a descendant. Built once per
     /// prebuild pass so cache eligibility stays O(1) per node.
     render_cache_boundary_blocked: ?*const std.AutoHashMapUnmanaged(u32, void) = null,
-    /// Node 外部裁剪矩形旁表（node.id → 视口系 rect；见 Cx.external_clip_rects）。
+    /// Node 外部裁剪矩形旁表（node.id -> 视口系 rect；见 Cx.external_clip_rects）。
     /// null = 宿主未启用该能力（DevTools 等旁路构造点无需关心）。
     external_clip_rects: ?*const std.AutoHashMapUnmanaged(u32, [4]f32) = null,
     shaping_cache: ?*shaping_cache_mod.ShapingCache = null,

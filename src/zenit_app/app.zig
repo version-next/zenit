@@ -1,4 +1,4 @@
-/// App 模块 — 应用层封装
+/// App 模块，应用层封装
 ///
 /// 提供从 UI 声明到屏幕显示的完整管线。
 const renderer_mod = @import("renderer.zig");
@@ -8,7 +8,7 @@ pub const FrameStats = renderer_mod.FrameStats;
 
 pub const ResourcePath = @import("resource_path.zig").ResourcePath;
 
-/// 一站式应用运行时 — 见 runtime.zig
+/// 一站式应用运行时，见 runtime.zig
 pub const runtime = @import("runtime.zig");
 
 /// E2E test harness 转发口（`-Dtest-mode=true` 时有效，否则整体编译期消除）。

@@ -1,4 +1,4 @@
-/// Input Render — beforeRender 钩子 + textarea VirtualList 集成
+/// Input Render, beforeRender 钩子 + textarea VirtualList 集成
 const std = @import("std");
 const core = @import("../../core.zig");
 const Cx = core.Cx;
@@ -222,9 +222,9 @@ pub fn inputBeforeRender(node: *Node) void {
     }
 
     // 拖拽：cursor 更新走 inputEventHandler.mouse_move 路径。
-    // 不能在 before_render 用 cx.mouse_x/y 重算 cursor —— 那个值只有 mouse_move
+    // 不能在 before_render 用 cx.mouse_x/y 重算 cursor，那个值只有 mouse_move
     // 才更新，mouse_down 后到首个 mouse_move 之间是 stale 坐标，e2e 或程序合成
-    // click 场景下还停在 (0,0) → cursor 错误 jump 到 0。
+    // click 场景下还停在 (0,0) -> cursor 错误 jump 到 0。
     if (state.is_dragging) {
         if (state.cx_ref) |cx| {
             if (cx.pressed_node == null) state.is_dragging = false;
@@ -261,7 +261,7 @@ pub fn inputBeforeRender(node: *Node) void {
             text_nd.style.padding.left = new_padding_left;
             if (changed) {
                 // 内容变化必须标 sizing（不只 layout）：多行 .word wrap 的
-                // intrinsic 度量有缓存，markLayoutDirty 不会让它失效——
+                // intrinsic 度量有缓存，markLayoutDirty 不会让它失效,
                 // wrap 行盒永远按旧内容画。表现为 IME preedit / 新输入的字
                 // 不出现，光标/下划线却按新内容前进（视觉错位）。
                 if (content_changed) text_nd.markSizingDirty();
@@ -317,7 +317,7 @@ pub fn inputBeforeRender(node: *Node) void {
     const container_inner_x = state.padding_h;
     const container_inner_y = state.padding_v;
     // 光标高度跟随行高（canvas 缩放会把 font_size/line_height 推到很大,
-    // 写死 16 会在放大后显得极小）。14px 字号下 line_height=18 → 16,
+    // 写死 16 会在放大后显得极小）。14px 字号下 line_height=18 -> 16,
     // 与原值一致,常规 Input 不回归。
     var cursor_h: f32 = if (state.line_height > 0) @max(12.0, state.line_height - 2.0) else 16;
     var cursor_y = (node.rectFromWorldOrFallback().h - cursor_h) / 2;
@@ -659,8 +659,8 @@ fn updateMultilineSelectionNodes(
                     }
                 } else {
                     // 跨行：高亮只罩每行**文本实际宽度**（去掉行尾空白），
-                    // 不铺到 wrap 宽度——铺满会把行右侧的空白也"选中"。
-                    // 首行（start_x → 该行文本尾）
+                    // 不铺到 wrap 宽度，铺满会把行右侧的空白也"选中"。
+                    // 首行（start_x -> 该行文本尾）
                     const first_row_w = displayRowTextWidth(state, start_row) orelse state.input_inner_w;
                     sel.setLayoutRect(.{
                         .x = @round(container_inner_x + start_x),
@@ -738,7 +738,7 @@ fn updateMultilineSelectionNodes(
     sel.markRenderDirty();
 }
 
-/// 某显示行的文本实际宽度（去掉行尾空白）。跨行选区高亮用——
+/// 某显示行的文本实际宽度（去掉行尾空白）。跨行选区高亮用,
 /// 只罩文本，不铺到 wrap 宽度。无 WrapMap 路径返回 null（caller 回退行宽）。
 fn displayRowTextWidth(state: *TextInputState, row: usize) ?f32 {
     const wrap = state.textarea_wrap orelse return null;

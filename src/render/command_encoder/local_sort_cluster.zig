@@ -1,4 +1,4 @@
-//! command_encoder/local_sort_cluster.zig — local-sort 的**簇状态机**
+//! command_encoder/local_sort_cluster.zig, local-sort 的**簇状态机**
 //!
 //! 从 command_encoder.zig 析出（2026-08-05），与 clip_geometry.zig 同批。
 //! 前一批（local_sort.zig，2026-07-31）搬走的是纯函数：单条命令属于哪个
@@ -10,7 +10,7 @@
 //!     buildDispatchOrder）只碰这两个字段，互相之间零 encoder 依赖；
 //!   - 它此前是 `RenderCommandEncoder` 的**嵌套** struct（还带着
 //!     `local_sort_cluster_capacity` 这个容器大小常量），簇逻辑因而是
-//!     「encoder 结构体里的一个独立小机器」——最典型的 god-module 寄生体；
+//!     「encoder 结构体里的一个独立小机器」，最典型的 god-module 寄生体；
 //!   - encoder 侧只剩 3 个触点：`var cluster = ...Cluster{}`、
 //!     `cluster.tryAppend(...)`、`self.flushLocalSortCluster(commands, &cluster)`
 //!     （flush 留在 encoder：它要调 dispatchCommand，那是编码主循环的职责）。
@@ -25,7 +25,7 @@
 //! 任意重排都守不住这个不变式。
 //!
 //! 这里不搬什么：判定「哪条命令可入簇」的几何（bounds/pipeline）在
-//! local_sort.zig；把簇里的命令真正发射出去（flush → dispatchCommand）
+//! local_sort.zig；把簇里的命令真正发射出去（flush -> dispatchCommand）
 //! 在 encoder。本模块只管「攒」。
 
 const std = @import("std");
@@ -84,8 +84,8 @@ pub const LocalSortCluster = struct {
         return .none;
     }
 
-    /// 按 pipeline 分桶输出 dispatch 顺序（sdf → image → icon → text），
-    /// 桶内保持插入序 —— 见模块头的顺序合同。
+    /// 按 pipeline 分桶输出 dispatch 顺序（sdf -> image -> icon -> text），
+    /// 桶内保持插入序，见模块头的顺序合同。
     pub fn buildDispatchOrder(self: *const LocalSortCluster, out: *[capacity]usize) []const usize {
         var out_len: usize = 0;
         const order = [_]lsort.PipelineKind{ .sdf, .image, .icon, .text };
@@ -103,7 +103,7 @@ pub const LocalSortCluster = struct {
 // ── 测试 ───────────────────────────────────────────────────────────────
 // 此前这套逻辑是 encoder 的嵌套 struct，只能借 encodeCommands 间接观测；
 // 下面用 duck-typed mock 命令直接驱动（与 command_encoder_test.zig 的
-// MockItem 同款手法 —— render 模块不 import ui 侧的 paint_table）。
+// MockItem 同款手法，render 模块不 import ui 侧的 paint_table）。
 
 const MockItem = struct {
     // ⚠ 枚举成员必须与 local_sort.zig 的 switch 标签一致（那边按 anytype
@@ -146,7 +146,7 @@ test "tryAppend: 同 pipeline 相互重叠也照收（bounds 只跨 pipeline 检
 
 test "tryAppend: 跨 pipeline 且 bounds 重叠 ⇒ .overlap，不改动簇" {
     var cluster = LocalSortCluster{};
-    // rects[0]：rect → sdf，bounds 在 (0,0)。
+    // rects[0]：rect -> sdf，bounds 在 (0,0)。
     try std.testing.expectEqual(RejectReason.none, cluster.tryAppend(&rects, 0));
     const overlapping_image = [_]MockItem{
         .{ .kind = .image, .geom = .{ .x = 5, .y = 5, .w = 10, .h = 10 } },
@@ -172,7 +172,7 @@ test "tryAppend: control（fence）恒 .unsortable，即便簇为空" {
 
 test "buildDispatchOrder: 按 pipeline 分桶、桶内保插入序" {
     var cluster = LocalSortCluster{};
-    // 插入序：image, sdf, text, sdf —— 交错。注意各 bounds 互不重叠
+    // 插入序：image, sdf, text, sdf，交错。注意各 bounds 互不重叠
     //（跨 pipeline 重叠会被 tryAppend 拒绝，混不进同一个簇）。
     const seq = [_]MockItem{
         .{ .kind = .image, .geom = .{ .x = 0, .y = 0, .w = 5, .h = 5 } },

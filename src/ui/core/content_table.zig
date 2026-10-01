@@ -1,4 +1,4 @@
-//! ContentTable — v0.9-§a NodeContent SoA, dense by ElementId
+//! ContentTable, v0.9-§a NodeContent SoA, dense by ElementId
 //!
 //! 与 ElementTable 一一对应：每个 element 创建时同步 ensureSlot。
 //! v0.9 stage 1 (本提交): 双写期。Node.visuals.content 仍是 source of truth；
@@ -82,7 +82,7 @@ pub const ContentTable = struct {
         if (id.isNull() or id.index >= self.items.items.len) return;
         var slot = &self.items.items[id.index];
         // 换文本时释放旧 owned 内容/spans，否则被换出的 dupe 永久泄漏。
-        // 指针守卫：caller `getText → 改字段 → setText` 原样写回同一块内存时不能 free。
+        // 指针守卫：caller `getText -> 改字段 -> setText` 原样写回同一块内存时不能 free。
         if (slot.text) |old| {
             const new_content_ptr: ?[*]const u8 = if (t) |nt| nt.content.ptr else null;
             const new_spans_ptr: ?[*]const types.TextSpan = if (t) |nt| nt.spans.ptr else null;

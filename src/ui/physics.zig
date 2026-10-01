@@ -48,7 +48,7 @@ pub const RubberBand = struct {
         return if (visual < 0) -raw else raw;
     }
 
-    /// iOS 风格增量更新: 反函数恢复 raw → 加 delta → 重新映射
+    /// iOS 风格增量更新: 反函数恢复 raw -> 加 delta -> 重新映射
     pub fn applyDelta(self: RubberBand, current_bonus: f32, raw_delta: f32, dimension: f32) f32 {
         const raw = self.unclamp(current_bonus, dimension) + raw_delta;
         return self.clamp(raw, dimension);

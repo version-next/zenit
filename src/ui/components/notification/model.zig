@@ -1,6 +1,6 @@
 //! Notification 纯逻辑层：停靠几何、堆叠几何、入场/退场曲线、计时。
 //!
-//! 不碰 Node —— 渲染层每帧把这里算出的数值写进 transform / alpha。
+//! 不碰 Node，渲染层每帧把这里算出的数值写进 transform / alpha。
 //! 所有时间相关量都由墙钟时间戳（born / left_at / deadline）推导，
 //! 不在对象上逐帧累加：掉帧时相位不漂（设计稿 16.5 / 16.8）。
 const std = @import("std");
@@ -18,6 +18,9 @@ pub const Kind = enum {
     progress,
     /// 倒计时环（中心剩余秒数）+「撤销」按钮。
     undo,
+    /// 文案提示（16.13）：36 高玻璃胶囊，只有一句话（+ 可选标记 / 键帽 / 按钮），
+    /// 与卡片同一个堆叠，没有标题、时间戳、关闭钮和生命条。
+    hint,
 };
 
 /// 语义色调。oklch 同明度同色度、只换色相（设计稿 16.9）。
@@ -122,7 +125,7 @@ pub const Spec = struct {
     pub const enter_scale_from: f32 = 0.98;
     /// 透明度在入场前 55% 的时间里走完，避免半透明残影拖尾。
     pub const enter_fade_portion: f32 = 0.55;
-    /// 内容分层错峰：间隔压到 20ms 级、每层 220ms、位移 4px——最后一层（60 + 220 = 280ms）
+    /// 内容分层错峰：间隔压到 20ms 级、每层 220ms、位移 4px，最后一层（60 + 220 = 280ms）
     /// 与卡片本体 300ms 的入场同时收尾，错峰感还在，整体时长不拉长。
     pub const stagger_ms: f64 = 220;
     pub const stagger_offset: f32 = 4;
@@ -171,6 +174,16 @@ pub const Durations = struct {
     pub const retry_progress: u32 = 5200;
 };
 
+/// 文案提示（16.13）默认停留时长；进行中常驻。
+pub const HintDurations = struct {
+    /// 纯文案 / 成功。
+    pub const plain: u32 = 2000;
+    /// 失败 / 快捷键。
+    pub const emphasis: u32 = 3000;
+    /// 可撤销（带按钮）。
+    pub const action: u32 = 4000;
+};
+
 // ============================================================================
 // 缓动
 // ============================================================================
@@ -183,7 +196,7 @@ pub fn lerp(a: f32, b: f32, t: f32) f32 {
     return a + (b - a) * t;
 }
 
-/// easeOutCubic = 1 − (1−p)³ —— 统一缓动（16.5）。
+/// easeOutCubic = 1 − (1−p)³，统一缓动（16.5）。
 pub fn easeOutCubic(p: f32) f32 {
     const q = 1 - clamp01(p);
     return 1 - q * q * q;
@@ -216,7 +229,7 @@ pub fn enterEase(p: f32) f32 {
     return easing_mod.Easing.cubicBezier(0.16, 1, 0.3, 1).apply(clamp01(p));
 }
 
-/// 卡片本体入场：translate 10→0 · scale .98→1，300ms 强减速；alpha 在前 55% 走完。
+/// 卡片本体入场：translate 10->0 · scale .98->1，300ms 强减速；alpha 在前 55% 走完。
 pub fn enterMotion(elapsed_ms: f64) Motion {
     const raw = progressOf(elapsed_ms, Spec.enter_ms);
     const p = enterEase(raw);
@@ -233,7 +246,7 @@ pub fn staggerMotion(elapsed_ms: f64, delay_ms: f64) struct { offset: f32, alpha
     return .{ .offset = (1 - p) * Spec.stagger_offset, .alpha = p };
 }
 
-/// 图标出现：scale .9→1，不过冲、不旋转（原地转换换图标时复用）。
+/// 图标出现：scale .9->1，不过冲、不旋转（原地转换换图标时复用）。
 pub fn iconPop(elapsed_ms: f64, duration_ms: f64) struct { scale: f32, rotate_deg: f32 } {
     const p = enterEase(progressOf(elapsed_ms, duration_ms));
     return .{ .scale = lerp(0.9, 1, p), .rotate_deg = 0 };
@@ -293,6 +306,8 @@ pub fn swipeCommits(position: Position, dx: f32) bool {
 pub const StackInput = struct {
     /// 卡片自然高度（未裁切）。
     height: f32,
+    /// 卡片自然宽度（卡片恒为满宽；文案提示胶囊随内容）。0 = 不参与宽度收拢。
+    width: f32 = 0,
     /// 高度贡献权重：常态 1；退场中 1−p，连续收到 0。
     weight: f32 = 1,
     /// 退场中的卡片不作为「最前那张」的裁切参照。
@@ -306,6 +321,9 @@ pub const StackOutput = struct {
     offset: f32,
     /// 可见高度（折叠态被裁到最前那张的高度）。
     clip_height: f32,
+    /// 可见宽度：折叠态后层收拢到最前那张的宽度（胶囊宽度不一时不从侧面露出），
+    /// 展开时按展开进度恢复自身宽度。
+    clip_width: f32 = 0,
     scale: f32,
     /// 玻璃密度 A（背景 alpha）。
     glass_alpha: f32,
@@ -329,14 +347,19 @@ pub fn solveStack(inputs: []const StackInput, params: StackParams, out: []StackO
     std.debug.assert(out.len >= inputs.len);
     const e = clamp01(params.expand);
 
-    // 折叠态的裁切参照：最前一张非退场卡片的高度。
+    // 折叠态的裁切参照：最前一张非退场卡片的高度与宽度。
     var front_height: f32 = 0;
+    var front_width: f32 = 0;
     for (inputs) |in| {
         if (!in.leaving) {
             front_height = in.height;
+            front_width = in.width;
             break;
         }
-    } else if (inputs.len > 0) front_height = inputs[0].height;
+    } else if (inputs.len > 0) {
+        front_height = inputs[0].height;
+        front_width = inputs[0].width;
+    }
 
     var depth: f32 = 0;
     var expanded_offset: f32 = 0;
@@ -350,6 +373,7 @@ pub fn solveStack(inputs: []const StackInput, params: StackParams, out: []StackO
         const base_alpha: f32 = if (in.quiet) Spec.glass_quiet else Spec.glass_front;
         const collapsed_glass = @min(1, base_alpha + depth1 * Spec.glass_depth_gain);
         const collapsed_clip = lerp(in.height, front_height, depth1);
+        const collapsed_width = if (in.width > 0 and front_width > 0) lerp(in.width, front_width, depth1) else in.width;
         const collapsed_content = 1 - depth1;
         const collapsed_vis = clamp01(Spec.collapsed_visible_layers - depth);
         const expanded_vis = clamp01(max_visible - depth);
@@ -357,6 +381,7 @@ pub fn solveStack(inputs: []const StackInput, params: StackParams, out: []StackO
         out[i] = .{
             .offset = offset,
             .clip_height = lerp(collapsed_clip, in.height, e),
+            .clip_width = lerp(collapsed_width, in.width, e),
             .scale = lerp(collapsed_scale, 1, e),
             .glass_alpha = lerp(collapsed_glass, base_alpha, e),
             .content_alpha = lerp(collapsed_content, 1, e),
@@ -370,7 +395,7 @@ pub fn solveStack(inputs: []const StackInput, params: StackParams, out: []StackO
     }
 }
 
-/// 整组堆叠沿增长方向的外沿（最远那张卡片的远边）—— 角标与悬停外接矩形用。
+/// 整组堆叠沿增长方向的外沿（最远那张卡片的远边），角标与悬停外接矩形用。
 pub fn stackExtent(outputs: []const StackOutput) f32 {
     var extent: f32 = 0;
     for (outputs) |o| {
@@ -447,7 +472,7 @@ pub const Follow = struct {
     initialized: bool = false,
 
     /// continuous = true 时（有卡片在退场 / 本卡入场未满 620ms / 正在展开折叠），
-    /// 直接跟随逐帧目标——过渡与逐帧驱动不能叠加。否则目标跳变启动 540ms 补间。
+    /// 直接跟随逐帧目标，过渡与逐帧驱动不能叠加。否则目标跳变启动 540ms 补间。
     pub fn step(self: *Follow, target: f32, now_ms: f64, continuous: bool) f32 {
         if (!self.initialized or continuous) {
             self.* = .{ .value = target, .from = target, .target = target, .initialized = true };
@@ -473,7 +498,7 @@ pub const Follow = struct {
     }
 
     /// 锚点整体平移（窗口尺寸变化）：当前值、补间起点与目标一起移动，
-    /// 进行中的重排补间继续走而不重新起跳。窗口变化是刚性位移，不是重排——
+    /// 进行中的重排补间继续走而不重新起跳。窗口变化是刚性位移，不是重排,
     /// 若当成目标跳变去补间，普通 resize 会拖尾，live resize 里（拖动停住后
     /// AppKit 不再出帧）更会卡在半路直到松手（堆叠掉出窗口底部）。
     pub fn shift(self: *Follow, delta: f32) void {
@@ -583,6 +608,29 @@ test "solveStack: leaving front card does not become the collapsed clip referenc
     var out: [3]StackOutput = undefined;
     solveStack(&inputs, .{ .expand = 0 }, &out);
     try testing.expectApproxEqAbs(@as(f32, 70), out[2].clip_height, 1e-4);
+}
+
+test "solveStack: 后层宽度折叠时收拢到最前那张、展开时按进度恢复自身宽度" {
+    const inputs = [_]StackInput{
+        .{ .height = 36, .width = 95 },
+        .{ .height = 36, .width = 220 },
+        .{ .height = 90, .width = 392 },
+    };
+    var out: [3]StackOutput = undefined;
+    solveStack(&inputs, .{ .expand = 0 }, &out);
+    for (out) |o| try std.testing.expectApproxEqAbs(@as(f32, 95), o.clip_width, 1e-4);
+    solveStack(&inputs, .{ .expand = 1 }, &out);
+    for (out, inputs) |o, in| try std.testing.expectApproxEqAbs(in.width, o.clip_width, 1e-4);
+    // 展开进行中：连续插值（过渡），不跳变。
+    solveStack(&inputs, .{ .expand = 0.5 }, &out);
+    try std.testing.expectApproxEqAbs(@as(f32, 95), out[0].clip_width, 1e-4);
+    try std.testing.expectApproxEqAbs(@as(f32, (95.0 + 220.0) / 2.0), out[1].clip_width, 1e-4);
+    try std.testing.expectApproxEqAbs(@as(f32, (95.0 + 392.0) / 2.0), out[2].clip_width, 1e-4);
+    // 未提供宽度的输入保持 0（不参与收拢）。
+    const legacy = [_]StackInput{ .{ .height = 60 }, .{ .height = 80 } };
+    var out2: [2]StackOutput = undefined;
+    solveStack(&legacy, .{}, &out2);
+    try std.testing.expectEqual(@as(f32, 0), out2[1].clip_width);
 }
 
 test "solveStack: quiet uses its own base density" {

@@ -1,4 +1,4 @@
-//! BulkQuad 批量矩形层 —— 从 `Cx` 析出的有状态渲染子系统。
+//! BulkQuad 批量矩形层，从 `Cx` 析出的有状态渲染子系统。
 //!
 //! 管一件事：**绕过 Node 树的一批同构矩形，在 paint pass 末尾 lower 成
 //! display item 并插进 display list 的正确位置**。
@@ -10,17 +10,17 @@
 //!
 //! 接口因此切在：**`Host` 把这六个输入打包传进来，本模块不知道 Cx 存在**
 //! （`Cx.appendBulkQuads` 是一行委托，见 core.zig）。setBulkQuads* 三个是
-//! 面向宿主的公共 API，仍留在 `Cx` 上做薄委托——消费者在仓外（下游应用），
+//! 面向宿主的公共 API，仍留在 `Cx` 上做薄委托，消费者在仓外（下游应用），
 //! 挪走它们是 break-API。
 //!
-//! 搬出来之后，此前只能靠完整 `Cx.render()` 驱动的逻辑——三级插入点定位、
-//! z 归并、z 继承、锚点为 null 的降级路径——全都可以用手搓 display list +
+//! 搬出来之后，此前只能靠完整 `Cx.render()` 驱动的逻辑，三级插入点定位、
+//! z 归并、z 继承、锚点为 null 的降级路径，全都可以用手搓 display list +
 //! 手搓 Node 树做单元测试（见文末测试），不必再为驱动一帧渲染付出整棵树。
 //!
 //! ⚠ 两个集成点留在 `Cx`，别搬进来：
 //!   - `Cx.render` 末尾调 `cx.appendBulkQuads()`（paint pass 之后）；
 //!   - `Cx.invalidateReferencesToEx` 里清锚点（见 `dropIfInsideSubtree` 的
-//!     注释——那次 SIGSEGV 的教训写在那边）。
+//!     注释，那次 SIGSEGV 的教训写在那边）。
 
 const std = @import("std");
 
@@ -40,7 +40,7 @@ const Shadow = types.Shadow;
 const InsetShadow = types.InsetShadow;
 const MultiGradient = types.MultiGradient;
 
-/// 批量矩形 —— 绕过 Node 树的"一批同构矩形"提交单元。
+/// 批量矩形，绕过 Node 树的"一批同构矩形"提交单元。
 ///
 /// 动机（通用能力，非某个宿主专用）：Node 的成本是**逐节点**的挂载、布局与
 /// paint 遍历。当宿主要画成千上万个彼此独立、样式同构、且**不参与布局/命中/
@@ -55,14 +55,14 @@ const MultiGradient = types.MultiGradient;
 ///   - 不参与命中测试、焦点、无障碍树、动画、effect 栈；
 ///   - 层级与裁剪由 `setBulkQuads` 的 `anchor` 决定（见 `Cx.setBulkQuads`）：
 ///     挂靠某个 Node 时这批矩形就画在该 Node 的内容位置、并受它的 clip
-///     约束——即"表现得和该 Node 的普通子内容一致"；不挂靠时退化为
+///     约束，即"表现得和该 Node 的普通子内容一致"；不挂靠时退化为
 ///     画在整棵 Node 树之上、不裁剪（仅适合全屏 overlay 类用途）；
 ///   - 组内按数组顺序绘制（后者盖前者）;
 ///   - 数据跨帧保留，直到宿主再次 `setBulkQuads` 覆盖（不做跨帧 diff）。
 ///     详见 `Cx.setBulkQuads` 的"生命周期"一节。
 ///
 /// 像素等价保证：lower 出的 `fill_rect` / `stroke_rect` 与 Node 路径**同构**
-/// —— 相同 color/radius/border_width 下走的是同一条 SDF 管线、同一套参数，
+/// 相同 color/radius/border_width 下走的是同一条 SDF 管线、同一套参数，
 /// 因此逐位相同（core/tests.zig 的 Node-vs-bulk 对照测试守着这条）。
 pub const BulkQuad = struct {
     x: f32,
@@ -79,14 +79,14 @@ pub const BulkQuad = struct {
     /// 这条 quad 在**锚点子树兄弟序**里的层级。
     ///
     /// null（默认）= 整层作为一个平面插在锚点子树静态内容之后，也就是画在
-    /// 所有对象 Node 之上 —— 这是原有语义，适合"画面上只有批量项"的场合。
+    /// 所有对象 Node 之上，这是原有语义，适合"画面上只有批量项"的场合。
     ///
     /// 给了值 ⇒ 这条 quad 会被插到"第一个 z_index 大于它的 Node item"之前，
     /// 于是批量项与 Node 能**逐个交错**。宿主把对象的 z 原样传下来即可。
     ///
     /// 为什么需要它：一个平面无法表达"部分对象在某些 Node 之下、另一些在其
     /// 之上"。真实场景里少数对象因为要画文字必须留在 Node 路径，而它们的 z
-    /// 往往横穿整个 z 区间 —— 用单平面切在任何一刀都会画错一侧。
+    /// 往往横穿整个 z 区间，用单平面切在任何一刀都会画错一侧。
     z_index: ?i16 = null,
 
     /// 分边描边宽度（顺序同 Node：top/right/bottom/left）。
@@ -94,14 +94,14 @@ pub const BulkQuad = struct {
     /// 同语义）。非零时 `border_width` 被忽略。
     ///
     /// 之所以能加：GPU 侧 `InstanceData` 本来就有 `float4 border_widths`，
-    /// `DisplayItem.border_per_side` 也早就存在 —— 缺的只是这一段没往下传。
+    /// `DisplayItem.border_per_side` 也早就存在，缺的只是这一段没往下传。
     border_widths: [4]f32 = .{ 0, 0, 0, 0 },
 
     /// 投影。null = 无阴影，不产生任何额外开销。
     ///
     /// 阴影在 SDF 片元着色器里是**解析式**计算（与填充同一次 instanced draw），
     /// 不需要离屏 pass。给批量层开放它，带阴影的对象才不会被踢回 Node 路径
-    /// —— 后者实测慢 53×（见 core.zig `BulkQuad` 迁移前的实测记录）。
+    /// 后者实测慢 53×（见 core.zig `BulkQuad` 迁移前的实测记录）。
     shadow: ?Shadow = null,
 
     /// 内阴影。null = 无。同样是解析式，`packed_flags` bit24 已有对应位。
@@ -111,7 +111,7 @@ pub const BulkQuad = struct {
     ///
     /// 与 shadow 同一条路：`InstanceData` 早就有 `gradient_stop_offset` /
     /// `gradient_stop_count`，`DisplayItem` 也有 `multi_gradient_rect`
-    /// （16 stop）—— 缺的只是这一段没往下传。
+    /// （16 stop），缺的只是这一段没往下传。
     ///
     /// 给了渐变时 `color` 被忽略（但仍应填成大致色，供降级路径使用）。
     gradient: ?MultiGradient = null,
@@ -124,7 +124,7 @@ pub const BulkQuad = struct {
     /// 给了值 ⇒ 这条 quad 以「锚点 clip ∩ 该矩形」裁剪。实现上按矩形值
     /// 建 property-tree ClipNode（同帧同矩形只建一个，parent 挂锚点 clip），
     /// lowering 的 clip 链前缀保留会让相邻同 clip 的 quad 共享一次 push/pop。
-    /// 三渲染器（SDF/text/image）的 per-instance clip 早已就位 —— 这里只是
+    /// 三渲染器（SDF/text/image）的 per-instance clip 早已就位，这里只是
     /// 把"每 quad 一个 clip"这段管道补上（宿主场景：画布 frame 裁剪子女）。
     clip_rect: ?[4]f32 = null,
 
@@ -205,13 +205,13 @@ pub const BulkQuadLayer = struct {
             clip_id = rt.clip_id;
             node_id = anchor.id;
             // 插入点 = 锚点子树在 display list 中最后一个 item 之后。
-            // 不用 scene_runtime 的 subtree_display_item_* ——那两个字段是
+            // 不用 scene_runtime 的 subtree_display_item_*，那两个字段是
             // 缓存 splice/replay 的记账，会被改写指向别处（实测过期时会
             // 越过后续兄弟，正是本 bug 的翻车点）。这里按 node 归属实扫，
             // 只在提交了批量层的帧上跑一次，成本相对 20000 quad 可忽略。
             //
             // `insertPoint` 只在"锚点之后本来就没有任何 item"时返回
-            // null —— 那种情况下末尾追加与正确插入点等价，是安全的。
+            // null，那种情况下末尾追加与正确插入点等价，是安全的。
             insert_at = self.insertPoint(anchor, host);
         }
 
@@ -227,7 +227,7 @@ pub const BulkQuadLayer = struct {
         // 分段路径：只要有任何一条 quad 带 z_index，就按 z 分组、每组各自
         // 定位插入点，让批量项与 Node 逐个交错（见 BulkQuad.z_index）。
         //
-        // 分组只按**相邻且同 z**切分，不做全局排序 —— 宿主提交的顺序就是绘制
+        // 分组只按**相邻且同 z**切分，不做全局排序，宿主提交的顺序就是绘制
         // 顺序（BulkQuad 的既有契约），重排会破坏同 z 内的先后关系。
         if (self.anchor != null) {
             var any_z = false;
@@ -244,7 +244,7 @@ pub const BulkQuadLayer = struct {
         }
 
         // 插入点就是末尾（无锚点，或锚点子树本就排在最后）时不必绕暂存区，
-        // 直接往 display_list 尾部写——两万 quad 的量级下省掉一次整层拷贝。
+        // 直接往 display_list 尾部写，两万 quad 的量级下省掉一次整层拷贝。
         const at_tail = insert_at == null or insert_at.? == host.display_list.items.items.len;
         if (at_tail) {
             try host.display_list.items.ensureUnusedCapacity(
@@ -252,7 +252,7 @@ pub const BulkQuadLayer = struct {
                 self.quads.items.len * MAX_ITEMS_PER_QUAD,
             );
             for (self.quads.items) |q| {
-                // 与另外两处降级路径共用同一个 lower —— 三处各写一遍是历史包袱，
+                // 与另外两处降级路径共用同一个 lower，三处各写一遍是历史包袱，
                 // 加字段时必然漏改其中一处（阴影/分边就是这么差点漏掉的）。
                 try appendQuadItems(&host.display_list.items, host.allocator, q, clip_cache.headerFor(host, q, header));
             }
@@ -273,12 +273,12 @@ pub const BulkQuadLayer = struct {
 
     /// 批量层挂靠点：锚点**静态内容**之后、**交互叠加**之前的位置。
     ///
-    /// 层级模型（底 → 顶），批量层属于第 1 层：
+    /// 层级模型（底 -> 顶），批量层属于第 1 层：
     ///   1. 画布静态内容：Node 路径的大对象 + 批量层的小对象（同层，互相按
     ///      提交/文档序排）；
     ///   2. 画布交互叠加：选择框 / resize handles / 尺寸标签 / hover 高亮 /
-    ///      snap 线——这些是锚点的子节点，但必须**盖在**批量层之上；
-    ///   3. UI chrome（侧栏 / Inspector / 工具栏）——锚点之外的兄弟，天然在后；
+    ///      snap 线，这些是锚点的子节点，但必须**盖在**批量层之上；
+    ///   3. UI chrome（侧栏 / Inspector / 工具栏），锚点之外的兄弟，天然在后；
     ///   4. overlay / modal。
     ///
     /// 宿主用 `overlay_z_threshold`（本层的 `overlay_z` 字段）声明第 2 层的
@@ -290,12 +290,12 @@ pub const BulkQuadLayer = struct {
     ///   ② 锚点子树静态内容为空但有交互叠加（选中了对象、画布里的对象全部
     ///      降级成批量层）⇒ 插到第一个叠加 item 之前。
     ///   ③ 锚点子树一个 item 都没产出（锚点自身无背景 + 子内容全降级/为空
-    ///      —— 画布缩小到全对象走批量层时正是这一档）⇒ 退回到"锚点之后的
+    ///      画布缩小到全对象走批量层时正是这一档）⇒ 退回到"锚点之后的
     ///      兄弟"的第一个 item 之前。**不能因为 ①② 落空就返回 null**：null
     ///      在调用方语义里是"追加到末尾"，那会让批量层整片盖到 chrome 上，
     ///      表现为缩小档下画面间歇性闪烁/糊住 UI（见 core/tests.zig 的
     ///      "锚点子树无 display item" 回归）。
-    /// 三级都落空（锚点后面本来就没有任何内容）才返回 null —— 此时末尾
+    /// 三级都落空（锚点后面本来就没有任何内容）才返回 null，此时末尾
     /// 追加与正确插入点等价。
     pub fn insertPoint(self: *const BulkQuadLayer, anchor: *Node, host: Host) ?usize {
         const arena = host.frame_arena;
@@ -352,7 +352,7 @@ pub const BulkQuadLayer = struct {
 
         // ③ 锚点子树空：改用"锚点之后的节点"来定位。收集 paint 序里排在
         // 锚点子树**之后**的所有 node id，取它们在 display list 中最靠前的
-        // item —— 批量层插在它之前，就仍然被这些 chrome 盖住。
+        // item，批量层插在它之前，就仍然被这些 chrome 盖住。
         const root = host.root orelse return null;
         var after: std.AutoHashMapUnmanaged(u32, void) = .{};
         defer after.deinit(arena);
@@ -423,7 +423,7 @@ pub const BulkQuadLayer = struct {
             try merged.append(host.allocator, it);
         }
         // 收尾：只有当插入点本来就是**整份 display list 的末尾**时，剩下的
-        // quad 才追加到最后。否则它们已经在 `idx == tail` 那一步落位了 ——
+        // quad 才追加到最后。否则它们已经在 `idx == tail` 那一步落位了,
         // 再追加一次会让批量项越过锚点之后的 chrome（侧栏 / Inspector /
         // 工具栏），正是"对象糊在 UI 上"那类回归。
         if (tail >= src.len) {
@@ -456,7 +456,7 @@ pub const BulkQuadLayer = struct {
 
     /// 替换本帧的批量矩形层（见 `BulkQuad`）。内部拷贝一份，调用方可立即
     /// 复用/释放 `quads`。传空切片即关闭该层（anchor / overlay_z 仍会被
-    /// 重写——与 Cx.setBulkQuadsEx 的既有行为一致）。
+    /// 重写，与 Cx.setBulkQuadsEx 的既有行为一致）。
     pub fn set(
         self: *BulkQuadLayer,
         host: Host,
@@ -497,7 +497,7 @@ pub const BulkQuadLayer = struct {
     ///
     /// 锚点是裸 `*Node`（见 Cx.setBulkQuads 的生命周期一节）。宿主契约
     /// 要求"锚点销毁前重新提交"，但**销毁路径本身必须兜底**：宿主可能在
-    /// 摘树之后、下一次 setBulkQuads 之前就渲染一帧（下游应用的 goHome →
+    /// 摘树之后、下一次 setBulkQuads 之前就渲染一帧（下游应用的 goHome ->
     /// teardownChromeScreen 摘掉画布子树，而 applySnapshot 在 homepage 屏
     /// 直接早退不再提交 ⇒ 锚点永远停留在已释放的 canvas_host）。此时
     /// append 会解引用 `anchor.id`，在 Cx.render 里读到未映射地址。
@@ -521,14 +521,14 @@ pub const BulkQuadLayer = struct {
     }
 };
 
-/// BulkQuad.clip_rect → ClipNode 的**按帧**缓存（同一矩形只建一个节点；
+/// BulkQuad.clip_rect -> ClipNode 的**按帧**缓存（同一矩形只建一个节点；
 /// 典型宿主场景里一个 frame 的全部子女共享同一矩形）。map 存 frame_arena，
 /// 帧末随 arena 一起蒸发，无需显式清理。
 pub const BulkClipCache = struct {
     map: std.AutoHashMapUnmanaged(u128, u32) = .{},
 
     /// 为一条 quad 解析 header：无 clip_rect 原样返回；有则把 clip_id
-    /// 换成「parent = 锚点 clip」的 ad-hoc ClipNode —— 链式发射时就是
+    /// 换成「parent = 锚点 clip」的 ad-hoc ClipNode，链式发射时就是
     /// 视口 clip ∩ quad clip。ClipNode 建失败**安全降级**为锚点 clip
     /// （宁可这一帧少裁一刀，不能整批不画）。
     pub fn headerFor(
@@ -572,7 +572,7 @@ fn collectSubtreeIds(
 }
 
 /// 收集锚点子树里属于**交互叠加**的节点 id：z_index ≥ `threshold` 的节点
-/// 及其整棵子树（子节点继承父的叠加身份——尺寸标签的文字要跟着胶囊走）。
+/// 及其整棵子树（子节点继承父的叠加身份，尺寸标签的文字要跟着胶囊走）。
 /// `inherited` = 祖先里已经有人越过阈值。
 fn collectOverlayIds(
     node: *Node,
@@ -619,7 +619,7 @@ fn collectSubtreeZ(
 /// 子树 z 归属：**后代继承祖先的 z_index**（自身显式声明时取自身）。
 ///
 /// 批量层归并按"item 的 z"决定 quad 插在它前还是后，而 z 是**兄弟间**的
-/// 层级语义 —— 一个对象容器设了 z=3，它内部的文字/图标子节点并没有、
+/// 层级语义，一个对象容器设了 z=3，它内部的文字/图标子节点并没有、
 /// 也不需要各自再设一遍 z：它们属于那个容器的层级。此前这里直接读
 /// 子节点自身的 z_index（默认 0），于是"容器 z=3 里的文字"被当成 z=0，
 /// 批量层的 z=2 quad 插到了文字**之后**，把它整块盖掉
@@ -641,7 +641,7 @@ fn collectSubtreeZInherited(
 
 /// 一条 BulkQuad 降为 1~4 个 DisplayItem。
 ///
-/// 顺序即绘制序，与 Node 路径保持一致：**投影 → 填充 → 描边 → 内阴影**。
+/// 顺序即绘制序，与 Node 路径保持一致：**投影 -> 填充 -> 描边 -> 内阴影**。
 /// 投影必须在填充之前（否则盖住对象本体）；内阴影必须在填充之后
 /// （它画在对象内部）。`node_style_render.zig` 是同一套顺序。
 ///
@@ -734,7 +734,7 @@ fn appendQuadItems(
     }
     if (q.inset_shadow) |s| {
         if (s.color.a > 0) {
-            // 注意 inset_shadow_rect 自带 `fill` —— 它在 shader 里连底色一起
+            // 注意 inset_shadow_rect 自带 `fill`，它在 shader 里连底色一起
             // 画（见 sdf_primitives.metal 的 inset 分支）。这里传 TRANSPARENT：
             // 底色已由上面的 fill_rect 画过，重复画会让半透明填充叠深一层。
             try out.append(allocator, .{ .inset_shadow_rect = .{
@@ -812,7 +812,7 @@ const Fixture = struct {
     /// 查不到 ⇒ 整层安全降级为"这一帧不画"（见 append 里对"对象糊在 UI 上"
     /// 的防御）。真实路径里这份记录由 render pass 写入，手搓夹具必须补上，
     /// 否则 append 静默早退、display list 里一个批量 item 都不会有。
-    /// 只填 node_id / clip_id / transform_id——本层消费的就这三样。
+    /// 只填 node_id / clip_id / transform_id，本层消费的就这三样。
     fn registerRuntime(self: *Fixture, node: *Node, clip_id: u32) !void {
         try self.runtime.put(.{
             .node_id = node.id,
@@ -1035,7 +1035,7 @@ test "appendSegmented：z 归并按 z 升序，同 z 时 Node 在前" {
     try f.registerRuntime(tree.canvas, display_list_mod.INVALID_ID);
 
     // 一个 z=50 的 Node；批量层里有 z=10（绿）与 z=90（蓝）两段。
-    // 正确顺序必须是 绿 → Node → 蓝。
+    // 正确顺序必须是 绿 -> Node -> 蓝。
     try setZ(testing.allocator, tree.obj, 50);
     try f.list.append(fillFor(tree.obj.id));
 

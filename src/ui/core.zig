@@ -98,7 +98,7 @@ pub const cursor = @import("core/cursor.zig");
 pub const CursorRegion = cursor.Region;
 pub const CursorToken = cursor.Token;
 
-// Phase 0: ElementId 生成式 handle —— Phase 3 拆 Node 后的核心索引
+// Phase 0: ElementId 生成式 handle, Phase 3 拆 Node 后的核心索引
 pub const element_id = @import("core/element_id.zig");
 pub const ElementId = element_id.ElementId;
 pub const SlotMap = element_id.SlotMap;
@@ -131,7 +131,7 @@ pub const shaping_cache = @import("core/shaping_cache.zig");
 pub const ShapingCache = shaping_cache.ShapingCache;
 pub const ShapingKey = shaping_cache.ShapingKey;
 
-// GlyphRun pipeline 接管旧 ASCII-first measure 路径起步 —
+// GlyphRun pipeline 接管旧 ASCII-first measure 路径起步,
 // cx.shapeText 调 TextShaper.shape() 构 GlyphRun，过 ShapingCache 缓存。
 const text_module = @import("text");
 pub const TextShaper = text_module.TextShaper;
@@ -158,7 +158,7 @@ pub const layerize_mod = @import("core/layerize.zig");
 pub const PromotionHint = layerize_mod.PromotionHint;
 pub const layerize = layerize_mod.layerize;
 
-// Phase 0: DirtyFlags —— 替代 Node 上分散的 13 布尔 + 2 version。Phase 3 接入。
+// Phase 0: DirtyFlags，替代 Node 上分散的 13 布尔 + 2 version。Phase 3 接入。
 pub const dirty_flags = @import("core/dirty_flags.zig");
 pub const DirtyFlags = dirty_flags.DirtyFlags;
 
@@ -253,7 +253,7 @@ pub const CursorShape = core_types.CursorShape;
 /// 自定义位图光标描述（`Cx.setCustomCursor` 的输入）。
 /// 纵横比由 SVG 自身保持，`size_pt` 只约束逻辑宽度（输出宽度 = size_pt，
 /// viewBox 会等比缩放到它）；
-/// `hot_x/hot_y` 是**最终位图**内左上原点的热点逻辑坐标（points）——
+/// `hot_x/hot_y` 是**最终位图**内左上原点的热点逻辑坐标（points）,
 /// 若 size_pt ≠ viewBox 宽度，调用方要自行按比例换算（常用
 /// size_pt == viewBox 宽度，此时两者一致）。
 pub const CustomCursorDesc = custom_cursor_mod.CustomCursorDesc;
@@ -329,7 +329,7 @@ pub fn bindScopeToNode(scope: *Scope, node: *Node) !void {
 }
 
 /// 一次性收养：把刚建好的 child 立刻挂到 parent 上，append 失败时自己释放 child。
-/// 「建好即挂」让 create→append 之间不存在游离窗口，也就不需要门控 flag；
+/// 「建好即挂」让 create->append 之间不存在游离窗口，也就不需要门控 flag；
 /// 各组件里同型的 adoptTagChild / adoptTabChild / adoptDividerChild 就是它。
 /// 前提：parent 自身已挂在受守卫的子树上（根节点有 errdefer freeNode）。
 pub fn adoptChild(cx: *Cx, allocator: std.mem.Allocator, parent: *Node, child: *Node) !*Node {
@@ -355,8 +355,8 @@ const resolveInspectTarget = cx_hit_target.resolveInspectTarget;
 //   cx_render         render() 帧管线、after-layout hooks、redraw 调度
 //   cx_frame          帧时钟、idle 停帧门控、deferred 预算
 //   cx_runtime_index  interaction index / focus order 全量与增量重建
-//   cx_world_sync     Node → World 表同步、layerize
-//   cx_world_hooks    进程级 Node → World 路由回调（g_active_world*）
+//   cx_world_sync     Node -> World 表同步、layerize
+//   cx_world_hooks    进程级 Node -> World 路由回调（g_active_world*）
 //   cx_node_lifetime  detach / freeNode / 引用失效
 //   cx_a11y           a11y 树同步 + macOS bridge 回调（投影规则在 a11y_projection）
 //   cx_platform       SystemSdk / 窗口身份 / 原生文本输入会话
@@ -417,7 +417,7 @@ pub var a11y_context_register_failures: u64 = 0;
 /// 逐 glass 亮度样本（renderer 每帧从 luminance 槽池投影；key = glass 拥有者 node id）。
 pub const BackdropLumRegion = struct { node_id: u32, lum: f32 };
 
-/// 批量矩形 —— 绕过 Node 树的"一批同构矩形"提交单元。
+/// 批量矩形，绕过 Node 树的"一批同构矩形"提交单元。
 ///
 /// 实现已整体析出到 core/bulk_quad_layer.zig（五个字段 + 十三个方法）。
 /// 这里保留公共别名：消费者（下游应用等）用的是 `ui.BulkQuad` /
@@ -433,7 +433,7 @@ pub const MAX_ITEMS_PER_QUAD: usize = bulk_quad_layer_mod.MAX_ITEMS_PER_QUAD;
 pub const WINDOW_PORTAL_Z_INDEX: i16 = 31_000;
 
 /// 由 Cx 兜底释放的一块组件私有内存（目前只有 ScrollArea 的 ScrollCtxCell）。
-/// 用 destroyFn 抹掉具体类型，避免 core → components 的反向依赖。
+/// 用 destroyFn 抹掉具体类型，避免 core -> components 的反向依赖。
 pub const OwnedCell = struct {
     ptr: *anyopaque,
     destroyFn: *const fn (*anyopaque, Allocator) void,
@@ -443,7 +443,7 @@ pub const OwnedCell = struct {
 pub const AfterLayoutResult = enum { done, needs_layout };
 /// `round` 从 0 开始；`last_round` 为 true 时返回 needs_layout 也不会再被调用。
 pub const AfterLayoutFn = *const fn (ctx: *anyopaque, round: u8, last_round: bool) AfterLayoutResult;
-/// 一帧内「回调 → 布局」最多循环的轮数。
+/// 一帧内「回调 -> 布局」最多循环的轮数。
 pub const max_after_layout_rounds: u8 = 4;
 const AfterLayoutHook = struct { ctx: *anyopaque, run: AfterLayoutFn };
 
@@ -483,7 +483,7 @@ pub const Cx = struct {
 
     // UI 树
     root: ?*Node = null,
-    /// Window-root portal —— 所有脱离正常文档流的 overlay 的唯一宿主。
+    /// Window-root portal，所有脱离正常文档流的 overlay 的唯一宿主。
     /// Popover/Tooltip 只把 floating content 挂到这里，trigger wrapper 仍留在
     /// caller 树中。Modal/Sheet 的 barrier 也作为同一 portal 的直接 child，
     /// 使 OverlayStack 的 z-index tier 能在同级兄弟之间正确排序。
@@ -518,12 +518,12 @@ pub const Cx = struct {
     /// 标记本帧是否有新的 mouseDown 事件（每帧清除）
     has_new_mouse_down: bool = false,
 
-    // (已删除: hovered_node_id/pressed_node_id/focused_node_id — 保留模式下节点不重建，直接用 ?*Node 指针)
+    // (已删除: hovered_node_id/pressed_node_id/focused_node_id，保留模式下节点不重建，直接用 ?*Node 指针)
 
     mouse_x: f32 = 0,
     mouse_y: f32 = 0,
     viewport: Size = Size.ZERO,
-    /// App-defined "safe area" insets — title bar / tab bar / status bar 占用的空间。
+    /// App-defined "safe area" insets, title bar / tab bar / status bar 占用的空间。
     /// floating UI（popover / hover / tooltip）做 viewport boundary 计算时把它们减掉，
     /// 避免 popover 顶部跑到 title bar 后面。Caller 在 app shell layout 后设置一次。
     /// 默认 0（无 chrome）。
@@ -537,10 +537,10 @@ pub const Cx = struct {
     current_cursor: CursorShape = .default,
     cursor_override: ?CursorShape = null,
     cursor_state: cursor.State = .{},
-    /// 自定义位图光标（CursorShape.custom 的内容），key → 已光栅化位图。
+    /// 自定义位图光标（CursorShape.custom 的内容），key -> 已光栅化位图。
     /// 同一时刻只有一个激活位图（active_custom_cursor）。
     /// 自定义位图光标存储（实现见 core/custom_cursor.zig）。
-    /// store 负责「desc → 光栅化 → 按内容寻址缓存」，下发到系统留在
+    /// store 负责「desc -> 光栅化 -> 按内容寻址缓存」，下发到系统留在
     /// updateCursorShape（那一步才需要 system_sdk / window_id）。
     custom_cursor: custom_cursor_mod.CustomCursorStore = .{},
     /// Harness 自动化指针。仅在收到自动化 pointer 命令后可见；纯绘制，
@@ -559,7 +559,7 @@ pub const Cx = struct {
     /// f64 避免长时间运行后精度退化（f32 在 ~16.7 秒后丢失亚毫秒精度）。
     ///
     /// **由墙钟派生**：frame_time_ms = (now - clock_epoch) - clock_paused_ns。
-    /// 不是逐帧 dt 的累加和——累加会把每个被 clamp 削短的慢帧永久丢失（实测 4fps
+    /// 不是逐帧 dt 的累加和，累加会把每个被 clamp 削短的慢帧永久丢失（实测 4fps
     /// 下 5s 真实时间只走 2s，动画降到 40% 速度且永不追回），表现为"性能越差动画越慢"。
     frame_time_ms: f64 = 0,
     /// 逻辑时钟原点。首次 advanceFrameClock 时锚定。
@@ -589,7 +589,7 @@ pub const Cx = struct {
     last_tick_animations_active: bool = false,
 
     // Stage B R3d (B 路线): cx.display_list 是真源，下面 lowering 子结构持有
-    // encoder 端 buffer (paint pass → derive 翻译目标 + inspector overlay merge)。
+    // encoder 端 buffer (paint pass -> derive 翻译目标 + inspector overlay merge)。
     // v0.5 §5 GpuDraw 完工后 (commit 10d26a8) encoder 吃 lowering.main_paint;
     // lowering.main union 仍保留供 inspector overlay 写入 + 内部诊断。
     // 直接读 lowering.* 字段属于内部访问；外部 caller 走 cx.lowerForEncoderPaintTable()。
@@ -599,12 +599,12 @@ pub const Cx = struct {
     /// 跨帧稳定不需快照）。此 flag 在首帧 / resize / 强制重绘时置 false 以强制
     /// 走完整 paint pass 并填 self.lowering.main 供 encoder lower 用。
     last_render_valid: bool = false,
-    /// 上一次 render() 时的 frame_time_ms。frame_time_ms 推进意味着可能有动画在跑——
+    /// 上一次 render() 时的 frame_time_ms。frame_time_ms 推进意味着可能有动画在跑,
     /// 即便 dirty 位 clean 也不能 skip（动画 hook 没机会推进）。
     last_render_frame_time_ms: f64 = 0,
 
     /// overlay 渲染命令分段记录（按 z_index 排序后合并，确保嵌套 overlay 层级正确）
-    /// 帧级 Arena 分配器 — 每帧 reset，用于临时计算（避免堆碎片化）
+    /// 帧级 Arena 分配器，每帧 reset，用于临时计算（避免堆碎片化）
     frame_arena: std.heap.ArenaAllocator,
     deferred_epoch: std.time.Instant,
     deferred_scheduler: DeferredScheduler,
@@ -643,10 +643,10 @@ pub const Cx = struct {
     bulk_quads_overlay_z: ?i16 = null,
     /// 宿主声明的批量层内容版本（见 setBulkQuadsVersioned）。
     bulk_quads_version: ?u64 = null,
-    /// Node 外部裁剪矩形旁表（node.id → 视口系 x/y/w/h）。
+    /// Node 外部裁剪矩形旁表（node.id -> 视口系 x/y/w/h）。
     ///
     /// 语义：该节点（含整个子树）额外受此矩形裁剪，与自身 overflow clip
-    /// 取交。节点**无须**成为裁剪来源的父子 —— 宿主场景是画布对象平铺
+    /// 取交。节点**无须**成为裁剪来源的父子，宿主场景是画布对象平铺
     /// 挂载（frame 与其成员是兄弟 Node），frame 的 clip 只能由宿主逐节点
     /// 标注。存旁表而不是 Node 字段：Node 顶层字段有 SoA 尺寸纪律，而这
     /// 是极稀疏的属性（只有画布 frame 成员用）。
@@ -680,11 +680,11 @@ pub const Cx = struct {
     // notify) 仍存在但只覆盖 focus/property change 通知；children navigation
     // 100% 走新 tree。
     accessibility_tree: a11y_tree_mod.AccessibilityTree,
-    /// A11yNode 只持 label/description/value 的 u64 hash；本表保留 hash → string
+    /// A11yNode 只持 label/description/value 的 u64 hash；本表保留 hash -> string
     /// 的反向映射，让 platform bridge (NSAccessibility / IAccessible) 能查回真实 UTF-8
     /// 字符串供 AT 工具读出。每帧 cx.render() 末尾在 syncA11yTreeFromInteractions 内重建。
     a11y_label_buf: std.AutoHashMapUnmanaged(u64, []const u8) = .{},
-    /// push-side bridge context — 持 window_id + label_resolver 指针。
+    /// push-side bridge context，持 window_id + label_resolver 指针。
     /// 每帧 syncA11yTreeFromInteractions 重设；flushToBridge 调用 macos_bridge
     /// extern push fn 时回弹此 ref 拿 window_id。
     a11y_push_cx_ref: a11y_macos_bridge_mod.PushCxRef = .{
@@ -735,12 +735,12 @@ pub const Cx = struct {
     // 保留模式
     root_scope: ?*Scope = null, // 全局根 Scope
 
-    /// 本 Cx 的 World id —— 盖在它创建的每个 Node.world_id 上，用于检测跨 Cx 串台。
+    /// 本 Cx 的 World id，盖在它创建的每个 Node.world_id 上，用于检测跨 Cx 串台。
     world_id: u16 = 0,
 
     /// >0 表示正处于 before_render tick 遍历中（render_engine 正在走节点树）。
     /// 期间任何 freeNode 都必须**延后**到遍历结束，否则会把正在被迭代的
-    /// 节点内存抽走 —— 见 deferred_free_nodes。
+    /// 节点内存抽走，见 deferred_free_nodes。
     tick_depth: u32 = 0,
     /// 布局之后的回调：在 before_render tick 之后那一轮布局完成后调用，读到的是本帧
     /// 最终几何。回调可以改几何并请求再布局（有轮数上限）；命中索引在全部轮次之后重建。
@@ -752,7 +752,7 @@ pub const Cx = struct {
     /// 触发路径：before_render hook / 动画完成回调里 dispose 组件 scope，
     /// scope cleanup 走 detachChild + freeNode（snapshot_layer 的
     /// animateOpacity(done) 是典型），而此时 tickBeforeRender 的递归栈上
-    /// 还持有该节点及其祖先的 *Node —— 立即 free 会让上层栈帧读到 0xaaaa… 毒值。
+    /// 还持有该节点及其祖先的 *Node，立即 free 会让上层栈帧读到 0xaaaa… 毒值。
     deferred_free_nodes: @import("reactive/deferred_disposal.zig").Queue = .{},
     draining_deferred_frees: bool = false,
     /// ScrollArea 的 on_cleanup 中转格（components/scroll_area 的 ScrollCtxCell）。
@@ -780,7 +780,7 @@ pub const Cx = struct {
     /// beginFrame 推进 epoch；shaped run 通过 ShapingKey 命中 cache，避免重复
     /// 当前存活的 Cx 数量。**不再用于拒绝第二个 Cx**（守卫已于 2026-07-30 拆除，
     /// 理由见 init）；仍需要它来判断"我是最后一个 Cx 吗"，决定何时回收
-    /// 进程级的 standalone fallback 存储 —— 见 deinit。
+    /// 进程级的 standalone fallback 存储，见 deinit。
     var g_live_cx_count: usize = 0;
 
     /// 已废弃的 no-op：多 Cx 守卫已拆除，无需再放行。保留供旧测试调用不报错。
@@ -813,7 +813,7 @@ pub const Cx = struct {
         //
         // 仍存在的 `g_*` 全局（node_tree / paint_content_accessor 的 standalone
         // 表、layout_engine 的 active cache）都**只在 `world_ref == null` 时**
-        // 才被读到 —— 即 cx-less mock 路径；生产路径已插桩验证 0 次命中。
+        // 才被读到，即 cx-less mock 路径；生产路径已插桩验证 0 次命中。
         // layout_engine 的两个 active 指针是 layoutNode 内 save/restore 的
         // 调用域内状态，不跨窗口存活。
         //
@@ -866,14 +866,14 @@ pub const Cx = struct {
         cx.overlay_stack.setRegistry(&cx.node_registry);
 
         // 启用 layout intrinsic cache（当前是全局静态；v0.2-P3 拆 Node 时
-        // 迁到 LayoutTable per-node 字段）。allocator 用 Cx.allocator —— 跨帧持久。
+        // 迁到 LayoutTable per-node 字段）。allocator 用 Cx.allocator，跨帧持久。
         layout_engine.enableIntrinsicCache(allocator);
 
         // 设置 Node dirty notify callback，让 markRenderDirty 把 dirty
-        // 同步到 World.dirty_set。当前是全局静态——多 Cx 场景下后者覆盖前者。
+        // 同步到 World.dirty_set。当前是全局静态，多 Cx 场景下后者覆盖前者。
         //
         // ⚠️ 订正（2026-07-29）：旧注释写的是"旧 Cx 的 dirty 流入新 Cx.world
-        // 是无害的（id 不匹配则 isValid 检查保护）"—— **这是错的，已证伪**。
+        // 是无害的（id 不匹配则 isValid 检查保护）", **这是错的，已证伪**。
         // ElementId 是 {index:u24, generation:u8}，**不含 World 标识**，且每个
         // World 都从 index 0 开始分配。SlotMap.isValid 只校验 index 范围 +
         // generation，所以拿旧 Cx 的 id 去查新 Cx 的 World **会假匹配并返回
@@ -912,7 +912,7 @@ pub const Cx = struct {
         core_node.setLayoutOutputReadCallback(&cx_world_hooks.onLayoutOutputRead);
         core_node.setLayoutOutputPtrCallback(&cx_world_hooks.onLayoutOutputPtr);
 
-        // 全部成功后才计数 —— 上面任何 errdefer 回滚都不应留下计数残留。
+        // 全部成功后才计数，上面任何 errdefer 回滚都不应留下计数残留。
         g_live_cx_count += 1;
         return cx;
     }
@@ -923,7 +923,7 @@ pub const Cx = struct {
         return self.lifetime_token.retain();
     }
 
-    /// 创建一个显式归属本 Cx 的节点 —— **不依赖任何进程级全局**。
+    /// 创建一个显式归属本 Cx 的节点，**不依赖任何进程级全局**。
     ///
     /// P0-3：这是多窗口的必要入口。`Node.create` 走的是
     /// `g_node_create_hook` + `cx_world_hooks.g_active_world` 全局对，多个 Cx 并存时
@@ -949,13 +949,13 @@ pub const Cx = struct {
         self.drag_manager.cancel(self, .scope_disposed);
 
         // tick 期间排队但还没释放的节点（正常帧路径会在 tick 结束时 drain，
-        // 这里兜底：deinit 可能发生在任意时刻）。必须在 root 释放之前处理 ——
+        // 这里兜底：deinit 可能发生在任意时刻）。必须在 root 释放之前处理,
         // 这些节点已经摘链，不会被 root 子树的递归释放覆盖到。
         self.tick_depth = 0;
         cx_node_lifetime.drainDeferredFrees(self);
 
         // ScrollArea 中转格：此刻所有节点与 scope 都已结束，没人再会读它们。
-        // 用组件自己登记的 destroyFn 释放，避免 core → components 的反向依赖。
+        // 用组件自己登记的 destroyFn 释放，避免 core -> components 的反向依赖。
         for (self.scroll_ctx_cells.items) |entry| {
             entry.destroyFn(entry.ptr, self.allocator);
         }
@@ -963,7 +963,7 @@ pub const Cx = struct {
 
         // standalone fallback storage 是进程级 + page_allocator，GPA leak
         // check 覆盖不到（审查报告列的盲区）。这里显式回收，让"零残留"可断言。
-        // 仅当没有其它存活 Cx 时才清 —— 否则会抽走别人还在用的表。
+        // 仅当没有其它存活 Cx 时才清，否则会抽走别人还在用的表。
         if (g_live_cx_count == 1) {
             core_node.deinitStandaloneRects();
             paint_content_accessor.deinitStandaloneStorage();
@@ -975,7 +975,7 @@ pub const Cx = struct {
         // 注意：clearNodeScopes 必须在所有路径上跑（不只是 root_scope 存在的
         // 路径）。测试和高级 caller 经常用外部 Scope mount 组件树，那种情况
         // self.root_scope 为 null，但 cx.root 子树的节点仍可能挂着已 dispose
-        // 的外部 scope 指针。如果不先清，freeNode → invalidateSubtreeHookState
+        // 的外部 scope 指针。如果不先清，freeNode -> invalidateSubtreeHookState
         // 会访问 hook 状态注册到外部 scope 上的悬垂指针，触发 UAF。
         if (self.root) |r| {
             hooks_mod.invalidateSubtreeHookState(r);
@@ -1051,7 +1051,7 @@ pub const Cx = struct {
         // unmount 直接清空 focus 指针而不触发组件 blur；由 session owner
         // 原子地 discard + disable，避免新树继承旧编辑器的 marked text。
         cx_platform.deactivateTextInputSession(self);
-        // 焦点悬垂指针必须在释放树**之前**清掉——递归 freeNode 过程中的任何
+        // 焦点悬垂指针必须在释放树**之前**清掉，递归 freeNode 过程中的任何
         // 焦点查询都可能解引用已释放节点（下游应用）。
         self.focus_manager.current_focus = null;
         self.focus_manager.current_focus_handle = null;
@@ -1070,14 +1070,14 @@ pub const Cx = struct {
         self.popover_portal_root = null;
         self.current_scope = null;
         self.is_mounted = false;
-        // 释放 StateStore — 销毁所有 Welcome 页面组件状态（含内部 HashMap/ArrayList）
+        // 释放 StateStore，销毁所有 Welcome 页面组件状态（含内部 HashMap/ArrayList）
         self.state_store.deinit();
         self.state_store = widget_state_mod.StateStore.init(self.allocator);
         // 重置 OverlayStack
         self.overlay_stack.clear();
-        // 重置 EventDispatcher — 清除指向已销毁节点的悬空指针
+        // 重置 EventDispatcher，清除指向已销毁节点的悬空指针
         self.dispatcher.clearPersistentState();
-        // 重置 FocusManager — 清除指向已销毁节点的悬空指针
+        // 重置 FocusManager，清除指向已销毁节点的悬空指针
         self.focus_manager.current_focus = null;
         self.focus_manager.current_focus_handle = null;
         self.focus_manager.focus_order.clearRetainingCapacity();
@@ -1116,10 +1116,10 @@ pub const Cx = struct {
             .height = .{ .grow = .{} },
         }, .{});
         // 不能用 portal.destroy：Node.destroy 不回收 ElementTable slot，也不清
-        // Cx 裸引用 —— 每次失败漏一个 element slot。portal 此时必然游离。
+        // Cx 裸引用，每次失败漏一个 element slot。portal 此时必然游离。
         errdefer self.destroyDetached(portal);
         portal.meta.ownership.meta.component_name = "WindowOverlayPortal";
-        // ensureExt 是不可失败版（内部 `catch @panic("OOM: StyleExt")`）——
+        // ensureExt 是不可失败版（内部 `catch @panic("OOM: StyleExt")`）,
         // 在这个已经返回 !*Node 的函数里用它，等于把一次可传播的分配失败
         // 变成整个进程 abort。消费方下游编辑器对 MdEditor.mount 做逐分配点
         // OOM 注入时实测：signal 6，栈顶就是这一行。改用 fallible 版本传播出去。
@@ -1133,7 +1133,7 @@ pub const Cx = struct {
     /// Debug 断言（只 log.err，不 panic）：portal 是"画到所有容器外"的唯一机制，
     /// 它自己的祖先链上若有 overflow_hidden 或 effect surface（opacity<1 /
     /// composited_group / backdrop blur / will_change），挂进去的浮层照样会被裁剪
-    /// 或困在那张 surface 里 —— z_index 不会让它们逃逸（方案 §6 步骤 2）。
+    /// 或困在那张 surface 里，z_index 不会让它们逃逸（方案 §6 步骤 2）。
     /// 每个 portal 节点只在首次经由 ensurePopoverPortalRoot 取用时检查一次。
     fn checkPopoverPortalAncestry(self: *Cx, portal: *Node) void {
         if (builtin.mode != .Debug) return;
@@ -1178,7 +1178,7 @@ pub const Cx = struct {
     ///   - 传 null ⇒ 退化为旧行为：画在整棵 Node 树之上、不裁剪。只适合
     ///     真正的全屏 overlay。
     ///
-    /// 注意 `anchor` 只提供层级锚点与 clip 来源，**不改变坐标语义**——
+    /// 注意 `anchor` 只提供层级锚点与 clip 来源，**不改变坐标语义**,
     /// BulkQuad 的 x/y 始终是绝对视口坐标，不会被 anchor 的 transform 再变换。
     ///
     /// 生命周期（显式契约，不要依赖隐式行为）：
@@ -1188,7 +1188,7 @@ pub const Cx = struct {
     ///     (b) `Cx.deinit`。
     ///   - `anchor` 是裸 `*Node`：宿主**应当**在锚点节点被销毁/重建前重新调用
     ///     本函数（传新锚点或传 null/空切片）。锚点节点在 display list 里没有
-    ///     任何 item 时（自身无背景 + 子内容全降级）层级仍然正确——见
+    ///     任何 item 时（自身无背景 + 子内容全降级）层级仍然正确，见
     ///     锚点子树三级回退（bulk_quad_layer.zig 的 `insertPoint`）。
     ///   - 兜底：锚点子树若经 `detachChild` / `freeNode` / scope dispose 销毁，
     ///     `invalidateReferencesToEx` 会自动清掉锚点**并关闭该层**。宿主漏掉
@@ -1197,14 +1197,14 @@ pub const Cx = struct {
     ///     在 homepage 屏早退不再提交，锚点悬垂 ⇒ Cx.render 解引用已释放节点
     ///     ⇒ SIGSEGV。）
     ///
-    /// 层级契约（底 → 顶）：画布静态内容（Node 大对象 + 批量层小对象）
-    /// → 画布交互叠加（选择框 / handles / 尺寸标签 / hover / snap 线）
-    /// → UI chrome → overlay/modal。批量层属于第一层；要让画布**内部**的
+    /// 层级契约（底 -> 顶）：画布静态内容（Node 大对象 + 批量层小对象）
+    /// -> 画布交互叠加（选择框 / handles / 尺寸标签 / hover / snap 线）
+    /// -> UI chrome -> overlay/modal。批量层属于第一层；要让画布**内部**的
     /// 交互叠加压住它，用 `setBulkQuadsEx` 传 `overlay_z_threshold`。
     ///
     /// 非空的批量层会让本帧**跳过零脏帧快速路径**：这批矩形由宿主每帧重新
     /// 提交，zenit 不做跨帧 diff，无从判断内容是否变化，只能保守重画。
-    /// （宿主若能自证内容未变，应当自己不调用本函数——那样零脏帧路径照常生效。）
+    /// （宿主若能自证内容未变，应当自己不调用本函数，那样零脏帧路径照常生效。）
     pub fn setBulkQuads(self: *Cx, anchor: ?*Node, quads: []const BulkQuad) !void {
         return cx_bulk_quads.setBulkQuads(self, anchor, quads);
     }
@@ -1214,7 +1214,7 @@ pub const Cx = struct {
     /// 插到它们**之前**，于是叠加照常盖在批量矩形之上。
     ///
     /// 不传（或用 `setBulkQuads`）⇒ 整棵锚点子树都算静态内容，批量层插在
-    /// 子树全部内容之后——此时任何画布内叠加都会被批量矩形盖住（这正是
+    /// 子树全部内容之后，此时任何画布内叠加都会被批量矩形盖住（这正是
     /// "选择手柄/尺寸标签被批量层压住"那个 bug）。
     /// `setBulkQuadsEx` + **内容版本号**。
     ///
@@ -1224,7 +1224,7 @@ pub const Cx = struct {
     /// 为什么需要它：批量层由宿主每帧重新提交，zenit 不做跨帧 diff，因此
     /// **只要存在批量层就必须保守重画**（见 render 的 fast-path 条件）。
     /// 在两万+ quad 的画布上这意味着每帧重跑整个 paint pass 重建整份
-    /// display list —— 实测 render_gen 21.6ms/帧，占整帧 70%，而 GPU 只用了
+    /// display list，实测 render_gen 21.6ms/帧，占整帧 70%，而 GPU 只用了
     /// 6.3ms。宿主自己知道内容变没变（对象几何/颜色/可视集是否变化），
     /// 把这个信息传下来，静止画面就能回到零脏帧。
     ///
@@ -1246,7 +1246,7 @@ pub const Cx = struct {
 
     /// 设置/清除某个 Node 的外部裁剪矩形（视口系；见 `external_clip_rects`
     /// 字段注释）。子树整体受裁；与节点自身 overflow clip 取交。
-    /// 值变化才请求重画 —— 宿主逐帧全量重标注是常态，不能帧帧触发重画。
+    /// 值变化才请求重画，宿主逐帧全量重标注是常态，不能帧帧触发重画。
     pub fn setNodeExternalClipRect(self: *Cx, node_id: u32, rect: ?[4]f32) void {
         return cx_bulk_quads.setNodeExternalClipRect(self, node_id, rect);
     }
@@ -1254,7 +1254,7 @@ pub const Cx = struct {
     /// 在 target node 上注册 gesture recognizer。返回的 u32 是
     /// recognizer id，可用于 cx.gesture_arena.requireFailure 建立 A 必须 B failed
     /// 才 began 的关系。
-    /// callback 在 GestureArena state 转换 (possible→began/changed/ended/failed) 时
+    /// callback 在 GestureArena state 转换 (possible->began/changed/ended/failed) 时
     /// 触发，ctx 透传给 callback。target node 销毁后 recognizer 不会自动 unregister，
     /// caller 需要在 scope dispose 时清理（或直接复用 ElementId 检查 SlotMap）。
     pub fn registerGesture(
@@ -1324,7 +1324,7 @@ pub const Cx = struct {
 
     /// 给 text_core.WrapMap 等接受擦除上下文指针的 API 用的回调适配器。
     ///
-    /// ⚠ context 必须是 `*Cx`（不是 `*TextContext`）—— 既有调用点传的都是 cx。
+    /// ⚠ context 必须是 `*Cx`（不是 `*TextContext`），既有调用点传的都是 cx。
     pub fn measureTextWidthCallback(
         context: *anyopaque,
         text_ptr: [*]const u8,
@@ -1340,7 +1340,7 @@ pub const Cx = struct {
         return cx_node_lifetime.invalidateReferencesToEx(self, subtree_root, unregister);
     }
 
-    /// 语义：节点 *即将销毁* — 清 state + 从 registry 摘除。
+    /// 语义：节点 *即将销毁*，清 state + 从 registry 摘除。
     /// detachChild/freeNode 等真正摘除节点的路径用这个。
     pub fn invalidateReferencesTo(self: *Cx, subtree_root: *Node) void {
         return cx_node_lifetime.invalidateReferencesTo(self, subtree_root);
@@ -1353,10 +1353,10 @@ pub const Cx = struct {
     /// sweep** 里 SIGABRT（单点注入却是干净的），因为它们都把「释放内存」提前到了
     /// teardown 的失效/注销扫描之前，或者反过来抢先 clearNodeScopes 把该跑的失效
     /// 整段跳过：
-    ///   - `freeNode(node)`                       → 不清 cx 引用/注销登记
-    ///   - `freeDetachedNodeAfterScopeDispose(n)` → clearNodeScopes 抢跑，binding.destroy
+    ///   - `freeNode(node)`                       -> 不清 cx 引用/注销登记
+    ///   - `freeDetachedNodeAfterScopeDispose(n)` -> clearNodeScopes 抢跑，binding.destroy
     ///                                              退化成 no-op，失效整层被跳过
-    ///   - 组件自写 abandon（先 clear 再 free）   → 同上，且比前者少跑一层
+    ///   - 组件自写 abandon（先 clear 再 free）   -> 同上，且比前者少跑一层
     ///
     /// 不变量：**所有失效/注销必须在节点内存仍存活时跑完，之后才允许释放内存。**
     /// 这里按该顺序固定下来，调用方不需要（也不应该）自己拼装：
@@ -1369,7 +1369,7 @@ pub const Cx = struct {
     ///
     /// 覆盖面对账（交叉 review 指出「泄漏 sweep 看不见悬垂指针，
     /// invalidateReferencesTo 的覆盖面本身没有不变量保护」，故逐项核对）：
-    /// Cx 上的 *Node 字段共 7 个 —— focused_node / hovered_node / pressed_node /
+    /// Cx 上的 *Node 字段共 7 个，focused_node / hovered_node / pressed_node /
     /// last_mouse_down_target / bulk_quads_anchor 五个由 invalidateReferencesToEx
     /// 显式清空；root 与 popover_portal_root 是生命周期根，不会落在被销毁的子树里。
     /// 其余按 node 索引的引用统一走 node_registry（handle + 代次校验，
@@ -1397,12 +1397,12 @@ pub const Cx = struct {
     /// reactive / tick 深度里只是排队、仍借用一份文档；文档不能立刻释放（UAF），消费方结构又可能
     /// 马上消失，无处暂存。此前只能故意泄漏。
     ///
-    /// 路由与 freeNode **逐字一致**（reactive 深度 → owner 队列；否则 tick 深度 → deferred_free_nodes；
-    /// 都不在 → 当场执行）。用法契约：**紧跟在对应的 freeNode 之后调用**——两者在同一时刻按同一组
+    /// 路由与 freeNode **逐字一致**（reactive 深度 -> owner 队列；否则 tick 深度 -> deferred_free_nodes；
+    /// 都不在 -> 当场执行）。用法契约：**紧跟在对应的 freeNode 之后调用**，两者在同一时刻按同一组
     /// 深度计数路由，必然落进同一条 FIFO 队列，节点在前、资源在后。若节点早先已在别的语境里排过队
     ///（freeNode 早退），这条契约不再成立，调用方要自己兜底（EditorPool 用 pending_docs + 帧末回收）。
     /// 交叉审查指出过"tick 优先"的另一种路由在 reactive 嵌在 tick 里 / tick 嵌在回调里
-    /// 两种嵌套下各有一条先释放文档的序列——只有"同队列相邻"才不依赖两条队列的 drain 顺序。
+    /// 两种嵌套下各有一条先释放文档的序列，只有"同队列相邻"才不依赖两条队列的 drain 顺序。
     /// `entry` 的存储归资源自己，直到回调跑完。
     pub fn deferDisposalLikeFreeNode(
         self: *Cx,
@@ -1418,10 +1418,10 @@ pub const Cx = struct {
     ///
     /// 关键顺序：**先 invalidateSubtreeHookState 再 clearNodeScopes**。
     /// invalidate 把双向 link 断开（既清 node.hooks.slots.animated_bg_state，也把
-    /// anim_state.node 设为 null）。clearNodeScopes 只清单向 node→ptr，所以
+    /// anim_state.node 设为 null）。clearNodeScopes 只清单向 node->ptr，所以
     /// 反序时 invalidate 看到 node.hooks.slots.animated_bg_state == null 直接跳过，
     /// 留下的 anim_state 仍持有悬垂 node 指针，等会儿 hook scope dispose
-    /// 调它的 destroyFn 就 deref 已释放节点 → SEGV。
+    /// 调它的 destroyFn 就 deref 已释放节点 -> SEGV。
     /// 登记一个由 Cx 兜底释放的组件内存（见 OwnedCell / ScrollCtxCell）。
     pub fn registerScrollCtxCell(self: *Cx, cell: OwnedCell) !void {
         return cx_node_lifetime.registerScrollCtxCell(self, cell);
@@ -1437,10 +1437,10 @@ pub const Cx = struct {
     /// 这里登记的 ScopeBinding.destroy **只做解绑，从不释放节点**
     /// （invalidateSubtreeHookState + clearNodeScopes，没有 freeNode）。
     /// 而 `node_slot = &binding.node` 让 clearNodeScopes 的 `slot.* = null`
-    /// 直接写进这份登记 —— 所以节点先被释放时，这条登记会退化成 no-op。
+    /// 直接写进这份登记，所以节点先被释放时，这条登记会退化成 no-op。
     ///
     /// 结论：**「errdefer 释放了节点、之后 scope dispose 再释放一次」这个
-    /// 双重释放形态在本框架不成立** —— 不是因为"解绑了指针"（那不够，
+    /// 双重释放形态在本框架不成立**，不是因为"解绑了指针"（那不够，
     /// 摘登记才算数），而是因为**这条登记本身就不负责释放**。
     pub fn bindScopeToNode(scope: *Scope, node: *Node) !void {
         return cx_node_lifetime.bindScopeToNode(scope, node);
@@ -1456,14 +1456,14 @@ pub const Cx = struct {
 
     /// 把 Node 注册到 World.elements 表。
     /// builders 在 Node.create 后调一次；node.element_id_raw 被设置。
-    /// 失败（OOM / table full）不致命——node 仍可运行旧路径。
+    /// 失败（OOM / table full）不致命，node 仍可运行旧路径。
     pub fn linkNodeToWorld(self: *Cx, node: *Node) void {
         return cx_world_sync.linkNodeToWorld(self, node);
     }
 
     // v0.5-P3 stage 1（2026-04-30）：删 linkParentChild 死 helper。
     // 当时设计为 builders 在 appendChild 调用以维护 World.elements 的父子链，但从未被
-    // 任何 caller 调用——World.elements 因此只有扁平节点列表无 tree structure。下游
+    // 任何 caller 调用，World.elements 因此只有扁平节点列表无 tree structure。下游
     // 消费方（render_engine / layout_engine 等）也未读 World.elements 的 children，
     // 整条 shadow 路径不完整。Stage 2+ 真接入主路径时再重建。
 
@@ -1483,11 +1483,11 @@ pub const Cx = struct {
     /// checked against the code rather than assumed:
     ///
     ///  1. `World.createElement` (world.zig) calls `layout.ensureSlot(id)` for
-    ///     every id it hands out, and it is the only way to get an ElementId —
+    ///     every id it hands out, and it is the only way to get an ElementId,
     ///     `linkNodeToWorld` below, the builder in node_lifecycle.zig, and Cx's
     ///     own registration all route through it.
     ///  2. Slots are never reclaimed. `World.destroyElement` calls
-    ///     `layout.clear(id)`, which does `items.set(index, .{})` — it zeroes
+    ///     `layout.clear(id)`, which does `items.set(index, .{})`, it zeroes
     ///     the entry and leaves the array length alone, with the comment
     ///     "layout / paint 槽不立即回收（保持 dense by index）". So an index
     ///     that was ever covered stays covered.
@@ -1499,7 +1499,7 @@ pub const Cx = struct {
     /// runs unconditionally every frame, and each one that fires walks the
     /// entire node tree. On a markdown document with code blocks, tables and
     /// images that is thousands of pointer-chases for zero effect. The saving
-    /// is modest on its own — the point is that it is free.
+    /// is modest on its own, the point is that it is free.
     ///
     /// Kept behind a flag rather than deleted: a caller that hand-builds
     /// elements outside `createElement` would break fact 1, and flipping this
@@ -1516,7 +1516,7 @@ pub const Cx = struct {
         return cx_world_sync.syncNodeRect(self, node);
     }
 
-    // v0.5-P3 Stage 3-3（2026-05-02）：syncPaintToTable —— paint pass 出口 shadow-sync。
+    // v0.5-P3 Stage 3-3（2026-05-02）：syncPaintToTable, paint pass 出口 shadow-sync。
     // 在 render_engine.renderNode 完成后调用：每个有 element_id 的节点，根据
     // node.style.background_color + border + text 计算 content_hash（lightweight），
     // 命中即跳过；不命中则 begin/end record 一个 chunk。Phase 1 不真填 display_items，
@@ -1530,9 +1530,9 @@ pub const Cx = struct {
 
     // cx 内的 mapDisplayItem + colorToRGBA +
     // radiusArrayToCorners 已合并到 gpu_draw_shadow.lowerDisplayItem (那是
-    // 唯一的 display_list → paint_table 映射点)。callsite 见 syncPaintToTable。
+    // 唯一的 display_list -> paint_table 映射点)。callsite 见 syncPaintToTable。
 
-    // v0.5-P3 Stage 3-4（2026-05-02）：syncInteractionToTable —— 把 focus + events
+    // v0.5-P3 Stage 3-4（2026-05-02）：syncInteractionToTable，把 focus + events
     // 信号 shadow-sync 到 InteractionTable。每节点取 node.interaction.focusable / tab_index、
     // 监听 mask（events 是否非空作为粗 mask）、a11y role。
     //
@@ -1549,9 +1549,9 @@ pub const Cx = struct {
     // 末尾会调 a11y_router.flushToBridge 把 dirty 推到 macOS NSAccessibility。
     //
     // 投影策略：
-    // - 节点有 a11y props (role != .none) → 投影为该 role
-    // - 节点 focusable 但无 a11y props → 投影为 .generic 容器（VoiceOver 仍可 tab 到）
-    // - 节点无 a11y 也不 focusable → 不投影（保持 tree sparse；VoiceOver 跳过纯视觉容器）
+    // - 节点有 a11y props (role != .none) -> 投影为该 role
+    // - 节点 focusable 但无 a11y props -> 投影为 .generic 容器（VoiceOver 仍可 tab 到）
+    // - 节点无 a11y 也不 focusable -> 不投影（保持 tree sparse；VoiceOver 跳过纯视觉容器）
     // - label 取 a11y.label，缺省 fall back 到子树第一个 text node 的 content（与
     //   focus.zig a11ySnapshotForNode 行为一致）
     //
@@ -1562,7 +1562,7 @@ pub const Cx = struct {
     }
 
     // 整树校验 LayoutTable 与 Node.rect 严格一致。
-    // SoT inversion 前的健康检查 —— 任何 sync miss 都让此函数返回 false。
+    // SoT inversion 前的健康检查，任何 sync miss 都让此函数返回 false。
     // 用法：debug build 内 layout/render 末尾调一次；prod build 不调。
     pub fn assertLayoutSyncIntegrity(self: *Cx, root: *Node) bool {
         return cx_world_sync.assertLayoutSyncIntegrity(self, root);
@@ -1583,7 +1583,7 @@ pub const Cx = struct {
         return self.state_store.getOrCreate(T, id, initial);
     }
 
-    /// 创建匿名状态 — 由 cx 持有所有权，返回稳定的 `*T` 指针。
+    /// 创建匿名状态，由 cx 持有所有权，返回稳定的 `*T` 指针。
     ///
     /// 推荐路径，适合大多数应用：
     /// ```
@@ -1595,7 +1595,7 @@ pub const Cx = struct {
     /// 创建一个新条目；不能跨 mount 再取回（要那种语义请用 `state(...)` 加显式 id）。
     ///
     /// 警告：匿名 id 按调用顺序从 `u64` 最大值向下递减分配，仅在单次 mount
-    /// 内有效——同一状态无法在下次 mount 或其它调用点凭 id 取回。需要持久
+    /// 内有效，同一状态无法在下次 mount 或其它调用点凭 id 取回。需要持久
     /// 或可寻址的 state，请改用 `cx.state(T, id, init)` 并自行分配显式 id。
     pub fn bindState(self: *Cx, comptime T: type, initial: T) !*T {
         const id = self.next_anon_state_id;
@@ -1603,7 +1603,7 @@ pub const Cx = struct {
         return self.state_store.getOrCreate(T, id, initial);
     }
 
-    /// 类型安全 handler 的简洁形式 — 直接传 `*State` 而不是 `(Type, id)`。
+    /// 类型安全 handler 的简洁形式，直接传 `*State` 而不是 `(Type, id)`。
     ///
     /// 与 `cx.handler` 等价但不查 state_store。配合 `cx.bindState` 使用。
     pub fn on(_: *Cx, comptime State: type, s: *State, comptime method: *const fn (*State) void) HandlerRef {
@@ -1816,7 +1816,7 @@ pub const Cx = struct {
     ///
     /// ⚠ HiDPI 注意：本函数会把 `window_scale` **重置为 1.0**。只有在 scale
     /// 确实无关的场景（绝大多数单测）才可以用。真实窗口的 resize 路径必须走
-    /// `setWindowMetrics` 并传入当前 backing scale —— 否则 Retina 下每次
+    /// `setWindowMetrics` 并传入当前 backing scale，否则 Retina 下每次
     /// resize 都会把 window_scale 打回 1.0，导致 SVG 按 1x 光栅化
     /// （resolveSvgRasterSize 读的正是 window_scale）。
     pub fn setViewport(self: *Cx, width: f32, height: f32) void {
@@ -1829,7 +1829,7 @@ pub const Cx = struct {
     /// 的节点重算（组件 hook 内重新读 cx.tokens 把派生 style/color 写回）。
     /// 同时对整棵树 markRenderDirty + markCompositeDirty。
     /// 没挂 hook 的节点只刷 paint state（背景色等已写入 PaintStateTable 的不会
-    /// 自动更新 — 那条路径要靠 §b stage 3 Signal-driven token；当前 fallback
+    /// 自动更新，那条路径要靠 §b stage 3 Signal-driven token；当前 fallback
     /// 是 component 自己挂 before_render hook 把 token color 同步写回 node.style）。
     pub fn setTheme(self: *Cx, t: *const theme.ThemeTokens) void {
         if (self.tokens == t) return;
@@ -1847,7 +1847,7 @@ pub const Cx = struct {
     /// ⚠️ 缓存必须随**创建它的那个 Scope**一起失效。
     ///
     /// `createSignal` 把 Signal 建在传入的 scope 上（`createInScope`），由它释放。
-    /// 而 `theme_signal` 是 Cx 上的**全局**缓存 —— 第一个订阅主题的常常是某个
+    /// 而 `theme_signal` 是 Cx 上的**全局**缓存，第一个订阅主题的常常是某个
     /// 组件/面板的 scope（比如一个弹层）。那个面板一关（`scope.dispose()`），
     /// 缓存就指向已释放内存；下一个调用者拿到野指针，`get()` 与 `setTheme()`
     /// 都是 UAF。已写出故障复现（本文件末尾那个测试），实测 SIGSEGV
@@ -1855,7 +1855,7 @@ pub const Cx = struct {
     ///
     /// 修法用现成机制：往同一个 scope 登记一份资源，dispose 时把 Cx 上的缓存
     /// 清掉。这样解绑和释放天然同步，不需要给 Scope 加新的耦合。
-    /// 登记排在最后一个可失败操作之后 —— 登记本身可失败，失败就别缓存，
+    /// 登记排在最后一个可失败操作之后，登记本身可失败，失败就别缓存，
     /// 宁可下次重建（见 [[register-must-follow-last-fallible-step]]）。
     pub fn themeSignal(self: *Cx, scope: *Scope) !*Signal(*const theme.ThemeTokens) {
         if (self.theme_signal) |sig| return sig;
@@ -1863,7 +1863,7 @@ pub const Cx = struct {
 
         // ⚠️ 必须用 **onCleanup（disposeNow 第 2 步）而不是 registerResource
         // （第 5 步）**。disposeNow 的顺序是：
-        //   1 子 scope → 2 cleanups → 3 effects → 4 **销毁 signals** → 5 resources
+        //   1 子 scope -> 2 cleanups -> 3 effects -> 4 **销毁 signals** -> 5 resources
         // 用 resource 的话，解绑发生在 Signal 已经被释放**之后**，中间
         // 第 3/4 步跑的是用户回调（effect destroy 等），任何一个再调
         // themeSignal 就会命中还没清的缓存拿到野指针。
@@ -1996,7 +1996,7 @@ pub const Cx = struct {
 
     /// 激活一个自定义位图光标：SVG 按宽度 size_pt×scale 光栅化（纵横比由
     /// SVG 自身保持）为预乘 RGBA 并内容寻址缓存，随后立即尝试下发。
-    /// 节点/override 上写 `CursorShape.custom` 即解析到当前激活位图 ——
+    /// 节点/override 上写 `CursorShape.custom` 即解析到当前激活位图,
     /// 本方法立即调 updateCursorShape，指针静止时换光标也当场生效
     /// （同 setCursorOverride 的立即更新语义；style.cursor 赋值本身无副作用）。
     /// 同一时刻只有一个激活位图，再次调用即切换内容。幂等：同 key 直接返回。
@@ -2070,31 +2070,13 @@ pub const Cx = struct {
         return cx_input.handleImeCommitReplace(self, commit_text, replace_start_utf8, replace_end_utf8);
     }
 
-    pub fn handleScrollEx(
-        self: *Cx,
-        x: f32,
-        y: f32,
-        dx: f32,
-        dy: f32,
-        is_momentum: bool,
-        phase_ended: bool,
-        is_trackpad: bool,
-    ) void {
-        return cx_input.handleScrollEx(self, x, y, dx, dy, is_momentum, phase_ended, is_trackpad);
+    pub fn handleScroll(self: *Cx, scroll: events_mod.ScrollEvent) void {
+        return cx_input.handleScroll(self, scroll);
     }
 
-    pub fn handleScrollWithModifiers(
-        self: *Cx,
-        x: f32,
-        y: f32,
-        dx: f32,
-        dy: f32,
-        is_momentum: bool,
-        phase_ended: bool,
-        is_trackpad: bool,
-        modifiers: Modifiers,
-    ) void {
-        return cx_input.handleScrollWithModifiers(self, x, y, dx, dy, is_momentum, phase_ended, is_trackpad, modifiers);
+    /// SystemSdk 原生滚轮事件 -> handleScroll（保留手势阶段与修饰键）。
+    pub fn handleSdkWheel(self: *Cx, wheel: system_sdk_mod.events.MouseWheel) void {
+        return cx_input.handleScroll(self, cx_input.scrollEventFromSdk(wheel));
     }
 
     /// 触控板捏合手势：按 pointer 命中派发到目标节点（沿冒泡链传播）。
@@ -2168,10 +2150,21 @@ pub const Cx = struct {
     /// 重复推进会让浮层跳过打开帧（见 ensureBeforeRenderTickedForHitTest 注释）。
     ///
     /// 历史 bug：生产路径从未推进 frame_time_ms（恒为 0），overlay TransitionController
-    /// 靠 now_ms - last_tick 推进 → delta 恒 0 → 入场动画仅靠首帧 pending_first dt 走一拍
+    /// 靠 now_ms - last_tick 推进 -> delta 恒 0 -> 入场动画仅靠首帧 pending_first dt 走一拍
     /// 后冻结在 ~progress 0.09（opacity 0.177），popover/menu/dropdown 永远半透明残留。
     pub fn advanceFrameClock(self: *Cx) void {
         return cx_frame.advanceFrameClock(self);
+    }
+
+    /// Select this context's animation clock before host-driven UI updates.
+    /// Does not advance time, consume redraw requests, or render. Multi-window
+    /// hosts must bind the destination context before input/controller callbacks.
+    pub fn bindFrameClock(self: *const Cx) void {
+        render_engine.setFrameClock(.{
+            .time_ms = self.frame_time_ms,
+            .dt_ms = self.frame_dt_ms,
+            .dt_seconds = self.frame_dt_seconds,
+        });
     }
 
     pub fn layout(self: *Cx) void {
@@ -2202,12 +2195,12 @@ pub const Cx = struct {
 
     /// idle 停帧门控统一判据：本轮 wake 是否需要渲染一帧。
     /// 会先消费到期的 scheduleRedrawAfterNs deadline（置 needs_redraw）。
-    /// needs_redraw 的边沿消费发生在 advanceFrameClock（时钟读完之后）——
+    /// needs_redraw 的边沿消费发生在 advanceFrameClock（时钟读完之后）,
     /// 调用方**不要**自己清，提前清会冻住本次唤醒的帧时钟。
     /// 只读聚合"最近一次需要自发唤醒"的剩余 ns：scheduleRedrawAfterNs deadline
     /// （光标闪烁等）+ deferred scheduler 最近未到期任务。null = 没有任何定时唤醒
-    /// 需求（可纯事件阻塞）。不消费任何状态——供主循环在 display-link 模式下算
-    /// pump 阻塞超时上限，deadline 到期的消费仍走 wantsFrame→processScheduledRedraw。
+    /// 需求（可纯事件阻塞）。不消费任何状态，供主循环在 display-link 模式下算
+    /// pump 阻塞超时上限，deadline 到期的消费仍走 wantsFrame->processScheduledRedraw。
     // ---- 计时器 ----
 
     pub const Timer = struct {
@@ -2334,7 +2327,7 @@ pub const GridStyle = builders.GridStyle;
 pub const clickable = builders.clickable;
 
 // ========== 声明式 API: 响应式文本 ==========
-/// textFmt — 响应式文本节点：内容 = comptime 格式串 + 一组 Signal/Memo 源。
+/// textFmt，响应式文本节点：内容 = comptime 格式串 + 一组 Signal/Memo 源。
 ///
 /// ```
 /// const count = try scope.createSignal(u32, 0);
@@ -2342,12 +2335,12 @@ pub const clickable = builders.clickable;
 /// ```
 ///
 /// 框架内部创建一个 effect：每当任一源变化，重新格式化并 `setText` +
-/// `markRenderDirty`——取代手写 Bindings struct + createEffect + bufPrint
+/// `markRenderDirty`，取代手写 Bindings struct + createEffect + bufPrint
 /// 的样板。`sources` 是 `*Signal(T)` / `*Memo(T)` 指针的 tuple，effect 内
 /// 调 `.get()` 自动订阅。
 ///
 /// 内存契约：`setText` 对 >16 字节内容不拷贝、直接存 slice，因此格式化
-/// buffer 必须比节点活得久且地址稳定——这里 buffer 挂在 heap 分配、注册为
+/// buffer 必须比节点活得久且地址稳定，这里 buffer 挂在 heap 分配、注册为
 /// `scope` 资源的 state 上,scope dispose 时先杀 effect 再释放资源(顺序
 /// 由 `Scope.dispose` 保证)。**调用方契约:销毁节点前先 dispose 传入的
 /// scope**(`App.runWith` 的根 scope 天然满足)。
@@ -2374,7 +2367,7 @@ pub fn textFmt(
     state.* = .{ .node = node, .sources = sources, .allocator = cx.allocator };
     try scope.adoptResource(state, State.destroy);
 
-    // createEffect 创建时立即跑一次 → 首帧即为真实内容。
+    // createEffect 创建时立即跑一次 -> 首帧即为真实内容。
     try scope.createEffect(.{ .s = state }, struct {
         fn run(ctx: anytype) void {
             ctx.s.update();
@@ -2423,7 +2416,7 @@ fn TextFmtState(comptime fmt: []const u8, comptime Sources: type) type {
     };
 }
 
-/// 源 tuple (`.{ *Signal(u32), *Memo(f32), ... }`) → 值 tuple 类型。
+/// 源 tuple (`.{ *Signal(u32), *Memo(f32), ... }`) -> 值 tuple 类型。
 fn SourceValues(comptime Sources: type) type {
     const fields = @typeInfo(Sources).@"struct".fields;
     var value_types: [fields.len]type = undefined;

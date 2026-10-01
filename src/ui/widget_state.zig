@@ -74,7 +74,7 @@ pub const StateStore = struct {
         const state = try self.allocator.create(T);
         // put 失败时刚建的 state 无人持有（devtools mountPanel sweep 第 1 个注入点就漏）。
         // 契约：initial 必须是**不持有资源**的裸结构（全仓 7 个调用点都是 `T{}` / `.{}` 零值，
-        // 已逐一核过）——这里只 destroy 不 deinit：对未 init 的结构调 deinit 是 UB，而持有资源的
+        // 已逐一核过），这里只 destroy 不 deinit：对未 init 的结构调 deinit 是 UB，而持有资源的
         // initial 在这条稀有路径上会漏掉内部资源。谁要传带资源的 initial，先改这里。
         errdefer self.allocator.destroy(state);
         state.* = initial;

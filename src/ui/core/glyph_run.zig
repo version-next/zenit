@@ -1,7 +1,7 @@
-//! GlyphRun + cluster map —— Phase 6 cluster-aware text layout 数据结构
+//! GlyphRun + cluster map, Phase 6 cluster-aware text layout 数据结构
 //!
 //! 现 zenit text_layout.zig 用旧 ASCII-first measure API 返回单个 f32 advance；这丢失了：
-//! - 字符 → glyph cluster 关系（complex script: 1 cluster = N codepoints / N glyphs）
+//! - 字符 -> glyph cluster 关系（complex script: 1 cluster = N codepoints / N glyphs）
 //! - 每 glyph 独立 advance + offset
 //! - direction（RTL 时 glyph order != logical order）
 //! - baseline 度量（ascent/descent/line_gap）混合字号正确对齐
@@ -81,7 +81,7 @@ pub const GlyphRun = struct {
     /// 给定原文 byte position，找对应 cluster index。
     /// 返回该 cluster 的 glyph_start。RTL 时 caller 应反向计算视觉 x。
     pub fn clusterAt(self: GlyphRun, byte: u32) ?u32 {
-        // clusters 按 byte_offset 升序排——二分查找
+        // clusters 按 byte_offset 升序排，二分查找
         var lo: usize = 0;
         var hi: usize = self.clusters.len;
         while (lo < hi) {
@@ -197,7 +197,7 @@ test "GlyphRun.xToCluster: x at half of cluster 0 → cluster 0" {
         .clusters = &clusters,
         .metrics = .{ .ascent = 0, .descent = 0, .line_gap = 0, .font_size = 14 },
     };
-    // x=4 in cluster 0 (width 10), midpoint = 5; 4 < 5 → still cluster 0
+    // x=4 in cluster 0 (width 10), midpoint = 5; 4 < 5 -> still cluster 0
     try testing.expectEqual(@as(u32, 0), run.xToCluster(4));
 }
 
@@ -215,7 +215,7 @@ test "GlyphRun.xToCluster: x past midpoint of cluster 0 → cluster 1" {
         .clusters = &clusters,
         .metrics = .{ .ascent = 0, .descent = 0, .line_gap = 0, .font_size = 14 },
     };
-    // x=8 past cluster 0 midpoint (5) → cluster 1
+    // x=8 past cluster 0 midpoint (5) -> cluster 1
     try testing.expectEqual(@as(u32, 1), run.xToCluster(8));
 }
 
@@ -235,9 +235,9 @@ test "GlyphRun.xToCluster: complex cluster (1 codepoint, 2 glyphs)" {
         .clusters = &clusters,
         .metrics = .{ .ascent = 0, .descent = 0, .line_gap = 0, .font_size = 14 },
     };
-    // x=4 在 cluster 0（midpoint=5）→ 0
+    // x=4 在 cluster 0（midpoint=5）-> 0
     try testing.expectEqual(@as(u32, 0), run.xToCluster(4));
-    // x=8 过 cluster 0 midpoint → 1
+    // x=8 过 cluster 0 midpoint -> 1
     try testing.expectEqual(@as(u32, 1), run.xToCluster(8));
 }
 

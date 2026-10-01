@@ -6,20 +6,20 @@
 //!
 //! v0.7 已 GA 能力:
 //! - 单值 select (multi-select 暂未支持，v0.8 候选)
-//! - SelectSlotRecipe 接入 recipe.zig — 默认 base style 经 ConditionalStyle merge
+//! - SelectSlotRecipe 接入 recipe.zig，默认 base style 经 ConditionalStyle merge
 //!   出 (trigger / content / item) 三 slot 颜色
 //! - slot 化: caller 可注 render_trigger / render_item fn ptr 自定义节点 (mount
 //!   仍管 click/keyboard 路由)
-//! - virtualize=true 接 VirtualList — 1k+ options 不爆 Node (pool 复用 + ensureVisible
+//! - virtualize=true 接 VirtualList, 1k+ options 不爆 Node (pool 复用 + ensureVisible
 //!   让键盘 highlight 自动滚到视口)
 //! - keyboard: typeahead / arrow up/down / PageUp/PageDown / Home/End / Esc / Enter
-//! - 提交回调 on_change(?ValueT) — uncontrolled 模式下 caller 通过此 hook 监听
+//! - 提交回调 on_change(?ValueT), uncontrolled 模式下 caller 通过此 hook 监听
 //!
 //! v0.8 §2.1 已 land:
 //! - trigger a11y.role=combobox + has_popup=listbox
-//! - aria-activedescendant: highlight_index 变化 → trigger.a11y.active_descendant_element_id
+//! - aria-activedescendant: highlight_index 变化 -> trigger.a11y.active_descendant_element_id
 //!   跟随 item.element_id_raw (virtualize 模式扫 pool_bindings)；不在可见区间则置 NULL。
-//!   下游 (a11y_tree.upsert → router → push) v0.7 #46 已闭环。
+//!   下游 (a11y_tree.upsert -> router -> push) v0.7 #46 已闭环。
 //!
 //! 留 v0.8+ 候选: multi-select；focus restoration on rerender；IME 联想。
 //!
@@ -70,7 +70,7 @@ const ConditionalStyle = recipe_mod.ConditionalStyle;
 const ThemeTokens = theme.ThemeTokens;
 
 // ============================================================================
-// v0.7 §2.1 — SelectSlotRecipe
+// v0.7 §2.1, SelectSlotRecipe
 // ============================================================================
 //
 // 三 slot：trigger / content / item
@@ -167,7 +167,7 @@ pub fn SelectHeadlessMount(comptime ValueT: type) type {
         wrapper: *Node,
         /// 触发节点（点击切换 open/close）
         trigger: *Node,
-        /// 标签节点（trigger 内部 label）—— caller 可改 .text.content 自定义当前选中显示
+        /// 标签节点（trigger 内部 label），caller 可改 .text.content 自定义当前选中显示
         trigger_label: *Node,
         /// 内容面板（item 列表父节点，caller 可遍历 children 取真实 item nodes）
         content: *Node,
@@ -197,7 +197,7 @@ fn ItemClickContext(comptime ValueT: type) type {
         /// caller 提供了 render_item slot 时不要覆盖 item.getBackground()；
         /// 高亮可视化由 caller 自己管 (后续 v0.8 暴露 highlight_index Signal 让 caller reactive)。
         custom_item_render: bool = false,
-        /// trigger node ref — click 改 highlight 后回写
+        /// trigger node ref, click 改 highlight 后回写
         /// trigger.a11y.active_descendant_element_id (aria-activedescendant)
         trigger: *Node,
     };
@@ -215,13 +215,13 @@ fn KeyContext(comptime ValueT: type) type {
         /// VirtualList state (开启 virtualize 时非空)；keyboard nav
         /// 后 ensureVisible + refreshRange
         vl_state: ?*virtual_list_mod.VirtualListState = null,
-        /// trigger node ref — keyboard 改 highlight 后回写
+        /// trigger node ref, keyboard 改 highlight 后回写
         /// trigger.a11y.active_descendant_element_id (aria-activedescendant)
         trigger: *Node,
     };
 }
 
-/// VirtualList user_context — pool render_fn 通过它拿状态。
+/// VirtualList user_context, pool render_fn 通过它拿状态。
 /// 跟 ItemClickContext 字段大致重叠，但少了 index (pool 节点共享，binding 动态)。
 fn VirtRenderContext(comptime ValueT: type) type {
     return struct {
@@ -237,33 +237,33 @@ fn VirtRenderContext(comptime ValueT: type) type {
         font_size: f32,
         item_slot_recipe_base_text_color: Color,
         render_item: ?*const fn (ctx: ItemSlotCtx(ValueT), cx: *Cx) anyerror!*Node,
-        /// 自引用 — VL render_fn 用 vl_state.pool_bindings 推 highlight，
-        /// 但创建顺序: VirtRenderContext → VL.mountWithContext → 回填 vl_state
+        /// 自引用，VL render_fn 用 vl_state.pool_bindings 推 highlight，
+        /// 但创建顺序: VirtRenderContext -> VL.mountWithContext -> 回填 vl_state
         vl_state: ?*virtual_list_mod.VirtualListState = null,
-        /// pool node 上挂的 click context — render_fn 第一次见某 pool node 时
+        /// pool node 上挂的 click context, render_fn 第一次见某 pool node 时
         /// alloc 一个，存这个 list 里以便 scope dispose 时统一释放。
         allocated_click_ctxs: std.ArrayListUnmanaged(*VirtItemClickContext(ValueT)) = .{},
         allocator: std.mem.Allocator,
-        /// trigger node ref — virt click 改 highlight 后回写 aria-activedescendant
+        /// trigger node ref, virt click 改 highlight 后回写 aria-activedescendant
         trigger: *Node,
     };
 }
 
-/// 池 click handler context — 通过 node + binding 查当前 option index
+/// 池 click handler context，通过 node + binding 查当前 option index
 fn VirtItemClickContext(comptime ValueT: type) type {
     return struct {
         vctx: *VirtRenderContext(ValueT),
-        /// 池 slot 的 node 引用 — handler 拿到 event 时通过 vctx.vl_state.pool_nodes
+        /// 池 slot 的 node 引用，handler 拿到 event 时通过 vctx.vl_state.pool_nodes
         /// 反查自己是哪个 slot，进而 pool_bindings[slot] 取当前 data index
         slot_node: *Node,
     };
 }
 
-/// VirtualList render_fn — 每次 pool 行进入可见区域时调
+/// VirtualList render_fn，每次 pool 行进入可见区域时调
 /// 在 pool 预分配的 node 上 fill children + style + 挂 click handler
 fn virtRenderItemFn(comptime ValueT: type) virtual_list_mod.RenderItemWithContextFn {
     const W = struct {
-        /// 回调是 void，失败只能 return——但要先向 VL 留痕，让它下一帧为这行重新取 slot 再调一次；
+        /// 回调是 void，失败只能 return，但要先向 VL 留痕，让它下一帧为这行重新取 slot 再调一次；
         /// 不留痕就是"半截行 + 整行无 click handler，直到某次 refreshRange"（GLM 交叉审查指出）。
         fn bail(node: *Node) void {
             _ = virtual_list_mod.markPoolNodeRenderIncomplete(node);
@@ -293,11 +293,11 @@ fn virtRenderItemFn(comptime ValueT: type) virtual_list_mod.RenderItemWithContex
             // 不能把上一行的 bg_hover 留在这个 slot 上（GLM 交叉审查指出）
             node.setBackgroundRaw(if (is_highlighted or is_selected) t.color.bg_hover else Color.TRANSPARENT);
             // sweep：VL 回调是 void，OOM 下 ensureExtPanic 直接 abort；圆角是装饰，降级返回
-            //（本行之后的失败也都是 catch return——半截行靠 VL 下次 refreshRange 重画，见 vl 回调重试约定）
+            //（本行之后的失败也都是 catch return，半截行靠 VL 下次 refreshRange 重画，见 vl 回调重试约定）
             (node.style.ensureExtFallible(cx.allocator) catch return bail(node)).corner_radius = .{ .all = t.radius.lg };
 
             if (vctx.render_item) |render_item_fn| {
-                // caller-provided slot — 让 caller 自己创建 child
+                // caller-provided slot，让 caller 自己创建 child
                 const ictx = ItemSlotCtx(ValueT){
                     .option = opt,
                     .index = @intCast(index),
@@ -352,7 +352,7 @@ fn virtItemClickHandlerFor(comptime ValueT: type) fn (Event, ?*anyopaque) EventR
         fn handle(event: Event, context: ?*anyopaque) EventResult {
             const cctx: *VirtItemClickContext(ValueT) = @ptrCast(@alignCast(context orelse return .ignored));
             const vctx = cctx.vctx;
-            // 反查 slot → data index via pool_bindings
+            // 反查 slot -> data index via pool_bindings
             const vl = vctx.vl_state orelse return .ignored;
             var slot_idx: ?usize = null;
             for (vl.pool_nodes, 0..) |pn, i| {
@@ -393,8 +393,8 @@ fn virtItemClickHandlerFor(comptime ValueT: type) fn (Event, ?*anyopaque) EventR
 /// 把当前 highlight_index 对应的 item 的 element_id 写到 trigger.a11y.active_descendant_element_id。
 /// - 非虚拟化路径：直接读 item_nodes[highlight_idx].element_id_raw
 /// - 虚拟化路径：扫 pool_bindings 找匹配 slot；若 highlight 不在可见区间则 active_descendant 置 NULL
-/// - highlight_index == null（关闭 / Esc 重置）→ 置 NULL
-/// markRenderDirty trigger 节点让 a11y projection 这一帧重发 (dirty flag → router →
+/// - highlight_index == null（关闭 / Esc 重置）-> 置 NULL
+/// markRenderDirty trigger 节点让 a11y projection 这一帧重发 (dirty flag -> router ->
 /// NSAccessibilitySelectedChildrenChanged)
 fn updateActiveDescendant(
     trigger: *Node,
@@ -429,7 +429,7 @@ fn updateActiveDescendant(
 /// 应用 highlight 视觉：highlighted item bg = bg_hover；selected item bg = bg_active；其余 transparent
 fn applyItemStyles(comptime ValueT: type, ctx: *KeyContext(ValueT)) void {
     // 不管哪个分支，都要写 trigger.a11y.active_descendant_element_id
-    // (custom_item_render / virtualize / 默认) — 字段层 wire-up，与视觉路径正交
+    // (custom_item_render / virtualize / 默认)，字段层 wire-up，与视觉路径正交
     defer updateActiveDescendant(ctx.trigger, ctx.item_nodes, ctx.vl_state, ctx.state.highlight_index);
 
     // 当 caller 用 render_item slot 自定义渲染时，mount 不要回写 background。
@@ -467,7 +467,7 @@ fn applyItemStyles(comptime ValueT: type, ctx: *KeyContext(ValueT)) void {
     }
 }
 
-/// 通用 keyboard handler — 转 KeyCode → state machine Action → step()
+/// 通用 keyboard handler，转 KeyCode -> state machine Action -> step()
 fn keyHandlerFor(comptime ValueT: type) fn (KeyCode, Modifiers, ?*anyopaque) EventResult {
     const Wrapper = struct {
         fn handle(key: KeyCode, _: Modifiers, context: ?*anyopaque) EventResult {
@@ -500,7 +500,7 @@ fn keyHandlerFor(comptime ValueT: type) fn (KeyCode, Modifiers, ?*anyopaque) Eve
     return Wrapper.handle;
 }
 
-/// 单 item click handler — 提交并关闭
+/// 单 item click handler，提交并关闭
 fn itemClickHandlerFor(comptime ValueT: type) fn (Event, ?*anyopaque) EventResult {
     const Wrapper = struct {
         fn handle(event: Event, context: ?*anyopaque) EventResult {
@@ -594,7 +594,7 @@ pub fn MountProps(comptime ValueT: type) type {
         /// variant + size 用于 SelectSlotRecipe 解析
         variant: SelectVariant = .default,
         size: SelectSize = .md,
-        /// slot 自定义 — null 时走默认 fallback 实现 (Phase 6 旧硬编码样式)。
+        /// slot 自定义，null 时走默认 fallback 实现 (Phase 6 旧硬编码样式)。
         /// render_trigger: caller 提供自己的 trigger 节点（含 label 子节点)；mount 函数
         /// 不再创建 default trigger box。
         render_trigger: ?*const fn (ctx: TriggerSlotCtx(ValueT), cx: *Cx) anyerror!*Node = null,
@@ -602,7 +602,7 @@ pub fn MountProps(comptime ValueT: type) type {
         /// hover event handler 接入 (在 caller 返回的 node 上挂)。
         render_item: ?*const fn (ctx: ItemSlotCtx(ValueT), cx: *Cx) anyerror!*Node = null,
         /// 开启 VirtualList 池化渲染。1k+ options 必开 (典型 60 options 以下
-        /// 用默认 false 更省内存——pool overhead 不值得)。开启后:
+        /// 用默认 false 更省内存，pool overhead 不值得)。开启后:
         /// - item_nodes 在 SelectHeadlessMount 结果里返空 slice (pool 复用，不持久)
         /// - applyItemStyles 改走 refreshRange (VL 重 render 可见区间)
         /// - keyboard navigation 自动 ensureVisible 让 highlight 滚到视口
@@ -624,7 +624,7 @@ pub fn mountSelectHeadless(
     const allocator = cx.allocator;
     const t = cx.tokens;
 
-    // recipe 解析 — 拿三 slot 的 ConditionalStyle
+    // recipe 解析，拿三 slot 的 ConditionalStyle
     const slots = SelectSlotRecipe.resolve(
         .{ .variant = props.variant, .size = props.size },
         t,
@@ -650,7 +650,7 @@ pub fn mountSelectHeadless(
 
     pop.wrapper.meta.ownership.meta.component_name = "SelectHeadless";
 
-    // ── State (Scope-managed) — 提到 trigger 之前，因为 TriggerSlotCtx 需要 state ref
+    // ── State (Scope-managed)，提到 trigger 之前，因为 TriggerSlotCtx 需要 state ref
     const state = try my_scope.allocator.create(SelectState(ValueT));
     state.* = SelectState(ValueT).init(.{
         .options = props.options,
@@ -745,7 +745,7 @@ pub fn mountSelectHeadless(
         _ = try core.adoptChild(cx, allocator, shell_node, shell.append_slot);
     }
 
-    // trigger a11y — combobox + has_popup=listbox + 初始无 active_descendant
+    // trigger a11y, combobox + has_popup=listbox + 初始无 active_descendant
     pop.trigger.behavior.interaction.a11y = .{
         .role = .combobox,
         .has_popup = .listbox,
@@ -754,7 +754,7 @@ pub fn mountSelectHeadless(
     };
 
     // ── Items ─────────────────────────────────────────────────────
-    // Content panel — recipe 解析后的 content slot 颜色
+    // Content panel, recipe 解析后的 content slot 颜色
     const content_resolved = slots.content.resolve(.{});
     pop.content.style.direction = .column;
     pop.content.style.gap = 2;
@@ -772,7 +772,7 @@ pub fn mountSelectHeadless(
     var vl_state: ?*virtual_list_mod.VirtualListState = null;
 
     if (props.virtualize) {
-        // 走 VirtualList — pool 复用，1k+ options 不爆 Node 数
+        // 走 VirtualList, pool 复用，1k+ options 不爆 Node 数
         // VL context: render_fn / click handler 通过 user_context 拿到状态
         const VirtCtx = VirtRenderContext(ValueT);
         const vctx = try my_scope.allocator.create(VirtCtx);
@@ -819,7 +819,7 @@ pub fn mountSelectHeadless(
         vl_state = vl_result.state;
         // item_nodes 留空 slice；caller 不能依赖
     } else {
-        // 非虚拟化路径 (现有行为) — 每 option 一个 persistent Node
+        // 非虚拟化路径 (现有行为)，每 option 一个 persistent Node
         const ItemNodesHolder = struct { nodes: []*Node };
         const holder = try my_scope.allocator.create(ItemNodesHolder);
         {
@@ -1073,7 +1073,7 @@ test "mountSelectHeadless(virtualize): VL 回调中途 OOM 后留痕重试，下
     try testing_alloc_ns.expect(failing.has_induced_failure);
     try testing_alloc_ns.expect(vl.rebind_incomplete);
     for (vl.pool_bindings) |b| try testing_alloc_ns.expect(b != 0);
-    // 下一趟：重新取 slot、回调成功 → label + check 两个子节点
+    // 下一趟：重新取 slot、回调成功 -> label + check 两个子节点
     vl.updateVisibleItems();
     try testing_alloc_ns.expect(!vl.rebind_incomplete);
     var found = false;

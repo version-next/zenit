@@ -1,4 +1,4 @@
-//! node_lifecycle — v0.12 §N4 god-object split: 从 node.zig 抽出
+//! node_lifecycle, v0.12 §N4 god-object split: 从 node.zig 抽出
 //! 生命周期 + geometry/rect 两个子域（geometry ~50 行小，按 plan 并入）。
 //!
 //! 范式同 §N1-§N3：Node-typed free function + @import("node.zig") 循环
@@ -12,7 +12,7 @@
 //!   re-export 保持公开 API（外部 core.zig 调 setRect*Callback）。
 //!
 //! 生命周期：create（用 g_node_create_hook，hook 单元随迁）/ destroy
-//! （树递归 → destroyForNode 递归调自身）/ release{Path,Stroke,
+//! （树递归 -> destroyForNode 递归调自身）/ release{Path,Stroke,
 //! CustomClip,All}Geometry / fireMountIfNeeded / fireCleanupCallbacks
 //! / clearNodeScopes（后三者原即 file-scope free fn，非 Node 方法，
 //! 直接搬 + node.zig re-export）。
@@ -43,7 +43,7 @@ const Style = types.Style;
 // 让串台**立即暴露**而不是静默画错。
 //
 // 当前 Cx.init 仍拒绝第二个并发 Cx，所以这条断言在正常使用下永不触发；
-// 它是为后续拆掉全局回调层准备的安全网 —— 迁移过程中一旦漏改某条路径，
+// 它是为后续拆掉全局回调层准备的安全网，迁移过程中一旦漏改某条路径，
 // debug build 会立刻 panic 而不是产出诡异画面。
 // ─────────────────────────────────────────────────────────────────────
 
@@ -59,7 +59,7 @@ pub fn setWorldOwnershipCheck(check: ?WorldOwnershipCheckFn) void {
 /// release 静默放行（保持既有行为，不给生产引入新的崩溃面）。
 ///
 /// **只对仍走全局回调的节点生效**（world_ref == null）。带 world_ref 的节点
-/// 已经直连自己的 owner World，天然不可能串台 —— 此时"当前 active World
+/// 已经直连自己的 owner World，天然不可能串台，此时"当前 active World
 /// 是谁"完全无关紧要，再断言反而会误伤合法的多 Cx 场景
 /// （节点 A 属于 cx_a，而 g_active_world 恰好指向后 init 的 cx_b）。
 /// 这正是阶段 3 迁移带来的能力：断言的适用面随迁移自动收缩。
@@ -105,7 +105,7 @@ pub fn setNodeCreateHook(hook: ?NodeCreateHookFn) void {
 // test mock 直接 Node.create 没 cx 时）。hashmap key by node ptr。
 //
 // ⚠️ 旧注释写的是"生产路径节点都经 g_node_create_hook 注册到 World，
-//    永不 hit（zero-cost）"—— **实测证伪**（2026-07-29）。
+//    永不 hit（zero-cost）", **实测证伪**（2026-07-29）。
 //    插桩跑真实 hello_button / storybook：生产节点（element_id 有效、
 //    回调已注册）确实会落到这里，因为 onRectQuery 用 `epoch == 0` 表示
 //    "已注册但本帧还没 layout" 并返回 null。详见 rectFromWorldOrFallback
@@ -125,7 +125,7 @@ fn standaloneRectSet(node_ptr: usize, r: ComputedRect) void {
         g_standalone_rects = std.AutoHashMap(usize, ComputedRect).init(std.heap.page_allocator);
         g_standalone_rects_init = true;
     }
-    // 不可降级：这是 fallback 节点 rect 的唯一权威存储，丢写 →
+    // 不可降级：这是 fallback 节点 rect 的唯一权威存储，丢写 ->
     // standaloneRectGet 返回 0×0 矩形，布局静默错成零尺寸。
     g_standalone_rects.put(node_ptr, r) catch @panic("OOM: standalone rect store");
 }
@@ -144,7 +144,7 @@ pub fn rectFromWorldOrFallback(self: *const Node) ComputedRect {
         if (self.element_id_raw != 0xFFFFFFFF) {
             const eid = world_mod.ElementId.fromRaw(self.element_id_raw);
             // createElement 会自动 seed layout slot（默认全 0），epoch==0 即
-            // "尚未 markLaidOut"——rectIfLaidOut 把该判定与 rect 读合并为
+            // "尚未 markLaidOut", rectIfLaidOut 把该判定与 rect 读合并为
             // 单次 MultiArrayList 派生（此路径全帧十万次级，Debug 下双读
             // 曾是采样最大单项之一）。
             if (w.layout.rectIfLaidOut(eid)) |r| {
@@ -158,16 +158,16 @@ pub fn rectFromWorldOrFallback(self: *const Node) ComputedRect {
     }
     // 走到这里有两种**语义完全不同**的情况，此前被混为一谈：
     //
-    //  (a) 真 standalone —— element_id == INVALID 的 cx-less mock，
+    //  (a) 真 standalone, element_id == INVALID 的 cx-less mock，
     //      本来就该读 fallback storage。
-    //  (b) **注册过但本帧还没 layout** —— onRectQuery 靠 `epoch == 0` 识别
+    //  (b) **注册过但本帧还没 layout**, onRectQuery 靠 `epoch == 0` 识别
     //      "slot 已 seed 但未 markLaidOut" 并返回 null（语义正确）。
     //      这类节点在 fallback map 里通常没有条目，于是静默拿到
-    //      ComputedRect(0,0,0,0) —— 一条**无声返回零矩形**的通路，
+    //      ComputedRect(0,0,0,0)，一条**无声返回零矩形**的通路，
     //      症状与 docs/BUGS.md 里"布局对、paint 空"一类吻合。
     //
     // 实测（插桩跑真实 hello_button / storybook）：(b) 确实会在生产路径命中，
-    // 每次 mount 约 3 次，集中在首帧 layout 之前的 overlay 定位查询 ——
+    // 每次 mount 约 3 次，集中在首帧 layout 之前的 overlay 定位查询,
     // 即 node_lifecycle.zig 旧注释所谓"生产路径永不 hit（zero-cost）"是错的。
     //
     // 命中数量有限且都发生在首帧前，属于**良性瞬态**（随后 layout 完成即
@@ -274,7 +274,7 @@ pub fn create(allocator: Allocator, id: u32, tag: ElementTag, style: Style) !*No
     // 真写 World 表，避免 fallback 字段成为 source-of-truth）。
     //
     // P0-3 说明：这是 19 个全局回调里**最后一个仍被生产路径使用**的。
-    // 它有"鸡生蛋"性质 —— 调用时节点还没有 world_ref，无法自举。
+    // 它有"鸡生蛋"性质，调用时节点还没有 world_ref，无法自举。
     // `createIn()`（见下）是显式传 World 的版本，多窗口场景应走它；
     // 保留本函数是为了不破坏现有 API 与大量 cx-less 测试。
     if (g_node_create_hook) |hook| {
@@ -284,7 +284,7 @@ pub fn create(allocator: Allocator, id: u32, tag: ElementTag, style: Style) !*No
     return node;
 }
 
-/// Node tag → World tag（与 core.zig:nodeTagToWorldTag 保持一致）。
+/// Node tag -> World tag（与 core.zig:nodeTagToWorldTag 保持一致）。
 fn worldTagForElementTag(t: ElementTag) world_mod.ElementTag {
     return switch (t) {
         .box, .scroll, .list, .spacer => .container,
@@ -295,7 +295,7 @@ fn worldTagForElementTag(t: ElementTag) world_mod.ElementTag {
     };
 }
 
-/// 显式指定 owner World 的节点创建 —— 不依赖任何进程级全局。
+/// 显式指定 owner World 的节点创建，不依赖任何进程级全局。
 ///
 /// P0-3 阶段 4 的前提：只要所有生产路径都走这里，`g_node_create_hook`
 /// 与 `g_active_world` 就可以退役，多个 Cx 才能真正并存。
@@ -392,7 +392,7 @@ pub fn destroy(self: *Node, allocator: Allocator) void {
         self.frame_state.frame_local.runtime.transitions = null;
     }
 
-    // 释放 NodeAnimations 槽（与 Cx.freeNodeNow 对齐——此前唯一遗漏项）
+    // 释放 NodeAnimations 槽（与 Cx.freeNodeNow 对齐，此前唯一遗漏项）
     if (self.frame_state.frame_local.runtime.commands) |na| {
         na.deinit();
         allocator.destroy(na);
@@ -457,7 +457,7 @@ pub fn releaseCustomClipGeometry(self: *Node, allocator: Allocator) void {
     self.meta.per_frame.custom_hooks.clip_meta.cache_epoch = 0;
 }
 
-/// freeNode 用——把节点持有的 path 堆内存（path /
+/// freeNode 用，把节点持有的 path 堆内存（path /
 /// stroke / custom_clip）经 World.layout_output slot 释放。必须在
 /// elements.destroy 之前调（element_id 还有效，layoutOutputPtr 能拿到
 /// slot；之后 slot 复用会脏）。语义同 §a freeNode 先 free owned text。
@@ -485,7 +485,7 @@ pub fn fireMountIfNeeded(node: *Node) void {
 ///
 /// **先摘再调**：on_cleanup 有三个触发点（这里、Node.destroy、Cx.freeNodeNow），
 /// 都必须遵守"取出即置空 ⇒ 只此一次"。此处曾只置 is_mounted 不清字段，
-/// 于是 removeChild/detachChild → freeNode 的正常 teardown 链对已 mount
+/// 于是 removeChild/detachChild -> freeNode 的正常 teardown 链对已 mount
 /// 节点会二次 invoke（回调普遍是"释放一次性资源"语义，ScrollArea cell
 /// 曾因此 refcount 下溢）。未 mount 的节点跳过且**保留字段**，留给
 /// destroy/freeNodeNow 触发一次。
@@ -515,6 +515,7 @@ pub fn clearNodeScopes(node: *Node) void {
     node.meta.per_frame.hooks.slots.hover_highlight_state = null;
     node.meta.per_frame.hooks.slots.anim_state = null;
     node.meta.per_frame.hooks.slots.focus_ring_anim = null;
+    node.meta.per_frame.hooks.slots.focus_ring_owned = false;
     for (node.children.items) |child| {
         clearNodeScopes(child);
     }

@@ -1,4 +1,4 @@
-//! paint_content_accessor — v0.9 god-object split: 从 node.zig 抽出
+//! paint_content_accessor, v0.9 god-object split: 从 node.zig 抽出
 //! §a NodeContent SoA + §b paint state SoA + §L NodeLayoutOutput SoA 的
 //! accessor 路由层。
 //!
@@ -28,7 +28,7 @@ const IconProps = types.IconProps;
 const NodeLayoutOutput = nlo.NodeLayoutOutput;
 
 // ─────────────────────────────────────────────────────────────────────
-// §b paint state SoA — write/read callback + standalone fallback
+// §b paint state SoA, write/read callback + standalone fallback
 // ─────────────────────────────────────────────────────────────────────
 
 pub const PaintStateBackgroundWriteFn = *const fn (element_id_raw: u32, c: Color) void;
@@ -56,7 +56,7 @@ pub fn setPaintOpacityReadCallback(cb: ?PaintStateOpacityReadFn) void {
 
 // 不可降级说明：这些 map 是 fallback 节点 paint/content 的**唯一权威存储**
 // （write 进来、read 从这里出去）。put 失败 = 写入的样式/文本被静默丢弃，
-// 读侧拿到默认值 → 节点画错而不报错。故 OOM 一律 panic。
+// 读侧拿到默认值 -> 节点画错而不报错。故 OOM 一律 panic。
 // standalone fallback for non-cx mock tests (element_id == 0xFFFFFFFF)。
 // Paint state 比 §a content 简单：Color/f32 是 POD，无 inline_buf 自指
 // 问题，hashmap rehash 不需要 re-fixup。
@@ -110,7 +110,7 @@ pub fn writeOpacity(world_ref: ?*world_mod.World, element_id_raw: u32, node_ptr:
     g_standalone_paint_opacity.put(node_ptr, value) catch @panic("OOM: standalone paint opacity store");
 }
 
-/// background 读路由：World callback → standalone fallback → 默认 TRANSPARENT。
+/// background 读路由：World callback -> standalone fallback -> 默认 TRANSPARENT。
 pub fn readBackground(world_ref: ?*world_mod.World, element_id_raw: u32, node_ptr: usize) Color {
     if (element_id_raw != 0xFFFFFFFF) {
         if (world_ref) |w| {
@@ -140,7 +140,7 @@ pub fn readOpacity(world_ref: ?*world_mod.World, element_id_raw: u32, node_ptr: 
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// §a NodeContent SoA — write/read callback + standalone fallback
+// §a NodeContent SoA, write/read callback + standalone fallback
 // ─────────────────────────────────────────────────────────────────────
 
 pub const ContentTextWriteFn = *const fn (element_id_raw: u32, t: ?TextProps) void;
@@ -305,7 +305,7 @@ pub fn readIcon(world_ref: ?*world_mod.World, element_id_raw: u32, node_ptr: usi
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// §L NodeLayoutOutput SoA — write/read/ptr callback + standalone fallback
+// §L NodeLayoutOutput SoA, write/read/ptr callback + standalone fallback
 // ─────────────────────────────────────────────────────────────────────
 //
 // layout_output 只在 render/hit 路径用，生产 caller 全 cx-backed
@@ -405,7 +405,7 @@ pub fn readLayoutOutput(world_ref: ?*world_mod.World, element_id_raw: u32, node_
 // ─────────────────────────────────────────────────────────────────────
 // standalone fallback storage 的显式回收
 //
-// 这几张表是**进程级**的，用 page_allocator 且此前从无 teardown ——
+// 这几张表是**进程级**的，用 page_allocator 且此前从无 teardown,
 // 于是 `zig build test` 的 GPA leak check 对它们完全盲视（走的不是 GPA），
 // 全绿并不代表这条路径没泄漏。审查报告把这点列为 GPA 盲区。
 //

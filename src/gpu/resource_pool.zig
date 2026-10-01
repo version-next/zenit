@@ -1,18 +1,18 @@
-//! GPU ResourcePool — Phase 0 地基
+//! GPU ResourcePool, Phase 0 地基
 //!
 //! 跨帧 GPU 资源持有 + epoch retirement queue。配合 FrameSync 使用：
 //! - 每帧 `beginFrame(epoch)` 后做工作；释放走 `release(handle)` 推进 retire 队列
 //! - 队列按 ring buffer 模式，到 epoch+MAX_FRAMES_IN_FLIGHT 时真正销毁
 //!
-//! 不持有具体后端资源类型 —— payload 是 type-erased `*anyopaque`，
+//! 不持有具体后端资源类型，payload 是 type-erased `*anyopaque`，
 //! 由 caller 提供 `deinit_fn(*anyopaque)`。一个 pool 可以管理多种资源
 //! （Texture/Buffer/Pipeline），handle 内带 `kind` tag 区分。
 //!
 //! 历史债避免（吸取 Chromium cc 经验）：
-//! 1. handle 是 generational —— freed 后 ABA 安全
+//! 1. handle 是 generational, freed 后 ABA 安全
 //! 2. 释放永远延迟到 GPU 帧完成后（DISPATCH_QUEUE_FOREVER 等过）
-//! 3. 不引入 atomic refcount —— GUI 单线程足够；多线程用例后续再扩
-//! 4. pool 自身可以被 drain（关窗时）—— 同步等所有 retire 完成
+//! 3. 不引入 atomic refcount, GUI 单线程足够；多线程用例后续再扩
+//! 4. pool 自身可以被 drain（关窗时），同步等所有 retire 完成
 //!
 //! 用法：
 //! ```
@@ -34,7 +34,7 @@ const testing = std.testing;
 
 pub const MAX_FRAMES_IN_FLIGHT_DEFAULT: u8 = 3;
 
-/// 资源类型 tag —— 用于调试/统计；不影响 pool 行为。
+/// 资源类型 tag，用于调试/统计；不影响 pool 行为。
 pub const ResourceKind = enum(u8) {
     texture,
     buffer,
@@ -118,7 +118,7 @@ pub const ResourcePool = struct {
         }
         self.allocator.free(self.pending);
 
-        // 同时销毁仍 occupied 的资源 —— 用户没主动 release 的也清了
+        // 同时销毁仍 occupied 的资源，用户没主动 release 的也清了
         for (self.slots.items) |*slot| {
             if (slot.occupied) {
                 if (slot.deinit_fn) |f| {
@@ -329,7 +329,7 @@ test "ResourcePool ABA: old handle invalid after release+realloc" {
     const h1 = try pool.alloc(.texture, &r1, &TestResource.deinitCb);
     pool.release(h1);
 
-    // 立即重新 alloc —— 不会复用 h1 的 slot（slot 还在 pending 里），但若 free_head 有 slot 则会复用
+    // 立即重新 alloc，不会复用 h1 的 slot（slot 还在 pending 里），但若 free_head 有 slot 则会复用
     // 这里 h1 release 时 slot 没回 free list（要等 endFrame），所以下面 alloc 会用新 slot
     var d2 = false;
     var r2 = TestResource{ .value = 2, .deinited = &d2 };
@@ -387,7 +387,7 @@ test "ResourcePool deinit cleans live resources" {
         defer pool.deinit();
         _ = try pool.alloc(.texture, &r1, &TestResource.deinitCb);
         _ = try pool.alloc(.buffer, &r2, &TestResource.deinitCb);
-        // 不主动 release —— deinit 应负责清理
+        // 不主动 release, deinit 应负责清理
     }
     try testing.expect(d1);
     try testing.expect(d2);

@@ -1,11 +1,11 @@
-/// Blend Composite —— 非 normal 混合模式的离屏图层合成
+/// Blend Composite，非 normal 混合模式的离屏图层合成
 ///
 /// 2026-07-30 接线。此前 blend_mode 的管线状态是"两头都断"：
 /// - 生产端：没有任何公共 API 能设出非 normal（本次在 StyleExt 补 blend_mode）；
 /// - 消费端：OffscreenLayer.blend_mode 存了但从未被读取，endOpacityLayer 的
-///   image pipeline 合成只有单一 SrcOver blend state —— multiply/screen 等
+///   image pipeline 合成只有单一 SrcOver blend state, multiply/screen 等
 ///   全部静默退化成 normal。
-/// 下游编辑器（source of truth）同样停在"shader 写了但没接线"——它的
+/// 下游编辑器（source of truth）同样停在"shader 写了但没接线"，它的
 /// shaders/composite.metal 是孤儿文件，本模块的混合函数从它移植。
 ///
 /// 方案：非 normal 混合需要读 dst（固定功能 blend factor 只能表达 multiply/
@@ -13,15 +13,15 @@
 ///   1. 离屏内容 pass 结束后、恢复 pass 重开前，把整个恢复目标 blit 一份
 ///      副本（dst copy，从池借临时纹理）；
 ///   2. 恢复 pass 里画一个全屏三角形：fragment 对 rect 内的像素做
-///      unpremul → B(Cd,Cs) → SrcOver 复合 → premul，rect 外原样回写 dst
+///      unpremul -> B(Cd,Cs) -> SrcOver 复合 -> premul，rect 外原样回写 dst
 ///      （等价 passthrough，不改变像素）；pipeline 无 blend state（replace）。
 ///
 /// 已知边界（v1，均回退 normal 合成而不是出错）：
 /// - use_draw_transform / rotate ≠ 0：合成矩形非轴对齐，全屏 UV 映射不成立；
-/// - GPU retained 缓存对非 normal blend 直接 decline（每帧重画）——混合结果
+/// - GPU retained 缓存对非 normal blend 直接 decline（每帧重画），混合结果
 ///   依赖 dst，缓存 src 内容虽仍成立，但为省 pass 切换复杂度 v1 不做。
 /// - 混合计算在采样后的线性空间进行（bgra8_unorm_srgb 采样自动去 sRGB），
-///   与 CSS 规范的非线性空间略有色差 —— 与下游编辑器参考实现一致，不单独校正。
+///   与 CSS 规范的非线性空间略有色差，与下游编辑器参考实现一致，不单独校正。
 const std = @import("std");
 const gpu = @import("gpu");
 const offscreen_texture = @import("offscreen_texture.zig");
@@ -34,7 +34,7 @@ comptime {
 }
 
 pub const BlendUniforms = extern struct {
-    /// 恢复目标物理像素尺寸（fragcoord → uv 用）
+    /// 恢复目标物理像素尺寸（fragcoord -> uv 用）
     target_size: [2]f32,
     /// 图层矩形在目标上的物理像素 origin/size
     rect_origin: [2]f32,

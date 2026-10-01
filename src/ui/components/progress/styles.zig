@@ -1,4 +1,4 @@
-//! Progress 样式层 — 状态取色 / 轨道色 / 百分比文本样式（zenit-styling-revamp）。
+//! Progress 样式层，状态取色 / 轨道色 / 百分比文本样式（zenit-styling-revamp）。
 //! 不确定模式 draw 回调内随 status_color 逐帧派生的渐变 lerp 属于绘制逻辑，留在 mod.zig。
 const core = @import("../../core.zig");
 const theme = core.theme;
@@ -6,7 +6,7 @@ const Color = core.Color;
 const ConditionalStyle = core.ConditionalStyle;
 const ProgressStatus = @import("mod.zig").ProgressStatus;
 
-/// 状态 → fill 颜色（提高贴白底对比度的 lerp 收口在此）
+/// 状态 -> fill 颜色（提高贴白底对比度的 lerp 收口在此）
 pub fn statusColor(s: ProgressStatus, t: *const theme.ThemeTokens) Color {
     const base = switch (s) {
         .normal => t.color.accent,

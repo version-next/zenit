@@ -18,15 +18,15 @@ const hooks_mod = @import("../hooks.zig");
 const reactive = @import("../reactive.zig");
 const world = core.world;
 
-/// 集中式悬垂指针清理 — 当一棵子树即将被销毁时调用
+/// 集中式悬垂指针清理，当一棵子树即将被销毁时调用
 ///
 /// 清除 Cx/EventDispatcher/FocusManager 中所有可能指向该子树的指针。
 /// 替代散落在 control_flow.zig 中的 6 行重复检查代码。
 /// 清事件 state 对 subtree 的引用（focused/hovered/pressed 等）。
 /// `unregister = true` 时**同时**把 subtree 从 node_registry 中移除（节点真的销毁走这条）。
-/// `unregister = false` 时**只**清 state — 节点还活着，pool 化复用（例如 VL slot pool 被 rebind）：
+/// `unregister = false` 时**只**清 state，节点还活着，pool 化复用（例如 VL slot pool 被 rebind）：
 ///   - 若 unregister 了，下次 register 时 trackGeneration 会因 last_ptr==null 而 bump generation，
-///     导致之前 interaction_index 里 proxy 的 handle 瞬间过期，hit test 返回 null → 事件被吞。
+///     导致之前 interaction_index 里 proxy 的 handle 瞬间过期，hit test 返回 null -> 事件被吞。
 ///   - 不 unregister 则 generation 稳定，proxy handle 保持有效。
 /// 清掉 Cx 里指进 `subtree_root` 子树的裸交互引用（focused / hovered / pressed /
 /// last_mouse_down 及其 handle）。**不触发任何回调**：freeNode 的立即释放路径是静默拆除
@@ -45,8 +45,8 @@ fn dropRawInteractionRefsInto(self: *Cx, subtree_root: *Node) void {
     }.check;
 
     // ⚠ 裸 `*_node` 指针不能直接解引用（isDesc 会走 n.parent 链）：
-    // 它可能指向**已释放**的节点 —— 实测 storybook 里 Popover 挂起时
-    // detachChildRetained → invalidateReferencesTo 会踩到陈旧的
+    // 它可能指向**已释放**的节点，实测 storybook 里 Popover 挂起时
+    // detachChildRetained -> invalidateReferencesTo 会踩到陈旧的
     // hovered_node，segfault 于 core.zig:1572 `current = n.parent`。
     //
     // 配套的 `*_handle` 走 node_registry.resolve，天然带存活校验。
@@ -114,7 +114,7 @@ pub fn invalidateReferencesToEx(self: *Cx, subtree_root: *Node, unregister: bool
     }.check;
     // 批量层锚点是裸 `*Node`（见 setBulkQuads 的生命周期一节）。宿主契约
     // 要求"锚点销毁前重新提交"，但**销毁路径本身必须兜底**：宿主可能在
-    // 摘树之后、下一次 setBulkQuads 之前就渲染一帧（下游应用的 goHome →
+    // 摘树之后、下一次 setBulkQuads 之前就渲染一帧（下游应用的 goHome ->
     // teardownChromeScreen 摘掉画布子树，而 applySnapshot 在 homepage 屏
     // 直接早退不再提交 ⇒ 锚点永远停留在已释放的 canvas_host）。此时
     // appendBulkQuads 会解引用 `anchor.id`，在 Cx.render 里读到未映射地址。
@@ -145,7 +145,7 @@ pub fn invalidateReferencesTo(self: *Cx, subtree_root: *Node) void {
 
 pub fn destroyDetached(self: *Cx, node: *Node) void {
     // 契约检查用 @panic 而不是 assert：assert 在 ReleaseFast 下会被去掉，
-    // 而「把已上树节点当游离释放」正是本原语要拦的误用 —— 它在 Debug 下
+    // 而「把已上树节点当游离释放」正是本原语要拦的误用，它在 Debug 下
     // 当场抓到过一次（下游编辑器 toolbar 漏门控）。这类检查必须在所有构建下存在。
     if (node.parent != null) @panic("destroyDetached: node 仍挂在树上；已上树的节点走 detachChild，不要走这里");
     self.invalidateReferencesTo(node);
@@ -170,7 +170,7 @@ pub fn detachChildRetained(self: *Cx, parent: *Node, child: *Node) void {
 ///
 /// 关闭 Modal/Sheet/Popover 后，焦点应回到当初打开它的那个控件
 /// （`FocusConfig.restore`，默认 true）。此前 `previous_focus` 被写入
-/// 但**全仓无人读取** —— 焦点直接丢失。
+/// 但**全仓无人读取**，焦点直接丢失。
 ///
 /// handle 解析失败（触发控件本身已销毁）时静默跳过：这是合法情况，
 /// 比如整个表单连同触发按钮一起被 Show 卸载。
@@ -216,7 +216,7 @@ pub fn freeNode(self: *Cx, node: *Node) void {
     // 释放前静默清掉 Cx 里指进这棵子树的裸引用（pressed / hovered / focused /
     // last_mouse_down）。否则在"点击回调里释放被按下的行"之后、mouseUp 收尾清
     // pressed_node 之前，任何 before_render hook（animBg 读 cx.pressed_node）都会解引用已释放节点。
-    // 只清指针不走 invalidateReferencesTo：后者会 clearFocus → 调 blur handler（见 dropRawInteractionRefsInto）。
+    // 只清指针不走 invalidateReferencesTo：后者会 clearFocus -> 调 blur handler（见 dropRawInteractionRefsInto）。
     dropRawInteractionRefsInto(self, node);
     freeNodeNow(self, node);
 }
@@ -235,8 +235,8 @@ pub fn deferDisposalLikeFreeNode(
         self.deferred_free_nodes.append(entry, ptr, dispose_fn);
         return;
     }
-    // 与 freeNode 刻意分叉的一处（二审）：深度已归零、但某条队列**正在 drain**——
-    // 这是 dispose 回调里同步拆除消费方（scope cleanup → pool.deinit）的时刻，队列后段可能还排着
+    // 与 freeNode 刻意分叉的一处（二审）：深度已归零、但某条队列**正在 drain**,
+    // 这是 dispose 回调里同步拆除消费方（scope cleanup -> pool.deinit）的时刻，队列后段可能还排着
     // 借用这份资源的节点。此时当场执行就是 UAF；追加到正在 drain 的那条队列末尾，
     // `while (popFirst())` 会在同一次 drain 里把它弹到，且必然排在残余节点之后。
     if (self.draining_deferred_frees) {
@@ -263,7 +263,7 @@ pub fn drainDeferredFrees(self: *Cx) void {
 
 fn freeNodeNow(self: *Cx, node: *Node) void {
     // 哨兵先于 freeing 检查：释放后的内存在 Debug 下被写成 0xaa，
-    // `freeing` 会读出 true 从而静默 early-return —— 那样 double free
+    // `freeing` 会读出 true 从而静默 early-return，那样 double free
     // 就变成了无声的 no-op。这里让它当场 panic。
     if (node.alive_sentinel != core_node.ALIVE_SENTINEL) {
         @panic("freeNode: 节点已被释放（double free）或内存已损坏");
@@ -274,7 +274,7 @@ fn freeNodeNow(self: *Cx, node: *Node) void {
     node.pending_free_cx = null;
     // 焦点注册表持裸 *Node：释放前必须摘除，否则后续任何
     // unregisterFocusableSubtree 的 isDescendantOf 沿 parent 链走到已释放
-    // 内存 → segfault（2026-07-30 实测：Modal body 放 Button，story 切换
+    // 内存 -> segfault（2026-07-30 实测：Modal body 放 Button，story 切换
     // 经 scope/freeNode 路径释放子树绕过了 detachChild 的 subtree 摘除）。
     self.focus_manager.unregisterFocusableSilent(node);
     // Silent teardown intentionally skips widget blur handlers, but it
@@ -305,7 +305,7 @@ fn freeNodeNow(self: *Cx, node: *Node) void {
         cleanup_handler.invoke();
     }
     // 必须在 elements.destroy 前 read owned text 释放
-    // —— 否则 element_id 被清后 getText 走 standalone path 拿不到原 entry，
+    // 否则 element_id 被清后 getText 走 standalone path 拿不到原 entry，
     // owned content 永远悬空泄漏。
     // 释放 owned 的 text content 和 spans
     if (node.getText()) |t| {
@@ -349,7 +349,7 @@ fn freeNodeNow(self: *Cx, node: *Node) void {
     // element slot（generation++ 进 free_list），但不清 content/paint/interaction
     // 镜像表。ContentTable.getText 仅按 index 读、不校验 generation，于是 slot 被
     // 下一个节点复用时会读到上一个 owner 的残留 text（典型：切走的 Menu 弹层项
-    // "Cut/Copy/Delete" 漏进新挂载的 DatePicker trigger → content 串台/空白）。
+    // "Cut/Copy/Delete" 漏进新挂载的 DatePicker trigger -> content 串台/空白）。
     if (node.element_id_raw != 0xFFFFFFFF) {
         const eid = world.ElementId.fromRaw(node.element_id_raw);
         if (self.world.elements.isValid(eid)) {

@@ -171,7 +171,7 @@ test "FormSection: title and divider" {
     try std.testing.expectEqual(Sizing{ .px = 1 }, divider.style.height);
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "form: mount 在任意分配点失败时不泄漏（sweep）" {
     const sw = @import("../oom_sweep.zig");
     try sw.sweepMount("form", struct {

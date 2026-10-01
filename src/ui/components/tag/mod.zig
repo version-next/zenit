@@ -334,7 +334,7 @@ test "Tag: background color is set" {
     try std.testing.expect(tag_node.getBackground().b > 0);
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }

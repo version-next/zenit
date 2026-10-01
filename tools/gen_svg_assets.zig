@@ -15,11 +15,11 @@
 //!   zig run tools/gen_svg_assets.zig --deps icon_ir,svg ... (use build step)
 //!
 //! Args: <icons_dir> <output_file> [embed_prefix] [base_icon_id]
-//!   icons_dir    — directory containing *.svg (non-recursive)
-//!   output_file  — path to write generated Zig
-//!   embed_prefix — @embedFile path prefix relative to output file's dir
+//!   icons_dir, directory containing *.svg (non-recursive)
+//!   output_file, path to write generated Zig
+//!   embed_prefix, @embedFile path prefix relative to output file's dir
 //!                  (default "icons/")
-//!   base_icon_id — first icon_id (default 1000). icon_id is the GPU mask-cache
+//!   base_icon_id, first icon_id (default 1000). icon_id is the GPU mask-cache
 //!                  key {icon_id, rep_size}; the builtin `common` set uses
 //!                  0..~16, so the full library starts at 1000 to avoid
 //!                  cache-key collisions when both are used in one app.
@@ -188,7 +188,7 @@ fn emitAsset(
 ) !void {
     try w.print("pub const {s} = blk: {{\n", .{entry.ident});
 
-    // contours → shapes → rep, mirroring svg_assets_generated.zig layout.
+    // contours -> shapes -> rep, mirroring svg_assets_generated.zig layout.
     for (rep.shapes, 0..) |shape, si| {
         for (shape.contours, 0..) |contour, ci| {
             try w.print("    const s{d}_c{d}_pts = [_]icon_ir.Point{{\n", .{ si, ci });
@@ -228,9 +228,9 @@ fn emitAsset(
 }
 
 /// Convert an icon file stem to a valid Zig identifier:
-/// hyphens → underscores, uppercase → lowercase. Dataset is known-clean
+/// hyphens -> underscores, uppercase -> lowercase. Dataset is known-clean
 /// (only `-` and one capital), so no leading-digit or keyword handling needed.
-/// Zig 关键字与基础类型名 —— 与之同名的图标必须走 `@"..."` 转义，
+/// Zig 关键字与基础类型名，与之同名的图标必须走 `@"..."` 转义，
 /// 否则生成物编译不过。真实踩坑：Lucide 有个 `type.svg`，直接生成
 /// `pub const type = ...` 报 "name shadows primitive 'type'"。
 /// 图标集是外部输入，不能假设文件名一定是合法 Zig 标识符。

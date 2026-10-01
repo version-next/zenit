@@ -1,4 +1,4 @@
-/// Timeline — GSAP 风格时间线编排
+/// Timeline, GSAP 风格时间线编排
 ///
 /// 时间线容器，支持灵活的相对定位 (Position 参数)，
 /// 统一播放控制 (play/pause/seek/reverse/timeScale)，
@@ -31,7 +31,7 @@ const PlayState = ctrl_mod.PlayState;
 const CallbackFn = ctrl_mod.CallbackFn;
 const render_engine = @import("../core/render_engine/mod.zig");
 
-/// 时间线定位参数 — GSAP 风格的相对定位
+/// 时间线定位参数，GSAP 风格的相对定位
 pub const Position = union(enum) {
     /// 绝对时间（秒）
     absolute: f32,
@@ -604,7 +604,7 @@ pub const Timeline = struct {
         var cleanup_dispatched = false;
         // 某个子动画的用户回调跑过之后，后面的子动画在被触碰前要先核对自己的排程
         //（回调可以直接改任意子动画的 duration/loops 等原始字段）。此前是每次回调后对整条
-        // Timeline 做一次全表 refresh —— N 个真实 update 回调 = 每帧 N² 次 prepareEntry
+        // Timeline 做一次全表 refresh, N 个真实 update 回调 = 每帧 N² 次 prepareEntry
         //（基准：2048 条 18.1ms/tick）。现在改成"惰性逐条核对"：只对**接下来要处理的**那一条
         // 做一次 prepareEntry 比对（O(1)），有变化才走完整 refresh（它会 bump control_revision、
         // 让本次遍历失效，与旧语义一致）；没变化就一路 O(N)。已处理过的更早子动画若被改了，
@@ -1115,7 +1115,7 @@ test "Timeline: pause and unpause" {
 test "Timeline: reverse 播到 0 必须完成，current_time 不越界为负" {
     // 回归：reverse 后 current_time 无下界递减，local_time < 0 恒把
     // any_active 钉 true，完成检查（>= total_duration and !any_active）
-    // 永不可达 —— 时间线永转、重绘被钉死。
+    // 永不可达，时间线永转、重绘被钉死。
     setTestTime(1000.0);
     var ctrl = AnimationController.initTween(.{ .from = 0, .to = 10, .duration = 0.5, .easing = .linear });
 
@@ -1175,13 +1175,13 @@ test "Timeline: 回调改后面子动画的时长，后者在本帧被触碰前�
 
     // 第一帧：a 的 update 回调把 b 的 duration 从 0.3 改成 1.0。
     // 旧实现：回调后全表 refresh；新实现：遍历到 b 之前只核对 b 这一条。两者都必须让 b 的排程在本帧就是 1.0，
-    // 且时长变化使本次遍历失效（control_revision 变）——修前的"回调之后不同步"会让 b 先按 0.3 的排程走一帧。
+    // 且时长变化使本次遍历失效（control_revision 变），修前的"回调之后不同步"会让 b 先按 0.3 的排程走一帧。
     const revision_before = tl.control_revision;
     setTestTime(1000.0 + 16.0);
     _ = tl.tick(0.016);
     try std.testing.expect(Edit.calls >= 1);
     // 排程变化使本次遍历失效：b 在本帧**没有**被触碰（entry 的 duration/anchor 记账还是 0.3s 的旧排程，
-    // 而 controller 采样读的是改后的原始字段——两者脱节的那一帧不能发样本）。
+    // 而 controller 采样读的是改后的原始字段，两者脱节的那一帧不能发样本）。
     // 负向实测：关掉惰性核对后 b 本帧被采样到 20 × 0.016 / 1.0 = 0.32；有同步（无论全表还是惰性）仍是 0。
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), b.value, 0.001);
     try std.testing.expect(!tl.entries.items[1].started);

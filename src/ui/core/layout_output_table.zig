@@ -1,8 +1,8 @@
-//! LayoutOutputTable — v0.10 §L NodeLayoutOutput SoA, dense by ElementId
+//! LayoutOutputTable, v0.10 §L NodeLayoutOutput SoA, dense by ElementId
 //!
 //! 与 ElementTable 一一对应：每个 element 创建时同步 ensureSlot。
 //! Stage 1 (本提交): 双写期。Node.visuals.layout_output 仍是 source of truth；
-//! 此表是**非 owning 镜像**——shallow copy NodeLayoutOutput（含 ?PathGeometry
+//! 此表是**非 owning 镜像**, shallow copy NodeLayoutOutput（含 ?PathGeometry
 //! 指针的别名拷贝）。in-place 字段仍负责 path 的 clone/freePathGeometry
 //! 生命周期；本表 clear **不 free**（否则与 in-place double-free）。
 //!

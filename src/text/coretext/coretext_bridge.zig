@@ -42,13 +42,13 @@ pub extern fn coretext_free_c_string(str: [*:0]u8) void;
 // 字体枚举（字体选择器）
 //
 // 实测（本机 macOS，272 family / 990 face）：枚举 17.6ms、全量 trait 扫描
-// 40.1ms —— 宿主在后台线程扫一次即可，这一层不做缓存。
+// 40.1ms，宿主在后台线程扫一次即可，这一层不做缓存。
 // ---------------------------------------------------------------------------
 
 /// 与 C 侧 `CoreTextFamilyInfo` 逐字段对齐。改这里必须同步改 bridge.m。
 pub const CoreTextFamilyInfo = extern struct {
     /// symbolic class == Symbolic：名字**不能**用字体自身渲染（Wingdings 等）。
-    /// ⚠ 不要用「字形覆盖」代替这个判据 —— 实测 Wingdings 对 'A'/'a'
+    /// ⚠ 不要用「字形覆盖」代替这个判据，实测 Wingdings 对 'A'/'a'
     ///   返回有字形，但画出来是图形。
     is_symbolic: c_int,
     /// 字体是否含有拼出自己名字所需的全部字形。实测 272 个里有 47 个为 0。

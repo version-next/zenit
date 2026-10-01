@@ -1,4 +1,4 @@
-//! UTF-8 合法性判定 —— 仓库唯一一份。
+//! UTF-8 合法性判定，仓库唯一一份。
 //!
 //! 此前同样的逻辑在仓库里有三份：
 //!   - `ui/devtools/format.zig`：100 行手写状态机，判"整串是否合法"
@@ -6,7 +6,7 @@
 //!   - `ui/core/text_shaping.zig` 的 `validUtf8Prefix`：判"最长合法前缀切片"
 //!
 //! 三者看着语义不同，其实是同一个扫描的三种返回形态。手写那份还额外承担了
-//! overlong / surrogate / >U+10FFFF 三类边界的维护责任 —— 穷举比对过（1~3
+//! overlong / surrogate / >U+10FFFF 三类边界的维护责任，穷举比对过（1~3
 //! 字节全量、4 字节抽样），它和 std 零差异，也就是说那 100 行只是把 std
 //! 重写了一遍，却要自己背边界正确性的锅。
 //!
@@ -38,7 +38,7 @@ pub fn isValid(bytes: []const u8) bool {
 /// 最长合法 UTF-8 前缀切片。
 ///
 /// ⚠ 调用方按**字节**切前缀时可能落在多字节序列中间（半个 CJK/emoji）。
-/// 非法 UTF-8 会让 CoreText 的 NSString 构造失败 —— shape 层报
+/// 非法 UTF-8 会让 CoreText 的 NSString 构造失败，shape 层报
 /// TextShapingFailed，FontSelector 桥则**静默返回 0.0f**，最终宽度 0.00
 /// 直接把 bbox 压塌（下游应用实测：emoji 之后切在 CJK 首字节的"前缀"全部量出
 /// 0.00）。先裁到最长合法前缀，与渲染端实际能显示的内容一致；合法输入零

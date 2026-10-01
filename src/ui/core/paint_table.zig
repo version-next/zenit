@@ -1,10 +1,10 @@
-//! PaintTable + PaintChunk — Phase 3 拆 Node 的渲染产物
+//! PaintTable + PaintChunk, Phase 3 拆 Node 的渲染产物
 //!
 //! 每 element 持一个 PaintChunk：
 //!   - display_items[]：高层语义绘制项（rect / text / image / path / shadow）
 //!   - property_state_ref：(transform_id, clip_id, effect_id, scroll_id) 四元 u32 引用 PropertyTree
 //!   - bounds：world-space AABB（用于 culling / hit broad-phase）
-//!   - content_hash：内容稳定 hash —— 重新生成时若 hash 命中则跳过录制，复用上帧 display_items
+//!   - content_hash：内容稳定 hash，重新生成时若 hash 命中则跳过录制，复用上帧 display_items
 //!
 //! 历史债避免（吸取 zenit 现状中 "Node.cached_commands" 是唯一保留态、
 //! 而 display_items 每帧重建 的问题）：
@@ -109,7 +109,7 @@ pub const CornerRadii = struct {
     br: f32 = 0,
     bl: f32 = 0,
 
-    /// 转 [4]f32 顺序 TL/TR/BR/BL — sdf_renderer.addRoundedRect 直消费的格式。
+    /// 转 [4]f32 顺序 TL/TR/BR/BL, sdf_renderer.addRoundedRect 直消费的格式。
     /// 让 encoder 切到 paint_table 时无需转换。
     pub fn toArray(self: CornerRadii) [4]f32 {
         return .{ self.tl, self.tr, self.br, self.bl };
@@ -139,14 +139,14 @@ pub const RGBA = packed struct(u32) {
         };
     }
 
-    /// 转 types.Color (相同 r/g/b/a u8 字段，字段顺序一致 → bitcast 等价但显式
+    /// 转 types.Color (相同 r/g/b/a u8 字段，字段顺序一致 -> bitcast 等价但显式
     /// 字段拷贝更清晰，便于 caller 用 Color.eql/Color.rgba 等 API)。tests fixture 用。
     pub fn toColor(self: RGBA) types.Color {
         return .{ .r = self.r, .g = self.g, .b = self.b, .a = self.a };
     }
 };
 
-/// 高层 display item —— 绘制描述。
+/// 高层 display item，绘制描述。
 ///
 /// v0.5 §5 GpuDraw epic B-4 起步: 旧 payload_a/b u64 placeholder 升级为
 /// 强类型字段 (geom + color + radii)，让 shadow 路径能真验证内容等价；
@@ -224,7 +224,7 @@ pub const DisplayItem = struct {
     text_blob_byte_end: u32 = 0,
     /// text_run.content (生命周期由 display_list / TextLayoutBlob 保证)
     text_content: []const u8 = "",
-    /// text_run.spans (?[]const TextSpan) — null 表示无 span 着色
+    /// text_run.spans (?[]const TextSpan), null 表示无 span 着色
     text_spans: ?[]const types.TextSpan = null,
     /// text_run.raster_policy 过线值（与 text_blob.TextRasterPolicy 一一对应）：
     /// 0 = static_crisp (默认), 1 = animated_stable/direct_animated, 2 = surface_cached。
@@ -273,12 +273,12 @@ pub const DisplayItem = struct {
     icon_rep_size: u8 = 0,
     /// image_quad: tint color (与 icon_tint 平行；image_quad 单独存避免歧义)
     image_tint: RGBA = .{ .r = 255, .g = 255, .b = 255, .a = 255 },
-    /// image_quad: corner_radius (与 radii 区别 — image_quad union 字段是单 f32)
+    /// image_quad: corner_radius (与 radii 区别，image_quad union 字段是单 f32)
     image_corner_radius: f32 = 0,
     // ── inset_shadow_rect / shadow_dual_rect 专用 (B-7-E) ──
     /// shadow_dual / inset_shadow 的辅助阴影颜色 (shadow_dual.shadow1_color，
     /// inset_shadow.shadow_color)。主 color 字段保留 fill 颜色；secondary 是
-    /// 阴影颜色 — 跟 gradient_to_color 类比但语义独立避免 alias。
+    /// 阴影颜色，跟 gradient_to_color 类比但语义独立避免 alias。
     shadow_secondary_color: RGBA = .{},
     /// shadow_dual 第二阴影颜色
     shadow2_color: RGBA = .{},
@@ -302,7 +302,7 @@ pub const DisplayItem = struct {
     /// 平时 0；begin_opacity_layer 写 opacity (rect kind 也共用)。
     opacity: f32 = 0,
     /// 绘制形状 (fill_rect/stroke_rect)：0 = rounded_rect, 1 = ellipse。
-    /// 与 types.ShapeSpec 同序。**不是** clip_shape_kind —— 那个是裁剪掩码，
+    /// 与 types.ShapeSpec 同序。**不是** clip_shape_kind，那个是裁剪掩码，
     /// 只裁内容裁不动描边；这个换的是填充与描边的距离场本身。
     shape_kind: u8 = 0,
     /// push_clip.shape_kind (rect/rounded_rect/ellipse/polygon)。0 = rect。
@@ -369,7 +369,7 @@ pub const PaintChunk = struct {
     property_state: PropertyStateRef = .NONE,
     /// world-space bounds（包络所有 display_items）
     bounds: Bounds = .ZERO,
-    /// 内容 hash —— 比对此值与上次记录决定是否需要重新录制
+    /// 内容 hash，比对此值与上次记录决定是否需要重新录制
     content_hash: u64 = 0,
     /// paint_epoch：每次重录 ++。下游 layer cache 据此判失效。
     paint_epoch: u64 = 0,
@@ -436,7 +436,7 @@ pub const PaintTable = struct {
         return self.chunks.items[id.index].paint_epoch;
     }
 
-    /// 重新录制 chunk —— 只在 content_hash 不同时真正清空 + 再录制。
+    /// 重新录制 chunk，只在 content_hash 不同时真正清空 + 再录制。
     /// 返回 true 表示真的重录了；false 表示 hash 命中跳过。
     pub fn beginRecord(self: *PaintTable, id: ElementId, new_content_hash: u64) !bool {
         try self.ensureSlot(id);
@@ -493,12 +493,12 @@ test "PaintTable: beginRecord on different hash bumps epoch + clears items" {
     try testing.expect(epoch1 > 0);
     try testing.expectEqual(@as(usize, 1), t.get(id).?.display_items.items.len);
 
-    // 同 hash → 不重录
+    // 同 hash -> 不重录
     try testing.expect(!(try t.beginRecord(id, 0xAAAA)));
     try testing.expectEqual(epoch1, t.epoch(id));
     try testing.expectEqual(@as(usize, 1), t.get(id).?.display_items.items.len);
 
-    // 不同 hash → 重录
+    // 不同 hash -> 重录
     try testing.expect(try t.beginRecord(id, 0xBBBB));
     try testing.expectEqual(@as(usize, 0), t.get(id).?.display_items.items.len); // cleared
     try t.pushItem(id, .{ .kind = .text, .local_bounds = .{} });

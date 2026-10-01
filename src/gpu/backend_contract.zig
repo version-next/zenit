@@ -3,8 +3,8 @@
 //! ## 为什么需要它
 //!
 //! `gpu.Backend` 长期是 `@import("metal/backend.zig")` 这样的**编译期 type
-//! alias**。alias 的问题不是"迁移贵"——`check_renderer_metal_boundary.sh` 早已
-//! 把渲染核心的直接 Metal 引用压到 0/0——而是**抽象从未被证伪**：只有一个实现
+//! alias**。alias 的问题不是"迁移贵", `check_renderer_metal_boundary.sh` 早已
+//! 把渲染核心的直接 Metal 引用压到 0/0，而是**抽象从未被证伪**：只有一个实现
 //! 时，无法知道 `gpu.Backend.*` 的签名到底是 backend-neutral 的，还是无意中把
 //! Metal 语义焊死在了里面。
 //!
@@ -16,7 +16,7 @@
 //!
 //! 清单来自实测而非设计愿望：统计 `src/render`、`src/ui`、`src/zenit_app`
 //! 里所有 `gpu.Backend.<Symbol>` 的引用点得到。`metal/backend.zig` 共导出 32 个
-//! 符号，渲染层实际只用到其中一个子集——契约只锁**被真正依赖的那部分**，
+//! 符号，渲染层实际只用到其中一个子集，契约只锁**被真正依赖的那部分**，
 //! 多导出不算违约（后端可以有自己的扩展），少导出才算。
 const std = @import("std");
 
@@ -58,7 +58,7 @@ pub const required_functions = [_][]const u8{
 /// 编译期校验：`BackendType` 是否满足契约。
 ///
 /// 在 `gpu.zig` 顶层对被选中的后端调用一次。校验失败会给出**具体缺了哪个符号**
-/// 的编译错误——比"某处 undefined"这种间接报错好定位得多。
+/// 的编译错误，比"某处 undefined"这种间接报错好定位得多。
 pub fn verify(comptime BackendType: type, comptime backend_name: []const u8) void {
     comptime {
         for (required_types) |name| {

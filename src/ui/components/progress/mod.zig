@@ -216,9 +216,9 @@ const IndeterminateState = struct {
     phase_seconds: f32 = 0,
     /// 基础颜色
     base_color: Color,
-    /// 高亮颜色（白色混合 35%）— shimmer 波峰
+    /// 高亮颜色（白色混合 35%），shimmer 波峰
     highlight_color: Color,
-    /// 阴影颜色（黑色混合 15%）— shimmer 波谷
+    /// 阴影颜色（黑色混合 15%），shimmer 波谷
     shadow_color: Color,
     /// 圆角
     radius: f32 = 2,
@@ -227,11 +227,11 @@ const IndeterminateState = struct {
 /// 动画时间参数
 const CYCLE_SECONDS: f32 = 2.0;
 
-/// cubic-bezier(0.65, 0, 0.35, 1) — 类似 CSS ease-in-out 但更极端
+/// cubic-bezier(0.65, 0, 0.35, 1)，类似 CSS ease-in-out 但更极端
 /// 用 de Casteljau 算法计算 cubic bezier 曲线上的 y 值
 /// P0=(0,0), P1=(0.65, 0), P2=(0.35, 1), P3=(1,1)
 fn cubicBezierEase(t: f32) f32 {
-    // 近似求解：对 cubic bezier 做 Newton-Raphson 反解 x→t 太重了
+    // 近似求解：对 cubic bezier 做 Newton-Raphson 反解 x->t 太重了
     // 用 5 次多项式拟合 cubic-bezier(0.65, 0, 0.35, 1)
     // 特征：中段快、两端慢，比 smoothstep 更极端
     const t2 = t * t;
@@ -245,7 +245,7 @@ fn cubicBezierEase(t: f32) f32 {
 fn barEdges(t: f32) struct { left: f32, right: f32 } {
     // lead（右边缘）比 trail（左边缘）相位超前
     // lead 更早启动、更早到达，trail 稍后追上
-    // 时间差制造宽度变化：入场展开 → 中段最宽 → 离场收窄
+    // 时间差制造宽度变化：入场展开 -> 中段最宽 -> 离场收窄
 
     // lead: 从 t=-0.1 开始映射到 [0,1]（提前启动）
     const lead_raw = math.clamp((t + 0.1) / 0.9, 0, 1);
@@ -285,7 +285,7 @@ fn indeterminateDraw(ctx: DrawContext, context: ?*anyopaque) anyerror!void {
 
     if (bar_w < 0.5) return; // 太小不画
 
-    // 绘制带 3-stop 渐变的 bar — highlight(0%) → base(55%) → shadow(100%)
+    // 绘制带 3-stop 渐变的 bar, highlight(0%) -> base(55%) -> shadow(100%)
     // 模拟移动光泽：波峰偏左，右侧自然衰减到暗部，比 2-stop 更真实
     var shimmer_colors = [_]Color{Color.rgba(0, 0, 0, 0)} ** 16;
     var shimmer_positions = [_]f32{0} ** 16;
@@ -560,12 +560,12 @@ test "Progress: render emits visible fill and percent text" {
     try std.testing.expect(saw_text);
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "progress: mount 在任意分配点失败时不泄漏（sweep）" {
     const sw = @import("../oom_sweep.zig");
     try sw.sweepMount("progress", struct {

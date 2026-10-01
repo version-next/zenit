@@ -1,9 +1,9 @@
-//! Minimal zenit app — counter button.
+//! Minimal zenit app, counter button.
 //!
 //! Demonstrates the recommended flow:
-//!   - `App.runWith(mountUI)` — one call replaces ~110 lines of boilerplate
-//!   - `cx.bindState` — no manual u64 ids
-//!   - `cx.on(T, state, T.method)` — type-safe handler binding
+//!   - `App.runWith(mountUI)`, one call replaces ~110 lines of boilerplate
+//!   - `cx.bindState`, no manual u64 ids
+//!   - `cx.on(T, state, T.method)`, type-safe handler binding
 const std = @import("std");
 const ui = @import("ui");
 const App = @import("zenit_app").App;

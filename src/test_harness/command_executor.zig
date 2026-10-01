@@ -1,4 +1,4 @@
-/// command_executor — 主线程消费命令并执行 UI 操作
+/// command_executor，主线程消费命令并执行 UI 操作
 ///
 /// 极简版本：支持 IME / click / type / key / query / focused / screenshot。
 /// 命令派发到 cx.handleX() API。
@@ -71,7 +71,7 @@ pub const FrameStatsSnapshot = struct {
     ///
     /// 与 offscreen_pool_exhausted 同类：是"一帧内 clip 切换次数远超预期"的
     /// 直接指标。修复后溢出**不再丢字**（会切到溢出 buffer 继续画），但持续
-    /// 增长仍说明 clip 链在逐行重发 —— 该去查 clip 前缀保留，而不是调大上限。
+    /// 增长仍说明 clip 链在逐行重发，该去查 clip 前缀保留，而不是调大上限。
     /// 修复前这里每 +1 就等于**一整批文字没画出来**（症状：整段中文消失、
     /// 位置留白、逐帧闪烁），且因为失败时实例不清空，该帧后续文本全部丢失。
     text_uniform_overflow: u64 = 0,
@@ -100,7 +100,7 @@ pub const FrameStatsSnapshot = struct {
     gpu_p95_us: u64 = 0,
     cpu_p95_us: u64 = 0,
     total_p95_us: u64 = 0,
-    /// P95 的有效样本数 —— 断言前必须检查它足够大，否则是在对空环/少量样本
+    /// P95 的有效样本数，断言前必须检查它足够大，否则是在对空环/少量样本
     /// 做判断（会得到 0，即"永远绿"的假信号）。
     timing_samples: u32 = 0,
 };
@@ -233,8 +233,8 @@ fn executeCommand(queue: *CommandQueue, cmd_in: TestCommand) bool {
         .click => |c| {
             if (getCtx()) |ctx| {
                 // handleMouseUp 内部已通过 dispatcher 合成 click event (含 click_count)。
-                // 不能再调 handleClick — 那会再触发一次 mouse_down/up → 多算一次 click
-                // → consecutive_clicks=2 → textarea/input 误判 double-click → selectWordAt。
+                // 不能再调 handleClick，那会再触发一次 mouse_down/up -> 多算一次 click
+                // -> consecutive_clicks=2 -> textarea/input 误判 double-click -> selectWordAt。
                 // down 与 up 都要带修饰键：宿主判定"加选还是独占选中"通常在
                 // up，只在 down 带会让 ⇧ 多选类 e2e 静默失效。
                 ctx.handleMouseDown(c.x, c.y, c.modifiers());
@@ -339,11 +339,14 @@ fn executeCommand(queue: *CommandQueue, cmd_in: TestCommand) bool {
         },
         .scroll => |c| {
             if (getCtx()) |ctx| {
-                ctx.handleScrollWithModifiers(c.x, c.y, c.dx, c.dy, false, false, true, .{
-                    .shift = c.shift,
-                    .ctrl = c.ctrl,
-                    .alt = c.alt,
-                    .super = c.super,
+                ctx.handleScroll(.{
+                    .x = c.x,
+                    .y = c.y,
+                    .dx = c.dx,
+                    .dy = c.dy,
+                    .phase = @enumFromInt(c.phase),
+                    .momentum = @enumFromInt(c.momentum),
+                    .modifiers = .{ .shift = c.shift, .ctrl = c.ctrl, .alt = c.alt, .super = c.super },
                 });
                 ctx.updateAutomationCursor(c.x, c.y, null);
                 queue.result.setJson("{\"ok\":true}");
@@ -450,7 +453,7 @@ fn executeCommand(queue: *CommandQueue, cmd_in: TestCommand) bool {
         .frame_stats => {
             if (g_get_frame_stats_fn) |f| {
                 const st = f();
-                // 16 个数值字段 —— 512B 已不够（JsonWriter 静默截断会产出
+                // 16 个数值字段，512B 已不够（JsonWriter 静默截断会产出
                 // 非法 JSON，客户端只会看到 parse 错而非明确失败）。
                 var buf: [1536]u8 = undefined;
                 var jw = JsonWriter.init(&buf);
@@ -665,8 +668,8 @@ fn executeCommand(queue: *CommandQueue, cmd_in: TestCommand) bool {
                             return true;
                         };
                         // textarea / single-line input 是两种不同的 state struct，
-                        // 不能盲 cast 成 TextInputState（内存 layout 差异 → buffer_len
-                        // 落到指针字段会读出 ~10^18 量级垃圾值 → @intCast(i64) panic）。
+                        // 不能盲 cast 成 TextInputState（内存 layout 差异 -> buffer_len
+                        // 落到指针字段会读出 ~10^18 量级垃圾值 -> @intCast(i64) panic）。
                         // 按 on_event 函数指针辨别：inputEventHandler vs textareaEventHandler。
                         const TextInputState = ui.widgets.input.TextInputState;
                         const TextareaState = ui.widgets.input.TextareaState;
@@ -905,16 +908,16 @@ fn nearestScrollAncestor(node: *Node) ?*Node {
 }
 
 /// Bring `node` into its scroll container's vertical viewport so its
-/// `globalRect()` lands on-screen — used before harness click/screen_pos so a
+/// `globalRect()` lands on-screen, used before harness click/screen_pos so a
 /// row scrolled out of view (e.g. a long sidebar nav list) is still clickable.
 ///
 /// **必须驱动 ScrollArea 的真实 `ScrollState.scroll_y`，不能直接写
-/// `content.style.translate_y`** —— `scrollbarBeforeRender` 每帧从
+/// `content.style.translate_y`**, `scrollbarBeforeRender` 每帧从
 /// `state.scroll_y` 重算 translate_y（含 maxScroll re-clamp），手写 translate
 /// 会被下一帧 hook 覆盖回去（scroll_y 仍 0），导致命中坐标与视觉脱节、点到错行。
-/// 改法：算出 node 在 content 坐标系里的偏移 → 设 `state.scroll_y`（clamp 到
+/// 改法：算出 node 在 content 坐标系里的偏移 -> 设 `state.scroll_y`（clamp 到
 /// [0, content_h-view_h]，max 直接从 rect 算而非 state，state 尺寸命令执行时机
-/// 可能还是旧值）→ 同步 translate_y + state 尺寸 + layout()+render()，之后
+/// 可能还是旧值）-> 同步 translate_y + state 尺寸 + layout()+render()，之后
 /// globalRect 才反映新偏移。只处理最近的 .scroll 祖先（storybook sidebar 够用）。
 fn scrollNodeIntoView(ctx: *Cx, node: *Node) void {
     const scroll = nearestScrollAncestor(node) orelse return;
@@ -941,13 +944,13 @@ fn scrollNodeIntoView(ctx: *Cx, node: *Node) void {
 
     var target_scroll = state.scroll_y;
     if (rel_top < margin) {
-        // node 在上方被裁 → 让它顶部对齐到 margin。
+        // node 在上方被裁 -> 让它顶部对齐到 margin。
         target_scroll = offset_in_content - margin;
     } else {
-        // node 在下方被裁 → 让它底部对齐到 view_h - margin。
+        // node 在下方被裁 -> 让它底部对齐到 view_h - margin。
         target_scroll = offset_in_content + node_rect.h - (view_h - margin);
     }
-    // maxScrollY 直接从 rect 算（不靠 state.content_height/viewport_height —— 那两个
+    // maxScrollY 直接从 rect 算（不靠 state.content_height/viewport_height，那两个
     // 由 before_render hook 从 rect 填，命令执行时机可能还是上一帧的旧值甚至 0，
     // 用旧值会把目标 scroll re-clamp 没了，正是「点到错行/上一目标」的根因）。
     const max_y = @max(content_rect.h - view_h, 0);
@@ -960,7 +963,7 @@ fn scrollNodeIntoView(ctx: *Cx, node: *Node) void {
         // maxScroll re-clamp 用旧尺寸又把 scroll_y 拽回去。
         if (view_h > 0) state.viewport_height = view_h;
         if (!state.external_content_height and content_rect.h > 0) state.content_height = content_rect.h;
-        // 同步施加 translate_y（与 scroll_y 一致 → before_render hook 不会再纠偏）。
+        // 同步施加 translate_y（与 scroll_y 一致 -> before_render hook 不会再纠偏）。
         // idle 帧 hook 不主动重算 translate_y（只在 bounce/re-clamp 时算），故这里显式写。
         content.style.translate_y = state.contentTranslateY();
         content.markInteractionDirty();

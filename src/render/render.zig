@@ -14,7 +14,7 @@ const text_renderer = @import("text_renderer.zig");
 pub const TextRenderer = text_renderer.TextRenderer;
 pub const Color = text_renderer.Color;
 
-// SDF renderer (primary — 真正 SDF 阴影/空心边框)
+// SDF renderer (primary，真正 SDF 阴影/空心边框)
 const sdf_renderer = @import("sdf_renderer.zig");
 pub const SdfRenderer = sdf_renderer.SdfRenderer;
 pub const SDFInstance = sdf_renderer.SDFInstance;
@@ -57,7 +57,7 @@ pub fn imageTextureBindsTotal() u64 {
 pub const TextureMemoryStats = image_renderer.TextureMemoryStats;
 pub const IconInstance = icon_renderer.IconInstance;
 
-// DisplayItem encoder (UI → GPU 统一编码器)
+// DisplayItem encoder (UI -> GPU 统一编码器)
 const command_encoder_mod = @import("command_encoder.zig");
 pub const RenderCommandEncoder = command_encoder_mod.RenderCommandEncoder;
 pub const OffscreenTexturePool = @import("offscreen_texture.zig").OffscreenTexturePool;
@@ -86,7 +86,7 @@ const path_renderer_mod = @import("path_renderer.zig");
 pub const PathRenderer = path_renderer_mod.PathRenderer;
 
 // command_encoder 的单测已析出到独立文件（原文件里占 679 行）。
-// 必须显式 import 才会被 test runner 收集 —— refAllDecls 只递归到
+// 必须显式 import 才会被 test runner 收集，refAllDecls 只递归到
 // 本文件引用过的模块，漏了这行等于静默失去 16 个测试。
 test {
     _ = @import("command_encoder_test.zig");

@@ -1,8 +1,8 @@
-//! DevTools 的 Box Model 可视化 —— 从 devtools.zig 析出。
+//! DevTools 的 Box Model 可视化，从 devtools.zig 析出。
 //!
 //! 画 Inspector 里那张「margin / border / padding / content」同心矩形图。
 //! 这一段是纯构建：只读 Node 的布局产物与主题 token，输出一棵展示用节点树，
-//! 不碰 DevTools 的面板状态、选中项、tab 切换、事件分发 —— 它夹在 4800 行的
+//! 不碰 DevTools 的面板状态、选中项、tab 切换、事件分发，它夹在 4800 行的
 //! devtools.zig 里纯粹是历史堆积。
 //!
 //! 唯一入口是 `build`，由 Layout Tab 调用一次。
@@ -150,7 +150,7 @@ pub fn build(cx: *Cx, node: *Node, parent: *Node) !void {
         .align_items = .center,
         .border = .{ .width = 1, .color = Color.rgba(79, 111, 196, 255) },
     }, .{});
-    // content 建好到挂上 stage 之间还有一次可失败的 text 分配 —— 门控 errdefer 守窗口，
+    // content 建好到挂上 stage 之间还有一次可失败的 text 分配，门控 errdefer 守窗口，
     // 挂接用 adoptChild（append 失败它自己收尸，所以让位标志要在 adopt 之前翻）。
     var content_owned = true;
     errdefer if (content_owned) cx.freeNode(content);

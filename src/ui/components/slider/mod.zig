@@ -40,7 +40,7 @@ pub const SliderProps = struct {
     haptic_feedback: bool = false,
     /// Native semantic pattern, not a weak/medium/strong intensity scale.
     haptic_pattern: HapticFeedbackPattern = .alignment,
-    /// 初始值。**只在 mount 时读取一次** —— 之后组件持有自己的
+    /// 初始值。**只在 mount 时读取一次**，之后组件持有自己的
     /// SliderState。需要外部驱动请用 mount 返回的 `result.state.setValue()`
     /// （那条路径会同步视觉与 a11y 数值）。
     initial_value: f32 = 0,
@@ -127,7 +127,7 @@ pub const SliderState = struct {
         self.fill_node.markSizingDirty();
 
         // thumb 用 translate_x 定位：纯 composite 位移，拖动零 relayout。
-        // （旧 margin.left 方案是"translate double-apply"时代的防御——该 bug 已证伪清除。）
+        // （旧 margin.left 方案是"translate double-apply"时代的防御，该 bug 已证伪清除。）
         self.thumb_node.setTranslateX(thumb_offset);
 
         // 更新文本
@@ -352,7 +352,7 @@ pub const SliderBuilder = struct {
         // event_context 始终设置（on_before_render 依赖它来定位 thumb）
         track_area.behavior.events.event_context = @ptrCast(state);
 
-        // 交互 (拖拽 + 点击轨道 + 键盘) — 仅非 disabled 时启用
+        // 交互 (拖拽 + 点击轨道 + 键盘)，仅非 disabled 时启用
         if (!p.disabled) {
             track_area.behavior.events.on_event = sliderEventHandler;
             track_area.on_capture_lost = sliderCaptureLost;
@@ -640,12 +640,12 @@ test "Slider: render emits fill highlight" {
     try std.testing.expect(saw_fill);
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "slider: mount 在任意分配点失败时不泄漏（sweep）" {
     const sw = @import("../oom_sweep.zig");
     try sw.sweepMount("slider", struct {

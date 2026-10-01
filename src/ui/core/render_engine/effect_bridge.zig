@@ -24,8 +24,8 @@ const EffectBridgeEntry = node_state.EffectBridgeEntry;
 const INVALID_ID = property_tree_mod.INVALID_ID;
 const ItemHeader = display_list_mod.ItemHeader;
 
-/// Effect/clip token 的 header — 这些 token 不绑定到具体 paint node，header 占位用
-/// INVALID transform_id (encoder 不用 transform 二次变换 effect/clip — 字段已 lower)。
+/// Effect/clip token 的 header，这些 token 不绑定到具体 paint node，header 占位用
+/// INVALID transform_id (encoder 不用 transform 二次变换 effect/clip，字段已 lower)。
 const CONTROL_HEADER: ItemHeader = .{ .transform_id = INVALID_ID, .node_id = std.math.maxInt(u32) };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -36,7 +36,7 @@ const CONTROL_HEADER: ItemHeader = .{ .transform_id = INVALID_ID, .node_id = std
 ///
 /// **只有真正被提升为独立 surface 的 layer 才有资格**：`stable_id` 本身对每个
 /// plan layer 都会赋值（含没被提升的），拿它当 retained 身份会让一批只是"路过"
-/// 的层去认领专属纹理 —— 它们的内容依赖外层上下文，跨帧复用不成立。
+/// 的层去认领专属纹理，它们的内容依赖外层上下文，跨帧复用不成立。
 /// 不合格时返回 INVALID_SURFACE_ID，encoder 走每帧重画的安全老路。
 fn retainedSurfaceId(layer: layer_tree_mod.CompositedLayer) u32 {
     if (!layer.promotion_reason.any()) return display_list_mod.INVALID_SURFACE_ID;
@@ -250,7 +250,7 @@ pub fn collectEffectBridgeChain(
         // 防御：缓存 splice 的 item header 可能携带**过期**的 effect_id（写缓存帧的
         // property tree 索引，本帧 effect 列表收缩后越界）。正常路径由
         // canReusePromotedCommands 的 effect_id 比对拦截 stale 替放；此处兜底
-        // 防 panic——越界即终止链（该 item 按无 effect 处理）。
+        // 防 panic，越界即终止链（该 item 按无 effect 处理）。
         if (current >= cx.property_tree.effects.items.len) break;
         entries[count] = .{
             .effect_id = current,
@@ -273,7 +273,7 @@ pub const DisplayEffectBridgeScope = struct {
     /// Begin 是否真的发射了 layer token。End 必须按这个位配对，而不是
     /// 重新推导条件：Begin 有 `draw_opacity == null` 等只在自己一侧成立的
     /// 早退（bridge 完整但仍无操作），重推导会让 End 对没 begin 过的层发
-    /// end token——靠编码器空栈守卫兜底没崩，但 token 流已不配平。
+    /// end token，靠编码器空栈守卫兜底没崩，但 token 流已不配平。
     layer_emitted: bool = false,
 };
 
@@ -352,10 +352,10 @@ pub fn appendDisplayEffectBridgeEnd(cx: *RenderContext, scopes: []const DisplayE
     while (remaining > 0) {
         remaining -= 1;
         const scope = scopes[remaining];
-        // backdrop_blur 的嵌套顺序刻意"颠倒"：begin 是 push_clip →
+        // backdrop_blur 的嵌套顺序刻意"颠倒"：begin 是 push_clip ->
         // begin_blur_layer，end 却先 pop_clip 再 end_blur_layer。这只因为
         // end_blur_layer 在编码器里是 no-op（blur 合成全部发生在 begin，
-        // 且发生在 clip 作用域内）才是安全的——若哪天给 end_blur_layer
+        // 且发生在 clip 作用域内）才是安全的，若哪天给 end_blur_layer
         // 加真实工作，必须改成按 clip_before_layer 分支还原真嵌套。
         if (scope.clip_active) {
             try appendRectClipBridgeEnd(cx, true);
@@ -375,7 +375,7 @@ pub fn appendDisplayEffectBridgeEnd(cx: *RenderContext, scopes: []const DisplayE
 }
 
 /// 收集 clip 链（innermost-first），供调用方做跨组公共前缀比较。
-/// 与 `collectEffectBridgeChain` 对偶 —— effect 侧早已按前缀保留 scope，
+/// 与 `collectEffectBridgeChain` 对偶，effect 侧早已按前缀保留 scope，
 /// clip 侧此前每组整链 close+reopen（见 display_list_lowering 的循环注释）。
 pub fn collectDisplayClipChainPublic(cx: *RenderContext, clip_id: u32, out: *[8]u32) usize {
     return collectDisplayClipChain(cx, clip_id, out);
@@ -397,7 +397,7 @@ pub fn appendDisplayClipBridgeBegin(cx: *RenderContext, clip_id: u32, active_par
     return appendDisplayClipBridgeBeginFiltered(cx, clip_id, active_parent_effect_id, false);
 }
 
-/// only_scroll=true 时仅发射来自 scroll 容器的 clip(effect 内部场景——
+/// only_scroll=true 时仅发射来自 scroll 容器的 clip(effect 内部场景,
 /// 玻璃岛内虚拟列表的行溢出必须裁,而 Input 等小 clip 的 effect-内投影
 /// 尚有坐标问题,先维持旧行为不发)。
 pub fn appendDisplayClipBridgeBeginFiltered(cx: *RenderContext, clip_id: u32, active_parent_effect_id: u32, only_scroll: bool) !usize {
@@ -408,8 +408,8 @@ pub fn appendDisplayClipBridgeBeginFiltered(cx: *RenderContext, clip_id: u32, ac
 ///
 /// 为什么需要它：lowering 主循环按 `(effect_id, clip_id)` 分组，而虚拟列表
 /// 里每一行都有自己的 clip_id。旧实现每组把**整条祖先链**重发一遍，于是
-/// 岛的圆角 clip（所有行共享的最外层）被逐行 push/pop —— 实测 git diff
-/// 滚动一次就有 15 万次 `null → rounded(1106) → null` 往返。每次往返
+/// 岛的圆角 clip（所有行共享的最外层）被逐行 push/pop，实测 git diff
+/// 滚动一次就有 15 万次 `null -> rounded(1106) -> null` 往返。每次往返
 /// `syncClipStateAfterMutation` 都要 `flushAllPending`（清空全部 pipeline
 /// 并吃掉一个 SDF uniform 槽），256 槽在一帧内耗尽，encode 涨到 10-17ms。
 ///
@@ -428,7 +428,7 @@ pub fn appendDisplayClipBridgeBeginSuffix(
     // offscreenOffset = -(surface_source_bounds.origin)（src 亦为 owner-local 帧）。因此
     // surface 内的 push_clip 同样必须转到 owner-local：active_parent_inverse.transformRect
     // (world_aabb) + encoder 偏移 = 正确 texture 位置。早先"surface 内直接传 world_aabb"
-    // 是早先的世界坐标模型假设——CA-pure 下会把 clip 推错位置 → 面板圆角/边界裁剪
+    // 是早先的世界坐标模型假设，CA-pure 下会把 clip 推错位置 -> 面板圆角/边界裁剪
     // 失效（menu item hover 背景溢出 wrapper 边缘）。
     const active_parent_inverse = blk: {
         if (active_parent_effect_id == INVALID_ID or active_parent_effect_id >= cx.property_tree.effects.items.len) {

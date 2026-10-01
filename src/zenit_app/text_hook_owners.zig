@@ -2,7 +2,7 @@
 //! measure 兜底）的归属栈。
 //!
 //! 这几个钩子是进程全局的，但 App 可以有多个（主窗口 + DevTools 等辅助
-//! 窗口）。此前每个 App.init 直接覆盖、每个 deinit 无条件清空 —— 关掉任一
+//! 窗口）。此前每个 App.init 直接覆盖、每个 deinit 无条件清空，关掉任一
 //! 辅助窗口就把**主窗口**的测量钩子一并拆掉，之后主窗口布局退回平台
 //! measure，光标/选区与字形错位。
 //!
@@ -180,7 +180,7 @@ test "超过容量：主窗口不被挤掉，其余窗口全关后钩子仍指�
     // 真实场景：OwnerStack 是进程级的，容量取自 MultiWindowApp.max_windows，
     // 但这个上限只管单个 MultiWindowApp；独立 App.init 不受限。于是
     // 「独立主窗口 + 开满的 MultiWindowApp」就是 capacity+1 个 owner。
-    // 旧实现栈满丢最老条目（= 主窗口），之后把其余窗口关光，栈空 → 钩子被
+    // 旧实现栈满丢最老条目（= 主窗口），之后把其余窗口关光，栈空 -> 钩子被
     // 清成 null，而主窗口还活着，测量退回平台 measure（光标/选区错位）。
     var stack: OwnerStack(2) = .{ .allocator = testing.allocator };
     var main_app: u8 = 0;

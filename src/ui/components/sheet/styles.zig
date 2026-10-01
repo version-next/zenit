@@ -1,4 +1,4 @@
-/// Sheet — 样式层
+/// Sheet，样式层
 ///
 /// 遮罩/面板取色、阴影与内容区样式；overlay 生命周期与滑入动画在 mod.zig。
 const core = @import("../../core.zig");
@@ -7,17 +7,17 @@ const Color = core.Color;
 const Padding = core.Padding;
 const Shadow = core.Shadow;
 
-/// 遮罩色 — props 覆盖优先，默认 overlay token
+/// 遮罩色，props 覆盖优先，默认 overlay token
 pub fn sheetBarrierColor(override: ?Color, t: *const theme.ThemeTokens) Color {
     return override orelse t.color.overlay;
 }
 
-/// 面板背景 — props 覆盖优先
+/// 面板背景，props 覆盖优先
 pub fn sheetPanelBackground(override: ?Color, t: *const theme.ThemeTokens) Color {
     return override orelse t.color.bg_secondary;
 }
 
-/// 主投影层 — token shadow.lg
+/// 主投影层，token shadow.lg
 pub fn sheetKeyShadow(t: *const theme.ThemeTokens) Shadow {
     return t.shadow.lg;
 }

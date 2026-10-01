@@ -1,7 +1,7 @@
-/// command_queue — 测试命令 SPSC 环形缓冲区
+/// command_queue，测试命令 SPSC 环形缓冲区
 ///
-/// HTTP 线程写入命令 → 主线程消费执行。
-/// (zenit 最小子集 — 只支持 IME / click / type / key / query / screenshot / focused)
+/// HTTP 线程写入命令 -> 主线程消费执行。
+/// (zenit 最小子集，只支持 IME / click / type / key / query / screenshot / focused)
 const std = @import("std");
 
 pub const QUEUE_SIZE = 16;
@@ -9,7 +9,7 @@ pub const RESULT_BUF_SIZE = 256 * 1024; // 256KB JSON result
 
 pub const TestCommand = union(enum) {
     health: void,
-    /// `/click` 同样走 MousePayload —— 它内部合成 down+up，若不带修饰键，
+    /// `/click` 同样走 MousePayload，它内部合成 down+up，若不带修饰键，
     /// "⇧ 点第二个对象"这类用例会静默退化成独占选中（宿主最常用的正是本路由）。
     click: MousePayload,
     click_test_id: TestIdPayload,
@@ -38,7 +38,7 @@ pub const TestCommand = union(enum) {
     app_route: AppRoutePayload,
     /// 查询上一帧 FrameStats（retained hits/misses/partial_repaints 等）
     frame_stats: void,
-    /// 清空跨帧计时采样环 —— 性能门禁在进入重场景后调用，
+    /// 清空跨帧计时采样环，性能门禁在进入重场景后调用，
     /// 使 P95 只统计该场景自己的帧（否则会混入上一个 story 的样本）
     reset_timing: void,
     /// Incremental per-Cx Console snapshot. after_seq=0 starts at the oldest
@@ -46,7 +46,8 @@ pub const TestCommand = union(enum) {
     console_query: ConsoleQueryPayload,
     console_clear: void,
     /// 滚轮事件（带修饰键）
-    scroll: struct { x: f32, y: f32, dx: f32, dy: f32, shift: bool = false, ctrl: bool = false, alt: bool = false, super: bool = false },
+    /// phase / momentum 按 ui.events.ScrollPhase / MomentumPhase 的序号；默认 0 = none（鼠标滚轮）
+    scroll: struct { x: f32, y: f32, dx: f32, dy: f32, phase: u8 = 0, momentum: u8 = 0, shift: bool = false, ctrl: bool = false, alt: bool = false, super: bool = false },
     /// 触控板捏合事件。phase: 0=began 1=changed 2=ended 3=cancelled
     magnify: struct { x: f32, y: f32, magnification: f32, phase: u8 },
     /// 拖放事件。kind: 0=entered 1=updated 2=exited 3=dropped；paths 换行分隔

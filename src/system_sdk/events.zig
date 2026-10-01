@@ -27,6 +27,22 @@ pub const MouseButton = enum(u8) {
 /// 注意:
 /// - EventQueue 会复制并持有 text_input / ime_* 的 text
 /// - 这些切片至少持续到下一次 pump 调用前有效
+/// 触控板滚动手势阶段（NSEvent.phase）。鼠标滚轮与惯性事件为 none。
+pub const ScrollPhase = enum(u8) { none, may_begin, began, changed, ended, cancelled };
+/// 惯性阶段（NSEvent.momentumPhase）。非惯性事件为 none。
+pub const MomentumPhase = enum(u8) { none, began, changed, ended };
+
+pub const MouseWheel = struct {
+    window_id: WindowId,
+    x: f32,
+    y: f32,
+    dx: f32,
+    dy: f32,
+    phase: ScrollPhase = .none,
+    momentum: MomentumPhase = .none,
+    modifiers: Modifiers = .{},
+};
+
 pub const Event = union(enum) {
     quit: void,
     frame_requested: void,
@@ -69,17 +85,7 @@ pub const Event = union(enum) {
         pressed: bool,
         modifiers: Modifiers = .{},
     },
-    mouse_wheel: struct {
-        window_id: WindowId,
-        x: f32,
-        y: f32,
-        dx: f32,
-        dy: f32,
-        is_momentum: bool = false,
-        phase_ended: bool = false,
-        is_trackpad: bool = false,
-        modifiers: Modifiers = .{},
-    },
+    mouse_wheel: MouseWheel,
     magnify: struct {
         window_id: WindowId,
         x: f32,

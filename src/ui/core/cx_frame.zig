@@ -31,7 +31,7 @@ pub fn advanceFrameClock(self: *Cx) void {
     if (self.clock_epoch == null) self.clock_epoch = now;
 
     // Idle 帧不推进逻辑时钟：根全 clean + 无浮层入/出场动画 + 无显式重绘请求
-    // → frame_time_ms 冻结 → render() 的 time_unchanged 零脏帧快速路径保持成立
+    // -> frame_time_ms 冻结 -> render() 的 time_unchanged 零脏帧快速路径保持成立
     // （否则每帧时钟都变，永远走全量 render，且 e2e query 在空闲态读到的帧不稳定）。
     // 任一活跃信号都会让时钟前进，驱动 overlay/Spring 等绝对时间戳动画。
     const idle = if (self.root) |r|
@@ -50,7 +50,7 @@ pub fn advanceFrameClock(self: *Cx) void {
     // 边沿消费：显式重绘请求驱动了本帧的时钟推进，到此即被消费。
     // 帧内活跃信号（动画 tick / overlay tick / deferred work / 事件）
     // 会重新置 true 驱动下一帧；帧末仍为 false = 可进入 idle 停帧。
-    // 注意消费点必须在 idle 判定**之后**——在帧循环里提前清会把
+    // 注意消费点必须在 idle 判定**之后**，在帧循环里提前清会把
     // 本次唤醒的时钟冻住（时间驱动的 overlay 入场动画会永远停在 0）。
     self.needs_redraw = false;
 
@@ -58,7 +58,7 @@ pub fn advanceFrameClock(self: *Cx) void {
         const dt_ns = now.since(prev);
         const dt_s = @as(f32, @floatFromInt(dt_ns)) / 1_000_000_000.0;
         // 增量 dt 仍钳到 [~0, 0.1s]：Spring 等物理积分器需要有界步长才稳定，
-        // 一个超大 dt 会让弹簧数值发散。这个 clamp 只服务增量消费者——
+        // 一个超大 dt 会让弹簧数值发散。这个 clamp 只服务增量消费者,
         // 绝对时钟另算（见下），否则慢帧会被永久削短。
         self.frame_dt_seconds = std.math.clamp(dt_s, 0.0, 0.1);
         self.frame_dt_ms = self.frame_dt_seconds * 1000.0;

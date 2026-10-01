@@ -1,15 +1,15 @@
-//! command_encoder/local_sort.zig — local-sort 的几何/bounds 纯函数
+//! command_encoder/local_sort.zig, local-sort 的几何/bounds 纯函数
 //!
 //! 从 command_encoder.zig 析出（2026-07-31），与 paint_fingerprint.zig 同批。
 //! 同样是零 encoder 实例状态依赖的纯函数簇。
 //!
 //! 用途：local-sort 会在**不改变视觉结果**的前提下，把相邻的同 pipeline
 //! 命令聚成一簇批量提交，减少 pipeline 切换。能否重排的判据就是这里算出的
-//! bounds ——**两条命令 bounds 不重叠才可换序**。
+//! bounds, **两条命令 bounds 不重叠才可换序**。
 //!
 //! ⚠ 合同：bounds 必须**宁大勿小**。算小了会把实际重叠的两条判为可换序，
 //! 直接产生错误的绘制顺序（后画的被先画的盖住）。文本宽度用的是保守估算
-//! （见 estimateTextWidthForLocalSort），不做真实 shaping —— 因为这里只需要
+//! （见 estimateTextWidthForLocalSort），不做真实 shaping，因为这里只需要
 //! 一个不会低估的上界，不需要精确值。
 
 const std = @import("std");
@@ -114,7 +114,7 @@ pub fn localSortArcBounds(cx: f32, cy: f32, outer_radius: f32) [4]f32 {
 pub fn localSortTextBounds(x: f32, y: f32, content: []const u8, font_size: f32) [4]f32 {
     const estimated_w = estimateTextWidthForLocalSort(content, font_size);
     // y 是基线：上伸 1.5em（ascent 上界）+ 下伸 0.5em（descender 上界）。
-    // 此前只算基线以上，g/p/y 的下伸部不参与重叠判定 —— 与紧贴下方的
+    // 此前只算基线以上，g/p/y 的下伸部不参与重叠判定，与紧贴下方的
     // 另一管线命令被判"不相交"而重排，z 序可能颠倒。
     const ascent = @max(font_size * 1.5, font_size);
     const descent = @max(font_size * 0.5, 0);

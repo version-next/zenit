@@ -16,7 +16,7 @@ pub fn resolveNodeLogicalTextProps(node: *Node) ?types.TextProps {
 }
 
 /// 计算 overflow_hidden 容器直接子节点的内容边界（相对于容器左上角）
-/// 返回 (min_x, min_y, max_x, max_y) — 含 translate/padding 偏移
+/// 返回 (min_x, min_y, max_x, max_y)，含 translate/padding 偏移
 ///
 /// 三种滚动机制都覆盖：
 /// - translate_x/y（ScrollArea 等）
@@ -38,7 +38,7 @@ pub fn computeContentExtent(node: *Node) ContentExtent {
         // 它们的 rect 默认 {0,0,0,0} 会误判为"内容溢出顶部"
         if (cr.w <= 0 and cr.h <= 0) continue;
         const child_pad = child.style.padding;
-        // 内容起点：rect 位置 + translate + padding（负 padding → 内容前移）
+        // 内容起点：rect 位置 + translate + padding（负 padding -> 内容前移）
         const x1 = cr.x + child.style.translate_x + @min(child_pad.left, @as(f32, 0));
         const y1 = cr.y + child.style.translate_y + @min(child_pad.top, @as(f32, 0));
         // 内容终点：rect 边界 + translate（rect.w 已含正 padding）
@@ -73,7 +73,7 @@ pub fn computeContentExtent(node: *Node) ContentExtent {
 
 /// paint pass overflow_fade 已不直接 emit；display_list 端
 /// (mod.zig appendNodeOverflowFade) 写 gradient_rect，lowering 时产出对应
-/// DisplayItem.gradient_rect — 视觉等价。本函数保留空壳是因为调用方仍在
+/// DisplayItem.gradient_rect，视觉等价。本函数保留空壳是因为调用方仍在
 /// paint pass 内调；下刀连调用方一起删。
 pub fn renderOverflowFade(
     cx: *render_context_mod.RenderContext,

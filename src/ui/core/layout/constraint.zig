@@ -1,7 +1,7 @@
-//! Layout Constraints — Taffy-style LayoutInput / AvailableSpace
+//! Layout Constraints, Taffy-style LayoutInput / AvailableSpace
 //!
 //! 取代当前 layout_engine.zig 的"先 layout 后 fitResizeAfterLayout 回填"模型。
-//! 子算法接收 LayoutInput，返回 LayoutOutput；约束沿父→子方向单向流动，
+//! 子算法接收 LayoutInput，返回 LayoutOutput；约束沿父->子方向单向流动，
 //! 不再有"父布完后回头读子尺寸再修正自己"的多遍。
 //!
 //! 历史债避免（吸取 zenit 当前 .fit 三遍修正 + Chromium 早期 layout-thrash 教训）：
@@ -108,7 +108,7 @@ pub const RunMode = enum(u8) {
     measure,
 };
 
-/// 父→子的布局输入。
+/// 父->子的布局输入。
 pub const LayoutInput = struct {
     /// 父能给我多少空间（每轴一个 AvailableSpace）
     available_space: AvailableSpaceXY,
@@ -127,7 +127,7 @@ pub const LayoutInput = struct {
     }
 };
 
-/// 子→父的布局结果。
+/// 子->父的布局结果。
 pub const LayoutOutput = struct {
     /// 测得的内容尺寸（不含 outer margin）
     size: Size2D,
@@ -139,7 +139,7 @@ pub const LayoutOutput = struct {
     pub const ZERO: LayoutOutput = .{ .size = Size2D.ZERO };
 };
 
-/// Intrinsic size cache —— 同一节点同输入的 measure 复用结果。
+/// Intrinsic size cache，同一节点同输入的 measure 复用结果。
 /// 简单 4-entry direct-mapped cache（cache-line 友好；查找 O(1)）。
 /// Phase 3 拆 Node 时挂到 LayoutTable 旁。
 pub const IntrinsicCache = struct {
@@ -174,7 +174,7 @@ pub const IntrinsicCache = struct {
     }
 };
 
-/// 计算 LayoutInput 的稳定 hash —— 用于 intrinsic cache 索引。
+/// 计算 LayoutInput 的稳定 hash，用于 intrinsic cache 索引。
 pub fn hashLayoutInput(input: LayoutInput) u64 {
     var hasher = std.hash.Wyhash.init(0xCAFEBABE);
     hashAvailable(&hasher, input.available_space.width);
@@ -286,7 +286,7 @@ test "IntrinsicCache: collision overwrites slot" {
     const out_a = LayoutOutput{ .size = .{ .width = 100, .height = 50 } };
     const out_b = LayoutOutput{ .size = .{ .width = 200, .height = 60 } };
 
-    // 两个 hash 模 ENTRY_COUNT 相等 → 后者覆盖
+    // 两个 hash 模 ENTRY_COUNT 相等 -> 后者覆盖
     cache.put(0, out_a);
     cache.put(IntrinsicCache.ENTRY_COUNT, out_b);
 

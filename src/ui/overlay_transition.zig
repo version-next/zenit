@@ -1,4 +1,4 @@
-//! 浮层 enter/exit 过渡的时钟与曲线表 —— 从 `overlay_stack.zig` 析出。
+//! 浮层 enter/exit 过渡的时钟与曲线表，从 `overlay_stack.zig` 析出。
 //!
 //! 原本 `TransitionController`（含 duration/easing/maxStep/hiddenScale 四张
 //! 表）与 `Transition` 枚举一起长在 overlay_stack.zig 里，和层栈管理混排。
@@ -7,21 +7,21 @@
 //!   - `TransitionController` 的 progress 状态（OverlayLayer 上的
 //!     enter_ctrl / exit_ctrl 两个实例字段）
 //!   - `apply()` 往节点上写 opacity/translate/scale（节点树侧唯一的接触面）
-//! 互相自洽、不依赖层栈的任何字段 —— 判据 (a) 成立。
+//! 互相自洽、不依赖层栈的任何字段，判据 (a) 成立。
 //!
 //! **接口切在「层间关系」与「单层动画时钟」之间**：tier/嵌套继承/互斥组/
 //! outside-click/焦点归还仍属 overlay_stack.zig（它们需要整栈视野）；
 //! 本模块只回答「这一层此刻该是什么 progress、画成什么样式」。
 //!
 //! **不搬的东西**：
-//!   - `holdEnterUntilGeometryStable` —— 它读写 OverlayLayer 的
+//!   - `holdEnterUntilGeometryStable`，它读写 OverlayLayer 的
 //!     enter_last_content_rect / enter_stable_frame_count / enter_paused，
 //!     是层状态机的一部分，拆出去反而要把 layer 字段掏空。
-//!   - `setManualTransitionFlags` —— 直接写 Node.frame_state 的 manual
+//!   - `setManualTransitionFlags`，直接写 Node.frame_state 的 manual
 //!     动画标志，语义上属于「节点脏位协议」，不是过渡时钟。
 //!
 //! 依赖注入而非硬 import：缓动曲线表（Easing）与节点类型都从各自的小
-//! 模块直接引入，**不 import core.zig**——core.zig 反向 import 本模块的
+//! 模块直接引入，**不 import core.zig**, core.zig 反向 import 本模块的
 //! 使用方（overlay_stack.zig），硬 import 会成环。时钟方面只消费
 //! `render_engine.current_frame_dt_ms` 一个只读全局（首帧 dt），因此
 //! 本模块可以在纯 Zig 单测里跑完整个时序，不拉起节点树 / 渲染引擎。
@@ -46,7 +46,7 @@ const easing_mod = @import("animation/easing.zig");
 const Easing = easing_mod.Easing;
 // 只为 `current_frame_dt_ms` 这一个只读帧时钟全局（见 update 的
 // pending_first_tick 分支）。行为零变化的要求下这一步不能改成参数注入
-// —— 生产调用点 `ctrl.update(now_ms)` 遍布 overlay_stack / 组件层。
+// 生产调用点 `ctrl.update(now_ms)` 遍布 overlay_stack / 组件层。
 const render_engine = @import("core/render_engine/mod.zig");
 
 /// 过渡动画预设（LayerConfig.enter_transition / exit_transition 的类型）。
@@ -119,8 +119,8 @@ pub const TransitionController = struct {
     }
 
     /// 获取过渡的缓动函数（作用在 progress 上）。
-    /// progress 入场 0→1、退场 1→0 线性推进；对 progress 施加 ease-out 后，
-    /// 入场读作 decelerate（快进慢停），退场自然读作 accelerate（慢起快出）——
+    /// progress 入场 0->1、退场 1->0 线性推进；对 progress 施加 ease-out 后，
+    /// 入场读作 decelerate（快进慢停），退场自然读作 accelerate（慢起快出）,
     /// 正是 Material motion 对 enter/exit 的标准配对，无需单独的 exit 曲线。
     fn transitionEasing(transition: Transition) Easing {
         return switch (transition) {
@@ -337,7 +337,7 @@ pub fn transitionAffectsTransform(transition: Transition) bool {
 }
 
 /// 层配置是否需要 composited_group surface（任一方向过渡影响 opacity 或
-/// transform 即需要）。原来是无调用者的私有 helper，析出时保留——它是
+/// transform 即需要）。原来是无调用者的私有 helper，析出时保留，它是
 /// 「为什么 bindContentNode 无条件开 composited_group 是安全的」这组
 /// 判定表的唯一表驱动表达，tier/z 序改动会先碰这里。
 pub fn layerNeedsCompositedGroup(enter: Transition, exit: Transition) bool {
@@ -460,7 +460,7 @@ test "TransitionController: seedFromProgress starts exit from mid-enter progress
 test "enter delay 按 wall-clock 消耗，掉帧的大步不被 maxStepMs 截短" {
     // 坑 2 的钉子：delay 剩 84ms 时来了一帧 100ms，必须整帧吃掉 84ms 并
     // 当场溢出进入动画。若 delay 也被 maxStepMs(24) 截断，这一帧只会
-    // 消耗 24ms，progress 仍钉在 0 —— tooltip delay 在掉帧时被拉长。
+    // 消耗 24ms，progress 仍钉在 0, tooltip delay 在掉帧时被拉长。
     var ctrl = TransitionController.initWithTime(.fade, .entering, 0);
     ctrl.delay_remaining_ms = 100;
     render_engine.current_frame_dt_ms = 16.0;
@@ -518,7 +518,7 @@ test "transitionAffectsOpacity / Transform / layerNeedsCompositedGroup 的表" {
     try std.testing.expect(transitionAffectsTransform(.slide_left));
     try std.testing.expect(!transitionAffectsTransform(.none));
 
-    // 任一方向有动画 → 需要 composited_group；双向 .none → 不需要
+    // 任一方向有动画 -> 需要 composited_group；双向 .none -> 不需要
     try std.testing.expect(!layerNeedsCompositedGroup(.none, .none));
     try std.testing.expect(layerNeedsCompositedGroup(.fade, .none));
     try std.testing.expect(layerNeedsCompositedGroup(.none, .fade_fast));

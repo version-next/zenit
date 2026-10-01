@@ -1,4 +1,4 @@
-//! Bench runner — Phase 0 perf 基线建立工具
+//! Bench runner, Phase 0 perf 基线建立工具
 //!
 //! 设计目标：
 //! - 简单可重复：黑箱时间测量 + warmup + 多次 sample 取中位数
@@ -20,7 +20,7 @@ pub const BenchOptions = struct {
     sample_iters: u32 = 50,
     /// 每次 sample 内部循环次数（小操作摊销噪声）。0 = 自适应。
     inner_iters: u32 = 0,
-    /// 单 case 总时间软上限（ns）—— 超时提前退出，避免一个慢 case 卡死 CI
+    /// 单 case 总时间软上限（ns），超时提前退出，避免一个慢 case 卡死 CI
     soft_budget_ns: u64 = 5 * std.time.ns_per_s,
 };
 
@@ -44,7 +44,7 @@ pub const BenchCase = struct {
     opts: BenchOptions = .{},
 };
 
-/// 运行时上下文 —— body 可读 setup 输出 + 控制内层循环。
+/// 运行时上下文，body 可读 setup 输出 + 控制内层循环。
 pub const BenchCtx = struct {
     state: ?*anyopaque,
     iter_index: u32,
@@ -101,7 +101,7 @@ pub fn run(
         var json_w = f.writer(&json_buffer);
         const jw = &json_w.interface;
         // 溯源信息：baseline 只有裸数字时，门禁红了没人判断得了是代码退化
-        // 还是换了机器/负载 —— 实测 src/bench/baselines/main.json 就因为
+        // 还是换了机器/负载，实测 src/bench/baselines/main.json 就因为
         // 没记 commit 而烂红了一个多月。ZENIT_BENCH_COMMIT 由 CI / 刷新脚本
         // 注入；本地手跑时缺省 "unknown"，不影响比较，只影响可追溯性。
         const commit = std.process.getEnvVarOwned(allocator, "ZENIT_BENCH_COMMIT") catch null;

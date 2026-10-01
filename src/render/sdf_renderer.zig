@@ -15,7 +15,7 @@ const MAX_CLIP_POLYGON_CONTOURS = 8;
 /// SDF Shader 源码（单一事实源）
 const sdf_shader_source: []const u8 = @embedFile("shaders/sdf_primitives.metal");
 
-/// Uniforms 结构 — 对齐 sdf_primitives.metal
+/// Uniforms 结构，对齐 sdf_primitives.metal
 const Uniforms = extern struct {
     viewport_size: [2]f32, // 物理像素
     scale_factor: f32,
@@ -31,7 +31,7 @@ const Uniforms = extern struct {
     frame_seed: u32 = 0,
 };
 
-/// SDF 实例数据 — 对齐 sdf_primitives.metal InstanceData（176 bytes）
+/// SDF 实例数据，对齐 sdf_primitives.metal InstanceData（176 bytes）
 pub const SDFInstance = extern struct {
     rect: [4]f32, // x, y, w, h (逻辑像素)
     rect_clip: [4]f32 = .{ 0, 0, -1, -1 }, // x, y, w, h；negative size = disabled
@@ -106,7 +106,7 @@ pub const SDFInstance = extern struct {
 ///
 /// ⚠ 序号与 `sdf_primitives.metal` 的 4 个 `switch (inst.shape_type)` 一一对应
 /// （主填充 / 外阴影 / 第二外阴影 / 内阴影）。**加成员必须四处都补 case**：
-/// 三处 default 值并不一致 —— 填充与两个外阴影 default 是 `1.0`（漏改 ⇒ 形状或
+/// 三处 default 值并不一致，填充与两个外阴影 default 是 `1.0`（漏改 ⇒ 形状或
 /// 阴影**静默消失**），内阴影 default 是 `-1.0`（漏改 ⇒ 内阴影**铺满整个形状**）。
 /// 症状相反，按同一个思路排查会被带偏。
 pub const ShapeType = enum(u32) {
@@ -185,7 +185,7 @@ const MAX_UNIFORM_UPDATES = 256;
 /// TRANSPARENT 颜色
 const TRANSPARENT: [4]f32 = .{ 0, 0, 0, 0 };
 
-/// Triple buffering 常量 — 消除 CPU/GPU buffer 竞争 (参考 Zed 120fps 方案)
+/// Triple buffering 常量，消除 CPU/GPU buffer 竞争 (参考 Zed 120fps 方案)
 const BUFFER_COUNT = 3;
 
 /// 每帧最多支持的渐变 stops 总数（8192 instances × 平均 4 stops）
@@ -201,14 +201,14 @@ pub const SdfRenderer = struct {
     allocator: std.mem.Allocator,
     device: *gpu.Backend.Device,
     pipeline: gpu.Backend.RenderPipeline,
-    /// Triple-buffered uniform buffers —— 必须与 instance_buffers 一样按帧轮转。
+    /// Triple-buffered uniform buffers，必须与 instance_buffers 一样按帧轮转。
     /// 曾经这里是**单个** buffer 而每帧把 uniform_write_offset 归零：三帧在飞时
     /// 第 N+1 帧会覆写 GPU 尚未消费的第 N 帧 viewport/clip/scale/frame_seed，
     /// 表现为偶发闪烁、错误裁剪、参数串帧（只在 GPU 落后时触发，极难归因）。
     uniform_buffers: [BUFFER_COUNT]gpu.Backend.Buffer,
     uniform_write_offset: usize = 0,
     /// 单帧 uniform 槽位溢出次数（诊断用）。溢出时旧实现直接 clamp 到最后一槽，
-    /// 导致多次 draw 别名同一块随后被覆写的内存 —— 静默出错；后来改成返回
+    /// 导致多次 draw 别名同一块随后被覆写的内存，静默出错；后来改成返回
     /// error.UniformSlotsExhausted，但 opacity layer / encoder.flush 等调用点
     /// `try` 透传，一帧超过 256 次 flush 就把 App.run 整个打崩。现在与
     /// TextRenderer 同款：槽位不够切到按需增长、跨帧保留的溢出 uniform buffer。
@@ -217,7 +217,7 @@ pub const SdfRenderer = struct {
     uniform_overflow_capacities: [BUFFER_COUNT]usize = [_]usize{0} ** BUFFER_COUNT,
     /// 本帧已用的溢出 uniform 槽位数。
     uniform_overflow_used: usize = 0,
-    /// Triple-buffered instance buffers — 每帧轮转，CPU/GPU 不竞争
+    /// Triple-buffered instance buffers，每帧轮转，CPU/GPU 不竞争
     instance_buffers: [BUFFER_COUNT]gpu.Backend.Buffer,
     /// Triple-buffered GradientStop buffers（slot 2）
     stop_buffers: [BUFFER_COUNT]gpu.Backend.Buffer,
@@ -253,7 +253,7 @@ pub const SdfRenderer = struct {
     /// "当前这个节点画成什么样"的上下文，与 rect_clip 同性质。
     ///
     /// 纪律：由 encoder 在**每条命令前后**设置与复位（同 rect_clip 的模式），
-    /// 绝不跨命令残留 —— 残留会让后面无关的矩形被画成椭圆。
+    /// 绝不跨命令残留，残留会让后面无关的矩形被画成椭圆。
     current_shape: ShapeType = .rect,
     instance_high_water_mark: usize = 0,
     /// 当前帧种子，每帧从外部传入，驱动 film_grain 动态噪声
@@ -265,7 +265,7 @@ pub const SdfRenderer = struct {
     ///
     /// 旧实现在 MAX_INSTANCES 用尽后对**每一批**都 createBuffer + destroy。
     /// 两万对象的画布一帧要走上千次这条路径，每次都是一次 driver 分配 +
-    /// page_allocator mmap —— 既是 CPU 热点，也让 RSS 无界增长（Metal 不会
+    /// page_allocator mmap，既是 CPU 热点，也让 RSS 无界增长（Metal 不会
     /// 立刻归还刚被 GPU 引用过的分配）。改为按帧槽位持有一个可增长的 buffer：
     /// 容量够就直接复用，不够才重建一次。槽位随 current_buffer 轮转，因此
     /// 仍然不会覆写 GPU 尚在消费的在飞帧数据。
@@ -456,7 +456,7 @@ pub const SdfRenderer = struct {
     }
 
     /// 仅更新 viewport 尺寸（离屏合成 render pass 切换时使用）
-    /// 不重置 buffer/instances/轮转——帧内状态保持连续
+    /// 不重置 buffer/instances/轮转，帧内状态保持连续
     pub fn setViewport(self: *SdfRenderer, width: f32, height: f32, scale: f32) void {
         self.viewport_width = width * scale;
         self.viewport_height = height * scale;
@@ -934,7 +934,7 @@ pub const SdfRenderer = struct {
     /// 内接 (x,y,w,h) 的椭圆。`border_width <= 0` 即无描边。
     ///
     /// per-side 描边对椭圆无意义（椭圆没有"四条边"），且 shader 的 per-side
-    /// 分支硬编码矩形内轮廓 —— 传进去会画出"矩形描边套椭圆填充"。所以入口
+    /// 分支硬编码矩形内轮廓，传进去会画出"矩形描边套椭圆填充"。所以入口
     /// 统一折叠：取四值的 **max** 而不是第一个（`{0,0,0,4}` 取第一个会静默
     /// 变成 0 宽描边，描边直接消失）。
     pub fn addEllipse(
@@ -1005,7 +1005,7 @@ pub const SdfRenderer = struct {
         self.instance_high_water_mark = @max(self.instance_high_water_mark, self.instances.items.len);
 
         // 更新 uniform buffer（只做一次）。
-        // 溢出**不能** clamp 到最后一槽 —— 那会让本次及后续所有 draw 别名同一块
+        // 溢出**不能** clamp 到最后一槽，那会让本次及后续所有 draw 别名同一块
         // 内存，随后被下一次 flush 覆写，静默画错。也不能报错丢批：调用方大多
         // `try` 透传，会把整帧乃至 App.run 打崩。槽位不够就用溢出 buffer 继续画。
         const uniform_buffer, const uniform_byte_offset = blk: {
@@ -1157,7 +1157,7 @@ test "sdf_ellipse 返回真实像素距离（而不是无量纲值或错量纲�
     try testing.expectApproxEqAbs(@as(f64, -10.0), sdfEllipseRef(40, 0, 50, 50), 1e-9);
 
     // 10:1 扁椭圆的长轴端点：真实距离 = 20。
-    // 旧的 `* min(rx,ry)` 写法在这里会得到 2.0（差 10 倍）—— AA 过渡带被拉宽
+    // 旧的 `* min(rx,ry)` 写法在这里会得到 2.0（差 10 倍），AA 过渡带被拉宽
     // 10 倍，长轴两端肉眼可见发虚。误差放宽到 10% 容纳一阶近似本身。
     const d = sdfEllipseRef(220, 0, 200, 20);
     try testing.expect(d > 18.0 and d < 22.0);

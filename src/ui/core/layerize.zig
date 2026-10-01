@@ -1,21 +1,21 @@
-//! Layerization — Phase 4 把 PaintChunks 分组到 LayerTree
+//! Layerization, Phase 4 把 PaintChunks 分组到 LayerTree
 //!
 //! 取代当前 compositor_plan.zig 每帧 O(N·M) 线性扫描的"合成摘要"。
 //! 算法对标 Chromium PaintArtifactCompositor::LayerizeGroup：
 //!
 //! 1. 按 element 顺序遍历（与 paint order 一致）
 //! 2. 对每个 element 检查是否需要"提升"为独立 layer：
-//!    - transform 动画期间 → 提升
-//!    - opacity 动画期间且 0 < α < 1 → 提升
-//!    - overflow: scroll/auto → 提升（解锁 layer transform 滚动）
-//!    - will-change: transform | opacity → 提升
-//! 3. 不需提升 → 加入"当前 group"（继续合并到父 layer）
+//!    - transform 动画期间 -> 提升
+//!    - opacity 动画期间且 0 < α < 1 -> 提升
+//!    - overflow: scroll/auto -> 提升（解锁 layer transform 滚动）
+//!    - will-change: transform | opacity -> 提升
+//! 3. 不需提升 -> 加入"当前 group"（继续合并到父 layer）
 //! 4. group 形成新 layer 时检查：
 //!    - 面积 < min_layer_area_px2：合并回父
 //!    - layer 总数已达上限：合并回父
 //!
 //! 历史债避免：
-//! - **不**让 layerization 跑在每帧——只在 element 拓扑/style/promotion-reason
+//! - **不**让 layerization 跑在每帧，只在 element 拓扑/style/promotion-reason
 //!   变化时跑一次；后续帧直接复用 layer tree（PropertyTree epoch 不变即可命中）
 //! - **不**为每个 chunk 一 layer（cc 早期教训）
 //! - **不**做 transform/opacity 静态提升（无动画时无收益）
@@ -38,7 +38,7 @@ pub const LayerId = layer_tree_mod.LayerId;
 pub const PromotionReason = layer_tree_mod.PromotionReason;
 pub const Bounds = paint_table_mod.Bounds;
 
-/// 单个 element 的 promotion hint —— 由 reactive/animation/scroll 在 prepass 阶段设置。
+/// 单个 element 的 promotion hint，由 reactive/animation/scroll 在 prepass 阶段设置。
 pub const PromotionHint = packed struct(u8) {
     transform_animating: bool = false,
     opacity_animating: bool = false,
@@ -108,7 +108,7 @@ pub fn layerize(
             // 接下来的非提升 element 跟这个新 layer
             current_group_layer = new_layer;
         } else {
-            // 不提升 → 合到当前 group layer
+            // 不提升 -> 合到当前 group layer
             try tree.assignElement(current_group_layer, item.element);
             if (tree.getMut(current_group_layer)) |l| {
                 l.world_bounds = l.world_bounds.unionWith(item.world_bounds);

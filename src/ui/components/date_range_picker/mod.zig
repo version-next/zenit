@@ -68,7 +68,7 @@ pub const DateRangePickerState = struct {
     scope: *Scope,
     day_cell_refs: std.ArrayListUnmanaged(DayCellRefs),
     /// a11y: trigger value_text（"Mar 10, 2026 – Mar 12, 2026"）与左右月 grid
-    /// label 的持久存储 —— a11y 投影每帧读这些 slice，栈上 buf 会悬垂。
+    /// label 的持久存储，a11y 投影每帧读这些 slice，栈上 buf 会悬垂。
     a11y_value_buf: [64]u8 = undefined,
     left_grid_a11y_buf: [24]u8 = undefined,
     right_grid_a11y_buf: [24]u8 = undefined,
@@ -161,7 +161,7 @@ pub const DateRangePickerBuilder = struct {
         // sweep：Popover 的 wrapper 由本组件持有，守到 return；子树建好即 adopt
         errdefer cx.freeNode(pop_result.wrapper);
         // 失败时 hooks（useAnimatedBackground 等）登记在 my_scope 上、destroy 会解引用节点：
-        // 必须先 dispose my_scope（连带 Popover 子 scope 解绑）再 freeNode —— errdefer 逆序，后声明的先跑。
+        // 必须先 dispose my_scope（连带 Popover 子 scope 解绑）再 freeNode, errdefer 逆序，后声明的先跑。
         errdefer my_scope.dispose();
         pop_result.wrapper.meta.ownership.meta.component_name = "DateRangePicker";
         pop_result.wrapper.behavior.interaction.a11y = .{ .role = .textbox, .disabled = p.disabled };
@@ -264,7 +264,7 @@ pub const DateRangePickerBuilder = struct {
         append_slot_detached = false;
         _ = try core.adoptChild(cx, allocator, trigger, shell.append_slot);
 
-        // panelStyle 内含 shadow（BoxStyle.shadow → ensureExt.setShadow，等价旧的手动 ext 写入）
+        // panelStyle 内含 shadow（BoxStyle.shadow -> ensureExt.setShadow，等价旧的手动 ext 写入）
         // panel 先建并挂进 popover content，两个月份区 / 分隔条建好即 adopt（mountMonthSection 自守）
         const panel = try core.adoptChild(cx, allocator, pop_result.content, try box(cx, styles.panelStyle(t), .{}));
         panel.meta.ownership.meta.component_name = "DateRangePickerPanel";
@@ -1052,7 +1052,7 @@ test "a11y: DateRangePicker expanded/value 跟随范围选择且可撤回" {
         try testing.expectEqual(@as(u64, 0), n.text_hash); // 无范围 → 无 value
     }
 
-    // 打开 → expanded=true
+    // 打开 -> expanded=true
     result.state.is_open.set(true);
     ctx.layout();
     _ = ctx.render();
@@ -1067,7 +1067,7 @@ test "a11y: DateRangePicker expanded/value 跟随范围选择且可撤回" {
         ctx.accessibility_tree.get(eid).?.text_hash,
     );
 
-    // 选终点 → 面板关闭（expanded 撤回）+ 完整范围播报
+    // 选终点 -> 面板关闭（expanded 撤回）+ 完整范围播报
     result.state.selectDate(.{ .year = 2026, .month = 3, .day = 12 });
     ctx.layout();
     _ = ctx.render();
@@ -1088,7 +1088,7 @@ test "a11y: DateRangePicker expanded/value 跟随范围选择且可撤回" {
     }
     try testing.expectEqual(@as(usize, 2), found_selected); // 起点 + 终点
 
-    // 再选一天 = 开启新范围 → 旧范围撤回，value 变半程
+    // 再选一天 = 开启新范围 -> 旧范围撤回，value 变半程
     result.state.selectDate(.{ .year = 2026, .month = 3, .day = 20 });
     ctx.layout();
     _ = ctx.render();
@@ -1359,7 +1359,7 @@ test "DateRangePicker: disabled stays inert and keeps overlay collapsed" {
     const trigger = result.wrapper.children.items[0];
     try std.testing.expect(trigger.behavior.events.on_click == null);
 
-    // trigger 本身仍正常布局（disabled 不等于塌成 0）——
+    // trigger 本身仍正常布局（disabled 不等于塌成 0）,
     // 关闭态的"零尺寸"现在体现在 overlay 已脱离树，而非留在树上占 0×0。
     const trigger_rect = trigger.rectFromWorldOrFallback();
     try std.testing.expect(trigger_rect.w > 0);
@@ -1373,7 +1373,7 @@ test "DateRangePicker: trigger 主体槽吃满剩余宽度，chevron 贴右" {
     // 回归：旧版所有子项平铺在 trigger 上且无 justify，chevron 紧跟 "End date"，
     // 320 宽 trigger 右侧空 ~109px；长文本还会把 chevron 顶出 trigger。
     const testing = std.testing;
-    // 第二组：窄 trigger 放不下内容 → 主体槽收缩裁剪，chevron 仍在 trigger 内贴右。
+    // 第二组：窄 trigger 放不下内容 -> 主体槽收缩裁剪，chevron 仍在 trigger 内贴右。
     // （placeholder 控制在 16 字节内：updateDisplayLabel 走 setInlineContent，超长会被截断）
     inline for (.{ .{ "Start date", "End date", 320 }, .{ "Sixteen byte str", "Sixteen byte end", 200 } }) |ph| {
         var ctx = try Cx.init(testing.allocator);
@@ -1425,12 +1425,12 @@ test "DateRangePicker: placeholder 超过 16 字节时完整显示，销毁不 I
     try std.testing.expectEqualStrings("An equally long end placeholder", result.state.end_display.getText().?.content);
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "date_range_picker: mount 在任意分配点失败时不泄漏（sweep）" {
     try @import("../oom_sweep.zig").sweepMount("date_range_picker", struct {
         fn m(scope: *Scope, cx: *Cx) anyerror!?*Node {

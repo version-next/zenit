@@ -1,4 +1,4 @@
-//! Tag 样式层 — TagRecipe + 关闭按钮具名样式函数
+//! Tag 样式层，TagRecipe + 关闭按钮具名样式函数
 //! 业务逻辑在 mod.zig；TagColor/TagVariant/TagSize 是公共 API，循环 import 取用。
 const core = @import("../../core.zig");
 const theme = core.theme;
@@ -12,7 +12,7 @@ const TagVariant = mod.TagVariant;
 const TagSize = mod.TagSize;
 
 // ============================================================================
-// TagRecipe — recipe(color × variant × size) 统一管理三个维度
+// TagRecipe, recipe(color × variant × size) 统一管理三个维度
 //
 // color 维度:   提供 background / text_color / border_color（通过 border 整体）
 // variant 维度: outline 时改 background 透明 + border width = 1
@@ -90,7 +90,7 @@ pub const TagRecipe = recipe_mod.recipe(struct {
         }.resolve,
     };
 
-    /// 跨维度几何 — height/padding 收进 recipe（只产出几何字段，禁碰 background）。
+    /// 跨维度几何，height/padding 收进 recipe（只产出几何字段，禁碰 background）。
     /// pill 圆角 = height/2 在 mount 里 fold 进 Border（细粒度 border 字段在
     /// derived 之后 merge，只能在组件函数体折叠，同 control_shell.zig）。
     pub fn derived(v: Variants, _: *const theme.ThemeTokens) ConditionalStyle {
@@ -102,7 +102,7 @@ pub const TagRecipe = recipe_mod.recipe(struct {
 });
 
 // ============================================================================
-// 具名样式函数 — 关闭按钮（无 variant 维度，颜色随 Tag 前景色参数化）
+// 具名样式函数，关闭按钮（无 variant 维度，颜色随 Tag 前景色参数化）
 // ============================================================================
 
 pub fn tagCloseButtonStyle(t: *const theme.ThemeTokens) core.BoxStyle {

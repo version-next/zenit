@@ -1,8 +1,8 @@
-//! Grapheme cluster 边界 — Unicode 17.0.0 UAX #29 extended grapheme clusters
+//! Grapheme cluster 边界，Unicode 17.0.0 UAX #29 extended grapheme clusters
 //!
 //! 为什么需要：光标移动 / 退格 / 选区若按 codepoint 走，用户会看到
 //! "退格 7 次才删掉一个家庭 emoji"、"光标停在 e 和组合音符之间"、
-//! "旗帜被拆成两个方块"、"肤色修饰符被单独删掉" —— 这些都是把
+//! "旗帜被拆成两个方块"、"肤色修饰符被单独删掉"，这些都是把
 //! 「一个用户感知字符」（extended grapheme cluster）当成多个字符处理的后果。
 //!
 //! ## 实现的规则（UAX #29, Table 1c "Extended grapheme cluster boundary rules"）
@@ -10,8 +10,8 @@
 //! - GB3          : CR × LF（CRLF 不可拆）
 //! - GB4  / GB5   : Control|CR|LF 前后一定断开
 //! - GB6/7/8      : Hangul 音节序列 L/V/T/LV/LVT 组合不断
-//! - GB9          : × (Extend | ZWJ)     —— 组合记号、变体选择符、肤色修饰符
-//! - GB9a         : × SpacingMark        —— 印度语系间距组合记号
+//! - GB9          : × (Extend | ZWJ)，组合记号、变体选择符、肤色修饰符
+//! - GB9a         : × SpacingMark，印度语系间距组合记号
 //! - GB9b         : Prepend ×
 //! - GB11         : Extended_Pictographic Extend* ZWJ × Extended_Pictographic
 //!                  （ZWJ emoji 序列，如 👨‍👩‍👧‍👦）
@@ -24,8 +24,8 @@
 //!
 //! ## API
 //! 两套适配器，规则引擎共用：
-//! - `nextBoundary(text, pos)` / `prevBoundary(text, pos)`  —— 平坦 []const u8
-//! - `nextBoundaryDoc(Doc, doc, pos)` / `prevBoundaryDoc(...)` —— 任何提供
+//! - `nextBoundary(text, pos)` / `prevBoundary(text, pos)`，平坦 []const u8
+//! - `nextBoundaryDoc(Doc, doc, pos)` / `prevBoundaryDoc(...)`，任何提供
 //!   `getByteAt(usize) ?u8` + `totalLength() usize` 的文档（PieceTree 等）
 
 const std = @import("std");
@@ -53,7 +53,7 @@ pub const Prop = enum(u8) {
     ext_pict,
 };
 
-/// codepoint → Grapheme_Cluster_Break 属性
+/// codepoint -> Grapheme_Cluster_Break 属性
 pub fn propOf(cp: u21) Prop {
     const gcb = gcbProp(cp);
     return if (gcb == .other and unicode_data.isExtendedPictographic(cp)) .ext_pict else gcb;

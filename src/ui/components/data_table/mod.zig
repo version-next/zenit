@@ -1,4 +1,4 @@
-/// DataTable — 高级数据表格（B4）：列宽拖拽调整 / 筛选 / 分页
+/// DataTable，高级数据表格（B4）：列宽拖拽调整 / 筛选 / 分页
 ///
 /// 与基础 table.zig 的分工：Table = 无数据所有权的渲染骨架（虚拟滚动、排序表头）；
 /// DataTable = 持字符串数据的电池全含版。retained 设计：分页窗口内的行/cell 节点
@@ -26,7 +26,7 @@ pub const ColumnDef = table_mod.ColumnDef;
 pub const SelectionMode = selection_mod.SelectionMode;
 
 // ============================================================================
-// 样式层已析出到 styles.zig — mount 只消费，本文件不做视觉决策
+// 样式层已析出到 styles.zig, mount 只消费，本文件不做视觉决策
 // ============================================================================
 
 const styles = @import("styles.zig");
@@ -101,7 +101,7 @@ pub const DataTableState = struct {
     row_bg_even: core.Color = core.Color.TRANSPARENT,
     row_bg_odd: core.Color = core.Color.TRANSPARENT,
 
-    /// 原始行下标 → 是否选中（对外查询用；参数是 rows[] 的下标，不是过滤序号）
+    /// 原始行下标 -> 是否选中（对外查询用；参数是 rows[] 的下标，不是过滤序号）
     pub fn isRowSelected(self: *const DataTableState, raw_row: usize) bool {
         var i: usize = 0;
         while (i < self.filtered_count) : (i += 1) {
@@ -267,15 +267,15 @@ fn onFilterChanged(state: *DataTableState, text: []const u8) void {
     @memcpy(state.filter_buf[0..len], text[0..len]);
     state.filter_len = len;
     state.page = 0;
-    // 筛选变了，过滤序号整体重排 —— 旧的选中位现在指向别的行，必须清掉
+    // 筛选变了，过滤序号整体重排，旧的选中位现在指向别的行，必须清掉
     state.selection.clear();
     state.selection.anchor = null;
     state.selection.lead = null;
     state.refresh();
 }
 
-/// 行点击 → 选择模型。走 on_event 而不是 on_click，因为需要读修饰键
-/// （Cmd/Ctrl 切换、Shift 区间）—— HandlerRef 的无参 on_click 拿不到。
+/// 行点击 -> 选择模型。走 on_event 而不是 on_click，因为需要读修饰键
+/// （Cmd/Ctrl 切换、Shift 区间），HandlerRef 的无参 on_click 拿不到。
 fn rowClickHandler(event: Event, context: ?*anyopaque) EventResult {
     const ctx: *RowClickCtx = @ptrCast(@alignCast(context orelse return .ignored));
     switch (event) {
@@ -285,7 +285,7 @@ fn rowClickHandler(event: Event, context: ?*anyopaque) EventResult {
             const fi = state.page * state.page_size + ctx.visible_row;
             if (fi >= state.filtered_count) return .ignored;
             state.selection.applyClick(fi, .{
-                // macOS 用 Cmd，其它平台用 Ctrl —— 两个都认
+                // macOS 用 Cmd，其它平台用 Ctrl，两个都认
                 .toggle = c.modifiers.super or c.modifiers.ctrl,
                 .range = c.modifiers.shift,
             });
@@ -399,7 +399,7 @@ pub fn mountDataTable(props_in: DataTableProps, scope: *Scope, cx: *Cx) !DataTab
     state.header_cells = header_cells;
     state.selection = sel_model;
     state.row_click_ctxs = row_click_ctxs;
-    // 从这一刻起所有权二选一：adopt 成功归 scope，adopt 失败由它当场用 cleanup 释放——
+    // 从这一刻起所有权二选一：adopt 成功归 scope，adopt 失败由它当场用 cleanup 释放,
     // 两种结局上面那串 errdefer 都不能再跑，所以标志在调用**之前**翻。
     state_adopted = true;
     try my_scope.adoptResource(@ptrCast(state), struct {
@@ -463,7 +463,7 @@ pub fn mountDataTable(props_in: DataTableProps, scope: *Scope, cx: *Cx) !DataTab
 
     for (props.columns, 0..) |col, ci| {
         const header_cell = try core.adoptChild(cx, allocator, header, try box(cx, dataTableHeaderCellStyle(col.width), .{}));
-        // 表头单元格必须是 columnheader 而不是普通 cell —— AT 靠它在朗读
+        // 表头单元格必须是 columnheader 而不是普通 cell, AT 靠它在朗读
         // 每个数据格时带上列名（"Name：Alice"而不是干巴巴一个"Alice"）。
         header_cell.behavior.interaction.a11y = .{
             .role = .columnheader,
@@ -760,12 +760,12 @@ test "DataTable: multi 多选 —— Cmd 切换 / Shift 区间 / 底色 / 回调
     try testing.expect(dt.state.row_nodes[1].getBackground().eql(dt.state.selection_bg));
     try testing.expect(!dt.state.row_nodes[0].getBackground().eql(dt.state.selection_bg));
 
-    // Cmd 点第 3 行 → 两行都选中
+    // Cmd 点第 3 行 -> 两行都选中
     clickRow(dt, 3, .{ .super = true });
     try testing.expectEqual(@as(usize, 2), dt.state.selection.selected_count);
     try testing.expect(dt.state.isRowSelected(1) and dt.state.isRowSelected(3));
 
-    // Shift 点第 4 行 → 以锚点(3)重划区间 3..4
+    // Shift 点第 4 行 -> 以锚点(3)重划区间 3..4
     clickRow(dt, 4, .{ .shift = true });
     try testing.expectEqual(@as(usize, 2), dt.state.selection.selected_count);
     try testing.expect(dt.state.isRowSelected(3) and dt.state.isRowSelected(4));
@@ -777,7 +777,7 @@ test "DataTable: multi 多选 —— Cmd 切换 / Shift 区间 / 底色 / 回调
     try testing.expectEqual(@as(usize, 2), n);
     try testing.expectEqualSlices(usize, &.{ 3, 4 }, buf[0..n]);
 
-    // 无修饰点回第 0 行 → 清空其余
+    // 无修饰点回第 0 行 -> 清空其余
     clickRow(dt, 0, .{});
     try testing.expectEqual(@as(usize, 1), dt.state.selection.selected_count);
     try testing.expect(dt.state.isRowSelected(0));
@@ -835,12 +835,12 @@ test "DataTable: 筛选变化清空选择（过滤序号重排，旧选中位会
     try testing.expect(dt.state.selection.anchor == null);
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "data_table: mount 在任意分配点失败时不泄漏（sweep）" {
     const sw = @import("../oom_sweep.zig");
     try sw.sweepMount("data_table", struct {

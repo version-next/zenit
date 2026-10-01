@@ -7,7 +7,7 @@
 /// - 键盘事件: key_down, key_up
 /// - 文本输入: text_input, ime_preedit, ime_commit
 /// - 焦点事件: focus, blur
-/// - 事件传播: capture → target → bubble (DOM 风格)
+/// - 事件传播: capture -> target -> bubble (DOM 风格)
 const std = @import("std");
 
 /// 多击判定窗口与像素容差。
@@ -192,20 +192,46 @@ pub const ImeCommitEvent = struct {
     replace_end_utf8: u32 = ime_no_replacement,
 };
 
+/// 触控板滚动手势阶段（对应 NSEvent.phase）。鼠标滚轮与惯性事件为 .none。
+/// 一个手势总是从 may_begin 或 began 开始，以 ended 或 cancelled 结束。
+pub const ScrollPhase = enum(u8) {
+    none,
+    /// 手指放下但还没移动；随后是 began 或 cancelled
+    may_begin,
+    began,
+    changed,
+    ended,
+    cancelled,
+};
+
+/// 松手后的惯性阶段（对应 NSEvent.momentumPhase）。非惯性事件为 .none。
+pub const MomentumPhase = enum(u8) { none, began, changed, ended };
+
 /// 滚轮事件
 pub const ScrollEvent = struct {
     dx: f32,
     dy: f32,
     x: f32,
     y: f32,
-    /// true = 松手后惯性滚动（trackpad momentum），false = 手指触摸中或鼠标滚轮
-    is_momentum: bool = false,
-    /// true = 触摸板手指抬起 (NSEventPhaseEnded)
-    phase_ended: bool = false,
-    /// true = 触摸板事件（有 phase 信息），false = 鼠标滚轮
-    is_trackpad: bool = false,
+    phase: ScrollPhase = .none,
+    momentum: MomentumPhase = .none,
     /// 事件发生时的修饰键状态（Cmd/Ctrl+滚轮 = 缩放 等画布交互需要）
     modifiers: Modifiers = .{},
+
+    /// 手指离开触控板（ended 之后可能有惯性，cancelled 没有）
+    pub fn phaseEnded(self: ScrollEvent) bool {
+        return self.phase == .ended or self.phase == .cancelled;
+    }
+
+    /// 松手后的惯性事件
+    pub fn isMomentum(self: ScrollEvent) bool {
+        return self.momentum != .none;
+    }
+
+    /// 触控板事件（有手势阶段或惯性）；false = 鼠标滚轮
+    pub fn isTrackpad(self: ScrollEvent) bool {
+        return self.isMomentum() or self.phase != .none;
+    }
 };
 
 /// 连续手势阶段

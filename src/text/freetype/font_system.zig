@@ -150,7 +150,7 @@ pub const Font = struct {
     }
 
     /// FreeType 后端只走 FT_PIXEL_MODE_GRAY（见 rasterizeGlyph 的 pixel_mode 断言），
-    /// 没有彩色字形路径 —— 恒为 false，与 CoreText 后端 API 对齐。
+    /// 没有彩色字形路径，恒为 false，与 CoreText 后端 API 对齐。
     pub fn hasColorGlyphs(self: *const Font) bool {
         _ = self;
         return false;

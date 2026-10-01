@@ -1,4 +1,4 @@
-/// Menu — 样式层
+/// Menu，样式层
 ///
 /// recipe 与具名样式函数；业务逻辑/State/事件处理在 mod.zig。
 const core = @import("../../core.zig");
@@ -9,12 +9,12 @@ const ConditionalStyle = core.ConditionalStyle;
 const recipe_mod = @import("../../recipe.zig");
 
 // ============================================================================
-// MenuItemRecipe — recipe(danger) + disabled 条件态
+// MenuItemRecipe, recipe(danger) + disabled 条件态
 //
 // base 管几何 + 静态外观 + normal 文字色 + hover 高亮背景（键盘/鼠标虚拟高亮
 // 取 hover 态色，由 MenuState.highlightIndex 运行时驱动）+ disabled 条件态。
 // danger 是真变体（每项的种类），走 variant resolver；disabled 是条件，
-// 走 resolve(.{ .is_disabled })——其短路语义天然保证 disabled 压过 danger
+// 走 resolve(.{ .is_disabled })，其短路语义天然保证 disabled 压过 danger
 // （替代此前 3 条 compounds 互斥梯子）。
 // ============================================================================
 pub const MenuItemRecipe = recipe_mod.recipe(struct {

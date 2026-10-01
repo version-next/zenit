@@ -1,4 +1,4 @@
-//! command_encoder_test.zig — RenderCommandEncoder 的单元测试
+//! command_encoder_test.zig, RenderCommandEncoder 的单元测试
 //!
 //! 从 command_encoder.zig 析出（2026-07-31）。测试占了原文件 679 行，
 //! 与被测代码放同一文件除了撑大文件没有别的作用；Zig 的 test 块在
@@ -6,7 +6,7 @@
 //! render_tests 模块）。
 //!
 //! ⚠ 这里测的是 encoder 的**内部**行为，所以引用了若干非 pub 符号需要的
-//! 限定路径。若某个被测函数改名/降级为私有，编译期就会报错 —— 这是有意的：
+//! 限定路径。若某个被测函数改名/降级为私有，编译期就会报错，这是有意的：
 //! 测试与实现同步失效，好过静默失去覆盖。
 
 const std = @import("std");
@@ -68,7 +68,7 @@ test "computeBackdropCaptureRegion trims capture to current clip and preserves d
     ).?;
 
     // 纹理分配尺寸落 64px 桶（性能：几何动画期同桶帧共享池纹理）。
-    // 逻辑 capture 160x120 → alloc 192x128；copy/dst 语义不变。
+    // 逻辑 capture 160x120 -> alloc 192x128；copy/dst 语义不变。
     try std.testing.expectEqual(@as(u32, 192), region.tex_w);
     try std.testing.expectEqual(@as(u32, 128), region.tex_h);
     try std.testing.expectEqual(@as(u32, 240), region.src_x);
@@ -92,7 +92,7 @@ test "computeBackdropCaptureRegion clips negative origin into transparent padded
         0,
     ).?;
 
-    // 60x40 → 64px 桶 → 64x64。
+    // 60x40 -> 64px 桶 -> 64x64。
     try std.testing.expectEqual(@as(u32, 64), region.tex_w);
     try std.testing.expectEqual(@as(u32, 64), region.tex_h);
     try std.testing.expectEqual(@as(u32, 0), region.src_x);
@@ -172,7 +172,7 @@ test "restoreSavedClipState preserves parent clip stack after offscreen mutation
 }
 
 test "clip 栈溢出：被忽略的 push 对应的 pop 不能弹掉父级 clip" {
-    // 回归：pushClip 在 depth>=64 时静默忽略，popClip 却无条件弹栈 ——
+    // 回归：pushClip 在 depth>=64 时静默忽略，popClip 却无条件弹栈,
     // 溢出段的每个 pop 都会弹掉一层**父级真实 clip**，之后的内容裁剪错位。
     var sdf: @import("sdf_renderer.zig").SdfRenderer = undefined;
     var txt: @import("text_renderer.zig").TextRenderer = undefined;
@@ -309,8 +309,8 @@ test "dynamic blur uniform slots advance within a frame" {
 }
 
 test "kawase uniform slots exhaust to null instead of clamping onto the last slot" {
-    // 回归：耗尽后曾钳到 511 继续复用——draw 已 encode 未提交，后写覆盖
-    // 前一 pass 的 uniform（静默坏帧）。正确语义是 null → 调用方终止模糊链。
+    // 回归：耗尽后曾钳到 511 继续复用，draw 已 encode 未提交，后写覆盖
+    // 前一 pass 的 uniform（静默坏帧）。正确语义是 null -> 调用方终止模糊链。
     var pgc = PersistentGpuCache{};
     var encoder = RenderCommandEncoder{
         .sdf_renderer = undefined,
@@ -425,7 +425,7 @@ test "FontSelector stable selection prefers oversampling candidate during animat
 
 test "HiDPI: FontSelector.setScaleFactor 传播到基准字体与扩展槽位" {
     // scale 变化时若只更新 small/medium/large，扩展槽位（bold/mono/cjk/…）
-    // 会永远停在旧 scale —— 表现为"部分字号变清晰了、另一些依旧糊"。
+    // 会永远停在旧 scale，表现为"部分字号变清晰了、另一些依旧糊"。
     var font12 = Font{
         .allocator = std.testing.allocator,
         .ct_font = undefined,
@@ -526,7 +526,7 @@ test "HiDPI: FontSelector.setScaleFactor 传播到 lazy derived font" {
 
     selector.setScaleFactor(2.0);
 
-    // 派生字体必须跟着变 —— 这正是本测试的靶心。
+    // 派生字体必须跟着变，这正是本测试的靶心。
     try std.testing.expectEqual(@as(f32, 2.0), derived.scale_factor);
     // 且不能把 cache 清空（键与 scale 无关，就地更新即可）。
     try std.testing.expect(selector.derived_cache.count() >= 1);
@@ -572,7 +572,7 @@ test "FontSelector derived cache init is idempotent" {
 }
 
 test "FontSelector weight_loader 未命中进负缓存：同 (字重, 字号) 不重复查 CoreText" {
-    // 回归守卫：字体族缺某个字重时 loader 返回 null，此前没有负缓存 ——
+    // 回归守卫：字体族缺某个字重时 loader 返回 null，此前没有负缓存,
     // 每次选字体（每帧、每次测量）都重走 CoreText 查找，native 侧还每次 NSLog。
     const Counter = struct {
         calls: u32 = 0,
@@ -633,7 +633,7 @@ test "retained_begin_seq stays aligned when no-op structural blocks are skipped"
     // 回归守卫（2026-07-30 审查发现的 P0）：encodeCommands 会把"空结构块"
     // （begin..end 之间无任何绘制命令）整块跳过、不经过 dispatchCommand。
     // 修复前，被跳过的 begin_opacity_layer 不推进 retained_begin_seq，而指纹
-    // 预扫描已经给它编了号 —— 后续所有层拿到前移一位的错误指纹，内容变了却
+    // 预扫描已经给它编了号，后续所有层拿到前移一位的错误指纹，内容变了却
     // 判命中，画面停在陈旧内容。
     //
     // 用 duck-typed mock 命令列表驱动（encoder 全程 anytype，render 模块不
@@ -787,7 +787,7 @@ test "retained_begin_seq stays aligned when no-op structural blocks are skipped"
 
     const begin = MockItem{ .control_kind = .begin_opacity_layer, .opacity = 0.5 };
     const end = MockItem{ .control_kind = .end_opacity_layer };
-    // 两个空 opacity block —— tryFindNoOpStructuralBlock 会把它们整块折叠。
+    // 两个空 opacity block, tryFindNoOpStructuralBlock 会把它们整块折叠。
     const commands = [_]MockItem{ begin, end, begin, end };
 
     var encoder = RenderCommandEncoder{
@@ -951,7 +951,7 @@ test "damage-rect: per-item 基线捕获；path/clip/嵌套子树折叠 safe；b
         .persistent = undefined,
     };
 
-    // 平坦层：两条 rect → 捕获 2 条 item，safe
+    // 平坦层：两条 rect -> 捕获 2 条 item，safe
     const flat = [_]MockItem{ begin, rect_a, rect_b, end };
     encoder.computeRetainedContentHashes(flat[0..]);
     try std.testing.expect(encoder.damage_ranges[0].captured);
@@ -962,7 +962,7 @@ test "damage-rect: per-item 基线捕获；path/clip/嵌套子树折叠 safe；b
     const b0 = encoder.damage_scratch[0].bounds;
     try std.testing.expectEqual(@as(f32, 8), b0[0]);
     try std.testing.expectEqual(@as(f32, 54), b0[2]);
-    // 同内容重扫 → digest 稳定；改颜色 → digest 变
+    // 同内容重扫 -> digest 稳定；改颜色 -> digest 变
     const d0 = encoder.damage_scratch[0].digest;
     encoder.computeRetainedContentHashes(flat[0..]);
     try std.testing.expectEqual(d0, encoder.damage_scratch[0].digest);
@@ -973,14 +973,14 @@ test "damage-rect: per-item 基线捕获；path/clip/嵌套子树折叠 safe；b
     try std.testing.expect(encoder.damage_scratch[0].digest != d0);
     try std.testing.expectEqual(encoder.damage_scratch[1].digest, encoder.damage_scratch[1].digest);
 
-    // 平移-only 嵌套 opacity 子层 → 递归逐条捕获（2026-07-30 非平坦层扩展）：
+    // 平移-only 嵌套 opacity 子层 -> 递归逐条捕获（2026-07-30 非平坦层扩展）：
     // rect_a + begin + rect_b + end = 4 items，外层保持 safe
     const nested = [_]MockItem{ begin, rect_a, begin, rect_b, end, end };
     encoder.computeRetainedContentHashes(nested[0..]);
     try std.testing.expect(encoder.damage_ranges[0].captured);
     try std.testing.expect(encoder.damage_ranges[0].safe);
     try std.testing.expectEqual(@as(u32, 4), encoder.damage_ranges[0].len);
-    // 子树内某条内容变化 → 只有对应 item 的 digest 变（细粒度脏区的前提）
+    // 子树内某条内容变化 -> 只有对应 item 的 digest 变（细粒度脏区的前提）
     const inner_digest = encoder.damage_scratch[2].digest;
     const outer_digest = encoder.damage_scratch[1].digest;
     var rect_b2 = rect_b;
@@ -1001,7 +1001,7 @@ test "damage-rect: per-item 基线捕获；path/clip/嵌套子树折叠 safe；b
     encoder.computeRetainedContentHashes(flat[0..]);
     try std.testing.expect(encoder.retained_hashes[0] != 0);
 
-    // plain 嵌套（无 dt）：draw==geom → 内容坐标与父同系，偏移 0
+    // plain 嵌套（无 dt）：draw==geom -> 内容坐标与父同系，偏移 0
     var begin_off = begin;
     begin_off.geom = .{ .x = 30, .y = 40, .w = 100, .h = 100 };
     const nested_off = [_]MockItem{ begin, rect_a, begin_off, rect_b, end, end };
@@ -1011,7 +1011,7 @@ test "damage-rect: per-item 基线捕获；path/clip/嵌套子树折叠 safe；b
     try std.testing.expectApproxEqAbs(@as(f32, 8), encoder.damage_scratch[2].bounds[0], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 38), encoder.damage_scratch[2].bounds[1], 0.001);
 
-    // 平移-only draw_transform 的嵌套（promoted surface 常态）→ 也递归：
+    // 平移-only draw_transform 的嵌套（promoted surface 常态）-> 也递归：
     // 内容坐标 = 嵌套-local + (tx - geom.x)
     var begin_tr = begin;
     begin_tr.use_draw_transform = true;
@@ -1025,7 +1025,7 @@ test "damage-rect: per-item 基线捕获；path/clip/嵌套子树折叠 safe；b
     try std.testing.expectApproxEqAbs(@as(f32, 228), encoder.damage_scratch[2].bounds[0], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 358), encoder.damage_scratch[2].bounds[1], 0.001);
 
-    // 带缩放的轴对齐 transform 嵌套 → 整棵折叠成单个 item：rect_a + fold = 2；
+    // 带缩放的轴对齐 transform 嵌套 -> 整棵折叠成单个 item：rect_a + fold = 2；
     // fold bounds 只由 transform 矩形决定（t4,t5,a·w,d·h）
     var begin_tx = begin;
     begin_tx.use_draw_transform = true;
@@ -1041,14 +1041,14 @@ test "damage-rect: per-item 基线捕获；path/clip/嵌套子树折叠 safe；b
     encoder.computeRetainedContentHashes(nested_tx2[0..]);
     try std.testing.expect(encoder.damage_scratch[1].digest != fold_digest);
 
-    // 旋转的嵌套子层：合成范围无法界定 → unsafe
+    // 旋转的嵌套子层：合成范围无法界定 -> unsafe
     var begin_rot = begin;
     begin_rot.rotate = 0.5;
     const nested_rot = [_]MockItem{ begin, rect_a, begin_rot, rect_b, end, end };
     encoder.computeRetainedContentHashes(nested_rot[0..]);
     try std.testing.expect(!encoder.damage_ranges[0].safe);
 
-    // path 命令 → 捕获为 item，bounds 从点集算（+pad）
+    // path 命令 -> 捕获为 item，bounds 从点集算（+pad）
     const path_cmds = [_]MockPathCmd{
         .{ .move_to = .{ .x = 5, .y = 5 } },
         .{ .line_to = .{ .x = 30, .y = 45 } },
@@ -1068,7 +1068,7 @@ test "damage-rect: per-item 基线捕获；path/clip/嵌套子树折叠 safe；b
     try std.testing.expectApproxEqAbs(@as(f32, 200 + 5 - 2), pb[1], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 55 + 4), pb[2], 0.001);
 
-    // push/pop_clip（矩形）→ 捕获为 item；pop 的 bounds = 配对 push 的矩形
+    // push/pop_clip（矩形）-> 捕获为 item；pop 的 bounds = 配对 push 的矩形
     const clip_push = MockItem{ .control_kind = .push_clip, .geom = .{ .x = 20, .y = 20, .w = 40, .h = 30 } };
     const clip_pop = MockItem{ .control_kind = .pop_clip };
     const with_clip = [_]MockItem{ begin, clip_push, rect_a, clip_pop, end };
@@ -1077,7 +1077,7 @@ test "damage-rect: per-item 基线捕获；path/clip/嵌套子树折叠 safe；b
     try std.testing.expectEqual(@as(u32, 3), encoder.damage_ranges[0].len);
     try std.testing.expectEqual(encoder.damage_scratch[0].bounds, encoder.damage_scratch[2].bounds);
 
-    // polygon clip / 不配对 pop / blur 子树 → unsafe
+    // polygon clip / 不配对 pop / blur 子树 -> unsafe
     var poly_clip = clip_push;
     poly_clip.clip_shape_kind = 3;
     const with_poly = [_]MockItem{ begin, poly_clip, rect_a, clip_pop, end };
@@ -1110,7 +1110,7 @@ test "damage-rect: per-item 基线捕获；path/clip/嵌套子树折叠 safe；b
 
 test "damage-rect: arc（spinner 环）脏区覆盖整个圆环，不是圆心一个点" {
     // 回归：arc 复用 .path kind 但无 path_geometry_ptr，pathItemBounds 曾返回
-    // {cx,cy,0,0} → retained 层（Modal/Sheet/Popover）里的 Spinner 部分重绘
+    // {cx,cy,0,0} -> retained 层（Modal/Sheet/Popover）里的 Spinner 部分重绘
     // 时 scissor 只剩圆心 ~2px，整个环被裁掉，转圈冻结。
     const MockItem = DamageMock.MockItem;
     var encoder = RenderCommandEncoder{
@@ -1168,8 +1168,8 @@ test "retained：含玻璃（begin_blur）的层及其外层指纹恒 0，永不
 }
 
 test "computeBackdropCaptureRegion clamps src to source texture bottom/right edge" {
-    // 瓦片跨视口底边：capture rect 底部超出 RT——clamp 后部分捕获而非整体失败
-    //（未 clamp 时 blit 报 InvalidTextureRegion → 玻璃合成整体被静默跳过）。
+    // 瓦片跨视口底边：capture rect 底部超出 RT, clamp 后部分捕获而非整体失败
+    //（未 clamp 时 blit 报 InvalidTextureRegion -> 玻璃合成整体被静默跳过）。
     const region = RenderCommandEncoder.computeBackdropCaptureRegion(
         100,
         450, // 采样起点靠近底部
@@ -1190,13 +1190,13 @@ test "measure 端与 render 端必须是同一个 FontSelector（度量≠渲染
     // 绑到内建的 app.font_selector 上：
     //   renderer.fonts / cx.measure_ctx / g_font_selector_for_measure
     // 消费方要换字体（下游编辑器换 Inter+Lora+Mono）时，如果只调
-    // renderer.setFonts()，就只换掉了第一个 —— 画字用 Inter，量宽还用
+    // renderer.setFonts()，就只换掉了第一个，画字用 Inter，量宽还用
     // runtime 默认那套。两套字体的 advance 不一样，于是光标和选区端点
     // 系统性地落在字形边缘之外，且越长的行偏得越多（误差逐字符累积）。
     //
     // 实测数据（fs=14 / fw=450 / "ssdf x"）：
     //   Inter-Regular  = 40.348
-    //   HelveticaNeue  = 37.590   ← runtime 默认，差 2.758px
+    //   HelveticaNeue  = 37.590   <- runtime 默认，差 2.758px
     // 这个缺口在行尾有 emoji 时最扎眼（emoji 本身 advance 19.000 两边一致，
     // 错的一直是拉丁部分），历史上被误报成「emoji 光栅化太窄」查了很久。
     //
@@ -1204,12 +1204,12 @@ test "measure 端与 render 端必须是同一个 FontSelector（度量≠渲染
     // 管线（光标/选区/命中走它），它**不经过 FontSelector**，由
     // layout_engine.setShapeFontResolver 单独接线。那条路的回归锚在
     // ui/core.zig "光标测量：shape 钩子装与不装必须同宽"。两个测试合起来
-    // 才覆盖全部四个出口 —— 只看本测试会漏掉光标偏移那一半。
+    // 才覆盖全部四个出口，只看本测试会漏掉光标偏移那一半。
     //
     // == 为什么断言「两个 selector 测出不同宽度」而不是断言某个具体数值 ==
     // 具体数值随系统字体版本漂移，钉死会变成脆测试。真正要钉的是**机制**：
     // 不同 selector 必然给出不同宽度，所以「测量用哪个 selector」不是无关
-    // 紧要的实现细节 —— 拿错就是错的，App.setFontSelector 必须一次换齐。
+    // 紧要的实现细节，拿错就是错的，App.setFontSelector 必须一次换齐。
     var fs = try text_module.FontSystem.init(std.testing.allocator);
     defer fs.deinit();
 
@@ -1254,7 +1254,7 @@ test "measure 端与 render 端必须是同一个 FontSelector（度量≠渲染
     render_side = &app_selector;
     const rendered_w = render_side.measureTextWidth(sample, 14, 450, false);
     const measured_w = Bridge.measure(measure_ctx, sample.ptr, sample.len, 14, 450, false);
-    // 这就是 bug 的形状 —— 两端分叉。断言它确实分叉，证明本测试测得到。
+    // 这就是 bug 的形状，两端分叉。断言它确实分叉，证明本测试测得到。
     try std.testing.expect(@abs(rendered_w - measured_w) > 1.0);
 
     // 模拟 App.setFontSelector：两端一起换，分叉消失。
@@ -1268,7 +1268,7 @@ test "measure 端与 render 端必须是同一个 FontSelector（度量≠渲染
 
 test "emoji advance 与拉丁 advance 不随 base selector 变化而混淆" {
     // 配套锚点：emoji 走 coretext_bridge 的 AppleColorEmoji 强制回退，
-    // 不受 base font 影响 —— 任何 base selector 下 advance 都一样。
+    // 不受 base font 影响，任何 base selector 下 advance 都一样。
     // 钉住这条是为了把「光标偏移」的责任范围**排除**掉 emoji：
     // 以后再出现类似偏移，这个测试仍绿就说明错的是拉丁段/base 字体，
     // 不必再重查一遍光栅化路径（历史上在那里空转过一轮）。
@@ -1289,7 +1289,7 @@ test "emoji advance 与拉丁 advance 不随 base selector 变化而混淆" {
     // 同一个 emoji，两套 base selector 必须给出同一个 advance。
     try std.testing.expectApproxEqAbs(ea, eb, 0.001);
 
-    // 而拉丁段必须**不同** —— 这正是上一个测试里那 2.758px 的来源。
+    // 而拉丁段必须**不同**，这正是上一个测试里那 2.758px 的来源。
     const la = sel_a.measureTextWidth("ssdf x", 14, 450, false);
     const lb = sel_b.measureTextWidth("ssdf x", 14, 450, false);
     try std.testing.expect(@abs(la - lb) > 1.0);
@@ -1298,10 +1298,10 @@ test "emoji advance 与拉丁 advance 不随 base selector 变化而混淆" {
 test "stack_mode: 脚本回退让位给显式字体栈，shapingFont 恒为 primary" {
     // == 这个测试在防什么 ==
     // 显式字体栈接入后，字体选择的分工是：
-    //   FontSelector（本测试对象）—— 不再按整段内容挑 CJK/韩文回退字体；
-    //   TextRenderer.selectSegmentFont —— shaping 前按码点在栈内显式选。
+    //   FontSelector（本测试对象），不再按整段内容挑 CJK/韩文回退字体；
+    //   TextRenderer.selectSegmentFont, shaping 前按码点在栈内显式选。
     // 若 stack_mode 下 resolveFonts 仍返回脚本回退，measure 端会整段换成
-    // 回退字体（shapingFont() 的历史行为），而 draw 端只换 CJK 段 ——
+    // 回退字体（shapingFont() 的历史行为），而 draw 端只换 CJK 段,
     // 「量出来和画出来不一样宽」的老病换个入口复发。
     var fs = try text_module.FontSystem.init(std.testing.allocator);
     defer fs.deinit();
@@ -1316,7 +1316,7 @@ test "stack_mode: 脚本回退让位给显式字体栈，shapingFont 恒为 prim
 
     const cjk_text = "中文 mixed";
 
-    // 关闭（默认）：维持既有行为 —— 内容相关脚本回退 + 整段按回退字体 shape。
+    // 关闭（默认）：维持既有行为，内容相关脚本回退 + 整段按回退字体 shape。
     const legacy = sel.resolveFonts(cjk_text, .{ .font_size = 14 });
     try std.testing.expect(legacy.fallback_is_script);
     try std.testing.expectEqual(pingfang, legacy.fallback.?);
@@ -1339,19 +1339,19 @@ test "stack_mode: 脚本回退让位给显式字体栈，shapingFont 恒为 prim
 }
 
 test "damage-rect: 文本脏区必须覆盖整串，不能只有绘制原点那一小块" {
-    // 回归（下游编辑器插入菜单表格尺寸标签："3 × 4" → "3 × 5" 屏幕上停在 "3 × 4"，
-    // 再 → "4 × 5" 变成 "4 × 4"）：
+    // 回归（下游编辑器插入菜单表格尺寸标签："3 × 4" -> "3 × 5" 屏幕上停在 "3 × 4"，
+    // 再 -> "4 × 5" 变成 "4 × 4"）：
     //
-    // text 命令的 geom.w/h **恒为 0** —— lowering 只填绘制原点
+    // text 命令的 geom.w/h **恒为 0**, lowering 只填绘制原点
     // （render_engine/gpu_draw_shadow.zig 的 .text_run 分支写死 .w=0/.h=0）。
     // damageItemBounds 直接拿它算脏区，于是 retained 层做部分重绘时脏区只有
     // 原点周围 pad×2 ≈ 20px：一行字里只有开头一两个字形落在脏区内被重画，
     // 后面的字形保留上一帧像素。
     //
     // 实测坐标（等宽 11px，原点 x=341）：旧脏区 x∈[331,351]，
-    //   首字形 x=341 → 在脏区内，会更新；
-    //   末字形 x=368 → 在脏区外，永远陈旧。
-    // 这就是「第一段更新、× 之后的段不更新」的真正原因 —— 与字体回退分段
+    //   首字形 x=341 -> 在脏区内，会更新；
+    //   末字形 x=368 -> 在脏区外，永远陈旧。
+    // 这就是「第一段更新、× 之后的段不更新」的真正原因，与字体回退分段
     // 无关，× 只是恰好把变化推到了尾段。
     //
     // 合同是**宁大宁小**（见 paint_fingerprint 文件头）：高估只多重绘几个
@@ -1393,7 +1393,7 @@ test "damage-rect: 文本脏区必须覆盖整串，不能只有绘制原点那�
 test "damage-rect: 文本脏区纵向以基线为准，覆盖上伸部与下伸部" {
     // 回归：text 命令的 geom.y 是**基线**（text_item_render 填 baseline_y），
     // 字形画在基线上方（glyph_y = cursor_y - bearing_y）。旧 bounds 纵向是
-    // [y-10, y+2fs+10] —— fs≥14 时字形顶部（y - ascent）落在脏区外，retained
+    // [y-10, y+2fs+10], fs≥14 时字形顶部（y - ascent）落在脏区外，retained
     // 层部分重绘后变化文本的上半截保留陈旧像素。
     const MockItem = DamageMock.MockItem;
     inline for (.{ 11.0, 14.0, 24.0, 48.0 }) |fs_c| {
@@ -1414,7 +1414,7 @@ test "damage-rect: 文本脏区纵向以基线为准，覆盖上伸部与下伸�
 }
 
 test "damage-rect: 旋转的 image/icon 脏区覆盖旋转后的四角" {
-    // 回归：damageItemBounds 忽略 rotate，按轴对齐 geom 算脏区 —— 45° 旋转
+    // 回归：damageItemBounds 忽略 rotate，按轴对齐 geom 算脏区，45° 旋转
     // 后四角伸出 geom 外，旋转动画在 retained 层里留下拖影。
     const MockItem = DamageMock.MockItem;
     const it = MockItem{
@@ -1440,7 +1440,7 @@ fn digestOf(it: anytype) u64 {
 
 test "指纹：polygon clip 按内容 hash（同指针新点集必须 miss）" {
     // 回归：clip_polygon_ptr 只喂指针值。点集活在 frame_arena，每帧 reset 后
-    // 同地址复用 —— 多边形形变（同指针新内容）被判命中，retained 层停在旧
+    // 同地址复用，多边形形变（同指针新内容）被判命中，retained 层停在旧
     // 裁剪形状。
     const MockItem = DamageMock.MockItem;
     var poly = MockClipPolygon{ .point_count = 3, .contour_count = 1 };
@@ -1457,10 +1457,10 @@ test "指纹：polygon clip 按内容 hash（同指针新点集必须 miss）" {
     poly.fill_rule = .nonzero;
     try std.testing.expect(digestOf(it) != d0);
     poly.fill_rule = .evenodd;
-    // 有效区间外的点不影响像素 → 不影响指纹
+    // 有效区间外的点不影响像素 -> 不影响指纹
     poly.points[10] = .{ 99, 99 };
     try std.testing.expectEqual(d0, digestOf(it));
-    // 内容相同、地址不同 → 指纹相同（不因 arena 地址抖动 miss）
+    // 内容相同、地址不同 -> 指纹相同（不因 arena 地址抖动 miss）
     const poly_copy = poly;
     var it2 = it;
     it2.clip_polygon_ptr = &poly_copy;
@@ -1484,7 +1484,7 @@ test "指纹：shape_kind 与 text fade 区间进指纹" {
 }
 
 test "isArcCommand: 类型判据只看 arc_outer_radius，不掺可见性条件" {
-    // 回归：此前「是不是 arc」有两份判据 —— dispatchCommand 顶部用
+    // 回归：此前「是不是 arc」有两份判据，dispatchCommand 顶部用
     // arc_outer_radius <= 0 决定要不要 flushPathPending，.path 分支却用
     // (radius>0 and stroke>0 and alpha>0) 决定走不走 addArc。两者的差值
     // （零宽 / 全透明的 arc）既不被当作 arc，也没有 path_geometry_ptr，
@@ -1499,7 +1499,7 @@ test "isArcCommand: 类型判据只看 arc_outer_radius，不掺可见性条件"
     const fill_path = .{ .kind = .path, .arc_outer_radius = @as(f32, 0), .stroke_width = @as(f32, 0) };
     const rect = .{ .kind = .rect, .arc_outer_radius = @as(f32, 0), .stroke_width = @as(f32, 0) };
 
-    // 零宽 / 全透明的 arc 仍然**是** arc —— 画不出来不等于类型变了
+    // 零宽 / 全透明的 arc 仍然**是** arc，画不出来不等于类型变了
     try std.testing.expect(ce.isArcCommand(zero_stroke_arc));
     try std.testing.expect(ce.isArcCommand(transparent_arc));
     try std.testing.expect(ce.isArcCommand(normal_arc));

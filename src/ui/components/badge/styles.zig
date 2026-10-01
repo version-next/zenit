@@ -1,4 +1,4 @@
-//! Badge 样式层 — BadgeRecipe + dot/StatusBadge 具名样式函数
+//! Badge 样式层，BadgeRecipe + dot/StatusBadge 具名样式函数
 //! 业务逻辑在 mod.zig；BadgeStatus/BadgeSize 是公共 API，循环 import 取用。
 const core = @import("../../core.zig");
 const theme = core.theme;
@@ -11,7 +11,7 @@ const BadgeStatus = mod.BadgeStatus;
 const BadgeSize = mod.BadgeSize;
 
 // ============================================================================
-// BadgeRecipe — recipe(status × size) 统一管理两个维度
+// BadgeRecipe, recipe(status × size) 统一管理两个维度
 //
 // base:        字重（状态/尺寸无关）
 // status 维度: 提供 background / text_color
@@ -52,7 +52,7 @@ pub const BadgeRecipe = recipe_mod.recipe(struct {
         }.resolve,
     };
 
-    /// 跨维度几何 — 只产出几何字段，禁碰 background
+    /// 跨维度几何，只产出几何字段，禁碰 background
     pub fn derived(v: Variants, _: *const theme.ThemeTokens) ConditionalStyle {
         return .{ .base = .{
             .height = .{ .px = v.size.height() },
@@ -63,7 +63,7 @@ pub const BadgeRecipe = recipe_mod.recipe(struct {
 });
 
 // ============================================================================
-// 具名样式函数 — dot 模式与 StatusBadge 的静态样式
+// 具名样式函数，dot 模式与 StatusBadge 的静态样式
 // ============================================================================
 
 /// 8×8 状态圆点（Badge dot 模式与 StatusBadge 共用）

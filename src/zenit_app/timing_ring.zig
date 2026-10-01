@@ -1,8 +1,8 @@
-//! timing_ring — 跨帧计时采样环（GPU 性能门禁的抗噪统计量来源）
+//! timing_ring，跨帧计时采样环（GPU 性能门禁的抗噪统计量来源）
 //!
 //! 刻意独立成文件且**不 import 任何 zenit 模块**：renderer.zig 会拉进
 //! Metal/ObjC 桥，没法在普通 test target 里编译；而百分位数学是纯逻辑，
-//! 必须能被 `zig build test` 真正覆盖到 —— 否则就是"看似有门禁、实际从没跑过"。
+//! 必须能被 `zig build test` 真正覆盖到，否则就是"看似有门禁、实际从没跑过"。
 
 const std = @import("std");
 
@@ -17,7 +17,7 @@ pub const Sample = struct {
 /// 影响，方差极大，任何单帧阈值不是永远绿就是随机红。门禁要的是「最近 N 帧的
 /// P95」这种抗噪统计量。
 ///
-/// 采样只收**真正渲染过的帧**（frame() 走完整路径才 push），idle 跳帧不进环 ——
+/// 采样只收**真正渲染过的帧**（frame() 走完整路径才 push），idle 跳帧不进环,
 /// 否则大量近零样本会把 P95 拉低成毫无意义的假绿。
 pub const TimingRing = struct {
     pub const CAPACITY = 120;
@@ -67,7 +67,7 @@ pub const TimingRing = struct {
 };
 
 /// 帧间隔样本超过此值视为 idle-resume gap（停帧后恢复的第一帧），丢弃不采样。
-/// 它不是卡帧——idle 停帧是框架的省电行为，把它画成红柱/拉低 FPS 都是误报。
+/// 它不是卡帧，idle 停帧是框架的省电行为，把它画成红柱/拉低 FPS 都是误报。
 pub const IDLE_RESUME_GAP_US: u64 = 500_000;
 
 /// DevTools FPS 用的帧间隔样本口径（纯函数，供单测覆盖）：
@@ -98,7 +98,7 @@ test "TimingRing: nearest-rank 百分位取值正确" {
         ring.push(.{ .gpu_execute_us = i });
     }
     try testing.expectEqual(@as(usize, 100), ring.len);
-    // nearest-rank: P95 → 第 95 名 → 值 95；P50 → 第 50 名 → 50
+    // nearest-rank: P95 -> 第 95 名 -> 值 95；P50 -> 第 50 名 -> 50
     try testing.expectEqual(@as(u64, 95), ring.gpuPercentile(95));
     try testing.expectEqual(@as(u64, 50), ring.gpuPercentile(50));
     try testing.expectEqual(@as(u64, 100), ring.gpuPercentile(100));
@@ -106,8 +106,8 @@ test "TimingRing: nearest-rank 百分位取值正确" {
 }
 
 test "TimingRing: nearest-rank 用 ceil 而非 floor（样本数非 100 倍数时才可区分）" {
-    // n=10：P95 的 ceil(0.95*10)=10 → 第 10 名；floor 会得到第 9 名。
-    // 上一个用例 n=100 时两者恰好相同，区分不出取整方向 —— 故补此例，
+    // n=10：P95 的 ceil(0.95*10)=10 -> 第 10 名；floor 会得到第 9 名。
+    // 上一个用例 n=100 时两者恰好相同，区分不出取整方向，故补此例，
     // 否则把 ceil 改成 floor 测试仍全绿（实测过的假信号）。
     var ring = TimingRing{};
     var i: u64 = 1;
@@ -123,7 +123,7 @@ test "TimingRing: 单个离群值不会污染 P95（抗噪的核心性质）" {
     while (i < 100) : (i += 1) ring.push(.{ .gpu_execute_us = 1000 });
     // 一个 100ms 的离群帧
     ring.push(.{ .gpu_execute_us = 100_000 });
-    // P95 仍应是稳态值，而非离群值 —— 否则门禁会被单帧抖动随机拉红
+    // P95 仍应是稳态值，而非离群值，否则门禁会被单帧抖动随机拉红
     try testing.expectEqual(@as(u64, 1000), ring.gpuPercentile(95));
     try testing.expectEqual(@as(u64, 100_000), ring.gpuPercentile(100));
 }
@@ -133,7 +133,7 @@ test "TimingRing: 持续变慢会推高 P95（门禁必须能变红）" {
     var i: usize = 0;
     while (i < TimingRing.CAPACITY) : (i += 1) ring.push(.{ .gpu_execute_us = 1000 });
     try testing.expectEqual(@as(u64, 1000), ring.gpuPercentile(95));
-    // 整环被慢帧填满 → P95 必须跟着涨（反向验证的逻辑基础）
+    // 整环被慢帧填满 -> P95 必须跟着涨（反向验证的逻辑基础）
     i = 0;
     while (i < TimingRing.CAPACITY) : (i += 1) ring.push(.{ .gpu_execute_us = 20_000 });
     try testing.expectEqual(@as(u64, 20_000), ring.gpuPercentile(95));

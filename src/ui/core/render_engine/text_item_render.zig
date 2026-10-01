@@ -183,7 +183,7 @@ pub fn appendTextBlobForNode(
 ///
 /// 正常路径由 `blob_id` 间接取字节（省一次拷贝）；但 blob_id 是帧内序号，
 /// 跨帧存活的 item（replay/cache）可能落在别的控件本帧新建的 blob 上。
-/// resolveTextRunContent 用 content_hash 识破后会回退到这里 ——
+/// resolveTextRunContent 用 content_hash 识破后会回退到这里,
 /// 兜底为空就是"识破了也画不出字"（实测：终端整片空白）。
 ///
 /// 切片指向节点自己的文本缓冲，不额外分配；只在越界时退化为空。
@@ -266,7 +266,7 @@ pub fn appendUnderline(
 }
 
 /// 诊断波浪线的波形（由字号推导）。量级对齐 VS Code / JetBrains：14px 字号下
-/// 周期 ≈4.2px、中心线峰峰 ≈1.5px、线宽 1px——整条高约 2.5px，细而清楚。
+/// 周期 ≈4.2px、中心线峰峰 ≈1.5px、线宽 1px，整条高约 2.5px，细而清楚。
 /// （旧参数峰峰 ≈3.9px + 线宽 ≈2px，约 6px 高，显得又粗又大。）
 pub const WavyParams = struct {
     period: f32,
@@ -392,7 +392,7 @@ pub fn appendDisplayLineWithSpans(
     var shape_measure_guard = layout_engine.beginExternalShapeMeasure(cx.shaping_cache, cx.font_system);
     defer shape_measure_guard.end();
 
-    // blob_id 是帧内序号，跨帧存活的 item 可能落在别人的 blob 上 ——
+    // blob_id 是帧内序号，跨帧存活的 item 可能落在别人的 blob 上,
     // 带上 content_hash 供 resolveTextRunContent 校验身份。
     const blob_content_hash: u64 = if (cx.text_blob_store.get(blob_id)) |bl|
         bl.content_hash
@@ -522,8 +522,8 @@ pub fn appendDisplayLineWithSpans(
             fixed_monospace_char_width: f32,
         ) f32 {
             if (seg_start >= seg_end) return 0;
-            // Monospace + 纯 ASCII fast path —— 等宽文本场景下 99% 命中。
-            // 直接走 measureSegmentWidthCtx → GlyphRun pipeline (cache hit) /
+            // Monospace + 纯 ASCII fast path，等宽文本场景下 99% 命中。
+            // 直接走 measureSegmentWidthCtx -> GlyphRun pipeline (cache hit) /
             // measureMonospaceTextWidth (legacy fallback)。
             // 之前每个 span 都走 prefix cache（每行 ~5 spans × 2 lookup），
             // ph_pre spike 时 cache miss build 是主导成本。
@@ -766,7 +766,7 @@ pub fn appendDisplayLineWithSpans(
 
     // Step 1: 把相邻字体属性相同的 chunks 合并成 "runs"，
     // 让 ligature 字体（如 JetBrains Mono）的 calt/liga 跨 token 边界能正确合成。
-    // 同 run 内仅颜色不同 → 走 drawTextWithSpans（整体 shape + 逐 glyph 着色）。
+    // 同 run 内仅颜色不同 -> 走 drawTextWithSpans（整体 shape + 逐 glyph 着色）。
     // run 边界由 (font_weight, use_italic, use_monospace) 区分；
     // 字体维度变化才会切 run（如 keyword bold vs 普通 regular）。
     var run_start: usize = 0;
@@ -774,7 +774,7 @@ pub fn appendDisplayLineWithSpans(
         const head = chunks[run_start];
         // inline box（如 inline code 的左右 padding）会让 chunk 的文字起点
         // (text_x) 与布局起点 (x) 错开。这样的 chunk 必须独立成 run：
-        // 一旦与邻居合并成一段连续 shaping，padding 造成的位移就丢了——
+        // 一旦与邻居合并成一段连续 shaping，padding 造成的位移就丢了,
         // 文字会贴着背景左缘画，右侧空出双倍 padding（左右不对称）。
         const head_has_box = head.kind == .span and
             text_layout.spanHasInlineBox(spans[head.span_index]);
@@ -893,7 +893,7 @@ pub fn appendDisplayEllipsisText(
     avail_w: f32,
     raster_policy: text_blob_mod.TextRasterPolicy,
 ) !void {
-    // blob_id 是帧内序号，跨帧存活的 item 可能落在别人的 blob 上 ——
+    // blob_id 是帧内序号，跨帧存活的 item 可能落在别人的 blob 上,
     // 带上 content_hash 供 resolveTextRunContent 校验身份。
     const blob_content_hash: u64 = if (cx.text_blob_store.get(blob_id)) |bl|
         bl.content_hash

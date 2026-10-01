@@ -2,7 +2,7 @@
 ///
 /// 提供 Key Context + Action 绑定:
 /// - 节点可设置 key_context 标签 (如 "editor", "modal")
-/// - 全局注册 KeyBinding (key + modifiers → Action)
+/// - 全局注册 KeyBinding (key + modifiers -> Action)
 /// - 键盘事件到达时，沿焦点链查找匹配 context 的 Action 并分发
 const std = @import("std");
 const events_mod = @import("events.zig");

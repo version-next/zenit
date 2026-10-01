@@ -1,4 +1,4 @@
-//! Select — interactive high-level Select component.
+//! Select, interactive high-level Select component.
 //!
 //! Visual contract: Pencil `puQEf` (Select Group 2).
 //! Behaviour is real: Popover positioning/dismissal, single and multiple
@@ -288,7 +288,7 @@ fn syncSelection(state: *SelectState) void {
             // ⚠ 失败时**不能**继续往下走：下面那段会把 label 当前（即旧的）
             // 文本连同新颜色一起 setText 回去，等于把"状态已选 B、显示仍是 A"
             // 这个分叉固化下来，并且配上新配色，看起来完全正常。
-            // 选中值本身已在别处提交，所以这不只是显示问题——任何回读标签
+            // 选中值本身已在别处提交，所以这不只是显示问题，任何回读标签
             // 文本的路径都会拿到旧值。
             if (label.setTextContent(state.allocator, content)) {
                 if (label.getText()) |old| {
@@ -1017,7 +1017,7 @@ test "Select: multiple selection toggles independently" {
     try testing.expect(!result.state.isSelected(0));
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 const sweep_opts = [_]SelectOption{ .{ .value = "one", .label = "Option 1" }, .{ .value = "two", .label = "Option 2" } };
 test "select(clearable): mount 在任意分配点失败时不泄漏（sweep）" {
     const sw = @import("../oom_sweep.zig");

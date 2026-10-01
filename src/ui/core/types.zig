@@ -48,7 +48,7 @@ pub const Point = struct {
 /// 无限画布类应用注意：在 1e6 量级世界坐标 + 深缩放（>1600%）下，f32 尾数
 /// 不足以区分相邻世界坐标（先转 f32 再变换会产生近 1px 量化误差，表现为
 /// 对象抖动/粘连）。应用必须在自己的 f64 里先减去视口原点、再把
-/// 视口局部坐标转 f32 交给 zenit——f64 中先做减法则误差恒为 0。
+/// 视口局部坐标转 f32 交给 zenit, f64 中先做减法则误差恒为 0。
 pub const Transform2D = struct {
     a: f32 = 1,
     b: f32 = 0,
@@ -735,7 +735,7 @@ pub const HitRoles = packed struct(u3) {
 /// `style.hit_roles` 的覆盖类型：**逐 role 三态**，null = 沿用框架推导的默认值。
 ///
 /// 刻意不复用 `HitRoles`：那是个 bool 结构体，写 `.{ .pointer = true }` 会连带把
-/// 未提及的 `scroll`/`inspect` 按字段默认值归零——调用方想"加一个 role"，实际
+/// 未提及的 `scroll`/`inspect` 按字段默认值归零，调用方想"加一个 role"，实际
 /// 却把另外两个也一并接管了（`inspect` 默认 true，被静默改成 false ⇒ 该节点在
 /// devtools 里选不中）。三态让"只覆盖我写的那一个"成为可表达的意图。
 pub const HitRolesOverride = struct {
@@ -1103,7 +1103,7 @@ pub const GridPlacement = struct {
 
 pub const Style = struct {
     // ── 高频内联字段 (~80 bytes) ──
-    // background / opacity 字段已删 → World.paint_state SoA。
+    // background / opacity 字段已删 -> World.paint_state SoA。
     // 读写经 Node.getBackground/setBackgroundRaw（standalone fallback for mock）。
     border: Border = .{},
     padding: Padding = Padding.ZERO,
@@ -1125,7 +1125,7 @@ pub const Style = struct {
     cursor: CursorShape = .inherit,
     layout_isolation: bool = false,
 
-    // ── 低频字段（按需分配，大多数节点为 null → ~0 bytes） ──
+    // ── 低频字段（按需分配，大多数节点为 null -> ~0 bytes） ──
     ext: ?*StyleExt = null,
 
     // ── Accessor 方法（只读，返回 ext 中的值或默认值） ──
@@ -1233,7 +1233,7 @@ pub const Style = struct {
     pub inline fn glass_params(self: *const Style) ?GlassParams {
         return self.getExt().glass;
     }
-    /// 背景模糊半径（逻辑像素，0 = 无模糊）— 从 glass 参数解包
+    /// 背景模糊半径（逻辑像素，0 = 无模糊），从 glass 参数解包
     pub inline fn backdrop_blur(self: *const Style) f32 {
         const gp = self.getExt().glass orelse return 0;
         return gp.backdrop_blur;
@@ -1353,13 +1353,13 @@ pub const Style = struct {
         if (@sizeOf(Style) > 128) @compileError("Style too large");
     }
 
-    /// ⚠️ **已冻结，不要在新代码里用。** 分配失败时 `@panic` —— 对编辑器来说
+    /// ⚠️ **已冻结，不要在新代码里用。** 分配失败时 `@panic`，对编辑器来说
     /// abort 是最坏结局（用户数据全丢）。绝大多数调用点所在的函数本身就是 `!T`、
     /// 本来就能传播错误。
     ///
     /// 新代码一律用 `ensureExtFallible` 并把错误传上去。确实"构造上不可能失败"
     /// （容量已预留等）就写 `ensureExtFallible(a) catch unreachable` 并在注释里
-    /// 论证 —— 要可 grep、可 review，而不是藏在库函数里。
+    /// 论证，要可 grep、可 review，而不是藏在库函数里。
     ///
     /// 存量调用点受下游项目的 OOM 债务棘轮脚本约束：只减不增。
     /// 归零后本函数删除。改名为 `*Panic` 是为了让存量可 grep、且没人会顺手敲它。
@@ -1420,7 +1420,7 @@ pub const BlurGradient = struct {
     /// 全局强度乘子 0~1（滚动位置等运行时信号驱动整体淡入淡出）
     strength: f32 = 1.0,
     /// stops：段间 smoothstep 插值；首 stop 前 / 末 stop 后保持端点强度。
-    /// 最多取前 4 个；空 slice 退回默认 (0,1)→(1,0) 单段渐出。
+    /// 最多取前 4 个；空 slice 退回默认 (0,1)->(1,0) 单段渐出。
     /// 注意生命周期：style 是 retained 的，slice 须指向 comptime 字面量
     /// （`&.{ ... }`）或与节点同寿命的存储，不能指向栈上临时数组。
     stops: []const Stop = &.{},
@@ -1477,10 +1477,10 @@ pub const GlassParams = struct {
     /// direction=.none 时关闭。
     blur_gradient: BlurGradient = .{},
 
-    /// 转为 GPU 就绪格式（Color→[4]f32）
+    /// 转为 GPU 就绪格式（Color->[4]f32）
     pub fn resolve(self: GlassParams) ResolvedGlassParams {
-        // blur gradient stops：clamp 到 [0,1] 并强制升序；空 slice → 默认
-        // 双 stop (0,1)→(1,0)（单段渐出）
+        // blur gradient stops：clamp 到 [0,1] 并强制升序；空 slice -> 默认
+        // 双 stop (0,1)->(1,0)（单段渐出）
         const bg = self.blur_gradient;
         var stop_pos: [4]f32 = .{ 0, 1, 1, 1 };
         var stop_str: [4]f32 = .{ 1, 0, 0, 0 };
@@ -1596,7 +1596,7 @@ pub const StyleExt = struct {
     /// **只影响同一父节点下兄弟节点的绘制与命中顺序。** 每个节点都是其子节点的
     /// stacking context：z 不跨父节点比较，不影响裁剪，也不影响命中是否受裁剪
     /// （渲染与命中都由祖先 overflow_hidden 链裁剪）。同级顺序见
-    /// core/paint_order.zig：regular → sticky(z<=0) → positive_z(z>0，按 z 稳定升序)；
+    /// core/paint_order.zig：regular -> sticky(z<=0) -> positive_z(z>0，按 z 稳定升序)；
     /// 负值按 0 处理。要在视觉上压过表亲，就给共同祖先下相应的那个子节点设 z；
     /// 要画到所有容器外，就挂到 portal（`cx.ensurePopoverPortalRoot()` / OverlayStack）。
     z_index: i16 = 0,
@@ -1686,9 +1686,9 @@ pub const StyleExt = struct {
     }
 };
 
-// ==================== StyleOverride — 统一样式覆盖 ====================
+// ==================== StyleOverride，统一样式覆盖 ====================
 
-/// 样式覆盖结构 — 所有字段默认 null，表示"不覆盖，用组件默认值"
+/// 样式覆盖结构，所有字段默认 null，表示"不覆盖，用组件默认值"
 /// 统一样式描述（全可选字段）
 ///
 /// 用于 box() 构造节点、组件外部样式覆盖、多层 merge。
@@ -1801,8 +1801,8 @@ pub const BoxStyle = struct {
     }
 
     /// 将 BoxStyle 非 null 的字段覆盖到 Style 上
-    /// ⚠️ **本函数是 void，内部有三处 ensureExtPanic —— OOM 下会 abort 整个进程。**
-    /// git_diff sidebar sweep 撞到过（applyMountedComponentStyle → 这里）。
+    /// ⚠️ **本函数是 void，内部有三处 ensureExtPanic, OOM 下会 abort 整个进程。**
+    /// git_diff sidebar sweep 撞到过（applyMountedComponentStyle -> 这里）。
     /// 没有当场改成 fallible 是因为 applyTo 是 BoxStyle 的公共 API、调用点很广，
     /// 改签名要连带改一大批调用方，属于接口级改动。
     /// **欠账登记在此**：要么把它改成 `!void` 并传播，要么让内部三处降级
@@ -1832,7 +1832,7 @@ pub const BoxStyle = struct {
         if (self.display) |v| style.display = v;
         if (self.layout_isolation) |v| style.layout_isolation = v;
         // 视觉
-        // Style.background/opacity 字段已删 → World.paint_state。
+        // Style.background/opacity 字段已删 -> World.paint_state。
         // BoxStyle 仍保留 background/opacity 字段（公开 API 不变）；这两个值
         // 由 builder 在 Node.create 后经 node.setBackgroundRaw/setOpacityRaw
         // 落到 SoA（见 BoxStyle.paintOverride() + builders.applyPaintOverride）。
@@ -2040,7 +2040,7 @@ pub const StyleOverride = BoxStyle;
 ///
 /// 交互态（hovered/pressed/focused）+ 持久语义态（selected/expanded/invalid）。
 /// 对标 Panda CSS conditions 的 _hover/_active/_focus/_disabled/_checked/
-/// _expanded/_invalid 子集——只收录组件库有真实消费者的条件位。
+/// _expanded/_invalid 子集，只收录组件库有真实消费者的条件位。
 pub const InteractionState = struct {
     is_hovered: bool = false,
     is_pressed: bool = false,
@@ -2067,7 +2067,7 @@ pub const DirtyLevel = enum {
     interaction,
     /// 布局脏（padding, margin, direction, justify, align_items, gap, flex, overflow, position, inset 等）
     layout,
-    /// 尺寸脏（width, height — 需要父容器重算）
+    /// 尺寸脏（width, height，需要父容器重算）
     sizing,
 
     /// 返回两个级别中更高的
@@ -2167,7 +2167,7 @@ pub fn isExtField(comptime field: StyleField) bool {
 
 /// 编译时获取 Style 字段的类型
 pub fn StyleFieldType(comptime field: StyleField) type {
-    // background/opacity 已不在 Style（→ World.paint_state）；
+    // background/opacity 已不在 Style（-> World.paint_state）；
     // 保留 StyleField 枚举 + setStyle API，类型在此显式给出。
     if (comptime field == .background) return Color;
     if (comptime field == .opacity) return f32;
@@ -2317,7 +2317,7 @@ pub const A11yRole = enum {
     generic,
 };
 
-/// aria-haspopup 值集 — ARIA 1.2 spec
+/// aria-haspopup 值集，ARIA 1.2 spec
 pub const HasPopup = enum {
     none,
     menu,
@@ -2409,7 +2409,7 @@ pub const A11yProps = struct {
     /// an unrelated AXValue.
     live_text: ?[]const u8 = null,
     hidden: bool = false,
-    /// aria-haspopup — 表明此控件激活时会打开浮层（菜单/对话框等）
+    /// aria-haspopup，表明此控件激活时会打开浮层（菜单/对话框等）
     has_popup: HasPopup = .none,
 
     // ── 2026-07-31：以下字段此前在 A11yProps 里根本不存在，
@@ -2455,7 +2455,7 @@ pub const A11yProps = struct {
     row_span: u32 = 1,
     column_index: u32 = 0,
     column_span: u32 = 1,
-    /// aria-activedescendant — 容器自身 focus 时，
+    /// aria-activedescendant，容器自身 focus 时，
     /// 通过此 element_id_raw 告诉 AT 当前激活的子项。0xFFFFFFFF = 无。
     /// 适用 combobox / listbox / grid 等"虚拟焦点"模式控件。
     active_descendant_element_id: u32 = 0xFFFFFFFF,
@@ -2570,8 +2570,8 @@ pub const TextProps = struct {
     /// 等宽字体字符宽度（> 0 时启用快速路径：整行一次塑形 + utf8DisplayWidth 计算 span 背景位置）
     monospace_char_width: f32 = 0,
     /// content 是否由框架 allocator 分配（节点销毁 / setText 换内容时由框架释放）。
-    /// 坑：`getText → 改 content 指向应用自己的 buffer → setText` 时 owned 会跟着
-    /// 拷过来仍为 true，节点销毁会 free 应用的 buffer（Invalid free）——
+    /// 坑：`getText -> 改 content 指向应用自己的 buffer -> setText` 时 owned 会跟着
+    /// 拷过来仍为 true，节点销毁会 free 应用的 buffer（Invalid free）,
     /// 指向应用 buffer 时必须显式置 `owned = false`，或直接用 `node.setTextContent`。
     owned: bool = false,
 
@@ -2584,7 +2584,7 @@ pub const TextProps = struct {
 
     /// 右端淡出遮罩宽（px，0 = 关闭；仅 wrap=.none 单行、无 spans 时生效）。
     /// 在可用宽（node 内容宽）的最后 fade_right px 内，glyph alpha 按位置
-    /// 线性降到 0 —— 类 CSS mask-image 的文本专用最小实现。与 .clip 搭配
+    /// 线性降到 0，类 CSS mask-image 的文本专用最小实现。与 .clip 搭配
     /// 使用可得到"名字淡出而不是被硬切/省略号"的收尾（浮层控件盖在文字上
     /// 的场景不再需要任何底色板，透明/玻璃背景上天然正确）。
     fade_right: f32 = 0,
@@ -2599,7 +2599,7 @@ pub const TextProps = struct {
 
     /// 设置内联文本内容（≤ inline_buf.len = 16 字节，零分配）。
     ///
-    /// **不截断**：超长返回 error.InlineContentTooLong。曾经静默截到 16 字节 ——
+    /// **不截断**：超长返回 error.InlineContentTooLong。曾经静默截到 16 字节,
     /// 调用方传入的 placeholder / 月份标签 / 格式化数字悄悄被砍掉一截。长度不受控的
     /// 内容用 `setContent(allocator, src)`（放得下走 inline，否则 dupe 成 owned）。
     /// 注意：调用后如果 TextProps 被值传递或复制，必须调用 fixupAfterMove
@@ -2610,7 +2610,7 @@ pub const TextProps = struct {
         self.inline_len = len;
         self.content = self.inline_buf[0..len];
         // content 已改指自身 inline_buf，不再是堆内存：必须撤掉 owned。
-        // 否则 `getText → setInlineContent → setText` 换掉一段 owned 堆文本时，
+        // 否则 `getText -> setInlineContent -> setText` 换掉一段 owned 堆文本时，
         // 新条目带着 owned=true 指向 inline_buf，节点销毁时 free 它 = Invalid free。
         // 旧堆内存由 ContentTable.setText 按指针守卫释放。
         self.owned = false;
@@ -2647,23 +2647,23 @@ pub const IconProps = struct {
     tint: Color = Color.WHITE,
 };
 
-/// 事件回调引用 —— 组件回调的统一形态。
+/// 事件回调引用，组件回调的统一形态。
 ///
 /// ## 为什么有 payload 变体（2026-07-31）
 ///
 /// 此前组件回调分两轨且**不可互换**：
-///   - `?HandlerRef`                        —— 无参，只通知"发生了"
-///   - `?*const fn (T, *anyopaque) void`    —— 带值，告诉你"变成了什么"
+///   - `?HandlerRef`，无参，只通知"发生了"
+///   - `?*const fn (T, *anyopaque) void`，带值，告诉你"变成了什么"
 ///
 /// docs/API_STABILITY.md 曾声称"已统一为 HandlerRef、Input 是特例"，实测
 /// 是 16 vs 17 的对半分裂。而且**直接把带值那组迁到无参 HandlerRef 会静默
-/// 丢掉 payload** —— 调用方照常编译，值没了，是最难查的一类回归。
+/// 丢掉 payload**，调用方照常编译，值没了，是最难查的一类回归。
 ///
 /// 所以先给 HandlerRef 加上可选的 payload 通道，再让两轨并轨：
 ///   - `.callback` 仍是无参签名，54 处既有 `.invoke()` 调用点零改动；
 ///   - `.payload_callback` 是可选的带值签名，由 `invokeWith*` 触发。
 ///
-/// payload 只支持 bool / []const u8 两种 —— 实测全仓 17 个带值回调的载荷
+/// payload 只支持 bool / []const u8 两种，实测全仓 17 个带值回调的载荷
 /// 就这两类（bool: checkbox/switch/accordion；[]const u8: input/textarea/
 /// tabs/radio）。不做泛型是刻意的：HandlerRef 存在 Node 里，泛型会让
 /// EventHandlers 变成 comptime 类型参数，污染整棵树的类型。
@@ -2683,7 +2683,7 @@ pub const HandlerRef = struct {
     };
 
     /// drop 回调的完整 payload：换行分隔的 paths + 落点坐标（window 坐标系，
-    /// 与 DragEvent.x/y 同源）。按落点摆放文件（画布拖入）需要坐标——
+    /// 与 DragEvent.x/y 同源）。按落点摆放文件（画布拖入）需要坐标,
     /// 只给 paths 时宿主只能退回全局 .drag 事件自己记位置（下游回归）。
     pub const DropPayload = struct {
         /// 换行分隔的文件路径 / URL 列表；仅回调执行期间有效，需留存自行 dupe。
@@ -2703,7 +2703,7 @@ pub const HandlerRef = struct {
     }
 
     /// 带 bool 值触发。handler 若注册的是无参版本，退化为无参调用
-    /// （不丢事件，只是拿不到值）——这样组件可以无条件调 invokeWithBool，
+    /// （不丢事件，只是拿不到值），这样组件可以无条件调 invokeWithBool，
     /// 不必关心调用方注册了哪种。
     pub fn invokeWithBool(self: HandlerRef, value: bool) void {
         if (self.payload_callback) |pc| switch (pc) {
@@ -2727,7 +2727,7 @@ pub const HandlerRef = struct {
     }
 
     /// 带完整 drop payload（paths + 落点坐标）触发。注册的是 string 版本时
-    /// 退化为仅 paths；无参版本退化为无参——同 invokeWithBool 的降级合同。
+    /// 退化为仅 paths；无参版本退化为无参，同 invokeWithBool 的降级合同。
     pub fn invokeWithDrop(self: HandlerRef, payload: DropPayload) void {
         if (self.payload_callback) |pc| switch (pc) {
             .drop => |f| return f(payload, self.context),
@@ -2756,7 +2756,7 @@ pub const EventHandlers = struct {
     on_focus: ?HandlerRef = null,
     on_blur: ?HandlerRef = null,
     on_event: ?GenericEventCallback = null,
-    /// Phase 6: capture 阶段事件处理器（root → target 路径下行调用）。
+    /// Phase 6: capture 阶段事件处理器（root -> target 路径下行调用）。
     /// 默认 null = 该节点不参与 capture phase 派发，零开销跳过。
     /// 用于：focus trap、scroll lock、手势仲裁等需要在祖先拦截的场景。
     on_event_capture: ?GenericEventCallback = null,

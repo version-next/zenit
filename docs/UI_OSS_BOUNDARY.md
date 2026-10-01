@@ -13,13 +13,13 @@ The line is enforced at **build time**: `zig build hello-button` only allows the
 | Module | Path | Role |
 |---|---|---|
 | `ui` | `src/ui/` | Declarative tree, reactive primitives, layout engine, components, hit-test, animation, focus, accessibility, dispatcher |
-| `app` | `src/zenit_app/` | `AppRenderer` (UI → GPU encoding), `App` runtime helper (one-call init + main loop) |
-| `system_sdk` | `src/system_sdk/` | Platform abstraction (events, IME, clipboard, dialogs) — backed by per-OS backends |
+| `app` | `src/zenit_app/` | `AppRenderer` (UI to GPU encoding), `App` runtime helper (one-call init + main loop) |
+| `system_sdk` | `src/system_sdk/` | Platform abstraction (events, IME, clipboard, dialogs), backed by per-OS backends |
 | `render` | `src/render/` | Metal renderers (SDF, text via CoreText, image atlas, icon) |
 | `gpu` | `src/gpu/` | Thin Metal abstraction (Surface, Device, Queue, CommandEncoder) |
 | `platform` | `src/platform/` | NSWindow + display link wrapper |
 | `text` | `src/text/` | Font loading, shaping (FreeType + HarfBuzz) |
-| `text_core` | `src/text_core/` | PieceTree, DocCursor, WrapMap, Anchor, SumTree, FenwickTree — pure text data structures |
+| `text_core` | `src/text_core/` | PieceTree, DocCursor, WrapMap, Anchor, SumTree, FenwickTree; pure text data structures |
 | `icon_ir` | `src/icon_ir.zig` | SVG asset metadata format |
 | `zenit_icons` | build-selected provider module | Full provider catalog (`ui.icons`); Lucide is the public default |
 | `zenit_system_icons` | `src/ui/system_icons_*.zig` | Provider-neutral semantic icons used by framework components |
@@ -28,16 +28,16 @@ The line is enforced at **build time**: `zig build hello-button` only allows the
 
 By policy, none of the following may appear in any module above:
 
-- **Language runtimes** — tree-sitter, LSP clients, regex engines (e.g. PCRE2), fuzzy matchers. A GUI framework should not pull in a language toolkit.
-- **Editor surfaces** — WYSIWYG document editors, code editors with syntax highlighting / find-replace / foldings, completion engines.
-- **App-side document models** — anything richer than the generic `PieceTree` already in `text_core`. Application data layers belong in the application.
-- **App shell** — sidebars, command palettes, file trees, multi-file workspace persistence, hot-reload, dev test harnesses, component showcases.
+- **Language runtimes**: tree-sitter, LSP clients, regex engines (e.g. PCRE2), fuzzy matchers. A GUI framework should not pull in a language toolkit.
+- **Editor surfaces**: WYSIWYG document editors, code editors with syntax highlighting / find-replace / foldings, completion engines.
+- **App-side document models**: anything richer than the generic `PieceTree` already in `text_core`. Application data layers belong in the application.
+- **App shell**: sidebars, command palettes, file trees, multi-file workspace persistence, hot-reload, dev test harnesses, component showcases.
 
 If you need any of these, build them in your application on top of the public `ui` / `app` surface. The boundary exists so a "give me a button" app doesn't drag in a language server.
 
 ## Why the boundary matters
 
-A minimal `hello-button` `.app` is **1.7 MB** (`-Doptimize=ReleaseSmall`) — a complete window, layout engine, Metal renderer, font fallback chain, IME handling. Open-source users of zenit should pay only for what they use.
+A minimal `hello-button` `.app` is **1.7 MB** (`-Doptimize=ReleaseSmall`), and it includes a complete window, layout engine, Metal renderer, font fallback chain, IME handling. Open-source users of zenit should pay only for what they use.
 
 It also means the framework can stay small enough to *understand*. New contributors need to read a manageable codebase to feel comfortable changing it.
 
@@ -108,7 +108,7 @@ If the component needs new data structures, prefer:
 2. A new file in `src/ui/` (broader utility).
 3. A new file in `src/text_core/` (text-related data structure that's truly generic, e.g., a new B-tree variant).
 
-**Don't** introduce dependencies on a language toolchain or an app-side document model from inside `src/ui/`. If you find yourself wanting to, you're probably building application logic — push it to the application layer.
+**Don't** introduce dependencies on a language toolchain or an app-side document model from inside `src/ui/`. If you find yourself wanting to, you're probably building application logic, so push it to the application layer.
 
 ### Adding a new system service (e.g., audio, file system)
 
@@ -155,4 +155,4 @@ gated skips. Most are first-open-render expectations that drifted as the
 popover prewarm pipeline evolved; the rest are SnapshotLayer/Grid render
 paths. See the [issue tracker](https://github.com/version-next/zenit/issues) for the full list and recommended fix
 order. A new contributor wanting to make a real difference should pick
-the first-open-render group from there — fixing one likely fixes ten.
+the first-open-render group from there; fixing one likely fixes ten.

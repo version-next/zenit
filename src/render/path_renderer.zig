@@ -1,4 +1,4 @@
-/// Path Renderer — 矢量路径 GPU 渲染（D5：含边缘 AA）
+/// Path Renderer，矢量路径 GPU 渲染（D5：含边缘 AA）
 ///
 /// 流程：
 ///   1. `addFillPath()` 接收 Contour 列表（来自 PathTessellator）
@@ -43,7 +43,7 @@ pub const PathPolygon = struct {
 const path_shader_source: []const u8 = @embedFile("shaders/path.metal");
 
 // ============================================================================
-// Uniforms — 与 path.metal PathUniforms 对齐
+// Uniforms，与 path.metal PathUniforms 对齐
 // ============================================================================
 
 const PathUniforms = extern struct {
@@ -67,7 +67,7 @@ const PathUniforms = extern struct {
 };
 
 // ============================================================================
-// 顶点格式 — 与 path.metal PathVertex 对齐
+// 顶点格式，与 path.metal PathVertex 对齐
 // ============================================================================
 
 const PathVertex = extern struct {
@@ -117,7 +117,7 @@ const MESH_CACHE_TTL_FRAMES = 240;
 //
 // ensureVertexBufferCapacity 只扩不缩：大画布 fit-all 一次冲到 ~56MiB 后
 // 峰值即永久驻留。收缩判据 = **连续** SHRINK_FRAMES 帧用量低于
-// capacity/SHRINK_DIVISOR 才释放。单帧判据会抖动——pan/zoom 场景帧间用量
+// capacity/SHRINK_DIVISOR 才释放。单帧判据会抖动，pan/zoom 场景帧间用量
 // 波动大，任何一帧回到高水位都重置计数，振荡负载永远触发不了建销循环；
 // 触发后也只在下一次真的有路径内容时按需重建一次 buffer。
 const SHRINK_DIVISOR: usize = 4;
@@ -170,14 +170,14 @@ const MeshEntry = struct {
 /// 矢量填充的渐变规格（可选）。存在的理由：`fill_path` 的 GPU 侧**早就支持
 /// per-vertex 颜色**（`PathVertex.color`，path.metal 的 fragment 直接插值
 /// `in.fill_color`），只是 CPU 侧一直把统一色回填进每个顶点。多边形（三角/
-/// 星形）的渐变填充就卡在这一步 —— 之前只能退化成纯色。
+/// 星形）的渐变填充就卡在这一步，之前只能退化成纯色。
 ///
 /// 做法：三角化之后，按每个顶点在 bbox 内的归一化位置求 t，再按 stop 插值
 /// 写进 `PathVertex.color`。顶点级插值对凸多边形与三角化后的凹多边形都成立
 /// （光栅器在三角形内做线性插值，与渐变本身的线性性一致）。
 ///
 /// 已知偏差：radial/conic 在**顶点**求值，弯曲等值线只在三角形内被线性近似。
-/// 三角/星形顶点少，径向渐变会略显棱角 —— 真要精确需要 fragment 侧求值
+/// 三角/星形顶点少，径向渐变会略显棱角，真要精确需要 fragment 侧求值
 /// （给 path.metal 加 gradient uniform），那是独立一笔。
 pub const FillGradient = struct {
     /// 与 sdf_renderer.GradientDir 同序（1=vertical 2=horizontal 3=diagonal
@@ -266,7 +266,7 @@ pub const PathRenderer = struct {
     // ── Phase C：跨帧 mesh 缓存 ──
     // key = wyhash(path 命令逐 tag payload + fill/stroke 判别 + scale +
     // stroke 参数)（encoder 侧算）。value = **path-local** 顶点（offset 去除、
-    // 平移不变 —— earclip/fringe/stroke expand 全是加性平移）。
+    // 平移不变，earclip/fringe/stroke expand 全是加性平移）。
     // 命中 = 跳过 flatten + earclip/stroke expand，直接平移回填。
     mesh_cache: std.AutoHashMapUnmanaged(u64, MeshEntry) = .{},
     mesh_cache_vertex_total: usize = 0,
@@ -276,7 +276,7 @@ pub const PathRenderer = struct {
     /// 最近一次 flush 实际发出的 GPU draw 数（合批后 ≤ draw_calls 数），debug 探针用
     last_flush_draw_count: u32 = 0,
     /// damage-rect 部分重绘：当前 pass 的脏区 scissor（物理像素 x,y,w,h）。
-    /// path renderer 自管 per-DrawCall scissor —— 每次 setScissorRect 都必须
+    /// path renderer 自管 per-DrawCall scissor，每次 setScissorRect 都必须
     /// 与它取交，否则会把脏区外应保留的旧像素画穿。由 encoder 在 pass 切换/
     /// 恢复时维护（beginOpacityLayerInto / applyOffscreenTargetViewport）。
     damage_scissor: ?[4]u32 = null,
@@ -371,7 +371,7 @@ pub const PathRenderer = struct {
         // buffer_write_offset 此刻仍是上一帧的累计字节用量（跨 pass 多次
         // flush 的总和），正是收缩判据的输入；随后才清零。
         // 判据用各槽位的最大容量：轮转后槽位容量各异，用当前槽位会被空槽
-        // （容量 0 → 视为"不需要收缩"）每帧重置计数，永远收缩不了。
+        // （容量 0 -> 视为"不需要收缩"）每帧重置计数，永远收缩不了。
         if (self.shrink_policy.noteFrame(self.buffer_write_offset, self.peakSlotCapacity())) {
             // 各槽容量可能各异，统一退役（走延迟释放，在飞帧不受影响）；需要时按实际用量重建。
             self.retireVertexBuffer();
@@ -406,7 +406,7 @@ pub const PathRenderer = struct {
         }
     }
 
-    /// 添加一条填充路径（轮廓 → Earcut + AA fringe → 追加三角形顶点）
+    /// 添加一条填充路径（轮廓 -> Earcut + AA fringe -> 追加三角形顶点）
     /// 返回产出的顶点区间（Phase C storeMesh 用）；null = 无有效三角形
     pub fn addFillPath(
         self: *PathRenderer,
@@ -448,7 +448,7 @@ pub const PathRenderer = struct {
 
         if (grad) |g| if (g.dir != 0 and g.stops.len > 0) {
             // 逐顶点求渐变色：先取本次新增顶点的 bbox（几何已含 offset），
-            // 再按归一化位置求 t → 颜色。GPU 侧线性插值，fragment 不用改。
+            // 再按归一化位置求 t -> 颜色。GPU 侧线性插值，fragment 不用改。
             var min_x: f32 = std.math.floatMax(f32);
             var min_y: f32 = std.math.floatMax(f32);
             var max_x: f32 = -std.math.floatMax(f32);
@@ -525,7 +525,7 @@ pub const PathRenderer = struct {
         });
     }
 
-    /// 添加一条描边路径（轮廓 → 沿边展开矩形 quad + AA fringe → 追加三角形顶点）
+    /// 添加一条描边路径（轮廓 -> 沿边展开矩形 quad + AA fringe -> 追加三角形顶点）
     pub fn addStrokePath(
         self: *PathRenderer,
         contours: []const Contour,
@@ -582,7 +582,7 @@ pub const PathRenderer = struct {
         }
     }
 
-    /// Phase C：缓存命中路径 —— 平移回填 + 补色 + 记 draw call。
+    /// Phase C：缓存命中路径，平移回填 + 补色 + 记 draw call。
     /// 返回 false = 未命中（caller 走 flatten + add*Path，然后 storeMesh）。
     pub fn appendCachedMesh(self: *PathRenderer, key: u64, color_rgba: [4]f32, offset_x: f32, offset_y: f32) !bool {
         const e = self.mesh_cache.getPtr(key) orelse {
@@ -727,7 +727,7 @@ pub const PathRenderer = struct {
         // 还原 pass 的 scissor：path 是唯一用硬件 scissor 做矩形裁剪的管线，其余
         // 管线（sdf/text/icon/image）在 shader 里按 rect_clip 裁、默认 pass scissor
         // 是整个 drawable（或 damage 区）。不还原的话，本次 flush 最后一组 draw 的
-        // scissor 会留给之后所有批次 —— 编辑器里一张矢量图之后，视口外的状态栏、
+        // scissor 会留给之后所有批次，编辑器里一张矢量图之后，视口外的状态栏、
         // 卡片以下的正文整段消失（2026-09-04 下游编辑器 chart block 实测）。
         if (applied_scissor != null) self.applyScissor(render_pass, .{ 0, 0, -1, -1 });
         self.last_flush_draw_count = draws_issued;
@@ -786,7 +786,7 @@ pub const PathRenderer = struct {
             .usage = .{ .vertex = true, .map_write = true },
         });
         // 旧 buffer 可能被本帧早前 pass（setVertexBuffer 已录进当前 command
-        // buffer）或仍在飞的前几帧引用——走 retire 延迟 destroy，而不是像
+        // buffer）或仍在飞的前几帧引用，走 retire 延迟 destroy，而不是像
         // 旧实现那样同步释放（与 glyph_atlas evictPage 修过的是同一类 bug）。
         self.retireVertexBuffer();
         self.vertex_buffer = new_buffer;
@@ -960,7 +960,7 @@ fn earclipFill(
         }
         if (!found_ear) {
             // 浮点误差下可能一个"合法" ear 都测不出来（顶点恰落在候选三角形边上等）。
-            // 与其提前放弃留下未填充楔形，不如强制剪掉最凸的顶点——对简单多边形
+            // 与其提前放弃留下未填充楔形，不如强制剪掉最凸的顶点，对简单多边形
             // 结果仍正确，病态自交输入最多产生轻微过绘。
             var best: ?usize = null;
             var best_cross: f32 = 0;
@@ -1019,7 +1019,7 @@ fn ensureCCW(pts: []TPoint) void {
         area2 -= pts[j].x * pts[i].y;
     }
     if (area2 < 0) {
-        // CW → 反转为 CCW
+        // CW -> 反转为 CCW
         std.mem.reverse(TPoint, pts);
     }
 }
@@ -1099,7 +1099,7 @@ fn buildAaFringe(
         const len = @sqrt(ex * ex + ey * ey);
         if (len < 1e-6) continue;
 
-        // 外法线（CCW 多边形的右侧为外侧）：旋转 +90° → (ey, -ex)
+        // 外法线（CCW 多边形的右侧为外侧）：旋转 +90° -> (ey, -ex)
         const nx = ey / len * fringe_w;
         const ny = -ex / len * fringe_w;
 
@@ -1159,7 +1159,7 @@ fn buildStrokeExpand(
     }
 
     // ---- Phase 2: 对每条边发射三角形 ----
-    // 每条边都使用该边自身的法线来展开两侧——保证同一条边的起点和终点
+    // 每条边都使用该边自身的法线来展开两侧，保证同一条边的起点和终点
     // 完全平行于原始边。join 的衔接通过额外的三角形扇形来处理。
     for (0..edge_count) |ei| {
         const ej = (ei + 1) % n;
@@ -1195,7 +1195,7 @@ fn buildStrokeExpand(
         try out.append(allocator, .{ .x = b1x, .y = b1y, .alpha_scale = 1.0 });
         try out.append(allocator, .{ .x = a1x, .y = a1y, .alpha_scale = 1.0 });
 
-        // AA fringe — 外侧 (+n)
+        // AA fringe，外侧 (+n)
         const ao_x = ax + nx * (half_w + fringe_w);
         const ao_y = ay + ny * (half_w + fringe_w);
         const bo_x = bx + nx * (half_w + fringe_w);
@@ -1207,7 +1207,7 @@ fn buildStrokeExpand(
         try out.append(allocator, .{ .x = bo_x, .y = bo_y, .alpha_scale = 0.0 });
         try out.append(allocator, .{ .x = ao_x, .y = ao_y, .alpha_scale = 0.0 });
 
-        // AA fringe — 内侧 (-n)
+        // AA fringe，内侧 (-n)
         const ai_x = ax - nx * (half_w + fringe_w);
         const ai_y = ay - ny * (half_w + fringe_w);
         const bi_x = bx - nx * (half_w + fringe_w);
@@ -1334,10 +1334,10 @@ fn buildStrokeExpand(
         } else {
             // Bevel / Round join：用扇形连接两条边端点
             // 确定外侧（发射扇形的一侧）
-            // cross > 0 → 左转 → 外侧在右 (+n)
-            // cross < 0 → 右转 → 外侧在左 (-n)
+            // cross > 0 -> 左转 -> 外侧在右 (+n)
+            // cross < 0 -> 右转 -> 外侧在左 (-n)
 
-            // 外侧：当前边终点 → 下条边起点
+            // 外侧：当前边终点 -> 下条边起点
             var s0_x: f32 = undefined;
             var s0_y: f32 = undefined;
             var s1_x: f32 = undefined;
@@ -1375,7 +1375,7 @@ fn buildStrokeExpand(
                     // 内侧在左 (-n)，miter 方向是 -mdx,-mdy
                     mi_x = bx - mdx * inner_scale;
                     mi_y = by - mdy * inner_scale;
-                    // 当前边左端 → miter → 下条边左端
+                    // 当前边左端 -> miter -> 下条边左端
                     try out.append(allocator, .{ .x = bx, .y = by, .alpha_scale = 1.0 });
                     try out.append(allocator, .{ .x = mi_x, .y = mi_y, .alpha_scale = 1.0 });
                     try out.append(allocator, .{ .x = b0x, .y = b0y, .alpha_scale = 1.0 });
@@ -1611,13 +1611,13 @@ test "canCoalesce merges only contiguous same-clip triangles calls" {
     const t2 = DrawCall{ .vertex_start = 42, .vertex_count = 6, .color = .{ 0, 0, 1, 1 }, .rect_clip = clip_b };
     const p0 = DrawCall{ .mode = .polygon_fill, .vertex_start = 42, .vertex_count = 6, .color = .{ 0, 0, 1, 1 }, .rect_clip = clip_a };
 
-    // 不同色但同 clip、区间连续 → 可合并（颜色 per-vertex）
+    // 不同色但同 clip、区间连续 -> 可合并（颜色 per-vertex）
     try std.testing.expect(canCoalesce(t0, t0.vertex_count, t1));
-    // 合并 t0+t1 后与 t2：clip 不同 → 不可合并
+    // 合并 t0+t1 后与 t2：clip 不同 -> 不可合并
     try std.testing.expect(!canCoalesce(t0, t0.vertex_count + t1.vertex_count, t2));
     // polygon_fill 永不参与合并
     try std.testing.expect(!canCoalesce(t0, t0.vertex_count + t1.vertex_count, p0));
-    // 区间不连续 → 不可合并
+    // 区间不连续 -> 不可合并
     try std.testing.expect(!canCoalesce(t0, t0.vertex_count, t2));
 }
 
@@ -1745,7 +1745,7 @@ test "Phase C mesh cache: store → 平移回填命中 → TTL 逐出" {
     try std.testing.expectEqual(@as(usize, 1), r.draw_calls.items.len);
     try std.testing.expectEqual(DrawMode.triangles, r.draw_calls.items[0].mode);
 
-    // TTL 逐出：last_used=0，360 帧（120 的倍数触发 sweep）时 0+240 < 360 → 移除
+    // TTL 逐出：last_used=0，360 帧（120 的倍数触发 sweep）时 0+240 < 360 -> 移除
     r.setFrame(360);
     try std.testing.expect(!try r.appendCachedMesh(42, .{ 1, 1, 1, 1 }, 0, 0));
     try std.testing.expectEqual(@as(usize, 0), r.mesh_cache_vertex_total);
@@ -1778,7 +1778,7 @@ test "vertex buffer 收缩判据：中途一帧回到高水位即重置计数（
 
     var i: u32 = 0;
     while (i < SHRINK_FRAMES - 1) : (i += 1) _ = p.noteFrame(0, cap);
-    // 差一帧到阈值时插入一帧高用量（恰好 cap/4 也算高）→ 重置
+    // 差一帧到阈值时插入一帧高用量（恰好 cap/4 也算高）-> 重置
     try std.testing.expect(!p.noteFrame(cap / SHRINK_DIVISOR, cap));
     // 重新数满整个窗口才触发
     i = 0;
@@ -1857,7 +1857,7 @@ test "vertex buffer 高水位收缩：beginFrame 序列驱动 retire → 延迟 
     // 前面扩容 retire 的旧 buffer 此时早已 drain（3 帧后）
     try std.testing.expectEqual(destroyed_base + 1, gpu.Backend.stats.buffers_destroyed);
 
-    // 恰第 SHRINK_FRAMES 帧：收缩发生——buffer 摘除进 retired，容量归零
+    // 恰第 SHRINK_FRAMES 帧：收缩发生，buffer 摘除进 retired，容量归零
     r.buffer_write_offset = 1024;
     r.beginFrame(800, 600, 1.0);
     try std.testing.expectEqual(@as(usize, 0), r.liveSlotBufferCount());

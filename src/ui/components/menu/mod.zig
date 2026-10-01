@@ -73,7 +73,7 @@ pub const MenuState = struct {
     item_nodes: [MAX_ITEMS]?*Node = [_]?*Node{null} ** MAX_ITEMS,
     item_count: usize = 0,
     on_select: ?core.HandlerRef,
-    /// 虚拟高亮背景色 — mount 时从 MenuItemRecipe 的 hover 态 resolve 得到
+    /// 虚拟高亮背景色，mount 时从 MenuItemRecipe 的 hover 态 resolve 得到
     highlight_bg: Color,
     /// Container which owns keyboard focus while item highlight is virtual.
     menu_node: ?*Node = null,
@@ -451,12 +451,12 @@ test "Menu: select item closes menu" {
     try std.testing.expect(!result.state.is_open.peek());
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "menu: mount 在任意分配点失败时不泄漏（sweep）" {
     const sw = @import("../oom_sweep.zig");
     try sw.sweepMount("menu", struct {

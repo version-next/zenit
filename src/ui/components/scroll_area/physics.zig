@@ -7,27 +7,28 @@ const ScrollState = state_mod.ScrollState;
 const debug = @import("debug.zig");
 const logScroll = debug.logScroll;
 
-/// 垂直滚动：正常范围 clamp，越界部分通过阻尼函数衰减后累积到 bonus
-pub fn applyVerticalScroll(state: *ScrollState, dy: f32, speed: f32, is_momentum: bool) void {
-    const raw_delta = -dy * speed;
-    var delta = raw_delta;
-    const max = state.maxScrollY();
-    delta = applyVerticalNearBoundaryResistance(state, delta, max, is_momentum);
-    logScroll(
-        "apply v: raw_delta={d:.2} delta={d:.2} max={d:.2} scroll_y={d:.2} bonus_y={d:.2} momentum={}",
-        .{ raw_delta, delta, max, state.scroll_y, state.bonus_y, is_momentum },
-    );
+/// 滚动输入的来源。只有触控板手势与其惯性有橡皮筋越界（同 NSScrollView：
+/// 没有手势阶段的鼠标滚轮到边界就停）。
+pub const InputKind = enum { wheel, gesture, momentum };
 
-    // 用户手动滚动时标记 user_scrolling（抑制弹簧回弹）
-    if (!is_momentum) {
-        state.user_scrolling = true;
+/// 垂直滚动：正常范围 clamp，越界部分通过阻尼函数衰减后累积到 bonus
+pub fn applyVerticalScroll(state: *ScrollState, dy: f32, speed: f32, kind: InputKind) void {
+    const raw_delta = -dy * speed;
+    const max = state.maxScrollY();
+    if (kind == .wheel) {
+        state.scroll_y = std.math.clamp(state.scroll_y + raw_delta, 0, max);
+        return;
     }
-    // 惯性阶段且已越界：同向压缩放行（允许 outward momentum 继续加深越界），
-    // 反向回拉让弹簧独占。小幅 outward 尾巴也拦截（防止弹簧回弹中被微弱 momentum 干扰）。
-    if (is_momentum and !state.user_scrolling and state.bonus_y != 0) {
-        const outward = (state.bonus_y > 0 and raw_delta > 0) or (state.bonus_y < 0 and raw_delta < 0);
-        if (!outward or @abs(raw_delta) < ScrollState.scroll_tuning.momentum_bonus_tail_cutoff) return;
-    }
+    const delta = applyVerticalNearBoundaryResistance(state, raw_delta, max, kind == .momentum);
+    logScroll(
+        "apply v: raw_delta={d:.2} delta={d:.2} max={d:.2} scroll_y={d:.2} bonus_y={d:.2} kind={s}",
+        .{ raw_delta, delta, max, state.scroll_y, state.bonus_y, @tagName(kind) },
+    );
+    applyVerticalDelta(state, delta, max);
+}
+
+fn applyVerticalDelta(state: *ScrollState, delta_in: f32, max: f32) void {
+    var delta = delta_in;
 
     // 如果已经在越界区域，先用本次输入消耗 bonus（iOS 风格：回到边界前不移动内容）
     if (state.bonus_y != 0 and delta != 0) {
@@ -61,7 +62,7 @@ pub fn applyVerticalScroll(state: *ScrollState, dy: f32, speed: f32, is_momentum
     }
 
     if (max <= 0) {
-        // 内容不够长，所有滚动都是越界 → 直接走 rubber band
+        // 内容不够长，所有滚动都是越界 -> 直接走 rubber band
         applyOverscrollY(state, delta);
         return;
     }
@@ -80,24 +81,23 @@ pub fn applyVerticalScroll(state: *ScrollState, dy: f32, speed: f32, is_momentum
 }
 
 /// 水平滚动：正常范围 clamp，越界部分通过阻尼函数衰减后累积到 bonus_x
-pub fn applyHorizontalScroll(state: *ScrollState, dx: f32, speed: f32, is_momentum: bool) void {
+pub fn applyHorizontalScroll(state: *ScrollState, dx: f32, speed: f32, kind: InputKind) void {
     const raw_delta = -dx * speed;
-    var delta = raw_delta;
     const max = state.maxScrollX();
-    delta = applyHorizontalNearBoundaryResistance(state, delta, max, is_momentum);
+    if (kind == .wheel) {
+        state.scroll_x = std.math.clamp(state.scroll_x + raw_delta, 0, max);
+        return;
+    }
+    const delta = applyHorizontalNearBoundaryResistance(state, raw_delta, max, kind == .momentum);
     logScroll(
-        "apply h: raw_delta={d:.2} delta={d:.2} max={d:.2} scroll_x={d:.2} bonus_x={d:.2} momentum={}",
-        .{ raw_delta, delta, max, state.scroll_x, state.bonus_x, is_momentum },
+        "apply h: raw_delta={d:.2} delta={d:.2} max={d:.2} scroll_x={d:.2} bonus_x={d:.2} kind={s}",
+        .{ raw_delta, delta, max, state.scroll_x, state.bonus_x, @tagName(kind) },
     );
+    applyHorizontalDelta(state, delta, max);
+}
 
-    if (!is_momentum) {
-        state.user_scrolling = true;
-    }
-    // 惯性阶段且已越界：同向压缩放行，反向回拉让弹簧独占，小幅尾巴也拦截
-    if (is_momentum and !state.user_scrolling and state.bonus_x != 0) {
-        const outward = (state.bonus_x > 0 and raw_delta > 0) or (state.bonus_x < 0 and raw_delta < 0);
-        if (!outward or @abs(raw_delta) < ScrollState.scroll_tuning.momentum_bonus_tail_cutoff) return;
-    }
+fn applyHorizontalDelta(state: *ScrollState, delta_in: f32, max: f32) void {
+    var delta = delta_in;
 
     if (state.bonus_x != 0 and delta != 0) {
         const raw_bonus = state.rubber_band_x.unclamp(state.bonus_x, state.viewport_width);
@@ -150,7 +150,7 @@ pub fn applyOverscrollY(state: *ScrollState, overflow: f32) void {
     if (!state.rubber_band_y_enabled) return;
     const prev_bonus = state.bonus_y;
     state.bonus_y = state.rubber_band.applyDelta(state.bonus_y, overflow, state.viewport_height);
-    // 逐事件估计视觉速度（px/s），弹簧启动时作为 v0 携带 → 与 rubber-band 阶段速度连续
+    // 逐事件估计视觉速度（px/s），弹簧启动时作为 v0 携带 -> 与 rubber-band 阶段速度连续
     state.bonus_velocity = (state.bonus_y - prev_bonus) / ScrollState.default_dt;
     if (@abs(state.bonus_y) < ScrollState.scroll_tuning.jitter_snap_epsilon and @abs(overflow) < ScrollState.scroll_tuning.jitter_snap_epsilon) {
         state.bonus_y = 0;

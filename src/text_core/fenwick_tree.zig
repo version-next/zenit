@@ -1,4 +1,4 @@
-/// FenwickTree — Binary Indexed Tree (BIT) 前缀和加速
+/// FenwickTree, Binary Indexed Tree (BIT) 前缀和加速
 ///
 /// 用于 WrapMap 的 display line 前缀和查询：
 /// - update(idx, delta): O(logN) 增量更新
@@ -111,7 +111,7 @@ pub const FenwickTree = struct {
     }
 
     /// Walk-down 查找: 找到最小的 idx 使得 prefixSum(idx) >= target
-    /// 用于 WrapMap.displayLineInfo: 给定 display_line → 找到对应的 buffer_line
+    /// 用于 WrapMap.displayLineInfo: 给定 display_line -> 找到对应的 buffer_line
     /// target 是 1-based (等价于 prefix_sums 数组中的 display_line + 1)
     pub fn find(self: *const FenwickTree, target: u32) usize {
         if (self.n == 0 or target == 0) return 0;
@@ -135,14 +135,14 @@ pub const FenwickTree = struct {
 
         // pos 是最后一个 prefix < target 的 1-indexed 位置
         // pos+1 是第一个 prefix >= target 的 1-indexed 位置
-        // 转回 0-indexed: pos (因为 1-indexed pos+1 → 0-indexed pos)
+        // 转回 0-indexed: pos (因为 1-indexed pos+1 -> 0-indexed pos)
         return @min(pos, self.n -| 1);
     }
 
     /// 改变大小并用新值 O(N) 重建
     ///
     /// 先分配新数组、都成功后才释放旧数组：反过来（先 free 后 alloc）在
-    /// alloc 失败时 self.tree/values 悬垂且 n 陈旧——后续任何读写都是 UAF，
+    /// alloc 失败时 self.tree/values 悬垂且 n 陈旧，后续任何读写都是 UAF，
     /// deinit 再 free 一次就是 double free。
     pub fn resize(self: *FenwickTree, new_size: usize, new_values: []const u32) !void {
         const tree = try self.allocator.alloc(i64, try std.math.add(usize, new_size, 1));
@@ -245,23 +245,23 @@ test "public operations safely handle invalid indices and full u32 values" {
 
 test "find walk-down" {
     const alloc = std.testing.allocator;
-    // display_counts: [1, 1, 3, 1, 2] → prefix: [1, 2, 5, 6, 8]
+    // display_counts: [1, 1, 3, 1, 2] -> prefix: [1, 2, 5, 6, 8]
     const vals = [_]u32{ 1, 1, 3, 1, 2 };
     var ft = try FenwickTree.buildFrom(alloc, &vals);
     defer ft.deinit();
 
     // find(target) returns the buf_line (0-indexed) where display_line falls
-    // display_line=0 → target=1 → buf_line=0 (prefix[0]=1 >= 1)
+    // display_line=0 -> target=1 -> buf_line=0 (prefix[0]=1 >= 1)
     try std.testing.expectEqual(@as(usize, 0), ft.find(1));
-    // display_line=1 → target=2 → buf_line=1 (prefix[1]=2 >= 2)
+    // display_line=1 -> target=2 -> buf_line=1 (prefix[1]=2 >= 2)
     try std.testing.expectEqual(@as(usize, 1), ft.find(2));
-    // display_line=2 → target=3 → buf_line=2 (prefix[2]=5 >= 3)
+    // display_line=2 -> target=3 -> buf_line=2 (prefix[2]=5 >= 3)
     try std.testing.expectEqual(@as(usize, 2), ft.find(3));
-    // display_line=4 → target=5 → buf_line=2 (prefix[2]=5 >= 5)
+    // display_line=4 -> target=5 -> buf_line=2 (prefix[2]=5 >= 5)
     try std.testing.expectEqual(@as(usize, 2), ft.find(5));
-    // display_line=5 → target=6 → buf_line=3 (prefix[3]=6 >= 6)
+    // display_line=5 -> target=6 -> buf_line=3 (prefix[3]=6 >= 6)
     try std.testing.expectEqual(@as(usize, 3), ft.find(6));
-    // display_line=7 → target=8 → buf_line=4 (prefix[4]=8 >= 8)
+    // display_line=7 -> target=8 -> buf_line=4 (prefix[4]=8 >= 8)
     try std.testing.expectEqual(@as(usize, 4), ft.find(8));
 }
 

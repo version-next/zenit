@@ -2,13 +2,13 @@
 //!
 //! Splits cleanly out of `core.zig`:
 //!   - `parseSvgIntrinsicSize` / `findSvgAttributeValue` / `parseSvgLength` /
-//!     `parseSvgViewBox` — extract width/height from `<svg>` markup.
-//!   - `resolveSvgRasterSize` — final pixel size for SVG rasterization, taking
+//!     `parseSvgViewBox`, extract width/height from `<svg>` markup.
+//!   - `resolveSvgRasterSize`, final pixel size for SVG rasterization, taking
 //!     window scale + oversample into account. (Caller passes scale directly,
 //!     not a `*Cx`, so this stays a pure helper.)
-//!   - `createIconPathGeometry` / `computePathGeometryBounds` — convert an
+//!   - `createIconPathGeometry` / `computePathGeometryBounds`, convert an
 //!     `icon_ir.Rep` into a `PathGeometry` for hit-testing.
-//!   - `hashSvgTexture` — stable cache-key hash for an SVG's bytes.
+//!   - `hashSvgTexture`, stable cache-key hash for an SVG's bytes.
 //!
 //! Extracted from `core.zig` to keep that file focused on the `Cx` runtime.
 //! No behavior change.

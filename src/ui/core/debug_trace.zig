@@ -1,4 +1,4 @@
-/// debug_trace — DevTools 渲染原因追踪与事件传播追踪
+/// debug_trace, DevTools 渲染原因追踪与事件传播追踪
 ///
 /// 零成本设计：DevTools 关闭时仅一个 null check（file-scope 全局指针）。
 /// 数据存储在 DebugTraceStore 中，按需堆分配，环形缓冲区复用。

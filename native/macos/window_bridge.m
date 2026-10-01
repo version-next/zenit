@@ -291,7 +291,20 @@ static id<MTLDevice> createBestMetalDevice(void) {
 #endif
 }
 
+// Background (off-screen) e2e only: ZENIT_RENDER_SCALE renders at a higher
+// backing scale than the screen provides, e.g. 3 for 4K demo recordings of a
+// 1280x800pt window. Ignored on-screen, where the layer must match the display.
+static CGFloat zenitRenderScaleOverride(void) {
+    if (!zenitBackgroundE2E()) return 0;
+    const char *value = getenv("ZENIT_RENDER_SCALE");
+    if (!value) return 0;
+    double scale = atof(value);
+    return (scale >= 1.0 && scale <= 4.0) ? (CGFloat)scale : 0;
+}
+
 static CGFloat currentScreenScale(NSWindow *window) {
+    CGFloat forced = zenitRenderScaleOverride();
+    if (forced > 0) return forced;
     NSScreen *screen = nil;
     if (window) {
         screen = window.screen;
@@ -2188,11 +2201,38 @@ typedef struct {
     float y;
     float dx;
     float dy;
-    BOOL isMomentum;
-    BOOL phaseEnded;
-    BOOL isTrackpad;
+    uint8_t phase;     // zenitScrollPhaseCode
+    uint8_t momentum;  // zenitMomentumPhaseCode
     uint32_t modifiers;
 } ScrollEventPacket;
+
+// 与 system_sdk.events.ScrollPhase 对齐：0 none, 1 may_begin, 2 began,
+// 3 changed, 4 ended, 5 cancelled。惯性事件的 phase 是 None（由 momentumPhase 标记）。
+static uint8_t zenitScrollPhaseCode(NSEvent *event) {
+    switch (event.phase) {
+        case NSEventPhaseNone: return 0;
+        case NSEventPhaseMayBegin: return 1;
+        case NSEventPhaseBegan: return 2;
+        case NSEventPhaseChanged:
+        case NSEventPhaseStationary: return 3;
+        case NSEventPhaseEnded: return 4;
+        case NSEventPhaseCancelled: return 5;
+        // NSEventPhase 是位掩码：组合位或新值仍表示手势进行中，不能当成鼠标滚轮
+        default: return 3;
+    }
+}
+
+// 与 system_sdk.events.MomentumPhase 对齐：0 none, 1 began, 2 changed, 3 ended。
+static uint8_t zenitMomentumPhaseCode(NSEvent *event) {
+    switch (event.momentumPhase) {
+        case NSEventPhaseNone: return 0;
+        case NSEventPhaseBegan: return 1;
+        case NSEventPhaseEnded:
+        case NSEventPhaseCancelled: return 3;
+        // Changed / Stationary / 未知组合：惯性仍在进行
+        default: return 2;
+    }
+}
 
 typedef struct {
     unsigned long long sequence;
@@ -3753,9 +3793,8 @@ int macos_poll_events(void* window_ptr) {
                         packet.y = (float)(contentFrame.size.height - scrollInWindow.y);
                         packet.dx = (float)event.scrollingDeltaX;
                         packet.dy = (float)event.scrollingDeltaY;
-                        packet.isMomentum = (event.momentumPhase != NSEventPhaseNone) ? YES : NO;
-                        packet.isTrackpad = (packet.isMomentum || event.phase != NSEventPhaseNone) ? YES : NO;
-                        packet.phaseEnded = (event.phase == NSEventPhaseEnded) ? YES : NO;
+                        packet.phase = zenitScrollPhaseCode(event);
+                        packet.momentum = zenitMomentumPhaseCode(event);
                         packet.modifiers = (uint32_t)event.modifierFlags;
                         if (!target.scrollEventQueue) {
                             target.scrollEventQueue = [NSMutableArray array];
@@ -3883,6 +3922,8 @@ void macos_set_window_size(void* window_ptr, int width, int height) {
 double macos_get_scale_factor(void* window_ptr) {
     @autoreleasepool {
         WindowWrapper *wrapper = (__bridge WindowWrapper*)window_ptr;
+        CGFloat forced = zenitRenderScaleOverride();
+        if (forced > 0) return (double)forced;
         if (!wrapper.window) return 2.0;  // 默认 Retina
         CGFloat scale = wrapper.window.backingScaleFactor;
         return (double)scale;
@@ -3895,7 +3936,8 @@ void macos_get_drawable_size(void* view_ptr, int* width, int* height) {
         MetalView *view = (__bridge MetalView*)view_ptr;
         // 直接用 view bounds * scale，避免 live resize 期间 drawableSize 不更新
         CGSize size = view.bounds.size;
-        CGFloat scale = view.window ? view.window.backingScaleFactor : [[NSScreen mainScreen] backingScaleFactor];
+        CGFloat scale = zenitRenderScaleOverride();
+        if (scale <= 0) scale = view.window ? view.window.backingScaleFactor : [[NSScreen mainScreen] backingScaleFactor];
         *width = (int)(size.width * scale);
         *height = (int)(size.height * scale);
     }
@@ -4233,10 +4275,8 @@ int macos_get_ime_commit(void *window_ptr, char *buffer, int buffer_size, int *o
 
 // 获取滚轮事件
 // 返回: 1 如果有滚轮事件，0 如果没有
-// is_momentum: 1 表示松手后惯性滚动，0 表示手指触摸中
-// phase_ended: 1 表示触摸板手指抬起 (NSEventPhaseEnded)
-// is_trackpad: 1 表示触摸板事件（有 phase 信息）
-int macos_get_scroll_event(void* window_ptr, float* x, float* y, float* dx, float* dy, int* is_momentum, int* phase_ended, int* is_trackpad, uint32_t* modifiers, unsigned long long* sequence) {
+// phase: zenitScrollPhaseCode; momentum: zenitMomentumPhaseCode
+int macos_get_scroll_event(void* window_ptr, float* x, float* y, float* dx, float* dy, uint8_t* phase, uint8_t* momentum, uint32_t* modifiers, unsigned long long* sequence) {
     @autoreleasepool {
         WindowWrapper *wrapper = (__bridge WindowWrapper*)window_ptr;
         if (wrapper.scrollEventQueue.count > 0) {
@@ -4250,9 +4290,8 @@ int macos_get_scroll_event(void* window_ptr, float* x, float* y, float* dx, floa
             *y = packet.y;
             *dx = packet.dx;
             *dy = packet.dy;
-            *is_momentum = packet.isMomentum ? 1 : 0;
-            *phase_ended = packet.phaseEnded ? 1 : 0;
-            *is_trackpad = packet.isTrackpad ? 1 : 0;
+            *phase = packet.phase;
+            *momentum = packet.momentum;
             *modifiers = packet.modifiers;
             if (sequence) *sequence = packet.sequence;
             return 1;
@@ -4261,9 +4300,8 @@ int macos_get_scroll_event(void* window_ptr, float* x, float* y, float* dx, floa
         *y = -1;
         *dx = 0;
         *dy = 0;
-        *is_momentum = 0;
-        *phase_ended = 0;
-        *is_trackpad = 0;
+        *phase = 0;
+        *momentum = 0;
         *modifiers = 0;
         if (sequence) *sequence = 0;
         return 0;
@@ -5032,9 +5070,8 @@ static void pumpAppEventsWithTimeout(uint32_t timeout_ms) {
                         packet.y = (float)(contentFrame.size.height - scrollInWindow.y);
                         packet.dx = (float)event.scrollingDeltaX;
                         packet.dy = (float)event.scrollingDeltaY;
-                        packet.isMomentum = (event.momentumPhase != NSEventPhaseNone) ? YES : NO;
-                        packet.isTrackpad = (packet.isMomentum || event.phase != NSEventPhaseNone) ? YES : NO;
-                        packet.phaseEnded = (event.phase == NSEventPhaseEnded) ? YES : NO;
+                        packet.phase = zenitScrollPhaseCode(event);
+                        packet.momentum = zenitMomentumPhaseCode(event);
                         packet.modifiers = (uint32_t)event.modifierFlags;
                         if (!target.scrollEventQueue) {
                             target.scrollEventQueue = [NSMutableArray array];

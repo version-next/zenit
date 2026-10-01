@@ -76,14 +76,14 @@ pub fn toMetalPixelFormat(format: gpu.TextureFormat) mtl.MTLPixelFormat {
         .bc7_rgba_unorm => .BC7_RGBAUnorm,
         .bc7_rgba_unorm_srgb => .BC7_RGBAUnorm_sRGB,
 
-        // Metal 不支持的格式 — 使用最近的等价格式。
+        // Metal 不支持的格式，使用最近的等价格式。
         // depth24plus 的 WebGPU 语义就是"至少 24 位、实现自选"，Metal 在
-        // Apple Silicon 上本就无 D24 —— Depth32Float 是规范授权的合规实现
+        // Apple Silicon 上本就无 D24, Depth32Float 是规范授权的合规实现
         // （Dawn/wgpu 同此），不是降级。
         .depth24_plus => .Depth32Float,
         .depth24_plus_stencil8 => .Depth32Float_Stencil8,
-        // Metal 原生支持 RGB10A2；此前占位回退到 BGRA8 —— 10 位掉 8 位
-        // （HDR/宽色域 banding）且通道序 RGB→BGR，调用方毫无感知。
+        // Metal 原生支持 RGB10A2；此前占位回退到 BGRA8, 10 位掉 8 位
+        // （HDR/宽色域 banding）且通道序 RGB->BGR，调用方毫无感知。
         .rgb10a2_unorm => .RGB10A2Unorm,
     };
 }

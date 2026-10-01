@@ -242,7 +242,7 @@ pub const CheckboxBuilder = struct {
         state.checkbox_box = checkbox_box;
 
         // Check 层：flex child，居中。
-        // 默认用图标库的 `check` 字形（纯对勾，无外框——方框由 checkbox_box 自身绘制），
+        // 默认用图标库的 `check` 字形（纯对勾，无外框，方框由 checkbox_box 自身绘制），
         // 调用方可通过 check_icon_asset 覆盖。
         const checkmark = try core.adoptChild(cx, allocator, checkbox_box, try core.iconTint(cx, p.check_icon_asset orelse icons.check, t.color.button_primary_fg, checkIconStyle()));
         checkmark.setOpacityRaw(if (state.checked) 1.0 else 0.0);
@@ -360,7 +360,7 @@ pub const RadioBuilder = struct {
             label_node.setText(label_txt);
         }
 
-        // 交互（hover + focus ring）— RadioGroup 统一管理时跳过
+        // 交互（hover + focus ring），RadioGroup 统一管理时跳过
         if (p.disabled) {
             container.style.cursor = .not_allowed;
         } else if (!p._skip_interaction) {
@@ -451,10 +451,10 @@ fn radioGroupBeforeRender(node: *Node) void {
 
         // 选中项：冻结其 hover 高亮钩子，把 border 控制权收回来钉死成 accent。
         // 否则 hover 钩子每帧把 border 插值回 normal(=checkbox_border 浅灰)，盖掉选中底色
-        // —— 鼠标移开后选中圈就镶一层浅灰。未选中项解冻，border 交还 hover 钩子管理。
+        // 鼠标移开后选中圈就镶一层浅灰。未选中项解冻，border 交还 hover 钩子管理。
         _ = hooks.setHoverHighlightFrozen(circle, is_checked);
 
-        // 用非 Raw setter，走 mount 时配的 Transition slot 平滑插值（Raw 会瞬切→僵硬）。
+        // 用非 Raw setter，走 mount 时配的 Transition slot 平滑插值（Raw 会瞬切->僵硬）。
         circle.setBackground(if (is_checked) t.color.accent else t.color.checkbox_bg);
         circle.setBorderColor(if (is_checked) t.color.accent else t.color.checkbox_border);
 
@@ -619,7 +619,7 @@ pub const SwitchState = struct {
 
 const node_animator = @import("../../animation/node_animator.zig");
 
-/// Switch 渲染前钩子：检测 checked 变化 → 发起 translate_x 动画 + 颜色联动
+/// Switch 渲染前钩子：检测 checked 变化 -> 发起 translate_x 动画 + 颜色联动
 fn updateSwitchThumbPosition(node: *core.Node) void {
     const state: *SwitchState = @ptrCast(@alignCast(node.behavior.events.event_context orelse return));
     const thumb = state.thumb orelse return;
@@ -902,7 +902,7 @@ test "Checkbox: toggle fires on_change callback" {
     var state = CheckboxState{
         .checked = false,
         // 并轨后：boolHandlerFrom 把 context 与回调捆在一起，
-        // 且**必须真的收到 new_val** —— 这正是并轨最容易丢的东西。
+        // 且**必须真的收到 new_val**，这正是并轨最容易丢的东西。
         .on_change = core.Cx.boolHandlerFrom(CallbackCtx, &cb_ctx, struct {
             fn handler(c: *CallbackCtx, new_val: bool) void {
                 c.last_value = new_val;
@@ -1193,12 +1193,12 @@ test "Switch: event handler responds to space key" {
     try std.testing.expect(!state.toggle_state.checked); // toggled off
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "checkbox(indeterminate): mount 在任意分配点失败时不泄漏（sweep）" {
     try @import("../oom_sweep.zig").sweepMount("checkbox(indeterminate)", struct {
         fn m(scope: *Scope, cx: *Cx) anyerror!?*Node {
@@ -1207,7 +1207,7 @@ test "checkbox(indeterminate): mount 在任意分配点失败时不泄漏（swee
     }.m);
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "radio_group: mount 在任意分配点失败时不泄漏（sweep）" {
     try @import("../oom_sweep.zig").sweepMount("radio_group", struct {
         fn m(scope: *Scope, cx: *Cx) anyerror!?*Node {
@@ -1217,7 +1217,7 @@ test "radio_group: mount 在任意分配点失败时不泄漏（sweep）" {
     }.m);
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "switch: mount 在任意分配点失败时不泄漏（sweep）" {
     try @import("../oom_sweep.zig").sweepMount("switch", struct {
         fn m(scope: *Scope, cx: *Cx) anyerror!?*Node {

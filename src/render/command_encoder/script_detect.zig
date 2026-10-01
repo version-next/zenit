@@ -1,8 +1,8 @@
-//! 文本脚本判定 / ASCII 分类 —— 与 encoder 状态零耦合的纯函数簇。
+//! 文本脚本判定 / ASCII 分类，与 encoder 状态零耦合的纯函数簇。
 //!
 //! 从 command_encoder.zig 析出（2026-08-05）。这一簇的共同点是**只看字节，
 //! 不看 encoder**：入参全是 `[]const u8` + 标量，返回 bool/f32，不触
-//! self、不分配、无副作用。它们回答的是同一个问题域 ——
+//! self、不分配、无副作用。它们回答的是同一个问题域,
 //! “这段文本属于哪个书写系统 / 能不能走定宽 ASCII 快路径”，
 //! 供 encoder 的字体回退选择（selectCjkFallbackFont）和定宽推进
 //! （fixedMonospaceAdvance）决策使用。
@@ -34,7 +34,7 @@ pub fn fixedMonospaceAdvance(content: []const u8, use_monospace_font: bool, mono
 
 /// 韩文优先回退：含谚文且不含汉字/假名。
 ///
-/// 混排（韩 + 中/日）时不走韩文档位 —— 韩文字体的汉字字形与中日排版不一致。
+/// 混排（韩 + 中/日）时不走韩文档位，韩文字体的汉字字形与中日排版不一致。
 pub fn preferKoreanFallback(text: []const u8) bool {
     return containsHangul(text) and !containsHanOrKana(text);
 }

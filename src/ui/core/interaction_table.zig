@@ -1,20 +1,20 @@
-//! InteractionTable — Phase 3 拆 Node 的交互/焦点/手势状态
+//! InteractionTable, Phase 3 拆 Node 的交互/焦点/手势状态
 //!
-//! 设计与 Element/Layout/Paint 三大表不同——**sparse**：不是每个 element 都有交互。
-//! 内部是 ElementId.index → InteractionData 的 AutoHashMap，
+//! 设计与 Element/Layout/Paint 三大表不同，**sparse**：不是每个 element 都有交互。
+//! 内部是 ElementId.index -> InteractionData 的 AutoHashMap，
 //! 但 hot lookup 走 ElementId.raw() 的紧凑数组（直接索引），未命中再 hash 查。
 //!
 //! 当前形态：sparse map only（HashMap）。Phase 6 输入/手势重构时再优化为
 //! "热表 + 冷表" 双层结构。
 //!
 //! 历史债避免：
-//! - 不在此表存 hit_test_AABB 几何—— 那个仍由 hit_runtime AABB tree 持有
+//! - 不在此表存 hit_test_AABB 几何，那个仍由 hit_runtime AABB tree 持有
 //!   （此表只存语义：focus_index、scroll_state ref、是否监听某事件）
 //!
 //! v0.5-P3 哈希退化修复（P0-A）：std 的 HashMapUnmanaged 是 tombstone 删除，
 //! 长生命周期表在滚动 churn（每帧对无事件节点 remove、对新节点 put）后 tombstone
-//! 堆积，get/remove 探测链变长（sample：get 7→159、remove 4→150）。两个对策：
-//!   1. remove 前先 contains：对不存在的 key（churn 里绝大多数）不写 tombstone——
+//! 堆积，get/remove 探测链变长（sample：get 7->159、remove 4->150）。两个对策：
+//!   1. remove 前先 contains：对不存在的 key（churn 里绝大多数）不写 tombstone,
 //!      getIndex 遇 tombstone 会继续探测，contains 与 remove 探测成本相同，但
 //!      不存在的 key 只探测不写。
 //!   2. 按删除计数 rehash：removed_since_rehash 超过 max(64, live) 时
@@ -43,7 +43,7 @@ pub const FocusFlags = packed struct(u8) {
     focused: bool = false,
     /// 鼠标 over 状态
     hovered: bool = false,
-    // 曾有一个 focus_trap 位，但全仓库从未被读写过 —— 真正生效的 focus trap
+    // 曾有一个 focus_trap 位，但全仓库从未被读写过，真正生效的 focus trap
     // 是 FocusScopeConfig.trap（另一个结构体上的同名语义，有测试覆盖）。
     // 留着只会让人以为"设了这个就能拿到 trap 效果"，已删除。
     _reserved: u4 = 0,
@@ -66,7 +66,7 @@ pub const InteractionData = struct {
 
 pub const InteractionTable = struct {
     allocator: std.mem.Allocator,
-    /// sparse 存储：ElementId.raw() → InteractionData
+    /// sparse 存储：ElementId.raw() -> InteractionData
     data: std.AutoHashMapUnmanaged(u32, InteractionData),
     /// 自上次 rehash 以来的成功删除数（tombstone 生成量的下界计数）
     removed_since_rehash: usize = 0,
@@ -235,7 +235,7 @@ test "InteractionTable: rehash fires when removals outgrow live set" {
         try t.put(.{ .index = @intCast(5000 + k), .generation = 0 }, .{});
         _ = t.remove(.{ .index = @intCast(5000 + k), .generation = 0 });
     }
-    // 200 次真删、live=40 → 阈值 64：期间至少 rehash 一次，剩余计数必然 ≤ 阈值
+    // 200 次真删、live=40 -> 阈值 64：期间至少 rehash 一次，剩余计数必然 ≤ 阈值
     try testing.expect(t.removed_since_rehash <= @max(64, t.live_count));
     try testing.expectEqual(@as(usize, 40), t.count());
     var m: u32 = 0;
@@ -245,7 +245,7 @@ test "InteractionTable: rehash fires when removals outgrow live set" {
     }
 }
 
-/// churn 基准：N 轮"插 M 键→删其中 M-K 键"，每轮换键段。返回量测到的 1 万次 get 纳秒数。
+/// churn 基准：N 轮"插 M 键->删其中 M-K 键"，每轮换键段。返回量测到的 1 万次 get 纳秒数。
 fn churnGetCost(comptime do_churn: bool) u64 {
     const ROUNDS = 200;
     const KEYS = 2000;

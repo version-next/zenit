@@ -203,7 +203,7 @@ test "metal text renderer: direct_animated 坐标连续无吸附, static 双侧�
     };
     defer device.deinit();
 
-    // init 会从嵌入源码编译 text.metal —— 同时验证 shader_snap 字段的 shader 侧改动。
+    // init 会从嵌入源码编译 text.metal，同时验证 shader_snap 字段的 shader 侧改动。
     var tr = try text_renderer_mod.TextRenderer.init(testing.allocator, &device);
     defer tr.deinit();
     tr.setViewport(800, 600, 2.0); // 2x DPR：半物理像素吸附可观测
@@ -224,7 +224,7 @@ test "metal text renderer: direct_animated 坐标连续无吸附, static 双侧�
     try testing.expect(static_nearest + static_linear > 0);
     for (tr.instances_nearest.items) |inst| {
         try testing.expect(inst.shader_snap > 0.5);
-        // CPU 已按 round(x*scale)/scale 吸附 → position*scale 应为整数
+        // CPU 已按 round(x*scale)/scale 吸附 -> position*scale 应为整数
         const px = inst.position[0] * 2.0;
         const py = inst.position[1] * 2.0;
         try testing.expectApproxEqAbs(@round(px), px, 1e-3);
@@ -238,7 +238,7 @@ test "metal text renderer: direct_animated 坐标连续无吸附, static 双侧�
     const anim_base_nearest = tr.instances_nearest.items.len;
     const anim_base_linear = tr.instances_linear.items.len;
     try tr.drawTextWithOptions("Hello", frac_x, frac_y, font, white, 16, false, null, true, false, 0);
-    // force_linear → 全部进 linear 列表
+    // force_linear -> 全部进 linear 列表
     try testing.expectEqual(anim_base_nearest, tr.instances_nearest.items.len);
     const anim_a_start = anim_base_linear;
     const anim_a_len = tr.instances_linear.items.len - anim_a_start;
@@ -248,7 +248,7 @@ test "metal text renderer: direct_animated 坐标连续无吸附, static 双侧�
     }
 
     // 同一文本平移亚像素 0.3px 再画一遍：逐 glyph 位置差必须恰为 0.3
-    // （任何一侧 round 都会把 0.3 离散成 0 或 0.5 的混合 → 字距抖动）
+    // （任何一侧 round 都会把 0.3 离散成 0 或 0.5 的混合 -> 字距抖动）
     const shift: f32 = 0.3;
     const b_start = tr.instances_linear.items.len;
     try tr.drawTextWithOptions("Hello", frac_x + shift, frac_y, font, white, 16, false, null, true, false, 0);

@@ -70,7 +70,7 @@ pub const TreeState = struct {
     container: *Node,
     flat_count: usize = 0,
     on_select: ?core.HandlerRef,
-    /// 选中行背景色 — mount 时从 treeSelectionBg 样式函数 resolve 得到
+    /// 选中行背景色，mount 时从 treeSelectionBg 样式函数 resolve 得到
     selection_bg: Color,
 
     /// 多选位图。MAX_NODES 固定 128，所以内联即可，无需分配。
@@ -141,7 +141,7 @@ pub const TreeState = struct {
             else
                 Color.TRANSPARENT);
             // 高亮是纯视觉的；aria-selected 才是 AT 唯一的选中依据。
-            // 放在这个全行遍历里（而不是只改"旧/新选中"两行）——
+            // 放在这个全行遍历里（而不是只改"旧/新选中"两行）,
             // 多选模式下一次操作可能改变任意多行的选中态。
             if (row.behavior.interaction.a11y) |*a| a.selected = sel;
             row.markRenderDirty();
@@ -171,7 +171,7 @@ pub const TreeState = struct {
         return n;
     }
 
-    /// 当前（主）选中节点的 id —— 回调里最常用的东西
+    /// 当前（主）选中节点的 id，回调里最常用的东西
     pub fn selectedId(self: *const TreeState) ?[]const u8 {
         const i = self.selected_flat_index orelse return null;
         if (i >= self.flat_count) return null;
@@ -334,7 +334,7 @@ pub const TreeBuilder = struct {
 
             const row = try core.adoptChild(cx, allocator, container, try box(cx, treeRowStyle(t), .{}));
             row.style.cursor = .pointer;
-            // 每行 role=treeitem。expanded 只对有子节点的行有意义——叶子节点
+            // 每行 role=treeitem。expanded 只对有子节点的行有意义，叶子节点
             // 留 null，否则 AT 会把"可展开但已折叠"的假信息读给用户。
             row.behavior.interaction.a11y = .{
                 .role = .treeitem,
@@ -445,7 +445,7 @@ fn treeItemEventHandler(event: Event, context: ?*anyopaque) EventResult {
                     tc.state.toggleExpand(tc.flat_index);
                 }
                 tc.state.selectNodeWithIntent(tc.flat_index, .{
-                    // macOS 用 Cmd，其它平台用 Ctrl —— 两个都认
+                    // macOS 用 Cmd，其它平台用 Ctrl，两个都认
                     .toggle = c.modifiers.super or c.modifiers.ctrl,
                     .range = c.modifiers.shift,
                 });
@@ -651,7 +651,7 @@ test "Tree: 无选中时 Down 选第 0 行；方向键跳过 disabled 节点" {
 
 // ── on_select payload + 多选 ────────────────────────────────
 
-/// 记录回调收到的 node id —— 这正是此前拿不到的东西
+/// 记录回调收到的 node id，这正是此前拿不到的东西
 const SelectSpy = struct {
     last: [64]u8 = [_]u8{0} ** 64,
     last_len: usize = 0,
@@ -775,12 +775,12 @@ test "Tree: multi 多选 —— Cmd 切换 / Shift 区间 / selectedIds" {
     try std.testing.expectEqualStrings("src", ids[0]);
     try std.testing.expectEqualStrings("README", ids[1]);
 
-    // Cmd 再点 4 → 取消
+    // Cmd 再点 4 -> 取消
     st.selectNodeWithIntent(4, .{ .toggle = true });
     try std.testing.expectEqual(@as(usize, 1), st.selected_count);
     try std.testing.expect(!st.isSelected(4));
 
-    // Shift 区间：锚点是 4（上一次 toggle 落点）→ 重划 1..4
+    // Shift 区间：锚点是 4（上一次 toggle 落点）-> 重划 1..4
     st.selectNode(1);
     st.selectNodeWithIntent(4, .{ .range = true });
     try std.testing.expectEqual(@as(usize, 4), st.selected_count);
@@ -793,12 +793,12 @@ test "Tree: multi 多选 —— Cmd 切换 / Shift 区间 / selectedIds" {
     try std.testing.expect(st.isSelected(2));
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "tree: mount 在任意分配点失败时不泄漏（sweep）" {
     try @import("../oom_sweep.zig").sweepMount("tree", struct {
         fn m(scope: *Scope, cx: *Cx) anyerror!?*Node {

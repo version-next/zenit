@@ -1,4 +1,4 @@
-/// Info.plist 生成器 — 把 BundleSpec 渲染为 XML
+/// Info.plist 生成器，把 BundleSpec 渲染为 XML
 ///
 /// 之所以代码生成而不是模板替换：CFBundleDocumentTypes / UTExportedTypeDeclarations 是数组结构，
 /// 数量由调用方决定，模板字符串处理这种嵌套结构不舒服。
@@ -23,20 +23,20 @@ pub const FileType = struct {
 };
 
 pub const BundleSpec = struct {
-    /// CFBundleDisplayName / CFBundleName — 用户可见名称
+    /// CFBundleDisplayName / CFBundleName，用户可见名称
     display_name: []const u8,
-    /// CFBundleIdentifier — 反向 DNS，如 "com.acme.myapp"
+    /// CFBundleIdentifier，反向 DNS，如 "com.acme.myapp"
     bundle_id: []const u8,
-    /// CFBundleExecutable — Contents/MacOS/<name> 的文件名
+    /// CFBundleExecutable, Contents/MacOS/<name> 的文件名
     executable: []const u8,
     /// CFBundleShortVersionString + CFBundleVersion
     version: []const u8 = "0.1.0",
     /// 4 字符 OSType signature。约定：APPL = 应用、????
     /// 用于 PkgInfo 文件 + CFBundleSignature
     signature: []const u8 = "????",
-    /// LSMinimumSystemVersion — 如 "12.0"
+    /// LSMinimumSystemVersion，如 "12.0"
     min_macos: []const u8 = "12.0",
-    /// CFBundleIconFile —  Resources/<icon_file>.icns 的文件名（不含扩展）
+    /// CFBundleIconFile, Resources/<icon_file>.icns 的文件名（不含扩展）
     icon_file: ?[]const u8 = null,
     /// LSApplicationCategoryType
     category: []const u8 = "public.app-category.developer-tools",
@@ -44,14 +44,14 @@ pub const BundleSpec = struct {
     copyright: ?[]const u8 = null,
     /// 文件类型注册（CFBundleDocumentTypes + UT*TypeDeclarations）。
     file_types: []const FileType = &.{},
-    /// NSAppTransportSecurity.NSAllowsArbitraryLoads — 默认 false（安全），
+    /// NSAppTransportSecurity.NSAllowsArbitraryLoads，默认 false（安全），
     /// 如果应用要拉任意 HTTP 图片/链接，调用方显式打开。
     allow_arbitrary_loads: bool = false,
-    /// CADisableMinimumFrameDuration — 解锁 ProMotion 120Hz。默认 true（编辑器场景值得）。
+    /// CADisableMinimumFrameDuration，解锁 ProMotion 120Hz。默认 true（编辑器场景值得）。
     disable_min_frame_duration: bool = true,
-    /// NSSupportsAutomaticGraphicsSwitching — 默认 true（笔记本省电）。
+    /// NSSupportsAutomaticGraphicsSwitching，默认 true（笔记本省电）。
     auto_graphics_switching: bool = true,
-    /// NSHighResolutionCapable — Retina 必开。
+    /// NSHighResolutionCapable, Retina 必开。
     high_resolution: bool = true,
 };
 
@@ -195,13 +195,13 @@ test "render with file types" {
         .bundle_id = "com.example.demo",
         .executable = "demo",
         .file_types = &.{
-            // Owner of a custom format — exported UTType
+            // Owner of a custom format, exported UTType
             .{
                 .name = "Demo Document",
                 .extensions = &.{"demo"},
                 .uti = "com.example.demo.document",
             },
-            // Imported UTType — registers as a handler for an existing
+            // Imported UTType, registers as a handler for an existing
             // system UTI without re-defining it.
             .{
                 .name = "Markdown",

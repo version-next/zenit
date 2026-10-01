@@ -24,7 +24,7 @@ pub const SystemSdk = struct {
     event_queue: events_mod.EventQueue,
     owner_thread_id: std.Thread.Id,
     /// runtime 正在遍历 events() 借出的切片。此期间重入 pump() 会先
-    /// clear() 释放正被遍历的 payload（UAF）——用断言把契约钉死
+    /// clear() 释放正被遍历的 payload（UAF），用断言把契约钉死
     /// （对齐 MultiWindowApp 的 iterating 先例）。
     dispatching: bool = false,
 
@@ -120,7 +120,7 @@ pub const SystemSdk = struct {
     }
 
     /// 富文本写入：plain text + 可选 HTML 写入同一 pasteboard item 的多 representation。
-    /// RTF 暂不支持（macOS HTML→RTF 依赖 WebKit 主线程转换，见 backend 注释）。
+    /// RTF 暂不支持（macOS HTML->RTF 依赖 WebKit 主线程转换，见 backend 注释）。
     pub fn clipboardSetRichText(self: *SystemSdk, rich: backend_mod.ClipboardRichText) SdkError!void {
         try self.ensureOwnerThread();
         if (!self.capabilities.has(.clipboard)) return SdkError.NotSupported;

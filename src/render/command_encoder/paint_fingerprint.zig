@@ -1,4 +1,4 @@
-//! command_encoder/paint_fingerprint.zig — paint 命令的**纯函数**工具集
+//! command_encoder/paint_fingerprint.zig, paint 命令的**纯函数**工具集
 //!
 //! 从 command_encoder.zig 析出（2026-07-31）。这一簇的共同特征是
 //! **零 encoder 实例状态依赖**：全部是 `fn(anytype) -> value` 的纯函数，
@@ -6,18 +6,18 @@
 //! 内部除了撑大文件没有别的作用。
 //!
 //! 三组职责：
-//! 1. **damage bounds** —— 单条命令影响的像素范围，供 damage-rect 部分
+//! 1. **damage bounds**，单条命令影响的像素范围，供 damage-rect 部分
 //!    重绘求脏区并集。合同是**宁大勿小**：漏一像素 = 保留到陈旧内容。
-//! 2. **内容指纹** —— 把命令里影响像素的字段喂进 hasher，供 retained
+//! 2. **内容指纹**，把命令里影响像素的字段喂进 hasher，供 retained
 //!    层判命中。合同是**宁可多喂**：漏喂 = 内容变了却判命中 = 画面陈旧。
-//! 3. **结构折叠** —— 识别空的 begin/end 结构块，整块跳过。
+//! 3. **结构折叠**，识别空的 begin/end 结构块，整块跳过。
 //!
 //! ⚠ 改这里任何一个函数前先读上面两条合同：它们的失效模式是**画面陈旧**
 //! 而非崩溃，e2e 未必抓得到。
 
 const std = @import("std");
 
-// 结构 token 分类 —— 与 tryFindNoOpStructuralBlock 同簇的纯函数。
+// 结构 token 分类，与 tryFindNoOpStructuralBlock 同簇的纯函数。
 pub const StructuralToken = enum {
     none,
     begin_clip,
@@ -63,7 +63,7 @@ pub inline fn matchingEndStructuralToken(begin_tok: StructuralToken) StructuralT
 }
 
 /// damage-rect：单条命令的保守外扩 bounds。
-/// 宁大勿小 —— 漏一像素脏区 = 保留到陈旧像素。
+/// 宁大勿小，漏一像素脏区 = 保留到陈旧像素。
 pub fn damageItemBounds(it: anytype) [4]f32 {
     const sh1 = it.shadow_blur * 2 + @max(@abs(it.shadow_offset_x), @abs(it.shadow_offset_y)) + @max(0, it.shadow_spread);
     const sh2 = it.shadow2_blur * 2 + @max(@abs(it.shadow2_offset_x), @abs(it.shadow2_offset_y));
@@ -76,17 +76,17 @@ pub fn damageItemBounds(it: anytype) [4]f32 {
     if (it.kind == .text) {
         // ⚠️ text 命令的 geom.w/h **恒为 0**（lowering 只填绘制原点，见
         // render_engine/gpu_draw_shadow.zig 的 .text_run 分支）。直接用它算
-        // damage bounds，脏区就只有原点周围 pad×2 ≈ 20px 的一小块 ——
+        // damage bounds，脏区就只有原点周围 pad×2 ≈ 20px 的一小块,
         // 于是同一行里只有开头一两个字进了脏区、后面的字保留上一帧像素。
         //
         // 实测（下游编辑器插入菜单表格尺寸标签，等宽 11px）：内容从 "3 × 4"
         // 换成 "3 × 5"，脏区 x∈[331,351] 只盖住 x=341 的首字形，末尾 x=368
-        // 的 '5' 落在脏区外 —— 屏幕上永远停在 "3 × 4"。首段更新、后段陈旧
+        // 的 '5' 落在脏区外，屏幕上永远停在 "3 × 4"。首段更新、后段陈旧
         // 的分段式残影就是这么来的，与字体回退分段无关（× 只是恰好让
         // 变化落在尾段）。
         //
         // 这里按内容长度给一个**保守上界**：每字节最多 1 个 em 宽
-        // （font_size），等宽显式给 cell 宽时用 cell 宽。合同是宁大勿小 ——
+        // （font_size），等宽显式给 cell 宽时用 cell 宽。合同是宁大勿小,
         // 高估只是多重绘几个像素，低估就是陈旧像素。
         const per_byte = if (it.text_monospace_char_width > 0)
             it.text_monospace_char_width
@@ -104,7 +104,7 @@ pub fn damageItemBounds(it: anytype) [4]f32 {
         h = @max(h, fs * 1.9);
     }
     // 旋转（image / icon 绕中心旋转，见 addImage/addIcon 的 rotate 参数）：
-    // 轴对齐 geom 盖不住旋转后的四角 —— 旋转动画会在角上留下拖影。与
+    // 轴对齐 geom 盖不住旋转后的四角，旋转动画会在角上留下拖影。与
     // local_sort.localSortImageLikeBounds 同法取外接圆。
     if (it.kind != .text and @abs(it.rotate) > 0.0001) {
         const cx = it.geom.x + w * 0.5;
@@ -121,11 +121,11 @@ pub fn damageItemBounds(it: anytype) [4]f32 {
 }
 
 /// damage-rect：path 命令的保守 bounds。path 的 geom.w/h 恒 0（lowering 只填
-/// offset），bounds 必须从点集算 —— quad/cubic 的控制点是曲线的凸包上界，
+/// offset），bounds 必须从点集算，quad/cubic 的控制点是曲线的凸包上界，
 /// 直接并入即可（过量但安全）。
 pub fn pathItemBounds(it: anytype) [4]f32 {
     // arc（spinner / 进度环）复用 `.path` kind 但**没有** path_geometry_ptr，
-    // geom 是圆心、w/h 恒 0。不单独处理的话脏区只有圆心一个点 —— retained
+    // geom 是圆心、w/h 恒 0。不单独处理的话脏区只有圆心一个点，retained
     // 层（Modal/Sheet/Popover）里的 Spinner 做部分重绘时 scissor 把整个环
     // 裁掉，屏幕上转圈冻结。判据与 isArcCommand / localSortArcBounds 同源
     // （只看 arc_outer_radius）；外扩 stroke_width + 2px AA 余量（宁大勿小）。
@@ -179,7 +179,7 @@ pub fn pathItemBounds(it: anytype) [4]f32 {
 
 /// damage-rect：嵌套 opacity 子层的合成矩形（geom ∪ draw rect ∪ 轴对齐
 /// transform rect，外扩 4px 容忍合成 bilinear/圆角边缘）。
-/// 旋转 / 非轴对齐 transform 返回 null → 该顶层 layer 判 unsafe。
+/// 旋转 / 非轴对齐 transform 返回 null -> 该顶层 layer 判 unsafe。
 pub fn nestedCompositeBounds(it: anytype) ?[4]f32 {
     if (it.rotate != 0) return null;
     var min_x = it.geom.x;
@@ -189,7 +189,7 @@ pub fn nestedCompositeBounds(it: anytype) ?[4]f32 {
     if (it.use_draw_transform) {
         const t = it.draw_transform;
         if (t[1] != 0 or t[2] != 0 or t[0] <= 0 or t[3] <= 0) return null;
-        // dt 合成：geom.xy 是嵌套-local 的内容包络原点，与父坐标无关 ——
+        // dt 合成：geom.xy 是嵌套-local 的内容包络原点，与父坐标无关,
         // 合成矩形只由 transform 决定（t4,t5,a·w,d·h）。
         min_x = t[4];
         min_y = t[5];
@@ -247,7 +247,7 @@ pub fn hashPaintItemInto(hasher: *std.hash.Wyhash, it: anytype) void {
         hasher.update(std.mem.sliceAsBytes(it.mg_stop_colors[0..n]));
         hasher.update(std.mem.sliceAsBytes(it.mg_stop_positions[0..n]));
     }
-    // glass 参数（begin_blur_layer）：只有指针，内容必须逐字段喂 ——
+    // glass 参数（begin_blur_layer）：只有指针，内容必须逐字段喂,
     // scroll_edge_strength / interactive boost 等逐帧变化不进指纹的话，
     // retained 层会 stale hit（既有缺口，2026-07-30 补）。
     if (it.glass_ptr) |gp| {
@@ -258,7 +258,7 @@ pub fn hashPaintItemInto(hasher: *std.hash.Wyhash, it: anytype) void {
             }
         }
     }
-    // arc：spinner / 进度环的角度逐帧变而 geom（中心）不变 —— 不喂必陈旧。
+    // arc：spinner / 进度环的角度逐帧变而 geom（中心）不变，不喂必陈旧。
     hasher.update(std.mem.asBytes(&it.arc_start_angle));
     hasher.update(std.mem.asBytes(&it.arc_end_angle));
     hasher.update(std.mem.asBytes(&it.arc_outer_radius));
@@ -278,7 +278,7 @@ pub fn hashPaintItemInto(hasher: *std.hash.Wyhash, it: anytype) void {
     hasher.update(std.mem.asBytes(&it.text_font_flags));
     hasher.update(std.mem.asBytes(&it.text_raster_policy));
     // 图像/图标身份。text 的 resource_handle 是 blob_id（shaping 缓存句柄）
-    // —— 像素由 content+字体参数完全决定，blob 身份**不进指纹**：overlay
+    // 像素由 content+字体参数完全决定，blob 身份**不进指纹**：overlay
     // 子树重建会给内容相同的文本重新分配 blob，喂进去会造成"内容没变却
     // 帧帧 miss"（既废掉 retained hit 又把 per-item diff 冲成 100% 脏）。
     if (it.kind != .text) hasher.update(std.mem.asBytes(&it.resource_handle));
@@ -291,7 +291,7 @@ pub fn hashPaintItemInto(hasher: *std.hash.Wyhash, it: anytype) void {
     hasher.update(std.mem.asBytes(&it.icon_corner_clip_radius));
     // 阴影 / 渐变 也影响像素。
     hasher.update(std.mem.asBytes(&it.shadow2_color));
-    // text_spans：span 着色/字重变化（选区高亮、语法色）不改文本字节 ——
+    // text_spans：span 着色/字重变化（选区高亮、语法色）不改文本字节,
     // 逐字段喂（struct 直接按字节 hash 会读到 padding，不稳定）。
     if (it.text_spans) |spans| {
         var span_len: usize = spans.len;
@@ -307,7 +307,7 @@ pub fn hashPaintItemInto(hasher: *std.hash.Wyhash, it: anytype) void {
         }
     }
     // path 几何：**必须喂顶点内容**。只喂指针值的话，frame_arena 每帧 reset
-    // 后分配顺序相同时地址必然复用 —— 同指针新内容 = 误命中陈旧路径（P0）。
+    // 后分配顺序相同时地址必然复用，同指针新内容 = 误命中陈旧路径（P0）。
     // PathCommand 是 union，按字节整体 hash 会读到 padding，逐 tag 喂 payload。
     if (it.path_geometry_ptr) |pg| {
         hasher.update(std.mem.asBytes(&pg.fill_rule));
@@ -324,7 +324,7 @@ pub fn hashPaintItemInto(hasher: *std.hash.Wyhash, it: anytype) void {
             }
         }
     }
-    // polygon clip：点集活在 frame_arena，每帧 reset 后地址相同 —— 只喂指针
+    // polygon clip：点集活在 frame_arena，每帧 reset 后地址相同，只喂指针
     // 等于"同指针新内容"误命中（与 path 几何同一类 P0）。按内容逐字段喂
     // （整体 asBytes 会读到 padding）；有效区间外的点不影响像素，不喂。
     if (it.clip_polygon_ptr) |cp| {

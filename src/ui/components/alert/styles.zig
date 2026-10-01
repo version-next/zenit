@@ -1,4 +1,4 @@
-//! Alert 样式层 — AlertRecipe(variant) 与具名静态样式（zenit-styling-revamp）。
+//! Alert 样式层，AlertRecipe(variant) 与具名静态样式（zenit-styling-revamp）。
 const core = @import("../../core.zig");
 const theme = core.theme;
 const Color = core.Color;
@@ -9,7 +9,7 @@ const recipe_mod = @import("../../recipe.zig");
 const AlertVariant = @import("mod.zig").AlertVariant;
 
 // ============================================================================
-// AlertRecipe — recipe(variant) 统一 Alert 颜色
+// AlertRecipe, recipe(variant) 统一 Alert 颜色
 //
 // variant 维度: background / border(width+color+radius) / text_color(accent)
 // accent = t.color.{info,success,warning,danger}

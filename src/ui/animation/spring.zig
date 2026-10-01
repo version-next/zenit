@@ -1,4 +1,4 @@
-/// Spring Animation — 解析解 (Closed-form Damped Harmonic Oscillator)
+/// Spring Animation，解析解 (Closed-form Damped Harmonic Oscillator)
 ///
 /// 阻尼谐振子方程: m·x'' + d·x' + k·x = 0
 /// 其中 x 是相对于 target 的位移。
@@ -56,7 +56,7 @@ pub const SpringPreset = struct {
     pub const molasses = SpringConfig{ .stiffness = 280, .damping = 120 };
 };
 
-/// 弹簧动画 — 解析解
+/// 弹簧动画，解析解
 pub const Spring = struct {
     config: SpringConfig,
     from: f32,
@@ -743,7 +743,7 @@ test "Spring: analytical solution accuracy" {
 }
 
 test "Spring: 非法 stiffness/damping 不产生 NaN（钳制防线）" {
-    // 回归：负 stiffness → @sqrt(负) → omega0/zeta 全 NaN，NaN 比较全 false
+    // 回归：负 stiffness -> @sqrt(负) -> omega0/zeta 全 NaN，NaN 比较全 false
     // 骗过 regime 选择与 w0 早退，最终把 NaN 写进节点 style。
     setTestTime(0);
     var s = Spring.init(0.0, 100.0, .{ .stiffness = -50.0, .damping = -5.0 });

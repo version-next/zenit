@@ -1,4 +1,4 @@
-//! 进程级 Node → World 路由钩子：Node 的 content / paint / layout-output / rect
+//! 进程级 Node -> World 路由钩子：Node 的 content / paint / layout-output / rect
 //! 读写与 dirty / structure 通知经这里转发到当前 active World（SoA 表）。
 //! Cx.init 注册这些回调并维护 g_active_world*；多 Cx 并存时用 Cx.createNode
 //! 显式归属，不依赖这里的全局。
@@ -18,11 +18,11 @@ const world = core.world;
 /// 当前 active World（v0.2-P3 全局静态；v0.3 per-Cx）
 pub var g_active_world: ?*world.World = null;
 
-/// 当前 active World 的 id —— 与 g_active_world 同步维护，
+/// 当前 active World 的 id，与 g_active_world 同步维护，
 /// onNodeCreate 用它给 Node.world_id 盖章。
 pub var g_active_world_id: u16 = core_node.INVALID_WORLD_ID;
 
-/// 单调递增的 World id 分配器。每个 Cx 拿一个唯一 id（不复用 —— 复用会让
+/// 单调递增的 World id 分配器。每个 Cx 拿一个唯一 id（不复用，复用会让
 /// 已释放 Cx 的陈旧 Node 与新 Cx 假匹配，正是本字段要防的问题）。
 pub var g_next_world_id: u16 = 0;
 
@@ -106,7 +106,7 @@ pub fn onContentIconWrite(element_id_raw: u32, ic: ?core_types.IconProps) void {
     w.content.setIcon(eid, ic);
 }
 
-// read 端 — Node.getText/getImage/getIcon 从 World.content 拿值。
+// read 端，Node.getText/getImage/getIcon 从 World.content 拿值。
 pub fn onContentTextRead(element_id_raw: u32) ?core_types.TextProps {
     const w = g_active_world orelse return null;
     if (element_id_raw == 0xFFFFFFFF) return null;
@@ -141,7 +141,7 @@ pub fn onNodeCreate(node: *Node) void {
         .key = node.id,
     }) catch return;
     node.element_id_raw = eid.raw();
-    // 同时记下 owner —— element_id 本身不含 World 标识（两个 World 都从
+    // 同时记下 owner, element_id 本身不含 World 标识（两个 World 都从
     // index 0 分配），只有这个字段能区分"窗口 A 的 0x8"和"窗口 B 的 0x8"。
     node.world_id = g_active_world_id;
     node.world_ref = w;
@@ -184,7 +184,7 @@ pub fn nodeBelongsToActiveWorldForTest(node: *const Node) bool {
 }
 
 /// 校验：node 是否属于当前 active World。
-/// 返回 false 意味着**跨 Cx 串台** —— 拿 A 窗口的节点去改 B 窗口的 World。
+/// 返回 false 意味着**跨 Cx 串台**，拿 A 窗口的节点去改 B 窗口的 World。
 /// world_id == INVALID 的节点是 cx-less mock（测试直接 Node.create），
 /// 它们本就走 standalone fallback，不参与 World 路由，放行。
 pub fn nodeBelongsToActiveWorld(node: *const Node) bool {

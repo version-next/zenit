@@ -1,4 +1,4 @@
-//! ControlShell 样式层 — ControlShellRecipe
+//! ControlShell 样式层，ControlShellRecipe
 //!
 //! 业务逻辑（controlShell()/ControlShellConfig/slot 组装）在 mod.zig；
 //! 本文件只有样式声明。variant/size 枚举是公共 API，留在 mod.zig，此处循环 import 取用。
@@ -15,7 +15,7 @@ const ControlVariant = mod.ControlVariant;
 const ControlSize = mod.ControlSize;
 
 // ============================================================================
-// ControlShellRecipe — 真正的 recipe()，把 variant × size 等五个维度统一管理
+// ControlShellRecipe，真正的 recipe()，把 variant × size 等五个维度统一管理
 //
 // resolve 算法: base < variant < derived < 外部 override
 // variant 维度负责: background / border / text_color / font_weight / 交互态
@@ -118,13 +118,13 @@ pub const ControlShellRecipe = recipe_mod.recipe(struct {
         }.resolve,
     };
 
-    /// 跨维度几何 — 只产出几何字段，禁碰 background（会污染 bgColors 三态取色）。
+    /// 跨维度几何，只产出几何字段，禁碰 background（会污染 bgColors 三态取色）。
     /// size/pill/icon_only/leading_icon 四个维度没有独立 resolver，全部在这里组合。
     ///
     /// **不产出 height/width 像素值**：外框高度 = padding_y × 2 + 行盒（行高），由布局
     /// fit 得出（行盒最小高度在 controlShell() 里按 metrics.lineHeightPx() 设到 slot 上）。
     /// icon_only：四边 padding = padding_y + (行高 − icon_size) / 2，图标槽最小为 icon_size
-    /// 见方 → 外框 = icon_size + 2·pad = 行高 + 2·padding_y，天然正方形且与文本控件等高。
+    /// 见方 -> 外框 = icon_size + 2·pad = 行高 + 2·padding_y，天然正方形且与文本控件等高。
     pub fn derived(v: Variants, t: *const theme.ThemeTokens) ConditionalStyle {
         const m = t.control.get(v.size);
         const pad: Padding = if (v.icon_only)

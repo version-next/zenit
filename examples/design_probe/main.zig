@@ -1,4 +1,4 @@
-/// design_probe —— pencil 视觉稿还原的验证靶场。
+/// design_probe, pencil 视觉稿还原的验证靶场。
 ///
 /// 用途：把一个 pencil 节点的精确数值翻译成 zenit 代码，渲染出来，
 /// 再用 `bun e2e/design_diff.ts` 与设计稿导出图做数值化比对。
@@ -13,14 +13,14 @@
 ///     text Label       Inter 12 normal            #17171B
 ///     frame Spacer     width:fill_container height:1
 ///     frame Rail       48x12 layout:none
-///       (三个 12x12 图标 x=0/18/36，enabled:false → 不渲染)
+///       (三个 12x12 图标 x=0/18/36，enabled:false -> 不渲染)
 const std = @import("std");
 const ui = @import("ui");
 const App = @import("zenit_app").App;
 
 /// 设计稿背景是透明的（#FFFFFF00），导出 PNG 会落在白底上。
 /// 比对时两边都要是白底，否则 RMSE 会被背景差淹没。
-/// 用 ui.arb 显式标记「有意的任意值」——这是对齐视觉稿的合法逃生舱，
+/// 用 ui.arb 显式标记「有意的任意值」，这是对齐视觉稿的合法逃生舱，
 /// 而不是该迁 token 的偷懒字面量（见 scripts/check_style_literals.sh）。
 const canvas_bg = ui.arb.hex(0xFFFFFF);
 
@@ -54,14 +54,14 @@ fn layerRow(cx: *ui.Cx) !*ui.Node {
     });
     try row.appendChild(cx.allocator, label);
 
-    // Spacer: width fill_container → .grow
+    // Spacer: width fill_container -> .grow
     const spacer = try ui.box(cx, .{
         .width = .fill(),
         .height = .fixed(1),
     }, .{});
     try row.appendChild(cx.allocator, spacer);
 
-    // Rail: 三个图标都是 enabled:false，设计稿里不可见 —— 保留占位尺寸即可。
+    // Rail: 三个图标都是 enabled:false，设计稿里不可见，保留占位尺寸即可。
     const rail = try ui.box(cx, .{
         .width = .fixed(48),
         .height = .fixed(12),

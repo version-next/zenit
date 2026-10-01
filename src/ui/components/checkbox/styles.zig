@@ -1,4 +1,4 @@
-//! Checkbox/Radio/Switch 样式层 — recipe 条件声明 + 具名样式函数
+//! Checkbox/Radio/Switch 样式层，recipe 条件声明 + 具名样式函数
 //! 业务逻辑（State/Builder/mount/事件/动画进度计算）在 mod.zig。
 const core = @import("../../core.zig");
 const theme = core.theme;
@@ -7,7 +7,7 @@ const ConditionalStyle = core.ConditionalStyle;
 const StyleOverride = core.StyleOverride;
 const recipe_mod = @import("../../recipe.zig");
 
-// ==================== CheckboxRecipe — checked/disabled 的声明式来源 ====================
+// ==================== CheckboxRecipe, checked/disabled 的声明式来源 ====================
 //
 // checked 用 ConditionalStyle 的 `selected` 条件位表达（selected 与 checked
 // 合一，见 InteractionState.is_selected）。唯一静态表达不了的是
@@ -16,7 +16,7 @@ const recipe_mod = @import("../../recipe.zig");
 // CheckboxColors 的最小分支里，并注明缘由。
 
 pub const CheckboxRecipe = recipe_mod.recipe(struct {
-    /// 无变体维度——状态全部由条件位承载；将来加 size/variant 从这里扩展。
+    /// 无变体维度，状态全部由条件位承载；将来加 size/variant 从这里扩展。
     pub const Variants = struct {};
 
     pub fn base(t: *const theme.ThemeTokens) ConditionalStyle {
@@ -39,7 +39,7 @@ pub const CheckboxRecipe = recipe_mod.recipe(struct {
     }
 });
 
-/// Checkbox/Radio 颜色访问器 — 单一取色源是 CheckboxRecipe；
+/// Checkbox/Radio 颜色访问器，单一取色源是 CheckboxRecipe；
 /// 本层只保留 recipe 表达不了的 disabled×checked 二维分支。
 /// （签名保持 (checked, disabled)，mount 与运行时更新点共用。）
 pub const CheckboxColors = struct {
@@ -50,7 +50,7 @@ pub const CheckboxColors = struct {
 
     /// 方框/圆圈背景色
     pub fn background(t: *const theme.ThemeTokens, checked: bool, disabled: bool) Color {
-        // disabled 在 resolve 里短路吞掉 selected → disabled+checked 差异色只能在此分支
+        // disabled 在 resolve 里短路吞掉 selected -> disabled+checked 差异色只能在此分支
         if (disabled and checked) return t.color.checkbox_disabled_checked_bg;
         return resolved(t, checked, disabled).background.?;
     }
@@ -70,7 +70,7 @@ pub const CheckboxColors = struct {
 // ==================== SwitchRecipe + SwitchColors ====================
 //
 // 离散端点（off/on = base/selected 条件）由 SwitchRecipe 按 slot 声明；
-// track/thumb/label 颜色随 thumb 位移进度 (0..1) 在两端点间连续插值——
+// track/thumb/label 颜色随 thumb 位移进度 (0..1) 在两端点间连续插值,
 // 插值本身不是离散条件，保留 lerp 辅助函数，但端点色一律取自 recipe，
 // 保证单一取色源；updateSwitchThumbPosition 只做进度计算。
 
@@ -150,7 +150,7 @@ pub const SwitchColors = struct {
     }
 };
 
-// ==================== 具名样式函数 — mount 逻辑只消费这些声明 ====================
+// ==================== 具名样式函数，mount 逻辑只消费这些声明 ====================
 
 /// Checkbox/Radio/Switch 共用的外层行容器（控件 + 标签）
 pub fn controlRowStyle() core.BoxStyle {
@@ -179,7 +179,7 @@ pub fn checkboxBoxStyle(t: *const theme.ThemeTokens, effectively_checked: bool, 
     };
 }
 
-/// checkmark / indeterminate 图标尺寸（14×14）— iconTint 消费，故为 Style
+/// checkmark / indeterminate 图标尺寸（14×14），iconTint 消费，故为 Style
 pub fn checkIconStyle() core.Style {
     return .{ .width = .{ .px = 14 }, .height = .{ .px = 14 } };
 }

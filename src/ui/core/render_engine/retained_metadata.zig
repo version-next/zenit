@@ -152,8 +152,8 @@ pub fn appendRetainedMetadata(
     // effect.local_bounds 必须是 **unscaled owner-local 帧的常量**（动画期不变）：
     // surface src = owner_world⁻¹·(owner_world·local_bounds) = local_bounds，texture
     // 覆盖区随之稳定，M_composite 独自承担 scale。早先用"含 scale 的 world opacity_bounds
-    // × unscaled 逆"换算 → 动画期逐帧漂移（texture 帧 = 反向缩放帧），children 的静态
-    // content 在其中被反向缩放，composite 的 scale 恰好抵消 → 内容视觉上不参与 scale 动画。
+    // × unscaled 逆"换算 -> 动画期逐帧漂移（texture 帧 = 反向缩放帧），children 的静态
+    // content 在其中被反向缩放，composite 的 scale 恰好抵消 -> 内容视觉上不参与 scale 动画。
     const local_rect_full = cx.rectFromWorld(node);
     const opacity_local_bounds = geometry.computeOpacityLayerBounds(
         node,
@@ -216,7 +216,7 @@ pub fn appendRetainedMetadata(
         const cr4 = node.style.effectiveRadii();
         const gp = node.style.glass_params() orelse types.GlassParams{};
         // 玻璃矩形必须是节点自身 rect：local_rect 来自 clip_world_rect，
-        // shadow/outline 会把它撑大 → glass SDF/采样按大矩形算，视觉上
+        // shadow/outline 会把它撑大 -> glass SDF/采样按大矩形算，视觉上
         // 出现比节点大一圈的"矩形玻璃切块"。
         const glass_local_bounds = inverse_world.transformRect(render_state.world_rect);
         effect_id = cx.property_tree.appendEffect(.{
@@ -232,16 +232,16 @@ pub fn appendRetainedMetadata(
     }
     if (render_state.use_rounded_clip) {
         // Stage 3 fold：同节点 opacity/composited_group + rounded_clip 合并为单个
-        // offscreen——把圆角写进刚 append 的 opacity effect，composite blit 时同时
+        // offscreen，把圆角写进刚 append 的 opacity effect，composite blit 时同时
         // 施加 mask 与 opacity（逐像素标量乘可交换，与"先裁再淡"视觉等价）。
         // 前提：无 blur（blur 的 corner_radius 裁背景采样，语义不同）、opacity
         // bounds 与 clip rect 一致（mask 作用于整个合成 quad，bounds 不一致时
-        // mask 位置/尺寸错误——shadow/overflow padding 场景在此回退）。
+        // mask 位置/尺寸错误，shadow/overflow padding 场景在此回退）。
         // 不变量：rounded_clip 恒为链最内层，本合并不改变链序。
         const opacity_effect_appended = render_state.use_opacity_layer and effect_id != parent_effect_id and !render_state.use_blur;
         // computeOpacityLayerBounds 末尾恒定 +2px pad；允许该常量超集（composite mask
         // 是 surface 内 apply_clip 精确圆角裁剪的超集，多裁不掉任何有效像素）。
-        // shadow/outline/children 溢出会扩得更多 → mismatch → 回退独立 rounded_clip。
+        // shadow/outline/children 溢出会扩得更多 -> mismatch -> 回退独立 rounded_clip。
         const bounds_match = std.math.approxEqAbs(f32, opacity_local_bounds.x, local_rect.x - 2, 0.5) and
             std.math.approxEqAbs(f32, opacity_local_bounds.y, local_rect.y - 2, 0.5) and
             std.math.approxEqAbs(f32, opacity_local_bounds.w, local_rect.w + 4, 0.5) and
@@ -303,7 +303,7 @@ pub fn appendRetainedMetadata(
         .promoted_surface_transform = if (node.meta.per_frame.caches.commands.promoted) |cache| cache.world_transform else Transform2D.identity(),
         .promoted_surface_flags = .{},
         // 不可降级：transform_id / clip_id / effect_id 已经写进 property_tree
-        // 并作为本函数返回值继续被使用，唯独 scene_runtime 里没有这个节点 ——
+        // 并作为本函数返回值继续被使用，唯独 scene_runtime 里没有这个节点,
         // 后续 layerize / hit-test 按 node_id 查 runtime 会静默 miss。
     }) catch @panic("OOM: scene_runtime.put (node metadata dropped)");
 

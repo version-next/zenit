@@ -3,7 +3,7 @@
 /// 设计要点 (R3g 后)：cache band 不再切 cx.display_list。改成从每个 child 的
 /// runtime.subtree_display_item_* 范围 + node 自己的 runtime.display_item_* +
 /// content_slices.tail_* 拼接。这样 child 走 subtree-replay / own-replay 短路
-/// (写 lowering_buffer 不写 display_list 末尾) 也能被正确捕获 — runtime range 永远
+/// (写 lowering_buffer 不写 display_list 末尾) 也能被正确捕获，runtime range 永远
 /// 指向 prebuilt 位置，里面就是 child 的真实 contributing items。
 const std = @import("std");
 const node_mod = @import("../node.zig");
@@ -60,7 +60,7 @@ fn nodeOwnItems(cx: *RenderContext, node_id: u32) []const DisplayItem {
 }
 
 /// 从 child 的 runtime range 切 child 的 contributing display items。
-/// 优先用 subtree range；若 subtree count=0 但 own count>0，回退到 own range —
+/// 优先用 subtree range；若 subtree count=0 但 own count>0，回退到 own range,
 /// 这覆盖 leaf 节点 own 走 prebuild 短路、subtree paint 期间 0 增长的情况。
 fn childSubtreeItems(cx: *RenderContext, child_id: u32) []const DisplayItem {
     const runtime = cx.scene_runtime.get(child_id) orelse return &.{};
@@ -188,8 +188,8 @@ fn assembleCacheCommands(
     }
 
     // 跨帧自包含化：blob-backed text_run 的 blob_id 指向**每帧重建**的 text_blob_store，
-    // 下帧 replay 时 id 对不上 → resolveTextRunContent 返回空串 → settle 帧文字消失。
-    // 写缓存时就地物化：content 指向当前帧 blob 字节（cachePromotedRenderCommands →
+    // 下帧 replay 时 id 对不上 -> resolveTextRunContent 返回空串 -> settle 帧文字消失。
+    // 写缓存时就地物化：content 指向当前帧 blob 字节（cachePromotedRenderCommands ->
     // duplicateDisplayItems 会深拷贝 content.len>0 的字节），blob_id 置 INVALID 断开
     // 跨帧引用。缓存从此不依赖任何帧内序号身份。
     for (buf) |*item| {
@@ -238,7 +238,7 @@ fn writeDescendantScopedPromotedCache(
 
     if (node.meta.per_frame.caches.commands.promoted) |old_cache| {
         // 洗白防护（下游回归 review 指出的洞）：本分支保留**旧帧的 self 命令**
-        // （含按值烘焙旧 glass 参数的 begin_blur token）——glass hash 必须跟随
+        // （含按值烘焙旧 glass 参数的 begin_blur token），glass hash 必须跟随
         // 实际写入的命令（沿用旧 hash），否则 markPromotedCacheRebuilt 盖上
         // 当前参数的章后，替放守卫比"当前 vs 当前"永远相等，旧 token 畅通
         // 无阻（GlassBox hover 回落方向视觉冻结的根因）。
@@ -350,14 +350,14 @@ fn markPromotedCacheRebuilt(cx: *RenderContext, node: *Node, exec_state: NodeExe
     if (node.meta.per_frame.caches.commands.promoted) |*cache| {
         cache.cached_transform_id = exec_state.retained_ids.transform_id;
         cache.cached_effect_id = exec_state.retained_ids.effect_id;
-        // 下游回归：clip_id 此前漏 stamp/漏比对 —— 纯 clip 数量平移（transform/
+        // 下游回归：clip_id 此前漏 stamp/漏比对，纯 clip 数量平移（transform/
         // effect 不变）可蒙混过关，替放后 item 索引到别的节点的 clip rect。
         cache.cached_clip_id = exec_state.retained_ids.clip_id;
         // glass 参数按值烘焙在缓存的 begin_blur token 里；参数写入不 bump
-        // content_version、dirty 位会被祖先 subtree replay 提前消费——必须
+        // content_version、dirty 位会被祖先 subtree replay 提前消费，必须
         // 独立 stamp（GlassBox interactive hover 真机冻结的根因）。
         // maxInt 哨兵 = 本次写入是 fresh 记录（splice 路径已带旧命令的旧章，
-        // 覆盖它就是"洗白"——旧 token 配新章，守卫失效）。
+        // 覆盖它就是"洗白"，旧 token 配新章，守卫失效）。
         if (cache.cached_glass_hash == std.math.maxInt(u64)) {
             cache.cached_glass_hash = render_engine.nodeGlassParamsHash(node);
         }

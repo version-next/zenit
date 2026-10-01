@@ -1,5 +1,5 @@
 const ImeReplacement = @import("ime_replacement.zig").ImeReplacement;
-/// TextInputState — Input/Textarea 核心状态
+/// TextInputState, Input/Textarea 核心状态
 ///
 /// 包含 TextInputState struct 定义及全部方法。
 const std = @import("std");
@@ -64,7 +64,7 @@ pub const TextInputState = struct {
     /// （对齐 AppKit/NSUndoManager 的 grouping-by-idle 行为）。
     pub const undo_coalesce_idle_ns: u64 = 800 * std.time.ns_per_ms;
 
-    /// 文本缓冲区 (固定大小, 避免动态分配 —— 见 editable_block.MAX_INPUT_BYTES)
+    /// 文本缓冲区 (固定大小, 避免动态分配，见 editable_block.MAX_INPUT_BYTES)
     buffer: [editable_block.MAX_INPUT_BYTES]u8 = [_]u8{0} ** editable_block.MAX_INPUT_BYTES,
     buffer_len: usize = 0,
     /// Opt-in for fields whose business value must not be silently truncated.
@@ -266,13 +266,13 @@ pub const TextInputState = struct {
 
     // ========== Doc sync ==========
 
-    /// DocCursor → state.cursor_pos / selection_anchor
+    /// DocCursor -> state.cursor_pos / selection_anchor
     pub fn syncCursorFromDoc(self: *TextInputState) void {
         self.cursor_pos = self.textarea_cursor.offset;
         self.selection_anchor = self.textarea_cursor.anchor;
     }
 
-    /// state.cursor_pos / selection_anchor → DocCursor
+    /// state.cursor_pos / selection_anchor -> DocCursor
     pub fn syncDocFromCursor(self: *TextInputState) void {
         self.textarea_cursor.offset = self.cursor_pos;
         self.textarea_cursor.anchor = self.selection_anchor;
@@ -701,7 +701,7 @@ pub const TextInputState = struct {
         self.clearImePendingCommit();
         self.dirty = true;
         self.resetBlink();
-        // preedit 变化改了 display text——必须走标脏链，否则零脏帧 fast-path
+        // preedit 变化改了 display text，必须走标脏链，否则零脏帧 fast-path
         // 跳过 inputBeforeRender/relayout，preedit 字形不上屏而光标已前进
         self.markVisualDirty();
     }
@@ -737,7 +737,7 @@ pub const TextInputState = struct {
 
     /// IME replacementRange 应用：把 [start,end) UTF-8 字节区间设为选区，
     /// 让随后的插入/删除落在该区间上（insertText 会先删选区）。
-    /// 哨兵或非法区间（起点大于终点 / 终点越界）不动作 —— 退化为现行
+    /// 哨兵或非法区间（起点大于终点 / 终点越界）不动作，退化为现行
     /// "落在光标处"行为。字符边界钳制由 insertText/deleteRange 内部完成。
     pub fn applyImeReplacementRange(self: *TextInputState, replace_start_utf8: u32, replace_end_utf8: u32) bool {
         if (replace_start_utf8 == events.ime_no_replacement or
@@ -746,7 +746,7 @@ pub const TextInputState = struct {
         const doc_len: usize = if (self.textarea_doc) |doc| doc.totalLength() else self.buffer_len;
         const start: usize = replace_start_utf8;
         const end: usize = replace_end_utf8;
-        // 桥接层区间可能基于过期文本（异步一帧）——越界时拒绝而不是钳，
+        // 桥接层区间可能基于过期文本（异步一帧），越界时拒绝而不是钳，
         // 宁可退化为现行为也不误删。
         if (end > doc_len) return false;
         const text = self.getText();
@@ -884,7 +884,7 @@ pub const TextInputState = struct {
     /// password 模式下用 mask 字符串替代真实 buffer 内容做测量。
     /// CJK IME 输入到 password 后，buffer 持 UTF-8 多字节字符 (双宽显示)，
     /// 但屏幕上画的是 ASCII '*' (单宽)。光标定位必须按 displayed mask 算，
-    /// 否则 cursor 视觉位置与 mask 字符不一致 → 偏移 bug。
+    /// 否则 cursor 视觉位置与 mask 字符不一致 -> 偏移 bug。
     /// 由于 mask 是 N 个完全相同的 '*'，shape 一次拿单宽乘 N 就够，避免长输入
     /// 时 O(N) shape 调用反复磨 ShapingCache。
     fn singleStarAdvance(self: *TextInputState) f32 {
@@ -1490,7 +1490,7 @@ pub const TextInputState = struct {
 
     /// 保存撤销快照。
     ///
-    /// 无条件压栈，并**断开** undo 合并链——所有走裸 pushUndo 的编辑
+    /// 无条件压栈，并**断开** undo 合并链，所有走裸 pushUndo 的编辑
     /// （setText / 词删除 / 行删除 / 粘贴等）都是自成一体的一步。
     /// 连续输入请走 `pushUndoCoalescing`。
     pub fn pushUndo(self: *TextInputState) bool {
@@ -1568,7 +1568,7 @@ pub const TextInputState = struct {
         self.undo_coalesce_at = null;
     }
 
-    /// 判断某个字符是否是"硬边界"——即使紧挨着输入也要断开 undo 单元。
+    /// 判断某个字符是否是"硬边界"，即使紧挨着输入也要断开 undo 单元。
     /// 空白/换行是原生控件公认的分词点：撤销时按"词"回退而不是整段回退。
     fn isUndoBoundaryText(text: []const u8) bool {
         for (text) |c| {
@@ -1667,7 +1667,7 @@ pub const TextInputState = struct {
 
     // ========== Hit-test+Scroll ==========
 
-    /// 全局 x 坐标 → 字符位置 (hit test)
+    /// 全局 x 坐标 -> 字符位置 (hit test)
     pub fn hitTestCursorPos(self: *TextInputState, global_x: f32) usize {
         if (self.multiline) {
             return self.hitTestCursorPosMultiline(
@@ -1738,7 +1738,7 @@ pub const TextInputState = struct {
     /// Multiline storage may reallocate while inserting a newline. Waiting until
     /// `inputBeforeRender` to replace `TextProps.content` leaves the node pointing at the old
     /// allocation during the layout that follows the input event. The caret uses the current
-    /// document and advances correctly, while glyph layout keeps the stale prefix — the visible
+    /// document and advances correctly, while glyph layout keeps the stale prefix, the visible
     /// symptom is text typed after Return disappearing. Keep the before-render sync as a fallback,
     /// but make every normal edit publish its display slice before layout can observe it.
     fn retryDisplay(self: *TextInputState, node: *core.Node) void {
@@ -1770,13 +1770,13 @@ pub const TextInputState = struct {
 
     /// 把 buffer/ime/cursor 变化通知到渲染管线。
     /// cx.render() 零脏帧 fast-path 会跳过 before_render hook，导致 inputBeforeRender
-    /// 不跑 → text.content 不更新（symptom: "输入 n 个字符要再点一下才更新 *"）。
+    /// 不跑 -> text.content 不更新（symptom: "输入 n 个字符要再点一下才更新 *"）。
     /// 任何修改了 buffer / cursor / scroll_x / ime 的 caller 都要在结束时调一次。
     pub fn markVisualDirty(self: *TextInputState) void {
         self.syncMultilineAutoHeight();
         _ = self.syncDisplayTextContent();
         // sizing（而非 layout）：display text 内容会变（打字/IME preedit 插拔），
-        // 软换行文本的 intrinsic 度量有缓存，markLayoutDirty 不会让它失效——
+        // 软换行文本的 intrinsic 度量有缓存，markLayoutDirty 不会让它失效,
         // wrap 行盒按旧内容画，表现为 preedit/新字不上屏、光标却按新内容前进。
         if (self.text_display_node) |n| n.markSizingDirty();
         if (self.cursor_node) |n| n.markRenderDirty();
@@ -1785,7 +1785,7 @@ pub const TextInputState = struct {
     }
 
     /// 更新水平滚动偏移，确保光标始终在可见区域内。
-    /// 同时把 visual node 标脏 —— updateScrollX 几乎只在 buffer/cursor/ime/focus
+    /// 同时把 visual node 标脏，updateScrollX 几乎只在 buffer/cursor/ime/focus
     /// 变化后调用，cx.render() 零脏帧 fast-path 会跳过 inputBeforeRender，
     /// 不在这统一标脏的话视觉 mask 不会更新（"输入 n 个字符要点一下才更新 *"）。
     pub fn updateScrollX(self: *TextInputState) void {
@@ -1854,7 +1854,7 @@ pub const TextInputState = struct {
 
     /// 以编程方式整体替换文本内容。
     ///
-    /// 此前单行 Input **没有**任何 setText —— props.value 只在 mount 时读
+    /// 此前单行 Input **没有**任何 setText, props.value 只在 mount 时读
     /// 一次（mod.zig 把它 memcpy 进 buffer），此后应用无法再改字段内容。
     /// 于是"表单先渲染、数据后到"和"提交后清空表单"这两个基本场景都做不到。
     ///

@@ -1,8 +1,8 @@
-//! hello_button 样式表 —— 演示两层样式抽象（见 docs/styling.md）：
+//! hello_button 样式表，演示两层样式抽象（见 docs/styling.md）：
 //!
 //! 1. 具名样式函数：`fn (tokens) -> BoxStyle/TextStyle` 纯函数（root/title/counterLabel），
 //!    经 ui.boxStyled/textStyled 挂载后换主题自动重放。
-//! 2. 应用层自定义 recipe：`PanelRecipe` 证明 ui.recipe 不是框架组件专属 ——
+//! 2. 应用层自定义 recipe：`PanelRecipe` 证明 ui.recipe 不是框架组件专属,
 //!    应用可以用同一套 CVA 风格 variant 系统定义自己的样式变体。
 const ui = @import("ui");
 

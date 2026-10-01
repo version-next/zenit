@@ -1,7 +1,7 @@
-//! Select Headless — pure-logic state machine.
+//! Select Headless, pure-logic state machine.
 //!
 //! Lives separately from `mod.zig` so bench builds can import this surface
-//! without transitively pulling `mount.zig` → `core.zig` → `reactive.zig`
+//! without transitively pulling `mount.zig` -> `core.zig` -> `reactive.zig`
 //! (which conflicts with bench's separate `reactive` module).
 
 const std = @import("std");

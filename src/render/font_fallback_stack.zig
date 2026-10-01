@@ -1,9 +1,9 @@
-//! font_fallback_stack.zig — CSS font-family 式的显式字体回退栈
+//! font_fallback_stack.zig, CSS font-family 式的显式字体回退栈
 //!
 //! == 为什么需要它（背景是一场真实事故）==
 //! 此前 CJK 字形全靠 CoreText 的 run 级联 fallback：主字体（Inter/Lora 等
 //! 全拉丁字体）shape 不出的码点由 CoreText 现场级联到系统字体。三个结构性问题：
-//!   1. run 级 fallback 的 CTFontRef **不是稳定实例** —— wrapper 曾用指针作
+//!   1. run 级 fallback 的 CTFontRef **不是稳定实例**, wrapper 曾用指针作
 //!      缓存键，同一字形被当成无数"新字体"重复收录，glyph atlas 32 页耗尽、
 //!      大规模丢字（见 text_renderer.getOrCreateGlyphFallbackFont 的注释）。
 //!      identity hash 修掉了键，但 fallback 本身仍不可控。
@@ -18,7 +18,7 @@
 //! 的职责在渲染器 TextRenderer.selectSegmentFont，不在本结构）；本结构管理
 //! 首位之后的回退族。shaping 前按段首码点显式选族：第一个 cmap 覆盖该码点
 //! 的族胜出，从族内按（字号优先、字重档最近）取一个**我们自己持有**的
-//! *Font 直接 shape —— 字体选择确定、CTFont 指针稳定、跳过级联开销。
+//! *Font 直接 shape，字体选择确定、CTFont 指针稳定、跳过级联开销。
 //! 栈内无族覆盖的码点（emoji、罕见符号）仍交 CoreText 级联兜底。
 //!
 //! == per-OS 系统兜底 ==
@@ -30,7 +30,7 @@
 //! 纯覆盖優先会踩中「PingFang 也覆盖部分谚文」一类的陷阱：韩文文本必须优先
 //! 用韩文字体（Hangul glyph 风格与中文字体不一致）。族可声明 priority
 //! （hangul / han_kana），同类脚本的码点先在声明了该优先级的族里找，
-//! 找不到再按栈序做纯覆盖遍历 —— 与 script_detect 的既有语义按码点对齐。
+//! 找不到再按栈序做纯覆盖遍历，与 script_detect 的既有语义按码点对齐。
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -39,7 +39,7 @@ const Font = text_module.Font;
 
 /// 各 OS 的默认系统 CJK 兜底族名。null = 该平台未定义（应用自行决定或
 /// 交平台级联）。本项目当前 macOS-only，其他平台在此处补名字即可接入：
-///   .windows → "Microsoft YaHei"、.linux → "Noto Sans CJK SC"（未验证，
+///   .windows -> "Microsoft YaHei"、.linux -> "Noto Sans CJK SC"（未验证，
 ///   接入时以目标发行版实测为准）。
 pub fn defaultSystemFamilyName() ?[]const u8 {
     return switch (builtin.os.tag) {
@@ -48,7 +48,7 @@ pub fn defaultSystemFamilyName() ?[]const u8 {
     };
 }
 
-/// 码点脚本分类 —— 只区分「回退策略不同」的三类。
+/// 码点脚本分类，只区分「回退策略不同」的三类。
 /// 范围与 command_encoder/script_detect.zig 的判定语义对齐（那边按整段文本
 /// 回答"要不要回退"，这边按单码点回答"优先找哪类族"）。
 pub const ScriptClass = enum { hangul, han_kana, other };
@@ -72,8 +72,8 @@ pub fn classifyCodepoint(cp: u21) ScriptClass {
 }
 
 /// PingFang 一类**固定字重档**字体的最近档映射：
-/// 400→Regular、500→Medium、600+→Semibold。
-/// （可变字体如 Inter 用不到这条 —— 它们在 FontSelector 侧按精确字重加载。）
+/// 400->Regular、500->Medium、600+->Semibold。
+/// （可变字体如 Inter 用不到这条，它们在 FontSelector 侧按精确字重加载。）
 pub fn archiveWeight(weight: u16) u16 {
     return if (weight >= 600) 600 else if (weight >= 500) 500 else 400;
 }
@@ -82,7 +82,7 @@ pub const FontFallbackStack = struct {
     pub const MAX_FAMILIES = 4;
     pub const MAX_FONTS_PER_FAMILY = 40;
     /// coverage 缓存容量上限。码点空间有限（一份文档的字表通常几千），
-    /// 撞顶只可能是恶意/极端输入 —— 直接清空重来，不做精细淘汰。
+    /// 撞顶只可能是恶意/极端输入，直接清空重来，不做精细淘汰。
     const COVERAGE_CACHE_MAX = 16384;
 
     pub const Priority = enum { none, han_kana, hangul };
@@ -99,7 +99,7 @@ pub const FontFallbackStack = struct {
 
     families: [MAX_FAMILIES]Family = undefined,
     family_count: u8 = 0,
-    /// cp → 命中的族下标 + 1；0 = 栈内无族覆盖（级联兜底）。
+    /// cp -> 命中的族下标 + 1；0 = 栈内无族覆盖（级联兜底）。
     /// cmap 覆盖与字号/字重无关，所以键只需码点本身。
     coverage_cache: std.AutoHashMap(u21, u8),
 
@@ -133,7 +133,7 @@ pub const FontFallbackStack = struct {
         fam.count += 1;
     }
 
-    /// 显式选字体：cp → 覆盖它的族（脚本优先 + 栈序）→ 族内最近档。
+    /// 显式选字体：cp -> 覆盖它的族（脚本优先 + 栈序）-> 族内最近档。
     /// null = 栈内无族覆盖，调用方交 CoreText 级联兜底。
     pub fn selectForCodepoint(self: *FontFallbackStack, cp: u21, size: f32, weight: u16) ?*Font {
         const fam_idx = self.familyForCodepoint(cp) orelse return null;
@@ -179,7 +179,7 @@ pub const FontFallbackStack = struct {
         return probe.glyphIndexForCodepoint(cp) != 0;
     }
 
-    /// 族内选档：**字号优先**（沿用 FontSelector.selectFromGroup 的语义 ——
+    /// 族内选档：**字号优先**（沿用 FontSelector.selectFromGroup 的语义,
     /// 应用可能故意让某个字号档用不同字重，如 14px 正文用 Medium 提亮 CJK，
     /// 字重优先会打翻这类设计），字号并列时取距目标**档位字重**最近的；
     /// 档距再并列时，粗体请求（≥600）取更粗、其余取更细（CSS font-weight
@@ -260,15 +260,15 @@ test "selectFromFamily: 字号优先，档内字重最近，粗体请求并列�
     for ([_]*Font{ &f14m, &f14b, &f16r, &f16m, &f16b }) |f| stack.addFont(fi, f);
     const fam = &stack.families[fi];
 
-    // 450@14 → 14px 档里离 400 档最近的是 Medium（字号优先，不越档去别的字号）
+    // 450@14 -> 14px 档里离 400 档最近的是 Medium（字号优先，不越档去别的字号）
     try testing.expectEqual(@as(?*Font, &f14m), FontFallbackStack.selectFromFamily(fam, 14, 450));
-    // 400@16 → Regular
+    // 400@16 -> Regular
     try testing.expectEqual(@as(?*Font, &f16r), FontFallbackStack.selectFromFamily(fam, 16, 400));
-    // 500@16 → Medium
+    // 500@16 -> Medium
     try testing.expectEqual(@as(?*Font, &f16m), FontFallbackStack.selectFromFamily(fam, 16, 500));
-    // 620@16 → 目标档 600，500/700 档距并列 → 粗体请求取更粗（真实 Semibold 面）
+    // 620@16 -> 目标档 600，500/700 档距并列 -> 粗体请求取更粗（真实 Semibold 面）
     try testing.expectEqual(@as(?*Font, &f16b), FontFallbackStack.selectFromFamily(fam, 16, 620));
-    // 700@15 → 无 15px 档，14/16 并列时按字重档就近（都有 700）→ 先到的 14px bold
+    // 700@15 -> 无 15px 档，14/16 并列时按字重档就近（都有 700）-> 先到的 14px bold
     try testing.expectEqual(@as(?*Font, &f14b), FontFallbackStack.selectFromFamily(fam, 15, 700));
 }
 
@@ -297,11 +297,11 @@ test "familyForCodepoint: 真实系统字体的覆盖与脚本优先（macOS）"
     const ki = stack.addFamily("Apple SD Gothic Neo", .hangul).?;
     stack.addFont(ki, gothic);
 
-    // 汉字 → PingFang（第一遍脚本优先命中）
+    // 汉字 -> PingFang（第一遍脚本优先命中）
     try testing.expectEqual(@as(?*Font, pf), stack.selectForCodepoint(0x4E2D, 14, 400));
-    // 谚文 → Gothic：即使 PingFang 在栈序上靠前且可能覆盖，也要走 hangul 优先族
+    // 谚文 -> Gothic：即使 PingFang 在栈序上靠前且可能覆盖，也要走 hangul 优先族
     try testing.expectEqual(@as(?*Font, gothic), stack.selectForCodepoint(0xAC00, 14, 400));
-    // emoji → 两族都不覆盖 → null（级联兜底）
+    // emoji -> 两族都不覆盖 -> null（级联兜底）
     try testing.expectEqual(@as(?*Font, null), stack.selectForCodepoint(0x1F600, 14, 400));
     // 二次查询走 coverage 缓存，答案必须一致
     try testing.expectEqual(@as(?*Font, pf), stack.selectForCodepoint(0x4E2D, 14, 400));

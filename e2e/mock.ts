@@ -1,5 +1,5 @@
 /**
- * e2e/mock.ts — 内嵌 mock HTTP 服务（runner 同进程，不单独起进程）。
+ * e2e/mock.ts，内嵌 mock HTTP 服务（runner 同进程，不单独起进程）。
  *
  * 对应 docs/internal/UI_AUTOMATION_PLAN.md §5：
  * - 每 case 原子激活覆盖（setCaseOverrides）
@@ -123,7 +123,7 @@ async function selfTest(): Promise<void> {
   const j2 = (await r2.json()) as { users: string[] };
   if (j2.users.length !== 0) throw new Error("override mock failed");
 
-  // 3. 未匹配 → 404 + 审计
+  // 3. 未匹配 -> 404 + 审计
   const r3 = await fetch(`${srv.url}/api/nope`);
   if (r3.status !== 404) throw new Error("unmatched should be 404");
   const audit = srv.getAudit();

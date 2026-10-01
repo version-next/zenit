@@ -1,4 +1,4 @@
-//! Inspector overlay — a one-line dev tool that highlights whatever node
+//! Inspector overlay, a one-line dev tool that highlights whatever node
 //! the mouse is hovering, with a dashed bounding box and a small label
 //! showing dimensions + component name.
 //!
@@ -184,7 +184,7 @@ pub fn attach(cx: *Cx, scope: *Scope, parent: *Node, config: Config) !*Node {
             if (s.nodes_alive) {
                 // Scope 先于节点树销毁：树上还挂着指回 state 的 before_render
                 // hook / anim_state / on_cleanup，label 文本还 alias 着
-                // state.label_buf —— 不摘干净，下一帧 tickBeforeRender 或
+                // state.label_buf，不摘干净，下一帧 tickBeforeRender 或
                 // setTheme 的 hook 遍历就是 use-after-free。
                 s.container.meta.per_frame.hooks.before_render.main = null;
                 s.container.meta.per_frame.hooks.slots.anim_state = null;
@@ -210,7 +210,7 @@ pub fn attach(cx: *Cx, scope: *Scope, parent: *Node, config: Config) !*Node {
         }
     }.cleanup, @ptrCast(state));
 
-    // Start hidden — until the user moves the mouse over a node, there's
+    // Start hidden, until the user moves the mouse over a node, there's
     // nothing to draw.
     setHidden(state, true);
 
@@ -235,7 +235,7 @@ fn beforeRender(node: *Node) void {
     }
 
     const t = target.?;
-    // 全变换 world rect（含祖先 scale/rotate）——hit-test 选中节点用的就是
+    // 全变换 world rect（含祖先 scale/rotate），hit-test 选中节点用的就是
     // 完整变换，高亮必须同口径，否则 scaled 子树里的节点框会脱位。
     const rect = inspector_mod.nodeWorldRect(t);
     // box/label 是 container 的子节点，translate 相对 container 生效；
@@ -246,7 +246,7 @@ fn beforeRender(node: *Node) void {
     const local_y = rect.y - org.y;
 
     // Position the box. translate_x/y is the cheapest-to-mutate way to move
-    // an absolute-positioned node — no layout pass needed.
+    // an absolute-positioned node, no layout pass needed.
     state.box.style.translate_x = local_x;
     state.box.style.translate_y = local_y;
     state.box.style.width = .{ .px = @max(rect.w, 1) };
@@ -426,7 +426,7 @@ test "overlay: attach 在非原点父节点下不双重计入父偏移" {
     overlay_node.meta.per_frame.hooks.before_render.main.?(overlay_node);
 
     // box 是 container（挂在 wrapper 下）的子节点：translate 必须是
-    // container-local 的 (50, 30)，而不是 world 的 (150, 80) ——
+    // container-local 的 (50, 30)，而不是 world 的 (150, 80),
     // 后者叠加 wrapper 自身位置后会画到 (250, 130)。
     const state: *OverlayState = @ptrCast(@alignCast(overlay_node.meta.per_frame.hooks.slots.anim_state.?));
     try std.testing.expectApproxEqAbs(@as(f32, 50), state.box.style.translate_x, 0.001);
@@ -445,7 +445,7 @@ test "overlay: scope 先销毁时摘干净所有指回 state 的引用（UAF 防
     try std.testing.expect(overlay_node.meta.per_frame.hooks.before_render.main != null);
     try std.testing.expect(overlay_node.meta.ownership.hooks.on_cleanup != null);
 
-    // scope 先于节点树销毁（组件级 scope 卸载的顺序）——
+    // scope 先于节点树销毁（组件级 scope 卸载的顺序）,
     // dispose 后节点树仍在渲染，任何残留引用都是下一帧的 use-after-free。
     scope.dispose();
     try std.testing.expect(overlay_node.meta.per_frame.hooks.before_render.main == null);
@@ -466,7 +466,7 @@ test "overlay: skips inspectable=false nodes (so it doesn't highlight itself)" {
     const overlay_node = try attach(cx, scope, root, .{});
 
     // Simulate hover landing on the overlay's own box. inspectable=false
-    // (set in attach) → overlay should remain hidden.
+    // (set in attach) -> overlay should remain hidden.
     cx.hovered_node = overlay_node;
     overlay_node.meta.per_frame.hooks.before_render.main.?(overlay_node);
 

@@ -1,4 +1,4 @@
-/// AnimationController — 统一播放控制器
+/// AnimationController，统一播放控制器
 ///
 /// 包装 Tween/Spring/Keyframes 三种驱动器，提供 GSAP 风格的统一播放控制：
 /// play / pause / resume / reverse / seek / restart
@@ -263,13 +263,13 @@ pub const AnimationController = struct {
         self.recordTweenStart();
     }
 
-    /// 用 (current_value, velocity) 接管动画 —— interruption-safe 续衔。
+    /// 用 (current_value, velocity) 接管动画，interruption-safe 续衔。
     /// 当 NodeAnimations.set 替换 controller 时，从老 controller 取 current/velocity
     /// 调这个；新 controller 据此从老的"当前位置"开始而非 from_value 跳变。
     ///
     /// 驱动行为:
     /// - spring: from := current_value, initial_velocity := velocity, 重 precompute
-    ///   + 锚定 start_time_ms = now → 下一 tick 真从 (current, velocity) 续衔
+    ///   + 锚定 start_time_ms = now -> 下一 tick 真从 (current, velocity) 续衔
     /// - tween: from := current_value (起点续衔)，velocity 忽略 (tween 没有速度参数)
     /// - keyframes: 不支持任意点续衔；只更新 self.value 给应用层用
     ///
@@ -1071,7 +1071,7 @@ test "AnimationController: yoyo" {
     _ = ctrl.tick(1500.0);
     try std.testing.expectApproxEqAbs(@as(f32, 100.0), ctrl.value, 1.0);
 
-    // 第二次反向 (yoyo) — resetDriver 会重置 start_time_ms 到 current_frame_time_ms
+    // 第二次反向 (yoyo), resetDriver 会重置 start_time_ms 到 current_frame_time_ms
     setTestTime(2000.0);
     _ = ctrl.tick(2000.0);
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), ctrl.value, 1.0);
@@ -1081,7 +1081,7 @@ test "AnimationController: yoyo" {
 
 test "AnimationController: yoyo 完成后裸 play() 重放必须从 from 正向开始" {
     // 回归：yoyo 结束时 direction 停在 -1，play() 的 was_completed 块只复位
-    // progress/current_loop 不复位 direction —— 重放从 to 倒播到 from。
+    // progress/current_loop 不复位 direction，重放从 to 倒播到 from。
     // （restart() 因 stop() 复位 direction 而幸免，裸 play() 中招）
     setTestTime(1000.0);
     var ctrl = AnimationController.initTween(.{
@@ -1100,7 +1100,7 @@ test "AnimationController: yoyo 完成后裸 play() 重放必须从 from 正向�
     _ = ctrl.tick(2000.0);
     try std.testing.expect(ctrl.isCompleted());
 
-    // 裸 play() 重放：中点应在 from→to 的正向路径上（≈50），倒播则 ≈50 也一样……
+    // 裸 play() 重放：中点应在 from->to 的正向路径上（≈50），倒播则 ≈50 也一样……
     // 所以采样 1/5 处：正向 ≈20，倒播 ≈80
     setTestTime(3000.0);
     ctrl.play();
@@ -1163,7 +1163,7 @@ test "AnimationController: keyframes driver" {
 
     ctrl.play();
 
-    // 25% (在 [0, 0.5] 段，局部 50%) → value ≈ 50
+    // 25% (在 [0, 0.5] 段，局部 50%) -> value ≈ 50
     setTestTime(1250.0);
     _ = ctrl.tick(1250.0);
     try std.testing.expectApproxEqAbs(@as(f32, 50.0), ctrl.value, 2.0);

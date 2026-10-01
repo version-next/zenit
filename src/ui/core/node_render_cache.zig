@@ -1,11 +1,11 @@
-//! node_render_cache — v0.12 §N2 god-object split: 从 node.zig 抽出
+//! node_render_cache, v0.12 §N2 god-object split: 从 node.zig 抽出
 //! 渲染缓存子域（6 方法 + TextHashSnapshot 类型）。
 //!
 //! 范式同 §N1 node_dirty.zig：Node-typed free function +
 //! @import("node.zig") 循环 import；node.zig 保留 thin delegate（原
 //! pub/private 可见性），内部 caller 零改。
 //!
-//! buildCachedRenderSlice 原是 static fn（无 self）→ 本模块模块级
+//! buildCachedRenderSlice 原是 static fn（无 self）-> 本模块模块级
 //! free function。TextHashSnapshot 类型搬入，node.zig re-export
 //! （外部 text_item_render.zig 等用 node.Node.TextHashSnapshot）。
 //!
@@ -180,8 +180,8 @@ pub fn invalidateRenderCache(self: *Node) void {
 }
 
 /// 下游回归：写入非 promoted 干净子树的跨帧 display payload 缓存。
-/// commands 需已物化（text_run 的 blob 引用断开、content 指向帧内字节 ——
-/// buildCachedRenderSlice → duplicateDisplayItems 会深拷贝 content/spans）。
+/// commands 需已物化（text_run 的 blob 引用断开、content 指向帧内字节,
+/// buildCachedRenderSlice -> duplicateDisplayItems 会深拷贝 content/spans）。
 /// stamp = 写入帧的 transform/effect/clip 链根 id + world bounds 尺寸。
 pub fn cacheSubtreePayloadCommands(
     self: *Node,
@@ -241,19 +241,19 @@ pub fn invalidatePromotedRenderCache(self: *Node) void {
     }
 }
 
-/// 作废 text hash 缓存 —— 每次写 text content 都必须调。
+/// 作废 text hash 缓存，每次写 text content 都必须调。
 ///
 /// ⚠️ 缓存键是 (content_version, content_ptr, content_len, spans_ptr, spans_len)，
 /// 而 `Node.setText` **不撞** content_version（它只是转发给 World.content，
 /// 不碰 per_frame.caches）。于是"等长换文本"时三个键分量可以全部不变：
-///   - len 相同（"3 × 4" → "3 × 5" 都是 6 字节）；
+///   - len 相同（"3 × 4" -> "3 × 5" 都是 6 字节）；
 ///   - ptr 相同（旧 owned buffer 被 free 后 allocator 常把同一块还给新的
 ///     dupe；就地改写调用方自己的 buffer 则必然同址）；
 ///   - version 相同（setText 不撞，调用方若只 markRenderDirty 也未必先于
 ///     本次读取发生）。
 /// 命中旧 hash 的后果不是崩溃而是**画面陈旧**：blob 指纹、paint chunk 的
 /// content_hash、retained 层指纹一路判"内容没变"而跳过重录。含字体回退的
-/// 串最扎眼 —— 文本被按字体切成多段（"3 × 4" = ['3 ']['×'][' ']['4']），
+/// 串最扎眼，文本被按字体切成多段（"3 × 4" = ['3 ']['×'][' ']['4']），
 /// 变化落在哪段就只有那段更新，其余段留着旧字形。
 ///
 /// 把作废点放在写路径（而不是让调用方记得 markRenderDirty）是因为：hash 的

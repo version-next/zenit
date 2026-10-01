@@ -76,7 +76,7 @@ test "useHoverHighlight: border_color with animation" {
     // 初始: normal 色
     try std.testing.expect(Color.eql(inner.style.border.color, t.color.checkbox_border));
 
-    // hover → 触发动画，tick 足够帧后应收敛到 accent 色。
+    // hover -> 触发动画，tick 足够帧后应收敛到 accent 色。
     // 注意：setTarget 用 render_engine.current_frame_time_ms 作为动画起点
     // （hooks.zig:609），所以必须**先把帧时钟设成当前值再 invoke**，否则
     // 动画起点停在 0 而后续 tick 从 16ms 起跳，进度计算错位。
@@ -93,7 +93,7 @@ test "useHoverHighlight: border_color with animation" {
     }
     try std.testing.expect(Color.eql(inner.style.border.color, t.color.accent));
 
-    // leave → tick 足够帧后恢复 normal 色（同样先对齐帧时钟）
+    // leave -> tick 足够帧后恢复 normal 色（同样先对齐帧时钟）
     render_engine.current_frame_time_ms = now_ms;
     container.behavior.events.on_leave.?.invoke();
     for (0..30) |_| {
@@ -154,7 +154,7 @@ test "onCleanup: triggered on removeChild" {
     try root.appendChild(std.testing.allocator, child);
 
     // 计数器而非 bool：双触发时第二次写 true 无感，历史上因此漏掉
-    // detachChild → freeNode 链上的 on_cleanup 二次 invoke（refcount 下溢级 bug）
+    // detachChild -> freeNode 链上的 on_cleanup 二次 invoke（refcount 下溢级 bug）
     var clean_count: u32 = 0;
     onCleanup(child, core.Cx.simpleHandler(struct {
         fn handler(c: *anyopaque) void {
@@ -174,7 +174,7 @@ test "onCleanup: triggered on removeChild" {
     try std.testing.expect(!child.frame_state.state_bits.flags.is_mounted);
 
     // 手动释放被移除的节点 (不在树中, ctx.deinit 不会释放)
-    // freeNode 不得再次触发 on_cleanup——一次性消费
+    // freeNode 不得再次触发 on_cleanup，一次性消费
     ctx.freeNode(child);
     try std.testing.expectEqual(@as(u32, 1), clean_count);
 }
@@ -244,7 +244,7 @@ test "useAnimatedBackground: creates state and hover signal" {
     try std.testing.expect(!is_hovered.get());
     try std.testing.expect(node.meta.per_frame.hooks.before_render.main != null or node.meta.per_frame.hooks.before_render.count > 0);
 
-    // hover → 设置 Signal
+    // hover -> 设置 Signal
     node.behavior.events.on_hover.?.invoke();
     try std.testing.expect(is_hovered.get());
 }
@@ -562,7 +562,7 @@ test "useFocusRing: tab focus shows outline with animation, blur fades out" {
     // 初始: 无 outline
     try std.testing.expect(node.style.outline() == null);
 
-    // Tab focus → tick 足够帧后 outline 出现 (opacity → 1.0)
+    // Tab focus -> tick 足够帧后 outline 出现 (opacity -> 1.0)
     ctx.focus_manager.last_focus_reason = .tab;
     node.behavior.events.on_focus.?.invoke();
     for (0..30) |_| {
@@ -577,7 +577,7 @@ test "useFocusRing: tab focus shows outline with animation, blur fades out" {
     // 颜色应该接近 focus_ring (alpha 可能因为 opacity=1.0 而完全一致)
     try std.testing.expect(Color.eql(node.style.outline().?.color, t.color.focus_ring));
 
-    // blur → tick 足够帧后 outline 消失 (opacity → 0.0)
+    // blur -> tick 足够帧后 outline 消失 (opacity -> 0.0)
     node.behavior.events.on_blur.?.invoke();
     for (0..30) |_| {
         for (node.meta.per_frame.hooks.before_render.hooks[0..node.meta.per_frame.hooks.before_render.count]) |cb_opt| {
@@ -604,7 +604,7 @@ test "useFocusRing: click focus does NOT show outline" {
 
     try useFocusRing(scope, ctx, node, .{});
 
-    // 鼠标点击 focus → tick 后仍不显示 outline
+    // 鼠标点击 focus -> tick 后仍不显示 outline
     ctx.focus_manager.last_focus_reason = .click;
     node.behavior.events.on_focus.?.invoke();
     for (0..30) |_| {
@@ -651,7 +651,7 @@ test "useFocusRing: focused input scrolled out of ScrollArea does not steal clic
     ctx.layout();
     _ = ctx.render();
 
-    // Tab 聚焦 → focus-visible → z_index 提升到 1。
+    // Tab 聚焦 -> focus-visible -> z_index 提升到 1。
     ctx.focus_manager.last_focus_reason = .tab;
     field.behavior.events.on_focus.?.invoke();
     try std.testing.expectEqual(@as(i16, 1), field.style.z_index());

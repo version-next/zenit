@@ -1,4 +1,4 @@
-//! FileUpload 样式层 — wrapper/drop zone/文件行/移除按钮样式与 drop 悬停取色（zenit-styling-revamp）。
+//! FileUpload 样式层，wrapper/drop zone/文件行/移除按钮样式与 drop 悬停取色（zenit-styling-revamp）。
 const core = @import("../../core.zig");
 const theme = core.theme;
 const Color = core.Color;

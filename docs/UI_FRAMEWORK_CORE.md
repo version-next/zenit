@@ -50,7 +50,7 @@ Style (inline, ~100 bytes)         StyleExt (allocated on demand, ~200 bytes)
                                   └──────────────────────────┘
 ```
 
-Most nodes have `ext == null` → ~60% memory saved.
+Most nodes have `ext == null`, which saves ~60% memory.
 
 ### Reading Rules
 
@@ -178,7 +178,7 @@ island.style.ensureExt(allocator).hit_behavior = .@"opaque";
 
 Intercepting behaviors (`.@"opaque"` / `.self_only` / `.self_and_children`) **implicitly imply `hit_roles.pointer = true`**, so you do not need to configure a `hit_roles` copy by hand.
 
-**Precedence**: `hit_roles` is a `HitRolesOverride` — **tri-state per role**, where `null` means "keep the framework-derived default". To add just one role, write only that one:
+**Precedence**: `hit_roles` is a `HitRolesOverride`, **tri-state per role**, where `null` means "keep the framework-derived default". To add just one role, write only that one:
 
 ```zig
 ext.hit_roles = .{ .pointer = true };   // scroll/inspect keep their derived defaults
@@ -218,7 +218,7 @@ root.rect = (0, 0, 800, 600)     root.rect = (0, 0, 800, 600)
 - `batchReverseChildren`: only rewrites the direct children's rects, **does not recurse into descendants**
 - `offsetDescendants`: **deleted**
 
-**Render/event layer** — child_offset accumulation now adds `node.rect.x`:
+**Render/event layer**: child_offset accumulation now adds `node.rect.x`:
 ```zig
 // render_engine.zig / event_dispatcher.zig / interaction_index.zig
 const child_offset_x = offset_x + node.rect.x + translate_x + sticky_offset_x;
@@ -250,8 +250,8 @@ pub fn computeGlobalOffset(node: *const Node) struct { x: f32, y: f32 } {
 
 ### Performance Gains
 
-- Eliminates `offsetDescendants` O(D) → a reverse layout pass drops from O(N+D) to O(N)
-- Child rects stay unchanged when a parent moves → fewer unnecessary layout_dirty
+- Eliminates `offsetDescendants` O(D), so a reverse layout pass drops from O(N+D) to O(N)
+- Child rects stay unchanged when a parent moves, so fewer unnecessary layout_dirty
 
 ---
 
@@ -315,7 +315,7 @@ node.setBackground(new_color);  // transitions automatically
 node.setOpacity(0.5);           // transitions automatically
 ```
 
-**Option 2: CSS-style declarative (`applyTransition`)** — recommended
+**Option 2: CSS-style declarative (`applyTransition`)**: recommended
 ```zig
 const recipe_mod = @import("ui").recipe;
 
@@ -328,7 +328,7 @@ node.applyTransition(allocator,
     &comptime recipe_mod.transition("all 150ms ease-out-quad"));
 ```
 
-**transition() syntax**: `"property duration easing, ..."` — omitted values fall back to defaults (duration=150ms, easing=ease-out-quad)
+**transition() syntax**: `"property duration easing, ..."`; omitted values fall back to defaults (duration=150ms, easing=ease-out-quad)
 
 **Supported property names**: `background` / `opacity` / `border-color` / `border-width` / `translate-x` / `translate-y` / `scale-x` / `scale-y` / `corner-radius` / `all`
 
@@ -339,7 +339,7 @@ node.applyTransition(allocator,
 - `TransitionSlots` (at most 8 properties) is allocated on demand behind the `node.transitions` pointer
 - Each frame `tickBeforeRender` runs `tickTransitions` before `on_before_render`
 - Active transitions advance their progress, apply easing, update the style value, and markRenderDirty
-- Once every transition finishes, `any_active = false` — zero cost
+- Once every transition finishes, `any_active = false`, so zero cost
 
 ### Supported Properties
 
@@ -536,7 +536,7 @@ const cs = ConditionalStyle{
 const resolved = cs.resolve(.{ .is_hovered = true });
 ```
 
-### recipe() — Single-Node Recipe
+### recipe(): Single-Node Recipe
 
 A compile-time factory, the counterpart of CVA's `cva()`:
 
@@ -598,7 +598,7 @@ Button(.{
 
 ### Design Motivation
 
-The Group component needs middle items to clear their left/right radii and the first/last items to keep only one side rounded — a scalar `radius: f32` cannot express that.
+The Group component needs middle items to clear their left/right radii and the first/last items to keep only one side rounded; a scalar `radius: f32` cannot express that.
 
 ### Architecture
 
@@ -652,7 +652,7 @@ fn sdf_rounded_rect_4(p: float2, half_size: float2, radii: float4) -> float {
 ### Instance Data Changes
 
 `SDFInstance` grew from 112 bytes to 128 bytes (float4 alignment):
-- `corner_radius: f32` → `corner_radii: [4]f32`
+- `corner_radius: f32` becomes `corner_radii: [4]f32`
 - All `addRounded*` API signatures updated to `radius: [4]f32`
 
 ---

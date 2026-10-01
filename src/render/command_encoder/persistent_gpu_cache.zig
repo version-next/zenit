@@ -1,4 +1,4 @@
-//! command_encoder/persistent_gpu_cache.zig — 跨帧 GPU 资源缓存的**簿记**
+//! command_encoder/persistent_gpu_cache.zig，跨帧 GPU 资源缓存的**簿记**
 //!
 //! 从 command_encoder.zig 析出（2026-08-05）。这组字段属于 AppRenderer
 //! 持有的 `PersistentGpuCache`：blur/glass/blend/damage-clear 的 pipeline、
@@ -7,7 +7,7 @@
 //! **能搬的只是簿记**：pipeline/buffer/sampler 的**创建**发生在
 //! backdrop_blur.zig / opacity_layer.zig / blend_composite.zig（它们持有
 //! device），**使用**发生在 encoder 的编码路径。本模块只拥有「字段 + 帧内
-//! 游标复位 + 统一释放」—— 这三样与 GPU 对象的形状完全解耦（全是
+//! 游标复位 + 统一释放」，这三样与 GPU 对象的形状完全解耦（全是
 //! `?gpu.Backend.X` 的 null 判空），也因此可以脱离真实设备单测。
 //!
 //! 不搬什么：
@@ -18,7 +18,7 @@
 //!   - debug_glass_slots[2] 的回读消费在 zenit_app/renderer.zig。
 //!
 //! ⚠ 合同：`deinit` 的释放顺序必须保持「先 staging 纹理、再 renderer、
-//! 再各 pipeline/buffer/sampler、最后复位 failed 标志」——失败标志随缓存
+//! 再各 pipeline/buffer/sampler、最后复位 failed 标志」，失败标志随缓存
 //! 清空复位，换 device 重建后允许重试一次（漏复位 = 那个管线永久退化）。
 //! 历史上 damage_clear_pipeline 曾是 12 个持久对象里唯一被 deinit 遗漏的。
 
@@ -64,7 +64,7 @@ pub const BlurLevelSlot = struct {
 };
 
 /// 迟滞槽数量。与 LUMINANCE_SLOT_COUNT 同量级即可（同为逐 glass 岛资源）；
-/// 槽满时新岛找不到槽 → 退化为无迟滞的原行为（见 backdrop_blur.zig）。
+/// 槽满时新岛找不到槽 -> 退化为无迟滞的原行为（见 backdrop_blur.zig）。
 pub const BLUR_LEVEL_SLOT_COUNT: usize = LUMINANCE_SLOT_COUNT;
 
 pub const PersistentGpuCache = struct {
@@ -74,9 +74,9 @@ pub const PersistentGpuCache = struct {
     blur_sampler: ?gpu.Backend.Sampler = null,
     /// 本帧已编码的 Kawase pass 数（上限 = 单帧模糊链预算）。uniform 本身走
     /// setFragmentBytes：Metal 在 encode 时拷贝字节。曾经是单个共享 buffer +
-    /// 每帧偏移归零 —— 三帧在飞时第 N+1 帧覆写 GPU 尚在读的第 N 帧 texel/valid_uv。
+    /// 每帧偏移归零，三帧在飞时第 N+1 帧覆写 GPU 尚在读的第 N 帧 texel/valid_uv。
     blur_uniform_write_offset: u32 = 0,
-    /// blur shader 编译/PSO 失败粘性标记——只试一次，否则持久失败时每个 blur 帧
+    /// blur shader 编译/PSO 失败粘性标记，只试一次，否则持久失败时每个 blur 帧
     /// 重新 newLibraryWithSource 编译整份源码（十毫秒级）+ 日志刷屏。
     blur_pipeline_failed: bool = false,
     /// Liquid Glass composite pipeline
@@ -87,7 +87,7 @@ pub const PersistentGpuCache = struct {
     glass_pipeline_failed: bool = false,
     /// backdrop 亮度自适应：**逐 glass 区域**的最深 Kawase 层 blit 目标池。
     /// 早先单张共享 staging = 每帧最后编码的 glass 覆盖写入，全局值实为
-    /// "随机某个 glass 的区域亮度"——滚动改变 culling 集合/编码顺序就整体摆动
+    /// "随机某个 glass 的区域亮度"，滚动改变 culling 集合/编码顺序就整体摆动
     /// （storybook 实拍：滚动导致全部玻璃同步换装/变透明）。
     /// 槽按 draw rect 量化 key 匹配（LRU 复用）；staging 各自固定 64x64 shared
     /// storage，槽创建一次绝不重建（重建会让上一帧 blit 目标被释放读到全零）。
@@ -95,7 +95,7 @@ pub const PersistentGpuCache = struct {
     /// 完成后可读。
     luminance_slots: [LUMINANCE_SLOT_COUNT]LuminanceSlot = [_]LuminanceSlot{.{}} ** LUMINANCE_SLOT_COUNT,
     /// 排障（ZENIT_DEBUG_GLASS）：glass 管线中间产物的 64×64 中心区
-    /// staging——slot 0 = capture(level0)，slot 1 = composite(glass_tex)，
+    /// staging, slot 0 = capture(level0)，slot 1 = composite(glass_tex)，
     /// slot 2 = 帧末 RT 球区（ZENIT_DEBUG_GLASS_RT="x,y" 设备像素）。
     /// 结构/生命周期同 luminance_slots；renderer 每帧回读打 RGB 均值，
     /// 用于二分"滚动闪烁的分叉发生在哪一级"。
@@ -104,8 +104,8 @@ pub const PersistentGpuCache = struct {
     /// backdrop blur 链深的**帧间迟滞**状态（逐 glass 岛，跨帧存活）。
     ///
     /// 背景：降采样链在离屏池拿不到纹理时 `break`，`actual_levels` 停在半途。
-    /// 池压力处于临界线时同一个岛会逐帧 5→4→4→5… 摆动，用户看到的是「闪」。
-    /// 关键在于**跳变**而非「少一级模糊」—— 恒定 4 级与恒定 5 级视觉上几乎
+    /// 池压力处于临界线时同一个岛会逐帧 5->4->4->5… 摆动，用户看到的是「闪」。
+    /// 关键在于**跳变**而非「少一级模糊」，恒定 4 级与恒定 5 级视觉上几乎
     /// 无差别，4/5 之间来回跳却清晰可见。
     ///
     /// 策略：降级立即生效（拿不到就用少的，绝不画垃圾纹理），升级要连续
@@ -120,7 +120,7 @@ pub const PersistentGpuCache = struct {
     /// Blend composite pipeline（非 normal 混合模式的图层合成，lazy-init）
     blend_pipeline: ?gpu.Backend.RenderPipeline = null,
     blend_uniform_write_offset: u32 = 0,
-    /// shader 编译失败标记 —— 只试一次，失败后所有非 normal blend 静默退化
+    /// shader 编译失败标记，只试一次，失败后所有非 normal blend 静默退化
     /// normal（不能每帧重试编译）。
     blend_pipeline_failed: bool = false,
 
@@ -167,7 +167,7 @@ pub const PersistentGpuCache = struct {
         self.glass_pipeline = null;
         if (self.blend_pipeline) |*p| p.deinit();
         self.blend_pipeline = null;
-        // damage clear pipeline（opacity_layer 懒建）——曾是 12 个持久 GPU
+        // damage clear pipeline（opacity_layer 懒建），曾是 12 个持久 GPU
         // 对象里唯一被 deinit 遗漏的；failed 标志同样要复位允许换 device 重试
         if (self.damage_clear_pipeline) |*p| p.deinit();
         self.damage_clear_pipeline = null;
@@ -178,7 +178,7 @@ pub const PersistentGpuCache = struct {
 // ── 测试 ───────────────────────────────────────────────────────────────
 // beginFrame/deinit 的字段清单此前只能靠「编译过 + 真机跑」兜底（槽位复位
 // 类测试在 command_encoder_test.zig 只覆盖 uniform 偏移那几个字段）。
-// 下列断言逐一钉住字段名 —— 若新增持久字段忘了在 beginFrame/deinit 里
+// 下列断言逐一钉住字段名，若新增持久字段忘了在 beginFrame/deinit 里
 // 处理，这里会在编译期报错，而不是变成又一个 damage_clear 式遗漏。
 
 test "PersistentGpuCache 零值构造即合法（AppRenderer.init 依赖全 lazy）" {

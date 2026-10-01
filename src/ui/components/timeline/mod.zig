@@ -246,12 +246,12 @@ test "Timeline: single item" {
     try std.testing.expectEqual(@as(usize, 1), tl.children.items.len);
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "timeline: mount 在任意分配点失败时不泄漏（sweep）" {
     try @import("../oom_sweep.zig").sweepMount("timeline", struct {
         fn m(scope: *Scope, cx: *Cx) anyerror!?*Node {

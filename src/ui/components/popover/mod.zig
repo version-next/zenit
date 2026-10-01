@@ -33,7 +33,7 @@ const HIDDEN_OPACITY: f32 = 0.001;
 pub const PopoverPosition = floating.Placement;
 
 // ============================================================================
-// Virtual Anchor —— floating-ui 风格的虚拟锚点
+// Virtual Anchor, floating-ui 风格的虚拟锚点
 //
 // 用途：popover/menu 不一定锚到真实 Node，常见场景：
 //   - 文本编辑器光标位置（动态像素坐标）
@@ -60,10 +60,10 @@ pub const PopoverPosition = floating.Placement;
 // }).mount(scope, cx);
 // ```
 //
-// 每帧 popover before-render 都会重新读 anchor → 锚点移动时 popover 自动跟随。
+// 每帧 popover before-render 都会重新读 anchor -> 锚点移动时 popover 自动跟随。
 // ============================================================================
 
-/// Anchor rect —— absolute (viewport) coordinates
+/// Anchor rect, absolute (viewport) coordinates
 pub const AnchorRect = struct {
     x: f32,
     y: f32,
@@ -91,7 +91,7 @@ pub const PopoverTrigger = enum {
     manual,
 };
 
-/// Popover 尺寸策略 ——
+/// Popover 尺寸策略,
 ///   - hard_clip（默认，向后兼容）：`max_width` / `max_height` 是内容硬上限，超出裁剪。
 ///   - fit_content：内容按自身尺寸布局；`max_*` 仍作为软上限。无滚动。
 ///   - fit_or_scroll：内容 ≤ `max_*` 时自然撑开；超出 `max_*` 时把内容包进 ScrollArea
@@ -117,7 +117,7 @@ pub const PopoverProps = struct {
     position: PopoverPosition = .bottom_start,
     /// 触发方式
     trigger: PopoverTrigger = .click,
-    /// 与触发元素的 main-axis 间距 —— 支持静态 / derivable（按 placement 动态算）。
+    /// 与触发元素的 main-axis 间距，支持静态 / derivable（按 placement 动态算）。
     /// 默认静态 4 px。Caller 写：
     ///   `.offset = .{ .static = 8 }`  或
     ///   `.offset = .{ .derive = .{ .ctx = ..., .compute = computeFn } }`
@@ -151,7 +151,7 @@ pub const PopoverProps = struct {
     /// 可选的 fallback placement 列表；非空时按顺序尝试 [position, ...fallback_placements]，
     /// 挑第一个不溢出的。空时走经典 2-way flip（position ↔ opposite）。
     /// 示例（docs aside panel）：`.fallback_placements = &.{.bottom_start, .top_start}`
-    /// 配合 `.position = .right_start` → 右侧 → 下方 → 上方，**永不 flip 到左**。
+    /// 配合 `.position = .right_start` -> 右侧 -> 下方 -> 上方，**永不 flip 到左**。
     fallback_placements: []const PopoverPosition = &.{},
     /// 可选：指向 caller 拥有的 mutable slice 的指针，**每帧被 popover 读**来决定 fallback 列表。
     /// 若非 null，覆盖 `fallback_placements` 字段。用于"根据其他 popover 的 active_position
@@ -175,7 +175,7 @@ pub const PopoverProps = struct {
     a11y_role: ?core.A11yRole = null,
     /// 自定义锚点：null 时锚点 = 内部 trigger_node（默认行为）
     /// 提供 anchor 时定位读 anchor，trigger_node 仍存在但不参与位置计算
-    /// （依然是 dismiss outside-click 判定的"trigger"——避免点击 trigger 触发 dismiss）。
+    /// （依然是 dismiss outside-click 判定的"trigger"，避免点击 trigger 触发 dismiss）。
     /// trigger=.manual + visible signal 控制下，virtual anchor 是最常用的组合。
     anchor: ?Anchor = null,
 
@@ -384,7 +384,7 @@ pub const PopoverBuilder = struct {
         // cx.popover_portal_root（App.mount 会在构建用户树前创建）。wrapper
         // 只保留 trigger 并留在 caller 的正常文档流。这是本渲染器里
         // 唯一能跨父级压过 caller 树中 cousin 的机制
-        // —— z_index 只有同级兄弟语义（render_engine sortSubtreeChildrenByZ），
+        // z_index 只有同级兄弟语义（render_engine sortSubtreeChildrenByZ），
         // inline content 的 z 压不过 wrapper 祖先的后置兄弟。portal 同时让 content
         // 免于祖先 overflow_hidden 裁剪与 modal dialog composited surface 的纹理
         // 边界裁切（surface bounds 不含 z>0 子树）。定位不受影响：
@@ -406,7 +406,7 @@ pub const PopoverBuilder = struct {
             fn cleanup(ptr: *anyopaque, alloc: Allocator) void {
                 const ctx: *DetachedContentCtx = @ptrCast(@alignCast(ptr));
                 // portal 下 content 挂在 portal root（caller 子树之外），scope dispose
-                // 不会经由 caller 树释放它 —— 必须先摘下来再走 detached 释放，否则
+                // 不会经由 caller 树释放它，必须先摘下来再走 detached 释放，否则
                 // portal root 残留一个 scope 已死的子节点（悬垂 UAF）。
                 if (ctx.portaled) {
                     if (ctx.content.parent) |parent| ctx.cx.detachChild(parent, ctx.content);
@@ -449,7 +449,7 @@ pub const PopoverBuilder = struct {
             // Bug 1 + Bug 3 都已修：
             //   Bug 3 在 framework 层（appendDisplayClipBridgeBegin）。
             //   Bug 1（scrollbarBeforeRender 触发 holdEnterUntilGeometryStable）
-            //   已不复现 — 经 e2e 验证 hook 启用后 popup 正常显示。
+            //   已不复现，经 e2e 验证 hook 启用后 popup 正常显示。
             try appendNewChild(cx, popover_content, scroll_result.container);
             scroll_container_node = scroll_result.container;
             break :blk scroll_result.content;
@@ -509,7 +509,7 @@ pub const PopoverBuilder = struct {
             .fit_or_scroll = fit_or_scroll_flag,
             .fit_h = effective_fit_h,
             .mount_ctx = mount_ctx,
-            // fit_content 路径下 fit 必须带 max（防长内容撑爆 popover）—— 见上方 content_width 注释
+            // fit_content 路径下 fit 必须带 max（防长内容撑爆 popover），见上方 content_width 注释
             .max_w = p.max_width,
             .max_h = p.max_height,
             .clip_subtree = p.clip_subtree_to_chrome,
@@ -688,7 +688,7 @@ const DetachedContentCtx = struct {
     cx: *Cx,
     layer_handle: overlay_stack_mod.LayerHandle,
     detach_hidden_content: bool,
-    /// content 挂在 popover_portal_root（非 caller 子树）——dispose 时需主动摘除。
+    /// content 挂在 popover_portal_root（非 caller 子树），dispose 时需主动摘除。
     portaled: bool = false,
 };
 
@@ -712,7 +712,7 @@ fn detachPopoverContentIfSuspended(ctx: *DetachedContentCtx) void {
     ctx.cx.needs_redraw = true;
 }
 
-/// 定位时实际锚点 —— node / 外部 node / virtual 三选一
+/// 定位时实际锚点，node / 外部 node / virtual 三选一
 const EffectiveAnchor = union(enum) {
     /// 默认：用 trigger_node（popover 自己 mount 出的）
     self_trigger,
@@ -817,7 +817,7 @@ pub fn dropdownSlideOffset(side: floating.Side, opacity: f32) [2]f32 {
 }
 
 /// 写入定位结果：记下静止位置，叠加 `.dropdown` 当前偏移（按节点现有 opacity），
-/// 并把落位方向交给过渡控制器——同帧后续的 opacity 推进由它按增量补上。
+/// 并把落位方向交给过渡控制器，同帧后续的 opacity 推进由它按增量补上。
 fn setPopoverRestTranslate(ctx: *PopoverPositionCtx, x: f32, y: f32) bool {
     ctx.rest_translate_x = x;
     ctx.rest_translate_y = y;
@@ -920,7 +920,7 @@ fn applyAutosizeMaxHeight(ctx: *PopoverPositionCtx, auto_opt: ?floating.Autosize
     }
     const ext = ctx.popover.style.ensureExtPanic(ctx.cx.allocator);
     // ph 是上一帧按旧 max_height 排出来的高度。滚动/窗口变化让可用高度逐帧变大时，
-    // 被旧 cap 咬住的 ph < 新 target，若只和新 target 比会在本帧关掉裁切——而内容
+    // 被旧 cap 咬住的 ph < 新 target，若只和新 target 比会在本帧关掉裁切，而内容
     // 实际比旧 cap 还高，下一帧 layout 才长到新 cap，这一帧整块内容溢出面板
     // （连续滚动 = 连续多帧漏出）。所以 ph 贴住旧 cap 时同样视为 cap 咬住。
     const prev_max_h = ext.max_height;
@@ -936,7 +936,7 @@ fn applyAutosizeMaxHeight(ctx: *PopoverPositionCtx, auto_opt: ?floating.Autosize
         ctx.popover.style.overflow_hidden = want_clip;
         clip_changed = true;
     }
-    // 裁切形状跟随 chrome 的圆角（.auto → border.radius 推出的 rounded_rect），
+    // 裁切形状跟随 chrome 的圆角（.auto -> border.radius 推出的 rounded_rect），
     // caller 改了面板圆角（下游编辑器工具条菜单 radius 10）也自动一致。
     // 历史：这里曾刻意用矩形 clip，绕开「composited owner 圆角 + overflow_hidden
     // settle 后嵌套 rounded_clip layer 落错帧（面板画到 2× 位置）」；代价是阴影
@@ -1019,11 +1019,11 @@ pub fn popoverBeforeRender(node: *Node) void {
         syncTransformOriginForPlacement(ctx.popover, ctx.active_position, ctx.cx.allocator);
         ctx.entry_ready = false;
         ctx.is_visible = false;
-        // Exit transition 期间 OR 仍有可见残留时 → 不能 reset translate/scale，
+        // Exit transition 期间 OR 仍有可见残留时 -> 不能 reset translate/scale，
         // 否则 popover 会瞬间飞到 (0,0) 然后才在原位完成 fade，肉眼看到左上角残影。
         // 判据：(a) overlay_stack 已挂 manual flag；(b) opacity > HIDDEN_OPACITY（仍可见）；
         //       (c) scale 不在 hidden 静默状态。
-        // 任一成立 → 把这一帧让给 TransitionController，等它把 fade 走完。
+        // 任一成立 -> 把这一帧让给 TransitionController，等它把 fade 走完。
         const exit_hidden_scale = overlay_stack_mod.TransitionController.hiddenScaleForTransition(ctx.exit_transition);
         const popup_still_visible = ctx.popover.getOpacity() > (HIDDEN_OPACITY + 0.0001) or
             @abs(ctx.popover.style.scale_x() - exit_hidden_scale) > 0.001 or
@@ -1146,13 +1146,13 @@ pub fn popoverBeforeRender(node: *Node) void {
             });
         }
         if (ctx.entry_ready) {
-            // 已有过有效定位 → freeze 上一帧 translate（保持位置自然 fade，不要飞回原点）。
+            // 已有过有效定位 -> freeze 上一帧 translate（保持位置自然 fade，不要飞回原点）。
             ctx.popover.markInteractionDirty();
         } else {
-            // 从未定位过 + anchor 已失效 → 强制完全透明（不是 HIDDEN_OPACITY）。
+            // 从未定位过 + anchor 已失效 -> 强制完全透明（不是 HIDDEN_OPACITY）。
             // HIDDEN_OPACITY=0.001 是 prewarm 策略：已定位过的 popup 维持测量但视觉隐藏。
             // 但此路径 popup 的 translate 默认 (0,0)，layout 仍会给它算出正常 rect，
-            // opacity=0.001 经 GPU 混色后肉眼可见 → 左上角残影。用 0 彻底不画。
+            // opacity=0.001 经 GPU 混色后肉眼可见 -> 左上角残影。用 0 彻底不画。
             ctx.cx.overlay_stack.setEnterPaused(ctx.layer_handle, true, ctx.cx.allocator);
             if (ctx.popover.getOpacity() != 0) {
                 ctx.popover.setOpacityRaw(0);
@@ -1180,7 +1180,7 @@ pub fn popoverBeforeRender(node: *Node) void {
             });
         }
         // 已 entered 的 popover 临时遇到 zero-rect（caller 清空 children 触发 reflow）
-        // 不要 force HIDDEN_OPACITY，否则 popover 此后再也不会被恢复 ——
+        // 不要 force HIDDEN_OPACITY，否则 popover 此后再也不会被恢复,
         // 框架的"恢复显示"路径只在 entry_ready=false 时才走（line 1054-1072）。
         // 已 entered 时维持当前 opacity，下一帧 layout 完成后无缝显示新内容。
         if (ctx.entry_ready) {
@@ -1188,8 +1188,8 @@ pub fn popoverBeforeRender(node: *Node) void {
             return;
         }
         ctx.cx.overlay_stack.setEnterPaused(ctx.layer_handle, true, ctx.cx.allocator);
-        // 从未定位过 + zero-rect → 强制完全透明（0 而非 HIDDEN_OPACITY=0.001）。
-        // 0.001 经 GPU 混色仍可见 → 肉眼看到左上角 (0,0) 的 popup 灰条残影（同 Phase 3 修复）。
+        // 从未定位过 + zero-rect -> 强制完全透明（0 而非 HIDDEN_OPACITY=0.001）。
+        // 0.001 经 GPU 混色仍可见 -> 肉眼看到左上角 (0,0) 的 popup 灰条残影（同 Phase 3 修复）。
         if (ctx.popover.getOpacity() != 0) {
             ctx.popover.setOpacityRaw(0);
             ctx.popover.markInteractionDirty();
@@ -1268,11 +1268,11 @@ pub fn popoverBeforeRender(node: *Node) void {
         middleware_buf[middleware_count] = .{ .size = .{ .padding = ctx.viewport_padding } };
         middleware_count += 1;
     }
-    // autosize（= floating-ui `size` 的 availableHeight → max-height）**始终**参与：
+    // autosize（= floating-ui `size` 的 availableHeight -> max-height）**始终**参与：
     // flip/shift 决定最终 placement 后，把该 placement 下 viewport 剩余高度作为
     // popover_content 的 max_height 上限（caller 设了 max_height 时取两者 min）。
     // 以前只在 caller 设了 max_height 时才激活，于是没设的 popover 在两侧都放不下时
-    // 保持完整高度，best-fit 只挪 translate 不改 layout → 面板压住 reference element。
+    // 保持完整高度，best-fit 只挪 translate 不改 layout -> 面板压住 reference element。
     // 消费方式：只改 ext.max_height + markSizingDirty，让下一帧 layout 自然应用，
     // **不触发 needs_remeasure**（强制 remeasure 会让 popup 永远 paused 不弹）。
     middleware_buf[middleware_count] = .{ .autosize = .{ .padding = ctx.viewport_padding, .apply_width = false } };
@@ -1303,7 +1303,7 @@ pub fn popoverBeforeRender(node: *Node) void {
     // autosize 驱动 max_height 软收紧（不 remeasure，见 middleware 注释）。
     // layout_engine 的 fit/grow intrinsic clamp 已经通过 effectiveMinMax 融合
     // sizing.max 与 ext.max_height（取 min），px 子节点也按 ext.max_height clamp
-    // → 这里只更新 ext.max_height 即可，layout 下一帧自然按融合后的 max clamp。
+    // -> 这里只更新 ext.max_height 即可，layout 下一帧自然按融合后的 max clamp。
     applyAutosizeMaxHeight(ctx, positioned.middleware_data.autosize, ph);
 
     if (ctx.match_trigger_width or ctx.constrain_width_to_viewport or ctx.preferred_max_width != null) {
@@ -1390,9 +1390,9 @@ pub fn popoverBeforeRender(node: *Node) void {
             @max(0, trigger_abs_y - vp_y - pad - final_offset_main)
         else
             @max(0, (vp_y + vp_h) - (trigger_abs_y + th) - pad - final_offset_main);
-        // 注：best-fit 不再改 popup_content.style.height —— 改 height 会触发 markSizingDirty
-        // → overlay_stack.holdEnterUntilGeometryStable 把 enter transition 冻结在 progress=0
-        // → opacity 永远 HIDDEN_OPACITY → popup 不显示。
+        // 注：best-fit 不再改 popup_content.style.height，改 height 会触发 markSizingDirty
+        // -> overlay_stack.holdEnterUntilGeometryStable 把 enter transition 冻结在 progress=0
+        // -> opacity 永远 HIDDEN_OPACITY -> popup 不显示。
         // 真正的 best-fit 只调整 ph_eff 让 translate.y 计算正确，**不**触碰 layout。
         // popup_content 自己的 fit{max} 已经 clamp 高度（内容超 max 自然停止撑大）。
         if (ph > available_h and available_h > 48 and ctx.entry_ready) {
@@ -1536,7 +1536,7 @@ test {
     _ = @import("tests.zig");
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }

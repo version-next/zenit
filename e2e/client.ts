@@ -27,7 +27,7 @@ async function ownerDiagnostic(rpcDir: string): Promise<string> {
   try {
     text = await readFile(join(rpcDir, "owner.json"), "utf8");
   } catch {
-    return "owner.json missing — no server ever claimed this dir (app not started, wrong dir, or pre-owner-lock app build)";
+    return "owner.json missing: no server ever claimed this dir (app not started, wrong dir, or pre-owner-lock app build)";
   }
   let pid: number;
   try {
@@ -38,10 +38,10 @@ async function ownerDiagnostic(rpcDir: string): Promise<string> {
   if (!Number.isFinite(pid) || pid <= 0) return "owner.json has no valid pid";
   try {
     process.kill(pid, 0);
-    return `owner pid ${pid} is alive — server busy or wedged, not a transport fault`;
+    return `owner pid ${pid} is alive: server busy or wedged, not a transport fault`;
   } catch (err: any) {
-    if (err?.code === "EPERM") return `owner pid ${pid} is alive (EPERM) — server busy or wedged`;
-    return `owner pid ${pid} is NOT running — app crashed or was killed mid-run`;
+    if (err?.code === "EPERM") return `owner pid ${pid} is alive (EPERM): server busy or wedged`;
+    return `owner pid ${pid} is NOT running: app crashed or was killed mid-run`;
   }
 }
 
@@ -218,7 +218,7 @@ export interface FrameStats {
   gpu_encode_us: number;
   total_frame_us: number;
 
-  // ── 跨帧 P95（微秒）——性能门禁断言用的抗噪统计量 ──
+  // ── 跨帧 P95（微秒），性能门禁断言用的抗噪统计量 ──
   gpu_p95_us: number;
   cpu_p95_us: number;
   total_p95_us: number;
@@ -296,15 +296,50 @@ export async function clickAt(x: number, y: number): Promise<ClickResult> {
   return request("POST", "/click", { x, y });
 }
 
-export interface ScrollMods { shift?: boolean; ctrl?: boolean; alt?: boolean; cmd?: boolean }
+/** 与 ui.events.ScrollPhase 一致。省略 = 鼠标滚轮。 */
+export type ScrollPhase = "none" | "may_begin" | "began" | "changed" | "ended" | "cancelled";
 
+export interface ScrollMods {
+  shift?: boolean;
+  ctrl?: boolean;
+  alt?: boolean;
+  cmd?: boolean;
+  /** 触控板手势阶段；省略时按鼠标滚轮派发（每个事件按命中目标）。 */
+  phase?: ScrollPhase;
+  /** 松手后的惯性阶段 */
+  momentum?: "began" | "changed" | "ended";
+}
+
+/** 单个滚动事件。默认是鼠标滚轮；触控板手势请用 trackpadScroll 发完整序列。 */
 export async function scrollAt(x: number, y: number, dx: number, dy: number, mods: ScrollMods = {}): Promise<{ ok: boolean }> {
   const body: Record<string, unknown> = { x, y, dx, dy };
   if (mods.shift) body.shift = true;
   if (mods.ctrl) body.ctrl = true;
   if (mods.alt) body.alt = true;
   if (mods.cmd) body.cmd = true;
+  if (mods.phase) body.phase = mods.phase;
+  if (mods.momentum) body.momentum = mods.momentum;
   return request("POST", "/scroll", body);
+}
+
+/**
+ * 一次完整的触控板手势：began、每个增量一个 changed、最后 ended（与真实设备
+ * 的事件序列一致）。stepDelayMs 控制事件间隔。
+ */
+export async function trackpadScroll(
+  x: number,
+  y: number,
+  deltas: Array<[number, number]>,
+  opts: { stepDelayMs?: number; mods?: Omit<ScrollMods, "phase" | "momentum"> } = {},
+): Promise<void> {
+  const delay = opts.stepDelayMs ?? 16;
+  const mods = opts.mods ?? {};
+  await scrollAt(x, y, 0, 0, { ...mods, phase: "began" });
+  for (const [dx, dy] of deltas) {
+    await scrollAt(x, y, dx, dy, { ...mods, phase: "changed" });
+    if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+  }
+  await scrollAt(x, y, 0, 0, { ...mods, phase: "ended" });
 }
 
 /** phase: 0=began 1=changed 2=ended 3=cancelled */
@@ -317,7 +352,7 @@ export async function dragAt(x: number, y: number, kind: number, paths = ""): Pr
   return request("POST", "/drag", { x, y, kind, paths });
 }
 
-/** 调整窗口逻辑尺寸（点）。resize 会触发 surface 重配 —— readback 能力回归锚点。 */
+/** 调整窗口逻辑尺寸（点）。resize 会触发 surface 重配，readback 能力回归锚点。 */
 export async function resizeWindow(width: number, height: number): Promise<{ ok: boolean }> {
   return request("POST", "/resize", { width, height });
 }
@@ -446,7 +481,7 @@ export async function waitFor<T>(
   fn: () => Promise<T | null | undefined>,
   // ⚠ 默认值必须走 getE2eTimeoutMs：否则 CI 把 ZENIT_E2E_TIMEOUT_MS 放宽到
   // 45s 只对单次 RPC 生效，不传预算的调用点仍死等 5s。负载下「条件在第
-  // 6~40s 满足」正好落进这个缺口 —— 报错还会写成 "waitFor timeout"，
+  // 6~40s 满足」正好落进这个缺口，报错还会写成 "waitFor timeout"，
   // 把排查引向被测功能而不是超时预算。这是 e2e 在负载下 flaky 的结构性原因。
   timeoutMs = getE2eTimeoutMs(5000),
   pollMs = 50,

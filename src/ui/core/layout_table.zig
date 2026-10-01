@@ -1,13 +1,13 @@
-//! LayoutTable — Phase 3 拆 Node 的布局产物存储（SoA, dense, indexed by ElementId）
+//! LayoutTable, Phase 3 拆 Node 的布局产物存储（SoA, dense, indexed by ElementId）
 //!
 //! 与 ElementTable 一一对应：每个 element 创建时，layout_table 同步分配槽。
 //! 字段拆分：constraints_in / final_rect / baseline / layout_epoch / intrinsic_cache。
-//! 这样 layout pass 只读 constraints/写 rect，paint pass 只读 rect —— 各自顺序扫
+//! 这样 layout pass 只读 constraints/写 rect，paint pass 只读 rect，各自顺序扫
 //! 单字段数组，cache-friendly。
 //!
 //! 历史债避免：
-//! - 不在此表存"渲染缓存"或"命中代理" —— 那些去 PaintTable / InteractionTable
-//! - 不挂 Allocator 给每个 entry —— intrinsic_cache 是 inline struct（4 entry，无堆分配）
+//! - 不在此表存"渲染缓存"或"命中代理"，那些去 PaintTable / InteractionTable
+//! - 不挂 Allocator 给每个 entry, intrinsic_cache 是 inline struct（4 entry，无堆分配）
 
 const std = @import("std");
 const testing = std.testing;
@@ -20,7 +20,7 @@ pub const LayoutOutput = constraint.LayoutOutput;
 pub const Size2D = constraint.Size2D;
 pub const IntrinsicCache = constraint.IntrinsicCache;
 
-/// final_rect — element 在父空间的位置 + 测得的尺寸
+/// final_rect, element 在父空间的位置 + 测得的尺寸
 pub const Rect = struct {
     x: f32 = 0,
     y: f32 = 0,
@@ -32,7 +32,7 @@ pub const Rect = struct {
 
 /// LayoutTable 单条记录
 pub const LayoutData = struct {
-    /// 父→子约束（最近一次 layout 的输入）
+    /// 父->子约束（最近一次 layout 的输入）
     last_input: LayoutInput = .{ .available_space = .{ .width = .max_content, .height = .max_content } },
     /// 测得尺寸（perform_layout 写入）
     measured: Size2D = .{},
@@ -60,7 +60,7 @@ pub const LayoutTable = struct {
     }
 
     /// 确保对应 ElementId 的 slot 存在（按 index 直接定位）。
-    /// 调用方负责保持与 ElementTable 同步：element create → layout.ensure(id)
+    /// 调用方负责保持与 ElementTable 同步：element create -> layout.ensure(id)
     pub fn ensureSlot(self: *LayoutTable, id: ElementId) !void {
         if (id.isNull()) return;
         const idx = id.index;
@@ -99,7 +99,7 @@ pub const LayoutTable = struct {
 
     /// epoch 与 rect 的单次合并读：epoch==0（已 seed 未 markLaidOut）返回 null。
     /// 热读路径（rectFromWorldOrFallback，全帧十万次级）此前对 epoch()/rect()
-    /// 各做一次 MultiArrayList 字段切片派生——Debug 下每次派生都是数个不内联
+    /// 各做一次 MultiArrayList 字段切片派生，Debug 下每次派生都是数个不内联
     /// 调用；这里合并为一次 slice() + 两个字段索引。
     pub fn rectIfLaidOut(self: *const LayoutTable, id: ElementId) ?Rect {
         if (id.isNull() or id.index >= self.items.len) return null;

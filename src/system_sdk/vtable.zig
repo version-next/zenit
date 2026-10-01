@@ -35,7 +35,7 @@ pub const ClipboardVTable = struct {
     /// 写入 PNG 编码图片（清空剪贴板原内容）
     set_image_png: ?*const fn (ctx: *anyopaque, png_bytes: []const u8) SdkError!void = null,
     /// 富文本写入：plain text + 可选 HTML 作为同一 pasteboard item 的多 representation。
-    /// RTF 不在此接口内（macOS HTML→RTF 转换依赖 WebKit 主线程嵌套 runloop，见 bridge 注释）。
+    /// RTF 不在此接口内（macOS HTML->RTF 转换依赖 WebKit 主线程嵌套 runloop，见 bridge 注释）。
     set_rich_text: ?*const fn (ctx: *anyopaque, rich: ClipboardRichText) SdkError!void = null,
     /// 剪贴板 HTML representation 的字节长度；无 HTML 时返回 0。
     get_html_len: ?*const fn (ctx: *anyopaque) SdkError!usize = null,
@@ -205,7 +205,7 @@ pub const MenuVTable = struct {
 };
 
 /// `.file_url`: payload 是绝对路径或 file:// / 其他 scheme 的 URL 字符串。
-/// 指向已存在文件时，macOS backend 会写 NSPasteboardTypeFileURL——可直接拖出
+/// 指向已存在文件时，macOS backend 会写 NSPasteboardTypeFileURL，可直接拖出
 /// 到 Finder（由 Finder 执行复制）。"拖出时才生成文件"（NSFilePromiseProvider）
 /// 尚未支持，见 window_bridge.m TODO(file-promise)。
 pub const DragPayloadKind = enum(u8) { text, file_url, internal };

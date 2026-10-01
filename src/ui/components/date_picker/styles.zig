@@ -1,4 +1,4 @@
-//! DatePicker 样式层 — trigger/panel/Today 按钮样式与交互态取色纯函数（zenit-styling-revamp）。
+//! DatePicker 样式层，trigger/panel/Today 按钮样式与交互态取色纯函数（zenit-styling-revamp）。
 //! mount 初始态与运行时更新（syncTriggerVisual/updateDisplayLabel）共用同一取色源。
 const core = @import("../../core.zig");
 const theme = core.theme;
@@ -28,8 +28,6 @@ pub fn leadingIconTint(has_value: bool, t: *const theme.ThemeTokens) Color {
 pub fn chevronTint(open: bool, t: *const theme.ThemeTokens) Color {
     return if (open) t.color.accent else t.color.fg_tertiary;
 }
-
-
 
 pub fn panelStyle(t: *const theme.ThemeTokens) core.BoxStyle {
     return .{

@@ -1,4 +1,4 @@
-//! Bench main entry — 注册所有 bench cases 并运行
+//! Bench main entry，注册所有 bench cases 并运行
 //!
 //! 运行：
 //!   zig build bench
@@ -14,7 +14,7 @@ const std = @import("std");
 const runner = @import("runner.zig");
 
 // reactive symbols 走 facade re-export (core.zig 已 pub 出来)，
-// 不再保留独立 reactive bench module — 解决 facade 拉 Cx 时 core.zig 同时
+// 不再保留独立 reactive bench module，解决 facade 拉 Cx 时 core.zig 同时
 // 属 reactive + zenit 两个 module 的冲突。
 const zenit = @import("zenit");
 const Signal = zenit.ui_core.Signal;
@@ -178,7 +178,7 @@ fn slotBody(allocator: std.mem.Allocator, ctx: *runner.BenchCtx) anyerror!void {
 }
 
 // ============================================================================
-// diamond glitch set —— A→B(memo), A→C(memo), [B,C]→D(effect)
+// diamond glitch set, A->B(memo), A->C(memo), [B,C]->D(effect)
 // 写 A 时 D 必须只跑一次（拓扑序保证）+ B/C 都已根据新 A 重算的值。
 // ============================================================================
 
@@ -249,7 +249,7 @@ fn diamondBody(allocator: std.mem.Allocator, ctx: *runner.BenchCtx) anyerror!voi
 }
 
 // ============================================================================
-// lazy memo unused —— 创建 memo 但没下游读，set source 不应触发计算
+// lazy memo unused，创建 memo 但没下游读，set source 不应触发计算
 // ============================================================================
 
 const LazyState = struct {
@@ -296,7 +296,7 @@ fn lazyMemoBody(allocator: std.mem.Allocator, ctx: *runner.BenchCtx) anyerror!vo
 }
 
 // ============================================================================
-// topological chain 10 —— A → M1 → M2 → ... → M10 → effect
+// topological chain 10, A -> M1 -> M2 -> ... -> M10 -> effect
 // 写 A 时 effect 应只触发一次，所有 memo 拓扑序更新。
 // ============================================================================
 
@@ -354,7 +354,7 @@ fn chainBody(allocator: std.mem.Allocator, ctx: *runner.BenchCtx) anyerror!void 
 }
 
 // ============================================================================
-// 10k node tree build + traverse —— element_table SoA 性能
+// 10k node tree build + traverse, element_table SoA 性能
 // 模拟 layout pass 的"建树 + 全量遍历"工作量；一旦 layout 切到 ElementTable
 // 这就是 zero-dirty 帧的 baseline 工作。
 // ============================================================================
@@ -479,8 +479,8 @@ fn unlinkBody(allocator: std.mem.Allocator, ctx: *runner.BenchCtx) anyerror!void
 
 // ============================================================================
 // single_signal_color_change_paint
-// 端到端测：signal.set → effect run → 写 dirty hashmap entry。
-// 这是"单 signal 改色 → paint dirty 落地"路径的真实成本。
+// 端到端测：signal.set -> effect run -> 写 dirty hashmap entry。
+// 这是"单 signal 改色 -> paint dirty 落地"路径的真实成本。
 // plan 矩阵 #2 目标 < 100µs。
 // ============================================================================
 
@@ -517,7 +517,7 @@ fn singleSignalColorSetup(allocator: std.mem.Allocator) anyerror!*anyopaque {
     }, struct {
         fn run(ctx: anytype) void {
             const new_color = ctx.signal.get();
-            // 模拟"颜色变化 → 标 paint dirty"
+            // 模拟"颜色变化 -> 标 paint dirty"
             ctx.target_color.* = new_color;
             // 诊断路径：bench 里模拟 dirty 标记的假负载，不是真渲染管线。
             // 分配失败只让这一轮少标一个 id，测的是 signal 传播开销本身。
@@ -594,7 +594,7 @@ fn realisticSetup(allocator: std.mem.Allocator) anyerror!*anyopaque {
         try createEffect(owner, slot_ctx, struct {
             fn run(ctx: anytype) void {
                 const new_color = ctx.theme_sig.get();
-                // 模拟"读 signal → 算出 style → 写 Node 字段 → 标 dirty"完整链路
+                // 模拟"读 signal -> 算出 style -> 写 Node 字段 -> 标 dirty"完整链路
                 ctx.color_slot.* = new_color;
                 // 诊断路径：同上，bench 假负载。
                 ctx.dirty.put(ctx.alloc, ctx.slot_id, 1) catch {};
@@ -1414,7 +1414,7 @@ fn paintCacheTeardown(allocator: std.mem.Allocator, ptr: *anyopaque) void {
 fn paintCacheBody(allocator: std.mem.Allocator, ctx: *runner.BenchCtx) anyerror!void {
     _ = allocator;
     const state: *PaintCacheState = @ptrCast(@alignCast(ctx.state.?));
-    // 同 hash → 永远命中 → 不重新录制
+    // 同 hash -> 永远命中 -> 不重新录制
     const hit = !(try state.table.beginRecord(state.target_id, 0xCAFEBABE));
     ctx.blackbox(hit);
 }
@@ -1467,7 +1467,7 @@ fn paintRecordBody(allocator: std.mem.Allocator, ctx: *runner.BenchCtx) anyerror
     _ = allocator;
     const state: *PaintRecordState = @ptrCast(@alignCast(ctx.state.?));
     state.counter +%= 1;
-    // 每次 hash 不同 → 必须重新录制
+    // 每次 hash 不同 -> 必须重新录制
     const new_hash = state.counter;
     _ = try state.table.beginRecord(state.target_id, new_hash);
     try state.table.pushItem(state.target_id, .{
@@ -1530,7 +1530,7 @@ fn promotionHintPackBody(allocator: std.mem.Allocator, ctx: *runner.BenchCtx) an
 }
 
 // ============================================================================
-// encodeOne 单 DisplayItem → GpuDraw 转换
+// encodeOne 单 DisplayItem -> GpuDraw 转换
 // ============================================================================
 
 fn encodeOneBody(allocator: std.mem.Allocator, ctx: *runner.BenchCtx) anyerror!void {
@@ -1550,7 +1550,7 @@ fn encodeOneBody(allocator: std.mem.Allocator, ctx: *runner.BenchCtx) anyerror!v
 }
 
 // ============================================================================
-// encodeStream 100 同质 rect → 1 batch
+// encodeStream 100 同质 rect -> 1 batch
 // ============================================================================
 
 const StreamState = struct {
@@ -1579,7 +1579,7 @@ fn streamHomogeneousBody(allocator: std.mem.Allocator, ctx: *runner.BenchCtx) an
 }
 
 // ============================================================================
-// encodeStream 50 rect + 50 text 交替 → 100 separate batches
+// encodeStream 50 rect + 50 text 交替 -> 100 separate batches
 // (worst case：完全无 batching)
 // ============================================================================
 
@@ -2255,7 +2255,7 @@ pub fn main() !void {
             .teardown = null,
             .body = elementIdHotPathBody,
         },
-        // 真测 plan 矩阵 #2 "单 signal 改色 → paint" 端到端
+        // 真测 plan 矩阵 #2 "单 signal 改色 -> paint" 端到端
         .{
             .name = "single_signal_color_change_paint",
             .setup = singleSignalColorSetup,
@@ -2318,13 +2318,13 @@ pub fn main() !void {
 }
 
 // ============================================================================
-// v0.5-P3 Frame-level scenario benches —— v0.5 §5 退出标准 #1/#3/#4/#5/#8
+// v0.5-P3 Frame-level scenario benches, v0.5 §5 退出标准 #1/#3/#4/#5/#8
 //
 // 与上方 micro bench 不同：这一组吃完整 Cx (init/setViewport/layout/render)
 // 路径，目标是在帧级 wall-clock 上 gate 退出标准的真数字。详见
 // docs/V05_ALIGNMENT_PLAN.md §5。
 //
-// 起步 case：#1 frame_10k_nodes_zero_dirty_relayout —— 10k 节点零脏帧。
+// 起步 case：#1 frame_10k_nodes_zero_dirty_relayout, 10k 节点零脏帧。
 // 命中 cx.render() 的 fast-path（time_unchanged + isTreeFullyClean），
 // 模拟生产 idle frame 的实际开销。
 // ============================================================================
@@ -2345,9 +2345,9 @@ fn frameZeroDirty10kSetup(allocator: std.mem.Allocator) anyerror!*anyopaque {
     cx.setViewport(1280, 800);
 
     // 直接命令式 build：root 一个 vstack，下挂 100 个 row，每 row 100 个 leaf
-    // text-less 占位 box → 共 100*100 + 100 + 1 = 10101 ≈ 10k 节点。
+    // text-less 占位 box -> 共 100*100 + 100 + 1 = 10101 ≈ 10k 节点。
     // 不用 ui.box() 的 tuple API（10k 不能字面量化），而是 Node.create +
-    // cx.linkNodeToWorld + parent.appendChild —— 与 box() 内部完全等价。
+    // cx.linkNodeToWorld + parent.appendChild，与 box() 内部完全等价。
     const ui_core = zenit.ui_core;
     const root = try ui_core.Node.create(
         allocator,
@@ -2415,7 +2415,7 @@ fn frameZeroDirty10kTeardown(allocator: std.mem.Allocator, state_ptr: *anyopaque
 
 fn frameZeroDirty10kBody(_: std.mem.Allocator, ctx: *runner.BenchCtx) anyerror!void {
     const state: *FrameZeroDirtyState = @ptrCast(@alignCast(ctx.state.?));
-    // 不改 frame_time_ms → time_unchanged → render() 走 fast-path return cache。
+    // 不改 frame_time_ms -> time_unchanged -> render() 走 fast-path return cache。
     // layout() 早返（had_dirty == false）；render() 早返（fully clean + cache valid）。
     state.cx.layout();
     const items = state.cx.render();
@@ -2423,7 +2423,7 @@ fn frameZeroDirty10kBody(_: std.mem.Allocator, ctx: *runner.BenchCtx) anyerror!v
 }
 
 // ----------------------------------------------------------------------------
-// #5 frame_dashboard_drawcall_count — typical dashboard 画面，draw call < 600
+// #5 frame_dashboard_drawcall_count, typical dashboard 画面，draw call < 600
 //
 // dashboard fixture：header bar + sidebar (12 nav items) + main 4×4 card grid
 // (16 cards × 3 text + 1 background = 4 nodes/card)。每节点产 1 fill_rect (背
@@ -2618,7 +2618,7 @@ fn frameDashboardSetup(allocator: std.mem.Allocator) anyerror!*anyopaque {
     const drawcall_count = cx.lowerForEncoderPaintTable().len;
     // §5 退出标准 #5: typical dashboard < 600 draw calls。当前 fixture
     // (header + 16 nav + 36 cards × 4 nodes) ≈ 176 display_items，~3.4×
-    // headroom。assert 是真 gate — 若回归到 600+ bench setup 直接 panic。
+    // headroom。assert 是真 gate，若回归到 600+ bench setup 直接 panic。
     std.debug.assert(drawcall_count > 30);
     std.debug.assert(drawcall_count < 600);
 
@@ -2642,7 +2642,7 @@ fn frameDashboardBody(_: std.mem.Allocator, ctx: *runner.BenchCtx) anyerror!void
 }
 
 // ----------------------------------------------------------------------------
-// #8 frame_diamond_set_no_double_paint — diamond reactive 拓扑下，源 signal
+// #8 frame_diamond_set_no_double_paint, diamond reactive 拓扑下，源 signal
 // 翻动一次后单一节点 paint 只被重录一次 (no glitch / no double paint)。
 //
 // 树形 (cx 内 1 个 target_box)；reactive owner 单独 (与 cx 共享 allocator):
@@ -2651,10 +2651,10 @@ fn frameDashboardBody(_: std.mem.Allocator, ctx: *runner.BenchCtx) anyerror!void
 //   C: Memo  = A.get() + 100
 //   effect(B,C): target_box.setBackground(rgba based on B+C)
 //
-// 期望: A.set(N) → reactive 同步 propagate (B/C/effect 各跑一次拓扑序保证)
-// → effect setBackground 让 target_box render-dirty → cx.render() 重录该
+// 期望: A.set(N) -> reactive 同步 propagate (B/C/effect 各跑一次拓扑序保证)
+// -> effect setBackground 让 target_box render-dirty -> cx.render() 重录该
 // 节点的 paint 一次 (display_list_own_prebuild_count == 1)。如果有 glitch
-// 即 effect 跑 2 次或 paint pass 重录 2 次，count > 1 → setup 阶段断言失败。
+// 即 effect 跑 2 次或 paint pass 重录 2 次，count > 1 -> setup 阶段断言失败。
 //
 // micro reactive_diamond_no_glitch_set 测纯 reactive；本 case 测 reactive +
 // paint 复合的 frame 时长，作为 v0.5 §5 #8 的可量化 gate。
@@ -2705,7 +2705,7 @@ fn frameDiamondSetup(allocator: std.mem.Allocator) anyerror!*anyopaque {
     cx.layout();
     _ = cx.render();
 
-    // reactive graph: A → B(memo), A → C(memo), effect(B, C) → setBackground。
+    // reactive graph: A -> B(memo), A -> C(memo), effect(B, C) -> setBackground。
     // owner 与 cx 用同 allocator，但生命周期独立（cx.deinit 后 owner 仍需 deinit）。
     const owner = try SignalOwner.init(allocator);
     errdefer owner.deinit();
@@ -2730,7 +2730,7 @@ fn frameDiamondSetup(allocator: std.mem.Allocator) anyerror!*anyopaque {
     }, struct {
         fn run(eff_ctx: anytype) void {
             const sum = eff_ctx.b.get() + eff_ctx.c.get();
-            // 用 sum 派生 RGB；强制每次 set 颜色都不同 → 真触发 markRenderDirty
+            // 用 sum 派生 RGB；强制每次 set 颜色都不同 -> 真触发 markRenderDirty
             const r: u8 = @intCast(@as(u32, @bitCast(sum)) & 0xFF);
             const g: u8 = @intCast((@as(u32, @bitCast(sum)) >> 8) & 0xFF);
             const b_ch: u8 = @intCast((@as(u32, @bitCast(sum)) >> 16) & 0xFF);
@@ -2785,7 +2785,7 @@ fn frameDiamondBody(_: std.mem.Allocator, ctx: *runner.BenchCtx) anyerror!void {
 }
 
 // ----------------------------------------------------------------------------
-// #3 frame_scrollarea_1k_items_scroll — 1k items 在 overflow_hidden 容器里
+// #3 frame_scrollarea_1k_items_scroll, 1k items 在 overflow_hidden 容器里
 // scroll 一帧 < 3ms (60fps frame budget)。
 //
 // 不依赖 ScrollArea component (避免拉 components/scroll_area/* 进 facade)：
@@ -2889,7 +2889,7 @@ fn frameScrollBody(_: std.mem.Allocator, ctx: *runner.BenchCtx) anyerror!void {
     const state: *FrameScrollState = @ptrCast(@alignCast(ctx.state.?));
     // 模拟 scroll: 每帧 translate 5px。-12000 ~ 0 之间循环避免无限增长。
     // setTranslateY pub fn 已删 (v0.5 round 9 dead code cleanup)，走
-    // setStyle(.translate_y, value) — translate_y 是非-ext 字段，无 allocator
+    // setStyle(.translate_y, value), translate_y 是非-ext 字段，无 allocator
     // 也能写。setStyle 的 .interaction dirty level 自动 markRenderDirty。
     state.scroll_offset -= 5.0;
     if (state.scroll_offset < -12000) state.scroll_offset = 0;
@@ -2900,14 +2900,14 @@ fn frameScrollBody(_: std.mem.Allocator, ctx: *runner.BenchCtx) anyerror!void {
 }
 
 // ----------------------------------------------------------------------------
-// #4 frame_transform_promoted_no_paint — will_change_transform 节点经 layer_tree
+// #4 frame_transform_promoted_no_paint, will_change_transform 节点经 layer_tree
 // promote 为 composited surface 后，setRotate 触发 composite-only 路径，
 // paint 不重录 (display_list_own_prebuild_count == 0)。
 //
 // 核心 invariant 链 (markCompositeDirty in node.zig:1460):
 //   self_needs_render_dirty = (promoted == null) and !isOutOfBandRenderUnit
-// 节点 promoted=composited surface → self_needs_render_dirty=false → 不冒泡
-// render dirty → render() 不重 paint 该节点 → prebuild_count == 0 当帧。
+// 节点 promoted=composited surface -> self_needs_render_dirty=false -> 不冒泡
+// render dirty -> render() 不重 paint 该节点 -> prebuild_count == 0 当帧。
 //
 // 当前 setTranslateX 走 markRenderDirtyTracked (line 1148, translate
 // composite-only 路径未切)，setRotate 走 markCompositeDirty (line 1176,
@@ -2952,8 +2952,8 @@ fn frameTransformSetup(allocator: std.mem.Allocator) anyerror!*anyopaque {
     cx.linkNodeToWorld(target);
     target.setBackgroundRaw(Color.rgba(80, 120, 160, 255));
     // 直接走 composited_group=true 路径让 layer_tree promote (layer_tree.zig:800
-    // shouldPromoteLayer：effect.kind == .composited_group → return true)。
-    // 比 will_change_transform 路径稳 — 后者还要 scene_runtime 同步 ext 才生效。
+    // shouldPromoteLayer：effect.kind == .composited_group -> return true)。
+    // 比 will_change_transform 路径稳，后者还要 scene_runtime 同步 ext 才生效。
     (try target.style.ensureExtFallible(allocator)).composited_group = true;
     try root.appendChild(allocator, target);
 
@@ -2963,7 +2963,7 @@ fn frameTransformSetup(allocator: std.mem.Allocator) anyerror!*anyopaque {
     cx.layout(); // 第二帧让 layer_tree promote 真生效 (如果 promotion 是 t+1 帧)
     _ = cx.render();
 
-    // 验证 promotion 真生效 — 这是 #4 的前置条件
+    // 验证 promotion 真生效，这是 #4 的前置条件
     if (target.meta.per_frame.caches.commands.promoted == null) {
         std.debug.panic(
             "frame_transform: target node not promoted to composited surface — " ++
@@ -2972,7 +2972,7 @@ fn frameTransformSetup(allocator: std.mem.Allocator) anyerror!*anyopaque {
         );
     }
 
-    // ===== #4 真正的 gate：setRotate → composite-only path =====
+    // ===== #4 真正的 gate：setRotate -> composite-only path =====
     cx.perf.resetFrame();
     target.setRotate(allocator, 0.1);
 
@@ -3019,7 +3019,7 @@ fn frameTransformBody(allocator: std.mem.Allocator, ctx: *runner.BenchCtx) anyer
 }
 
 // ----------------------------------------------------------------------------
-// v0.8 §2.2 — frame_select_1k_keyboard_pagedown
+// v0.8 §2.2, frame_select_1k_keyboard_pagedown
 //
 // mountSelectHeadless 接 1k options + virtualize=true，open popover，每帧
 // 模拟 PageDown (state.machine 走 page_down action) 然后 layout + render。
@@ -3092,7 +3092,7 @@ fn frameSelect1kTeardown(allocator: std.mem.Allocator, state_ptr: *anyopaque) vo
 
 fn frameSelect1kBody(_: std.mem.Allocator, ctx: *runner.BenchCtx) anyerror!void {
     const st: *FrameSelect1kState = @ptrCast(@alignCast(ctx.state.?));
-    // 每帧 step 一次 PageDown — wrap 防止 highlight 卡在末尾
+    // 每帧 step 一次 PageDown, wrap 防止 highlight 卡在末尾
     if (st.state.highlight_index) |hi| {
         if (hi + 10 >= st.item_count) {
             st.state.highlight_index = 0;

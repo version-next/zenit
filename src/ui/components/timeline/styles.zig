@@ -1,5 +1,5 @@
-//! Timeline 样式层 — 圆点/连接线/标题/描述/时间的视觉决策。
-//! 状态→颜色映射（dotColor/lineColor）是 TimelineStatus 的公共 API，留在 mod.zig。
+//! Timeline 样式层，圆点/连接线/标题/描述/时间的视觉决策。
+//! 状态->颜色映射（dotColor/lineColor）是 TimelineStatus 的公共 API，留在 mod.zig。
 const core = @import("../../core.zig");
 const mod = @import("mod.zig");
 const TimelineStatus = mod.TimelineStatus;

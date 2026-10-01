@@ -1,4 +1,4 @@
-//! Script detection + run split — Phase 6 文本流水线
+//! Script detection + run split, Phase 6 文本流水线
 //!
 //! 在 bidi.splitRuns 之后再按 script（拉丁/CJK/阿拉伯/希伯来等）切分；
 //! 同 direction + 同 script 的连续 codepoint 形成一个 shaping run。
@@ -14,7 +14,7 @@ const std = @import("std");
 const testing = std.testing;
 
 pub const Script = enum(u8) {
-    /// 通用（数字、ASCII 标点、空格 —— 跟前一个真 script 走）
+    /// 通用（数字、ASCII 标点、空格，跟前一个真 script 走）
     common,
     /// 拉丁
     latin,
@@ -36,7 +36,7 @@ pub const Script = enum(u8) {
     other,
 };
 
-/// codepoint → Script
+/// codepoint -> Script
 pub fn classify(cp: u32) Script {
     // ASCII 控制 + 标点 + 数字
     if (cp < 0x80) {
@@ -182,7 +182,7 @@ test "splitScriptRuns: latin + CJK + latin → 3 runs" {
     // bytes: H=72, i=69, ' '=20 (3 bytes) + E4 B8 AD E6 96 87 (6 bytes) + ' Bye' (4 bytes) = 13 total
     const text = "Hi \xE4\xB8\xAD\xE6\x96\x87 Bye";
     try splitScriptRuns(text, 0, @intCast(text.len), &runs, testing.allocator);
-    // 期望：latin run（含尾随空格 common）→ CJK run → latin run（含 ' ' 前导 common）
+    // 期望：latin run（含尾随空格 common）-> CJK run -> latin run（含 ' ' 前导 common）
     try testing.expectEqual(@as(usize, 3), runs.items.len);
     try testing.expectEqual(Script.latin, runs.items[0].script);
     try testing.expectEqual(Script.cjk, runs.items[1].script);

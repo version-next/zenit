@@ -12,7 +12,7 @@ pub fn devtoolsHitDebugEnabled() bool {
 var cursor_change_debug_enabled_cache: ?bool = null;
 var hit_scene_debug_enabled_cache: ?bool = null;
 /// ZENIT_HIT_SCENE_DEBUG=1：逐 mouse_move 打印命中结果（含 proxy AABB）与
-/// 每次 hit-test 场景重建走的分支——诊断「partial 重建缺口」类命中错乱。
+/// 每次 hit-test 场景重建走的分支，诊断「partial 重建缺口」类命中错乱。
 pub fn hitSceneDebugEnabled() bool {
     return readBoolEnvCached(&hit_scene_debug_enabled_cache, "ZENIT_HIT_SCENE_DEBUG");
 }

@@ -1,4 +1,4 @@
-/// Backdrop blur 子系统 — 从 command_encoder.zig 析出
+/// Backdrop blur 子系统，从 command_encoder.zig 析出
 ///
 /// 包含 Dual Kawase 模糊管线 + Liquid Glass composite。所有公共入口都接受
 /// `encoder: anytype`，避免与 RenderCommandEncoder 形成循环 import。
@@ -27,8 +27,8 @@ const glass_shader_source: []const u8 = @embedFile("shaders/glass.metal");
 /// PersistentGpuCache.blur_level_slots）。
 ///
 /// 定这个数的两端约束：
-/// - 下限：观测到的振荡周期是 3 帧 —— offscreen_texture.zig 的
-///   `REUSE_LAG_FRAMES = 3` 决定（retained miss 的层「画一帧 → 被拒两帧」）。
+/// - 下限：观测到的振荡周期是 3 帧，offscreen_texture.zig 的
+///   `REUSE_LAG_FRAMES = 3` 决定（retained miss 的层「画一帧 -> 被拒两帧」）。
 ///   N 必须 **≥ 3** 才能跨过一整个周期；N=1/2 时「被拒两帧」中间那次成功
 ///   仍会把级数顶上去，迟滞形同虚设。
 /// - 上限：N 帧是「窗口变大/玻璃变少之后模糊迟迟不变清晰」的可见延迟。
@@ -40,17 +40,17 @@ const glass_shader_source: []const u8 = @embedFile("shaders/glass.metal");
 pub const BLUR_LEVEL_RAISE_FRAMES: u32 = 6;
 
 /// 迟滞状态的纯值形式（与 PersistentGpuCache.BlurLevelSlot 的三个计数字段
-/// 一一对应）。抽出来是为了让状态机可单测 —— 真机路径要 GPU 池。
+/// 一一对应）。抽出来是为了让状态机可单测，真机路径要 GPU 池。
 pub const BlurLevelState = struct { committed: u32 = 0, streak: u32 = 0, backoff: u32 = 0 };
 
 /// 本帧允许的链深上限。
-/// - committed == 0：无历史（首帧 / 槽换主）→ 不设限，一次到位。
-/// - streak 到达阈值 → 放行一次「上调尝试」（允许到 max_levels）。
+/// - committed == 0：无历史（首帧 / 槽换主）-> 不设限，一次到位。
+/// - streak 到达阈值 -> 放行一次「上调尝试」（允许到 max_levels）。
 /// - 否则压在上一帧实际提交的级数（降级立即生效已由 committed 天然承载）。
 ///
 /// 上调尝试的间隔：基准 BLUR_LEVEL_RAISE_FRAMES，每次尝试失败翻倍
 /// （上限 8× ≈ 48 帧 / 0.8s）。硬饱和（池永远给不出下一级）时若不退避，
-/// 就从「每 3 帧闪」变成「每 N 帧闪」—— 频率降了但仍是可见的周期性跳变。
+/// 就从「每 3 帧闪」变成「每 N 帧闪」，频率降了但仍是可见的周期性跳变。
 pub fn levelCap(committed: u32, streak: u32, backoff: u32, max_levels: u32) u32 {
     if (committed == 0) return max_levels;
     const threshold = BLUR_LEVEL_RAISE_FRAMES *| (@as(u32, 1) << @intCast(@min(backoff, 3)));
@@ -63,7 +63,7 @@ pub fn levelSettle(prev: BlurLevelState, cap: u32, actual: u32, max_levels: u32)
     var next = prev;
     next.committed = actual;
     if (cap < max_levels) {
-        // 被迟滞压住：跑满上限就累计，没跑满说明池连当前级数都给不出 → 清零
+        // 被迟滞压住：跑满上限就累计，没跑满说明池连当前级数都给不出 -> 清零
         // （连续性是迟滞的全部意义）。
         next.streak = if (actual >= cap) prev.streak +| 1 else 0;
         return next;
@@ -96,7 +96,7 @@ pub const KawaseUniforms = extern struct {
     ///
     /// capture 纹理按 64px 桶分配（池复用所需），实际只 blit 进
     /// copy_w×copy_h，右/下那圈 pad 被 clear 成透明黑且永不写入。不钳的话
-    /// Kawase 会把这圈黑逐级糊进有效内容（半径 180 → 链深 6 级，污染极远），
+    /// Kawase 会把这圈黑逐级糊进有效内容（半径 180 -> 链深 6 级，污染极远），
     /// 表现为背板被冲淡 + 边缘糊出一团灰。钳进有效区 = 对边界做 clamp-to-edge
     /// 延展，与 CSS backdrop-filter / Core Image 的边界语义一致。
     valid_uv: [4]f32 = .{ 0, 0, 1, 1 },
@@ -165,7 +165,7 @@ pub fn ensureBlurPipeline(encoder: anytype) bool {
         }
     }
     // glass 有独立失败标记：blur 建好后 glass 持久失败同样不能每帧重编译。
-    // glass 失败不影响返回值——调用方可以继续走纯 blur+tint 退化路径。
+    // glass 失败不影响返回值，调用方可以继续走纯 blur+tint 退化路径。
     if (encoder.persistent.glass_pipeline == null and !encoder.persistent.glass_pipeline_failed) {
         if (!buildGlassPipeline(encoder)) {
             encoder.persistent.glass_pipeline_failed = true;
@@ -264,7 +264,7 @@ fn buildGlassPipeline(encoder: anytype) bool {
 /// 分配一个 Kawase uniform 槽；耗尽返回 null。
 /// 不能钳到最后一格复用：draw 已 encode 未提交，后写会覆盖前一个 pass 的
 /// uniform（texel_size/valid_uv 错乱的静默坏帧）。调用方拿到 null 应当
-/// 终止本条模糊链（executeKawasePass 返回 false 即是该语义——
+/// 终止本条模糊链（executeKawasePass 返回 false 即是该语义,
 /// 两条 down/up 链对 false 都是 break 并以最后完成级为输出）。
 pub fn acquireKawaseUniformSlot(encoder: anytype) ?u32 {
     if (encoder.persistent.blur_uniform_write_offset >= max_kawase_uniform_updates) return null;
@@ -370,7 +370,7 @@ fn restoreRenderTargetPass(
 
 /// 执行一遍 Kawase pass（downsample 或 upsample）。
 /// 返回 false = 资源缺失被跳过（dst 内容未写入，caller 不得把它当模糊结果用）。
-/// 曾经是静默 void return —— caller 用 try 期待错误传播，拿到的却是"成功但
+/// 曾经是静默 void return, caller 用 try 期待错误传播，拿到的却是"成功但
 /// 什么都没做"，下游把未渲染的垃圾纹理当最深模糊层用进了亮度采样。
 /// 把"有效像素尺寸 + 纹理分配尺寸"换算成采样用的 uv 子矩形。
 ///
@@ -385,7 +385,7 @@ pub fn validUv(off_x: u32, off_y: u32, valid_w: u32, valid_h: u32, tex_w: u32, t
     const half_y = 0.5 / th;
     // 起点不能恒当 0：贴窗口边的 glass（GlassEdge/下游应用 header）pad 越出屏幕
     // 被裁掉，有效内容从 dst_x/dst_y 开始（实测 dst=(160,160)）。漏掉偏移会
-    // 把那段空白 pad 也当成有效区，映射整体错位——表现为背景被拉伸糊开。
+    // 把那段空白 pad 也当成有效区，映射整体错位，表现为背景被拉伸糊开。
     const x0: f32 = @as(f32, @floatFromInt(@min(off_x, tex_w))) / tw + half_x;
     const y0: f32 = @as(f32, @floatFromInt(@min(off_y, tex_h))) / th + half_y;
     const x1_raw: f32 = @as(f32, @floatFromInt(@min(off_x + valid_w, tex_w))) / tw - half_x;
@@ -490,7 +490,7 @@ pub fn executeGlassComposite(
     capture_scale: f32,
 ) !bool {
     // 返回 false = 被跳过（dst 未写入）。caller 必须回退 blur_tex 合成，
-    // 不能把这张未渲染的 glass_tex 当结果 —— 否则玻璃区域是垃圾像素。
+    // 不能把这张未渲染的 glass_tex 当结果，否则玻璃区域是垃圾像素。
     var pipeline = encoder.persistent.glass_pipeline orelse return warnPassSkipped("glass pipeline");
     var sampler_state = encoder.persistent.blur_sampler orelse return warnPassSkipped("glass sampler");
 
@@ -544,7 +544,7 @@ pub fn executeGlassComposite(
     return true;
 }
 
-/// Backdrop blur 入口参数 — 比裸 30+ float 更可读
+/// Backdrop blur 入口参数，比裸 30+ float 更可读
 pub const BackdropBlurParams = struct {
     /// glass 拥有者 node id（亮度区域槽的稳定 key；maxInt = 未知）
     glass_owner_id: u32 = std.math.maxInt(u32),
@@ -592,7 +592,7 @@ pub const BackdropBlurParams = struct {
     rotate: f32,
 };
 
-/// 离屏 surface 内的局部矩形 → 世界（main RT）坐标 AABB。
+/// 离屏 surface 内的局部矩形 -> 世界（main RT）坐标 AABB。
 ///
 /// 当前目标的纹理局部坐标 = 局部坐标 + offscreenOffset()（与内容绘制同一换算）。
 /// 然后逐层向外：用 draw_transform 的层，其矩阵把纹理局部坐标映到「弹栈后目标帧
@@ -646,13 +646,13 @@ pub fn offscreenLocalRectToWorld(encoder: anytype, x: f32, y: f32, w: f32, h: f3
     return .{ x0, y0, x1 - x0, y1 - y0 };
 }
 
-/// blur_radius（逻辑 px）→ Kawase 链参数。抽成纯函数以便单测连续性/DPI 无关性。
+/// blur_radius（逻辑 px）-> Kawase 链参数。抽成纯函数以便单测连续性/DPI 无关性。
 ///
 /// blur_radius 连续可调（同 CSS backdrop-filter: blur(px)），量程 [0, 96]
 /// （types.zig resolve 已 clamp 并写明）：
 /// - 链深 n = ceil(log2(r_phys/3))：offset 以各级纹理 texel（物理 px）计，
-///   故级数按物理 px 算，等效物理足迹 ∝ r_phys → 视觉糊度 DPI 无关；
-/// - 小数级插值：余量 r_phys/(3·2^n) ∈ (0.5, 1] 作为全链 offset 缩放 →
+///   故级数按物理 px 算，等效物理足迹 ∝ r_phys -> 视觉糊度 DPI 无关；
+/// - 小数级插值：余量 r_phys/(3·2^n) ∈ (0.5, 1] 作为全链 offset 缩放 ->
 ///   档位边界两侧糊度连续，不再阶梯跳变；n=1 段（r_phys ≤ 6）scale 一路
 ///   降到 0，曲线从 0 起连续；
 /// - 级数上限 6：覆盖 2x 屏满量程（96 逻辑 = 192 物理 px）。3x 屏 64
@@ -673,7 +673,7 @@ pub fn blurChainParams(radius_logical: f32, scale: f32) BlurChainParams {
 /// Backdrop blur: Dual Kawase 降采样链 + 升采样链
 ///
 /// 语义：模糊节点区域下方的已渲染背景，子节点之后正常渲染（保持清晰）
-/// 流程：blit 区域复制 → downsample chain → upsample chain → composite 回 RT
+/// 流程：blit 区域复制 -> downsample chain -> upsample chain -> composite 回 RT
 pub fn applyBackdropBlur(encoder: anytype, p: BackdropBlurParams) !void {
     // 诊断开关：全关 backdrop blur（含 Kawase 链与 glass composite）。
     // blur 每个 glass 区域要花 ~10 个 render pass + 1 个 blit，是每帧 pass 数
@@ -686,7 +686,7 @@ pub fn applyBackdropBlur(encoder: anytype, p: BackdropBlurParams) !void {
 
     const ir = encoder.image_renderer orelse return;
     // s = 当前目标（可能是放大光栅的离屏层）的倍率，只用于恢复 pass；
-    // cap_s = 捕获源（main RT）的倍率——层内的玻璃永远从 main RT 采样，捕获区域、
+    // cap_s = 捕获源（main RT）的倍率，层内的玻璃永远从 main RT 采样，捕获区域、
     // 模糊链、content_uv 与形状蒙版都按 main RT 的物理像素计算。
     const s = encoder.scale;
     const cap_s: f32 = if (encoder.offscreen_depth > 0) encoder.offscreen_stack[0].saved_scale else s;
@@ -735,20 +735,20 @@ pub fn applyBackdropBlur(encoder: anytype, p: BackdropBlurParams) !void {
     // capture 源永远是 main RT：glass 落在 overlay/composited surface 内时
     // （absolute 节点、动画 promote 等），surface 自己的纹理里只有该子树内容，
     // 采它得不到玻璃身后的背板。overlay 在主内容之后合成，main RT 此刻正是
-    // 玻璃下方的真实画面 —— 用 world 坐标直接采、不加 offscreen offset。
+    // 玻璃下方的真实画面，用 world 坐标直接采、不加 offscreen offset。
     if (std.posix.getenv("ZENIT_DEBUG_GLASS") != null) {
         std.debug.print("[glassenc] frame={d} owner={d} depth={d}\n", .{ encoder.frame_index, p.glass_owner_id, encoder.offscreen_depth });
     }
     const blur_off: [2]f32 = if (sampling_main) .{ 0, 0 } else encoder.offscreenOffset();
     // capture 必须在 world 帧采样父 RT。CA-pure 统一路径下 p.x/p.y 是
-    // owner-local src 坐标（恒 ≈0），只有 draw_x/draw_y 才是世界 AABB —— 用
+    // owner-local src 坐标（恒 ≈0），只有 draw_x/draw_y 才是世界 AABB，用
     // src 采样会永远从 RT 左上角抓背景（黑底 + 错位内容）。
     const local_x = if (std.math.isNan(p.draw_x)) p.x else p.draw_x;
     const local_y = if (std.math.isNan(p.draw_y)) p.y else p.draw_y;
     const local_w = if (p.draw_w > 0) p.draw_w else p.w;
     const local_h = if (p.draw_h > 0) p.draw_h else p.h;
     // 玻璃在离屏 surface 内（opacity 渐隐 / scale / composited group）：参数是
-    // surface 内坐标，而采样源是 main RT —— 必须沿离屏栈把节点矩形映射到世界
+    // surface 内坐标，而采样源是 main RT，必须沿离屏栈把节点矩形映射到世界
     // （屏幕）坐标再捕获。否则永远从 RT 左上角抓背景（透出窗口另一处内容）。
     // 捕获按世界尺寸进行，合回时 content_uv 把这块区域画进局部矩形，缩放自然抵消。
     const world = if (sampling_main)
@@ -766,11 +766,11 @@ pub fn applyBackdropBlur(encoder: anytype, p: BackdropBlurParams) !void {
     // 世界 / 局部尺寸比：形状蒙版（圆角、bezel）在捕获纹理的世界像素里生成。
     const world_scale: f32 = if (local_w > 0 and local_h > 0) 0.5 * (node_w / local_w + node_h / local_h) else 1;
     // padded capture：比玻璃矩形大一圈。magnification / 边缘位移都会把采样点
-    // 推到节点矩形之外——只截节点大小时要么 clamp 拉丝、要么小纹理插值放大
+    // 推到节点矩形之外，只截节点大小时要么 clamp 拉丝、要么小纹理插值放大
     // 导致画质糊。多截的边距让位移/放大采到真实全分辨率背板。
     // pad 必须同时覆盖两件事：
-    //   (a) magnification/边缘位移把采样点推出节点矩形 —— 与节点尺寸相关
-    //   (b) blur kernel 本身的采样触达 —— 与 blur_radius 相关
+    //   (a) magnification/边缘位移把采样点推出节点矩形，与节点尺寸相关
+    //   (b) blur kernel 本身的采样触达，与 blur_radius 相关
     // 只算 (a) 会让大半径 blur 的 kernel 采出有效区，被 valid_uv clamp 成
     // 边界像素的无限延展：表现为节点外的颜色被"拉"进来（便签色漫到空白
     // 画布上）+ 整体发灰（同一条边界色被反复混入）。取两者较大者。
@@ -836,7 +836,7 @@ pub fn applyBackdropBlur(encoder: anytype, p: BackdropBlurParams) !void {
         };
         blit.end();
     }
-    // 排障：capture 内容中心区 → debug slot 0
+    // 排障：capture 内容中心区 -> debug slot 0
     debugGlassBlit(
         encoder,
         level0_binding,
@@ -875,10 +875,10 @@ pub fn applyBackdropBlur(encoder: anytype, p: BackdropBlurParams) !void {
 
     // ---- 链深帧间迟滞 ----
     // 池压力临界时，同一个岛的 actual_levels 会逐帧在 n 与 n-1 之间摆动，
-    // 用户看到的是「闪」——**跳变**才是缺陷，恒定 n-1 与恒定 n 视觉上几乎无差。
+    // 用户看到的是「闪」，**跳变**才是缺陷，恒定 n-1 与恒定 n 视觉上几乎无差。
     // 故：降级立即生效（拿不到就用少的），升级需连续 BLUR_LEVEL_RAISE_FRAMES
     // 帧都拿得到。槽按 glass_owner_id 匹配，逻辑与下方 luminance_slots 同构。
-    // 找不到槽（槽满 / owner 未知）→ level_slot = null → 完全退化为原行为。
+    // 找不到槽（槽满 / owner 未知）-> level_slot = null -> 完全退化为原行为。
     // 槽类型从 encoder 反推，避免 backdrop_blur ↔ command_encoder 循环 import。
     const LevelSlot = @typeInfo(@TypeOf(&encoder.persistent.blur_level_slots[0])).pointer.child;
     const level_slot: ?*LevelSlot = blk: {
@@ -894,7 +894,7 @@ pub fn applyBackdropBlur(encoder: anytype, p: BackdropBlurParams) !void {
         }
         // 无匹配：LRU 复用。只有当被复用的槽**确实陈旧**（上一帧没用过）才
         // 抢占，否则本帧岛数已超过槽数，抢占会让两个岛互相清空对方的历史，
-        // 迟滞退化成噪声 —— 这种情况下宁可不迟滞。
+        // 迟滞退化成噪声，这种情况下宁可不迟滞。
         const victim = &encoder.persistent.blur_level_slots[lru_idx];
         if (victim.last_used_frame + 1 >= encoder.frame_index and victim.key != std.math.maxInt(u32)) break :blk null;
         victim.key = p.glass_owner_id;
@@ -941,8 +941,8 @@ pub fn applyBackdropBlur(encoder: anytype, p: BackdropBlurParams) !void {
         w_chain[i + 1] = lw;
         h_chain[i + 1] = lh;
         // dst 按 lw×lh 精确分配且 viewport 满铺，故整张 dst 都是有效内容
-        // ——但它的内容源自 src 的有效区，比例随之继承（向上取整避免丢边）。
-        // dst 满铺且内容源自 src 有效区 → dst 整张有效，偏移归零。
+        // 但它的内容源自 src 的有效区，比例随之继承（向上取整避免丢边）。
+        // dst 满铺且内容源自 src 有效区 -> dst 整张有效，偏移归零。
         ox_chain[i + 1] = 0;
         oy_chain[i + 1] = 0;
         vw_chain[i + 1] = lw;
@@ -968,9 +968,9 @@ pub fn applyBackdropBlur(encoder: anytype, p: BackdropBlurParams) !void {
     }
 
     // ---- 3.5 backdrop 亮度自适应：最深层 blit 进本 glass 区域的专属槽 ----
-    // 最深 Kawase 层已经是重度模糊的低分辨率均值近似 —— 取其中 ≤64px 区域
+    // 最深 Kawase 层已经是重度模糊的低分辨率均值近似，取其中 ≤64px 区域
     // 拷进槽内固定尺寸 shared 纹理，CPU 下一帧 getBytes 求平均 luminance。
-    // 槽按 draw rect 量化 key 匹配（无匹配则 LRU 复用最久未用槽）——单张
+    // 槽按 draw rect 量化 key 匹配（无匹配则 LRU 复用最久未用槽），单张
     // 共享 staging 的"最后编码者覆盖"是滚动换装 bug 的根源。
     if (actual_levels > 0) lum: {
         const deep = tex_chain[actual_levels];
@@ -980,7 +980,7 @@ pub fn applyBackdropBlur(encoder: anytype, p: BackdropBlurParams) !void {
         const dw = @min(w_chain[actual_levels], 64);
         const dh = @min(h_chain[actual_levels], 64);
         // 槽 key = glass 拥有者 node id：滚动/布局变化下恒定（几何 key 会随
-        // 滚动逐帧变化 → 12 槽全体 churn → 值清空 → 回退全局均值 → 滚动闪变）。
+        // 滚动逐帧变化 -> 12 槽全体 churn -> 值清空 -> 回退全局均值 -> 滚动闪变）。
         const key = p.glass_owner_id;
         var slot_idx: ?usize = null;
         var lru_idx: usize = 0;
@@ -1035,13 +1035,13 @@ pub fn applyBackdropBlur(encoder: anytype, p: BackdropBlurParams) !void {
 
     // ---- 4. Upsample chain ----
     // 终点停在 tex_chain[1]（半分辨率）：glass shader 全程 normalized UV 采样
-    // 且模糊内容低频，半分辨率视觉差异极小 —— 省掉回全尺寸的最后一级 pass。
+    // 且模糊内容低频，半分辨率视觉差异极小，省掉回全尺寸的最后一级 pass。
     // level0 全程保持清晰内容，直接充当 composite 的 sharp 输入（不再单独 blit）。
     var upsample_ran: u32 = 0;
     if (actual_levels > 0) {
         var lvl: u32 = actual_levels;
         while (lvl > 1) : (lvl -= 1) {
-            // binding 缺失/pass 被跳过 → 停止上采样：tex_chain[1] 保持
+            // binding 缺失/pass 被跳过 -> 停止上采样：tex_chain[1] 保持
             // 已有内容（模糊程度降级但不是垃圾像素）。
             const src_binding = encoder.offscreen_pool.binding(tex_chain[lvl]) orelse break;
             const dst_binding = encoder.offscreen_pool.binding(tex_chain[lvl - 1]) orelse break;
@@ -1092,7 +1092,7 @@ pub fn applyBackdropBlur(encoder: anytype, p: BackdropBlurParams) !void {
     var level0_released = false;
     if (encoder.persistent.glass_pipeline != null) glass: {
         if (encoder.offscreen_pool.acquire(device, tex_w, tex_h, encoder.frame_index)) |glass_tex| {
-            // binding 缺失或 composite 被跳过 → 释放 glass_tex 并回退 blur_tex
+            // binding 缺失或 composite 被跳过 -> 释放 glass_tex 并回退 blur_tex
             // 合成；绝不能把未渲染的 glass_tex 当结果。
             const blur_binding = encoder.offscreen_pool.binding(blur_tex) orelse {
                 _ = encoder.offscreen_pool.releaseForReuseInFrame(glass_tex);
@@ -1160,7 +1160,7 @@ pub fn applyBackdropBlur(encoder: anytype, p: BackdropBlurParams) !void {
             composite_tex = glass_tex;
             composite_tint = .{ 1, 1, 1, 1 };
             composite_has_baked_shape_mask = true;
-            // 排障：composite 输出中心区 → debug slot 1
+            // 排障：composite 输出中心区 -> debug slot 1
             debugGlassBlit(encoder, glass_binding, (tex_w -| 64) / 2, (tex_h -| 64) / 2, tex_w, tex_h, 1);
         } else {
             if (std.posix.getenv("ZENIT_DEBUG_GLASS") != null)
@@ -1168,7 +1168,7 @@ pub fn applyBackdropBlur(encoder: anytype, p: BackdropBlurParams) !void {
         }
     }
     // ⚠ 池压力下的**公平性**：走到这里说明 composite 要么成功、要么已降级。
-    // 两种情况下 level0（capture 全尺寸，本函数最大的一张）都不再需要 ——
+    // 两种情况下 level0（capture 全尺寸，本函数最大的一张）都不再需要,
     // 成功路径的 composite 已经采样完毕，fallback 路径压根不用它。
     //
     // 不在这里放而是拖到函数末尾（原行为），会让**失败的岛比成功的岛占用更久**：
@@ -1176,7 +1176,7 @@ pub fn applyBackdropBlur(encoder: anytype, p: BackdropBlurParams) !void {
     // 攥到最后。于是最大的那个岛一旦 composite 失败，就把池吃干，**排在它后面
     // 的小岛整帧画不出来**（实测：owner=831 申请 896x1984 失败 40 次，
     // owner=1429 工具栏就缺席 40 帧，一一对应）。这正是 issue 33 里用户看到的
-    // "Inspector 和工具栏一起闪"——两者是同一条合成序列上的先后两环。
+    // "Inspector 和工具栏一起闪"，两者是同一条合成序列上的先后两环。
     //
     // releaseForReuseInFrame 会把 reusable_after_frame 清零 ⇒ **同帧立即可复用**，
     // 所以提前归还能直接惠及后面的岛。
@@ -1291,7 +1291,7 @@ test "validUv: 退化输入不产生非法区间" {
 test "validUv: 非零起点（贴窗口边）—— 下界必须跟着偏移走" {
     // GlassEdge / 下游应用 header 贴窗口边时 pad 越出屏幕被裁，有效内容从
     // dst=(160,160) 开始（实测值）。曾把下界恒当 0，于是那 160px 空白 pad
-    // 被当成有效区，映射整体错位 → 背景被拉伸糊开、侧栏文字糊成一片。
+    // 被当成有效区，映射整体错位 -> 背景被拉伸糊开、侧栏文字糊成一片。
     const uv = validUv(160, 160, 640, 2000, 832, 2368);
     try std.testing.expectApproxEqAbs(@as(f32, 160.0 / 832.0 + 0.5 / 832.0), uv[0], 1e-6);
     try std.testing.expectApproxEqAbs(@as(f32, 160.0 / 2368.0 + 0.5 / 2368.0), uv[1], 1e-6);
@@ -1305,7 +1305,7 @@ test "validUv: 非零起点（贴窗口边）—— 下界必须跟着偏移走"
 //
 // 模型：`pool_ok(n)` 表示离屏池本帧能否供到第 n 级。实测症状是池在临界线上
 // 以 REUSE_LAG_FRAMES=3 为周期放行/拒绝第 5 级，于是 actual_levels 逐帧
-// 5/4/4/5/4/4… 摆动 —— 用户看到的就是「闪」。
+// 5/4/4/5/4/4… 摆动，用户看到的就是「闪」。
 
 /// 跑一段迟滞状态机，返回逐帧的 actual_levels 序列。
 /// `achievable(frame)` 模拟池本帧最多能给到的级数。
@@ -1332,7 +1332,7 @@ test "levelCap: 无历史不设限（首帧/换主一次到位）" {
 test "levelCap: 有历史时压在上一帧提交的级数" {
     try std.testing.expectEqual(@as(u32, 4), levelCap(4, 0, 0, 5));
     try std.testing.expectEqual(@as(u32, 4), levelCap(4, BLUR_LEVEL_RAISE_FRAMES - 2, 0, 5));
-    // streak 达阈值 → 放行一次上调尝试
+    // streak 达阈值 -> 放行一次上调尝试
     try std.testing.expectEqual(@as(u32, 5), levelCap(4, BLUR_LEVEL_RAISE_FRAMES - 1, 0, 5));
 }
 
@@ -1362,8 +1362,8 @@ test "回归 issue 33：3 帧周期的池振荡不再让 levels 逐帧跳变" {
     var seq: [60]u32 = undefined;
     simulateLevels(Osc.f, 5, seq.len, &seq);
 
-    // 首帧不设限 → 5；此后必须收敛。稳态段（跳过前 12 帧的收敛期）内
-    // 相邻帧不得再有跳变 —— 这正是用户看到的「闪」。
+    // 首帧不设限 -> 5；此后必须收敛。稳态段（跳过前 12 帧的收敛期）内
+    // 相邻帧不得再有跳变，这正是用户看到的「闪」。
     var changes: u32 = 0;
     for (seq[12..], 13..) |v, i| {
         if (v != seq[i - 1]) changes += 1;
@@ -1372,7 +1372,7 @@ test "回归 issue 33：3 帧周期的池振荡不再让 levels 逐帧跳变" {
     // 稳定在低值是可接受的（视觉上与恒 5 几乎无差），但不能是 0。
     try std.testing.expect(seq[seq.len - 1] > 0);
 
-    // 变异验证（负对照）：没有迟滞就是原行为 —— 同样的池必然逐帧跳。
+    // 变异验证（负对照）：没有迟滞就是原行为，同样的池必然逐帧跳。
     var raw_changes: u32 = 0;
     for (13..seq.len) |i| {
         if (Osc.f(i) != Osc.f(i - 1)) raw_changes += 1;
@@ -1409,6 +1409,6 @@ test "硬饱和：第 5 级永远给不出时，退避让尝试频率收敛（�
     };
     var seq: [200]u32 = undefined;
     simulateLevels(Hard.f, 5, seq.len, &seq);
-    // 池恒给 4，cap 放行到 5 也只跑出 4 → 序列全程恒 4，零跳变。
+    // 池恒给 4，cap 放行到 5 也只跑出 4 -> 序列全程恒 4，零跳变。
     for (seq[1..]) |v| try std.testing.expectEqual(@as(u32, 4), v);
 }

@@ -83,7 +83,7 @@ pub const SignalOwner = struct {
 
     /// 销毁 SignalOwner 并清理所有资源
     ///
-    /// 单轨清理路径——graph.deinit 处理所有 reactive node 的 source /
+    /// 单轨清理路径，graph.deinit 处理所有 reactive node 的 source /
     /// observer 边；不再遍历 SignalBase.subscribers / EffectBase.dependencies
     /// 列表（这两个字段在 v0.3-P4/P5 删除）。
     ///
@@ -96,7 +96,7 @@ pub const SignalOwner = struct {
         self.assertThread();
         std.debug.assert(self.reactive_callback_depth == 0);
         _ = self.drainDeferredDisposals();
-        // 单轨清理——graph.deinit 处理所有 reactive node。
+        // 单轨清理，graph.deinit 处理所有 reactive node。
         // EffectBase.dependencies / SignalBase.subscribers 字段已删除。
         // 注意 SignalBase.subscribers 仍存在于 P1.5 完成前，此处不调用以保持单轨。
 
@@ -118,7 +118,7 @@ pub const SignalOwner = struct {
     }
 
     // 注意：这里刻意没有 reset()。曾存在一个"每帧重建 UI 树"用途的
-    // reset（Arena 整代回收 + 各字段复位）——那是 immediate-mode 的遗留，
+    // reset（Arena 整代回收 + 各字段复位），那是 immediate-mode 的遗留，
     // zenit 是保留模式框架，全仓从无调用方，2026-08-16 决策删除。
     // owner 的生命周期只有 init/deinit 两点。
 

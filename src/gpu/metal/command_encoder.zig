@@ -68,7 +68,7 @@ pub const CommandEncoder = struct {
     pub fn init(queue: *Queue) !CommandEncoder {
         // ABI 合同：bridge 的 create/new/copy/nextDrawable 系列用 __bridge_retained
         // 返回 **+1 owned** 对象（metal_bridge.m:625），调用方直接接管所有权。
-        // 这里**不能**再 retain —— 之前多 retain 一次而 deinit 只 release 一次，
+        // 这里**不能**再 retain，之前多 retain 一次而 deinit 只 release 一次，
         // 每帧净泄漏一个 MTLCommandBuffer。
         const cmd_buffer = mtl.metal_queue_command_buffer(queue.raw) orelse
             return error.CommandBufferCreationFailed;
@@ -176,7 +176,7 @@ pub const CommandEncoder = struct {
 
         // 创建 Render Encoder。
         // ABI 合同：bridge 用 __bridge_retained 返回 +1 owned（metal_bridge.m:766），
-        // 这里直接接管，**不再 retain** —— RenderPass.end() 只 release 一次，
+        // 这里直接接管，**不再 retain**, RenderPass.end() 只 release 一次，
         // 多retain 会让每个 render pass 泄漏一个 MTLRenderCommandEncoder。
         const encoder = mtl.metal_command_buffer_create_render_encoder(self.raw, pass_desc) orelse {
             mtl.release(pass_desc);
@@ -410,7 +410,7 @@ pub const RenderPass = struct {
         self.assertActive();
         // 计数必须覆盖**两条** draw 路径。此前只有 drawIndexed 计数，
         // 而 UI 主路径（SDF/text/image/icon 实例化）走的正是这里的非索引
-        // draw —— 于是 draw call 统计长期严重低估（审查报告 §4）。
+        // draw，于是 draw call 统计长期严重低估（审查报告 §4）。
         frame_draw_call_count += 1;
         if (instance_count == 1 and first_instance == 0) {
             mtl.metal_render_encoder_draw_primitives(
@@ -440,7 +440,7 @@ pub const RenderPass = struct {
     }
 
     /// 全局 frame draw call 计数器（矩阵 #5 < 400）。
-    /// FrameSync.beginFrame 处 reset；drawIndexed 调用时 +1（不分 instance count——
+    /// FrameSync.beginFrame 处 reset；drawIndexed 调用时 +1（不分 instance count,
     /// 一次 drawIndexed* 调用 = 一次 draw call，与 instance 数无关）。
     pub var frame_draw_call_count: u32 = 0;
 
@@ -575,7 +575,7 @@ pub const CommandBuffer = struct {
     fn onCommandBufferError(context: ?*anyopaque, code: c_long, desc: [*:0]const u8) callconv(.c) void {
         _ = context;
         const n = CommandBuffer.error_count.fetchAdd(1, .monotonic);
-        // 前几次全量报告，之后抽样 —— GPU fault 一旦发生往往逐帧复现，
+        // 前几次全量报告，之后抽样，GPU fault 一旦发生往往逐帧复现，
         // 不能刷屏，但也绝不能静默（此前的行为：完全没人看 status）。
         if (n < 5 or n % 64 == 0) {
             std.log.err("[metal] command buffer failed (code={d}, total={d}): {s}", .{ code, n + 1, desc });

@@ -1,16 +1,16 @@
-//! 原生文本输入会话的对账状态机 —— 从 `Cx` 析出。
+//! 原生文本输入会话的对账状态机，从 `Cx` 析出。
 //!
 //! 管一件事：**框架认为的「当前该不该开原生输入法」与平台的实际状态之间的
 //! 对账**。这是个三态机，关键在 `native_enabled: ?bool`：
 //!
-//!   null  —— 平台状态**未知**（SDK 刚 attach / 换窗口 / 刚 init），
+//!   null，平台状态**未知**（SDK 刚 attach / 换窗口 / 刚 init），
 //!            下一次对账必须无条件下发一次，不能因为「看起来没变」而跳过
-//!   true  —— 已确认开
-//!   false —— 已确认关
+//!   true，已确认开
+//!   false，已确认关
 //!
 //! 把「未知」和「关」分开是这个机器存在的理由：若用裸 bool，SDK attach 之后
 //! 第一次对账会因为 `false == false` 而不下发，于是焦点已在输入框上、原生
-//! 输入法却没开 —— 中日韩用户打不出字，且没有任何报错。
+//! 输入法却没开，中日韩用户打不出字，且没有任何报错。
 //!
 //! **这里不解析焦点**。焦点解析要碰 focus_manager / node_registry，是 `Cx`
 //! 的职责；本模块只接收「解析结果」（node handle + client context）并对账。
@@ -22,7 +22,7 @@ const NodeHandle = @import("hit_runtime.zig").NodeHandle;
 /// 平台侧动作。由 `Cx` 实现（它持有 system_sdk / window_id）。
 pub const Host = struct {
     ctx: *anyopaque,
-    /// 开/关原生输入法。返回是否**成功下发** —— 失败时状态机保持「未知」，
+    /// 开/关原生输入法。返回是否**成功下发**，失败时状态机保持「未知」，
     /// 下一帧会重试，而不是记成已生效。
     setEnabled: *const fn (ctx: *anyopaque, enabled: bool) bool,
     /// 丢弃进行中的 preedit（换焦点前必须做，否则半截组合串会漏进新目标）。
@@ -60,7 +60,7 @@ pub const TextInputSession = struct {
     }
 
     /// 彻底停用（窗口销毁 / SDK 摘除前）。与 reconcile 不同，这里把
-    /// native_enabled 钉成 false 而不是 null —— 我们刚亲手关过它。
+    /// native_enabled 钉成 false 而不是 null，我们刚亲手关过它。
     pub fn deactivate(self: *TextInputSession, host: Host) void {
         if (self.active_node != null) host.discardIme(host.ctx);
         _ = host.setEnabled(host.ctx, false);

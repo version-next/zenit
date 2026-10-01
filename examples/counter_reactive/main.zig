@@ -1,4 +1,4 @@
-/// counter_reactive — 演示 zenit 的响应式系统
+/// counter_reactive，演示 zenit 的响应式系统
 ///
 /// 与 hello_button 不同：
 ///   - hello_button 用命令式更新（手改 text + markRenderDirty）。
@@ -6,9 +6,9 @@
 ///     "声明数据流，框架自动同步 UI"。
 ///
 /// 三个 Signal-driven 的 UI 元素：
-///   - 主计数 Signal(u32) — 点击 +1
-///   - 派生 Memo(u32)    — 主计数 × 2，自动跟随
-///   - "Reset" Button     — 把 Signal 拨回 0
+///   - 主计数 Signal(u32)，点击 +1
+///   - 派生 Memo(u32)，主计数 × 2，自动跟随
+///   - "Reset" Button，把 Signal 拨回 0
 ///
 /// 动态文本用 `ui.textFmt(cx, scope, fmt, .{signals...}, props)` 一行声明：
 /// 框架内部创建 effect,任一源变化即重新格式化并重绘。

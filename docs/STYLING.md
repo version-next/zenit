@@ -1,4 +1,4 @@
-# Decoupling Styling from Business Logic — the zenit Styling Layering Guide
+# Decoupling Styling from Business Logic: the zenit Styling Layering Guide
 
 > For the operations manual (rules for writing new UI / migration steps for
 > existing code / the pitfall list), use the zenit UI dev Agent Skill
@@ -21,12 +21,12 @@ All colors, font sizes, spacing, radii, and control metrics are taken from
 
 **Convention: bare color and font-size literals are forbidden in view-building
 code** (`Color.hex(...)`, `.font_size = 24`). Literals bypass the token
-scale — themes cannot swap them and global changes cannot reach them.
+scale, so themes cannot swap them and global changes cannot reach them.
 `scripts/check_style_literals.sh` enforces a ratchet over examples/ that only
 lets the count go down, never up.
 
 **Escape hatch (arbitrary values)**: tokens cannot possibly cover every
-design — matching a specific mockup, one-off brand colors, and pixel-level
+design: matching a specific mockup, one-off brand colors, and pixel-level
 nudges are all legitimate needs (cf. Panda's `[18px]` / `[#316ff6]`). In
 those cases mark the value explicitly with `ui.arb.*` instead of writing a
 bare literal:
@@ -42,16 +42,16 @@ is entirely semantic and toolchain-facing: readers can tell at a glance an
 "intentional arbitrary value" apart from a "lazy literal that should have
 migrated to a token"; the ratchet only catches bare literals and lets `arb`
 through by construction; a global grep for `ui.arb` inventories every
-off-token value — once the same value shows up more than three times,
+off-token value. Once the same value shows up more than three times,
 consider promoting it to a token.
 
-Control metrics (height / padding / radius / icon size — nine values in all)
-live on `tokens.control` (`ControlScale` → one `ControlMetrics` per step);
+Control metrics (height / padding / radius / icon size; nine values in all)
+live on `tokens.control` (`ControlScale`, one `ControlMetrics` per step);
 a theme can replace the control scale wholesale. The legacy methods on the
-`ControlSize` enum (`.height()` etc.) are deprecated — they return the
+`ControlSize` enum (`.height()` etc.) are deprecated: they return the
 default scale and do not track the theme.
 
-### Layer 2: named style functions (styles.zig) — the Zig equivalent of CSS Modules
+### Layer 2: named style functions (styles.zig): the Zig equivalent of CSS Modules
 
 Each feature/example gets one `styles.zig` that exports pure functions:
 
@@ -79,7 +79,7 @@ Styles are named, reusable, and unit-testable; grepping a name finds every
 usage site.
 
 **Theme-safe**: `boxStyled/hstackStyled/vstackStyled/textStyled` attach an
-`on_theme` hook to the node — the full-tree walk performed by `Cx.setTheme`
+`on_theme` hook to the node. The full-tree walk performed by `Cx.setTheme`
 replays the style function with the new tokens (including background/opacity
 via paint_state, and marks layout dirty). By contrast, a plain
 `ui.box(cx, .{ .background = cx.tokens.color.X })` is a token snapshot taken
@@ -91,7 +91,7 @@ not affect eligibility for the promoted render cache (the
 large containers. Limitation: `setTheme` only walks the `cx.root` subtree;
 nodes in separate overlay trees are not covered.
 
-### Layer 3: recipes — styles with variants/interaction states (the CVA / Panda equivalent)
+### Layer 3: recipes: styles with variants/interaction states (the CVA / Panda equivalent)
 
 `ui.recipe` (`src/ui/recipe.zig`) is public API; applications can define
 their own recipes:
@@ -108,7 +108,7 @@ their own recipes:
   parsed at comptime.
 
 `derived(variants, tokens)` receives the full Variants and carries
-cross-dimensional composition logic (e.g. padding = f(size, icon mode)) — a
+cross-dimensional composition logic (e.g. padding = f(size, icon mode)), a
 "continuous function-style composition" that neither a single-dimension
 resolver nor the enum-AND-matched compounds can express. **Convention:
 derived must only produce geometric fields (padding/radius/height/width/gap)
@@ -166,7 +166,7 @@ worth minting a token, use the `t.scheme` escape hatch
 .shadow = if (t.scheme == .dark) heavy_shadow else soft_shadow,
 ```
 
-No dark condition is added to ConditionalStyle — two sources of dark values
+No dark condition is added to ConditionalStyle, since two sources of dark values
 would fight each other. By the same reasoning there is no group/peer hover
 (needs event-system support, tracked separately) and no pseudo-elements/media
 queries (no CSS-engine counterpart).
@@ -193,7 +193,7 @@ queries (no CSS-engine counterpart).
   event and should not pay a per-frame cost.
 - **The component library is currently not theme-safe (a known boundary,
   not a bug)**: `ui.widgets.*` components snapshot tokens at mount time, and
-  `boxStyled/textStyled` are currently used only by examples — after a
+  `boxStyled/textStyled` are currently used only by examples. After a
   runtime `setTheme` the component library's static colors do not update;
   the component tree has to be rebuilt. If runtime theme switching becomes
   a product requirement, rolling out on_theme replay across the component
@@ -214,7 +214,7 @@ This line is load-bearing. `const styles = @import("styles.zig")` at the top
 of `mod.zig` does **not** cause the tests inside `styles.zig` to be collected:
 `refAllDecls` only recurses into `pub` decls that are actually referenced, and
 the import binding is not `pub`. Without the explicit `_ = @import(...)`,
-tests added to `styles.zig` later are silently never run — the file compiles,
+tests added to `styles.zig` later are silently never run: the file compiles,
 the suite is green, and the assertions never execute.
 
 The repo has a gate for exactly this failure mode:

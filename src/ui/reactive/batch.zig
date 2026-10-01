@@ -7,7 +7,7 @@ const EffectBase = @import("effect_base.zig").EffectBase;
 /// 此结构保留：
 ///   1. nesting_level：维持嵌套 batch 计数（公共 API 不变）
 ///   2. is_batching：is_batching getter 兼容查询
-/// queueEffect / flush / pending_effects 路径已废弃 —— signal.set 不再
+/// queueEffect / flush / pending_effects 路径已废弃，signal.set 不再
 /// 经此队列；调度走 graph.markSignalWritten + graph.endBatch 拓扑序 drain。
 pub const BatchContext = struct {
     /// 待执行的 Effect 队列
@@ -75,7 +75,7 @@ pub const BatchContext = struct {
     ///
     /// 历史债避免（吸取 Phase 0 审查的"16 次硬上限静默清空"问题）：
     /// 上限提到 1024，且达到上限时**panic（debug）/ error log（release）**
-    /// 而非静默丢——业务上应当观察到，因为这是真实的循环依赖 bug。
+    /// 而非静默丢，业务上应当观察到，因为这是真实的循环依赖 bug。
     fn flush(self: *BatchContext, owner: anytype) void {
         const max_iterations: u32 = 1024;
         var iteration: u32 = 0;

@@ -1,4 +1,4 @@
-/// RenderCommandEncoder - UI DisplayItem → GPU 调用的统一编码器
+/// RenderCommandEncoder - UI DisplayItem -> GPU 调用的统一编码器
 ///
 /// 将 UI 框架生成的 lowered DisplayItem 切片高效编码为 SdfRenderer 和
 /// TextRenderer 的批量调用。
@@ -55,7 +55,7 @@ const backdrop_capture = @import("command_encoder/backdrop_capture.zig");
 pub const BackdropCaptureRegion = backdrop_capture.BackdropCaptureRegion;
 // 跨帧 GPU 资源缓存的簿记（2026-08-05 析出）：字段 + beginFrame/deinit。
 // pipeline 的创建在 backdrop_blur / opacity_layer / blend_composite，
-// uniform 槽分配已在 backdrop_blur —— 均不随迁。
+// uniform 槽分配已在 backdrop_blur，均不随迁。
 const persistent_gpu_cache = @import("command_encoder/persistent_gpu_cache.zig");
 pub const PersistentGpuCache = persistent_gpu_cache.PersistentGpuCache;
 pub const LuminanceSlot = persistent_gpu_cache.LuminanceSlot;
@@ -153,7 +153,7 @@ const RoundedClipState = struct {
     polygon: ClipPolygon = ClipPolygon.empty(),
 };
 
-/// SVG/CSS 混合模式 — 镜像 src/ui/core/types.zig 的 BlendMode
+/// SVG/CSS 混合模式，镜像 src/ui/core/types.zig 的 BlendMode
 /// render 模块不依赖 ui 模块，需在此独立定义（枚举值必须同步）
 pub const BlendMode = enum(u8) {
     normal = 0,
@@ -188,7 +188,7 @@ pub const ScissorRect = struct {
 };
 
 /// GPU retained 命中时挂起的合成信息。内容 pass 被完全跳过，end 处用这些字段
-/// 把缓存好的纹理合成回父目标 —— 等价于普通路径 endOpacityLayer 的第 7 步。
+/// 把缓存好的纹理合成回父目标，等价于普通路径 endOpacityLayer 的第 7 步。
 const RetainedPending = struct {
     texture: TextureLease,
     /// 该 layer 在父 surface 内的 outer-local 坐标（与 OffscreenLayer.x/y 同语义）。
@@ -216,10 +216,10 @@ const RetainedPending = struct {
 pub const DamageRange = struct {
     start: u32 = 0,
     len: u32 = 0,
-    /// false = 层内含 control token（嵌套层/clip）或 path 类命令 —— 嵌套 pass
+    /// false = 层内含 control token（嵌套层/clip）或 path 类命令，嵌套 pass
     /// 会重置 scissor、path renderer 自管 scissor，部分重绘不安全，整层重画。
     safe: bool = false,
-    /// item 数超 damage_scratch 容量 —— diff 不完整，放弃部分重绘。
+    /// item 数超 damage_scratch 容量，diff 不完整，放弃部分重绘。
     overflow: bool = false,
     /// 该 range 是否真的被捕获过（序号超 64 的层为 false）
     captured: bool = false,
@@ -272,7 +272,7 @@ pub const OffscreenLayer = struct {
     blend_mode: BlendMode = .normal,
     /// GPU retained：本层画进的是某个 layer 的专属纹理时，记下它的 stable_id。
     /// endOpacityLayer 据此决定是"标记内容已就绪"（retained）还是"还回池"
-    /// （普通临时纹理）—— 两者绝不能搞混：把 retained 纹理还回池会让别人覆写
+    /// （普通临时纹理），两者绝不能搞混：把 retained 纹理还回池会让别人覆写
     /// 它，把临时纹理标记 primed 则毫无意义。
     retained_id: u32 = opacity_layer.INVALID_SURFACE_ID,
     /// retained：本层 begin 在预扫描里的序号（damage-rect 基线写回用）。
@@ -288,19 +288,19 @@ pub const OffscreenLayer = struct {
     alloc_tex_h: u32 = 0,
     /// damage-rect 部分重绘：本层内容 pass 的脏区 scissor（texture-local 物理
     /// 像素）。嵌套 pass end 恢复本层时必须重新取交（scissor 是 per-pass 状态，
-    /// re-begin 会重置）—— 见 applyOffscreenTargetViewport。null = 整层重画。
+    /// re-begin 会重置），见 applyOffscreenTargetViewport。null = 整层重画。
     damage_scissor: ?opacity_layer.PartialRepaint = null,
 };
 
-/// RenderCommandEncoder — 将 lowered DisplayItem 切片编码为 GPU 调用。
+/// RenderCommandEncoder，将 lowered DisplayItem 切片编码为 GPU 调用。
 /// 跨帧持久的 PersistentGpuCache 曾住在这里，已析出到
 /// command_encoder/persistent_gpu_cache.zig（见该文件头部「不搬什么」）。
 /// 一条命令是不是 arc。
 ///
-/// arc 复用 `.path` kind，靠 `arc_outer_radius > 0` 区分 —— 且**只**靠它：
+/// arc 复用 `.path` kind，靠 `arc_outer_radius > 0` 区分，且**只**靠它：
 /// 描边宽度、颜色 alpha 是「画不画得出来」的问题，不是「是不是 arc」的问题。
 /// 把可见性条件混进类型判据，就会出现「它不算 arc，于是按 fill_path 处理」
-/// 这种既非 arc 也非 path 的空隙 —— 而 arc 命令从不带 path_geometry_ptr，
+/// 这种既非 arc 也非 path 的空隙，而 arc 命令从不带 path_geometry_ptr，
 /// 掉进 fill_path 分支的结果是被 `orelse return` 静默吞掉。
 pub fn isArcCommand(it: anytype) bool {
     return it.kind == .path and it.arc_outer_radius > 0;
@@ -323,7 +323,7 @@ pub const RenderCommandEncoder = struct {
     icon_renderer: ?*IconRenderer = null,
     fonts: ?*FontSelector = null,
 
-    // Clip stack — logical clip state remains stack-based, but axis-aligned
+    // Clip stack, logical clip state remains stack-based, but axis-aligned
     // rect clip is now captured per instance to avoid flushes on common
     // overflow_hidden transitions.
     clip_stack: [64]ScissorRect = undefined,
@@ -374,7 +374,7 @@ pub const RenderCommandEncoder = struct {
     /// 用深度计数而非布尔：被跳过的子树内部可能还有自己的 begin/end opacity
     /// layer，必须配对计数才能找回正确的 end。
     retained_skip_depth: u32 = 0,
-    /// retained 命中时挂起的合成信息 —— 内容 pass 被跳过，但仍要在 end 处把
+    /// retained 命中时挂起的合成信息，内容 pass 被跳过，但仍要在 end 处把
     /// 缓存纹理合成回父目标。
     retained_pending: [8]RetainedPending = undefined,
     retained_pending_depth: usize = 0,
@@ -385,12 +385,12 @@ pub const RenderCommandEncoder = struct {
     /// miss 中走了 damage-rect 部分重绘的次数（诊断）
     retained_partial_repaints: u32 = 0,
     /// 每个 begin_opacity_layer 的内容指纹（按出现顺序）。见
-    /// `computeRetainedContentHashes` —— 这是 retained 的真正缓存键。
+    /// `computeRetainedContentHashes`，这是 retained 的真正缓存键。
     retained_hashes: [64]u64 = [_]u64{0} ** 64,
     retained_hash_count: usize = 0,
     /// 本帧已合成过玻璃背板的 owner node id 集合。同一 blur effect 实例的
     /// begin token 可能在一帧内多次出现（display_list 多 pass 组装会把同
-    /// 子树的零星 item 排到存储尾部 → effect 链重开）；背板重合成会把
+    /// 子树的零星 item 排到存储尾部 -> effect 链重开）；背板重合成会把
     /// 先画的内容捕获+模糊+盖掉（下游应用侧栏"玻璃把内容糊掉"实拍）。
     /// 语义合同：一个 owner 每帧至多一张背板，重复 begin 跳过。
     blur_applied_owners: [64]u32 = undefined,
@@ -403,10 +403,10 @@ pub const RenderCommandEncoder = struct {
     damage_scratch: [1024]offscreen_texture.DamageItem = undefined,
     damage_scratch_count: usize = 0,
     /// layer_tree damage 通路合流（2026-07-30 晚）：
-    /// 读方向 —— encodeDisplay 每帧从 LayerTree 快照 {stable_id, local-space
+    /// 读方向，encodeDisplay 每帧从 LayerTree 快照 {stable_id, local-space
     /// damage bounds}（addDamage 生产端申报），computePartialDamage 并入 diff
     /// 出的脏区（安全方向：只放大，不缩小）。
-    /// 写方向 —— retained 层的实际决策（hit/整层/部分重绘）经
+    /// 写方向，retained 层的实际决策（hit/整层/部分重绘）经
     /// writebackLayerOutcomes 写回 LayerTree.needs_repaint/damage_rect，
     /// 两条通路从此共享一份状态（观测/测试单一事实源）。
     layer_damage_ids: [32]u32 = undefined,
@@ -425,13 +425,13 @@ pub const RenderCommandEncoder = struct {
     /// 离屏层栈（支持嵌套）
     offscreen_stack: [8]OffscreenLayer = undefined,
     offscreen_depth: usize = 0,
-    /// 离屏纹理池 — 指向 **owner（AppRenderer）持有的持久池**。encoder 本身是
+    /// 离屏纹理池，指向 **owner（AppRenderer）持有的持久池**。encoder 本身是
     /// 逐帧局部值；池若内嵌在 encoder 里会随 deinit 整池释放，跨帧复用（池存在
     /// 的唯一目的）从未发生，每个含离屏效果的帧都在 create/release 纹理。
     /// owner 负责 pool.deinit()（须在 GPU drain 之后）。
     offscreen_pool: *OffscreenTexturePool,
 
-    /// **跨帧持久**的 GPU 资源缓存（借用，不拥有）——— 与 offscreen_pool 同理。
+    /// **跨帧持久**的 GPU 资源缓存（借用，不拥有），与 offscreen_pool 同理。
     ///
     /// 历史问题（审查报告 P1）：path renderer / tessellator / blur & glass
     /// pipeline / buffer / sampler 全部内嵌在**逐帧新建**的 encoder 里，
@@ -503,7 +503,7 @@ pub const RenderCommandEncoder = struct {
         self.releaseAbandonedOffscreenBindings();
 
         // ⚠️ path/blur/glass 的 pipeline、buffer、sampler、tessellator **不再**
-        // 在这里释放 —— 它们已提升到 AppRenderer 持有的 PersistentGpuCache，
+        // 在这里释放，它们已提升到 AppRenderer 持有的 PersistentGpuCache，
         // 跨帧复用（此前每帧 create+destroy 一轮，连续 path/blur 动画每帧都要
         // 重新 runtime 编译 MSL，见审查报告 P1）。
         // encoder 只借用，帧末什么都不用做；缓存由 AppRenderer.deinit 统一释放。
@@ -524,7 +524,7 @@ pub const RenderCommandEncoder = struct {
     ///
     /// ⚠️ **不要在这里给 selector 装 drawn-width 回调**。RenderCommandEncoder 是
     /// **逐帧按值新建**的栈上临时量（AppRenderer.getEncoder 每帧 return 一个），
-    /// 把 `self` 存进生命周期跨帧的 FontSelector 里，帧一结束就是悬垂指针 ——
+    /// 把 `self` 存进生命周期跨帧的 FontSelector 里，帧一结束就是悬垂指针,
     /// 下一次布局测量即踩，表现为 e2e 里"RPC 超时"而非崩溃堆栈，极难归因。
     /// 该回调必须绑到生命周期稳定的 TextRenderer 上，由宿主在建窗时装、
     /// 拆窗时摘（由宿主的字体加载代码负责）。
@@ -586,7 +586,7 @@ pub const RenderCommandEncoder = struct {
     }
 
     /// 编码 cx 的 lowered DisplayItem 切片到 sdf/image/text renderer，flush() 后
-    /// 一次性提交 GPU。调用方不直接持有 IR 切片 — encoder 自己调
+    /// 一次性提交 GPU。调用方不直接持有 IR 切片，encoder 自己调
     /// cx.lowerForEncoderPaintTable() (B-7 主路径切换)。
     pub fn encodeDisplay(self: *RenderCommandEncoder, cx: anytype) !void {
         self.layer_outcome_count = 0;
@@ -595,8 +595,8 @@ pub const RenderCommandEncoder = struct {
         self.writebackLayerOutcomes(&cx.layer_tree);
     }
 
-    /// layer_tree → encoder：快照生产端（addDamage）申报的 per-layer 脏区。
-    /// consume-clear：取走即清 —— 生产环境不保证每帧调 LayerTree.beginFrame，
+    /// layer_tree -> encoder：快照生产端（addDamage）申报的 per-layer 脏区。
+    /// consume-clear：取走即清，生产环境不保证每帧调 LayerTree.beginFrame，
     /// 不清会让一次申报永久生效（并回脏区的反馈环 = partial 永远 100%）。
     fn captureLayerTreeDamage(self: *RenderCommandEncoder, lt: anytype) void {
         self.layer_damage_count = 0;
@@ -614,7 +614,7 @@ pub const RenderCommandEncoder = struct {
         }
     }
 
-    /// encoder → layer_tree：写回 retained 层本帧实际重绘决策。
+    /// encoder -> layer_tree：写回 retained 层本帧实际重绘决策。
     fn writebackLayerOutcomes(self: *RenderCommandEncoder, lt: anytype) void {
         var i: usize = 0;
         while (i < self.layer_outcome_count) : (i += 1) {
@@ -635,14 +635,14 @@ pub const RenderCommandEncoder = struct {
         self.layer_outcome_count += 1;
     }
 
-    /// Prewarm text atlas — 在 GPU wait 前预生成 glyph，避免渲染时 stall。
+    /// Prewarm text atlas，在 GPU wait 前预生成 glyph，避免渲染时 stall。
     pub fn prewarmDisplay(self: *RenderCommandEncoder, cx: anytype) !void {
         try self.prewarmTextCommands(cx.lowerForEncoderPaintTable());
     }
 
     /// prewarm 的输入指纹：只覆盖「决定需要哪些字形」的字段。
     ///
-    /// 位置 / 颜色 / clip 一律**不进**签名 —— 滚动时它们每帧都变，但字形集合
+    /// 位置 / 颜色 / clip 一律**不进**签名，滚动时它们每帧都变，但字形集合
     /// 完全不变，把它们算进去等于让签名永不命中，优化直接失效。
     /// 反过来，凡是能改变字形集合的都必须进：文本字节、字号、字重、
     /// font_flags（italic/mono/symbol 选不同字体）、monospace cell 宽
@@ -663,7 +663,7 @@ pub const RenderCommandEncoder = struct {
     }
 
     fn prewarmTextCommands(self: *RenderCommandEncoder, commands: anytype) !void {
-        // 帧间跳过：文本负载与上帧完全一致且 atlas 没驱逐过页 → 字形必然全在，
+        // 帧间跳过：文本负载与上帧完全一致且 atlas 没驱逐过页 -> 字形必然全在，
         // 整趟 prewarm 无产出。详见 TextRenderer.prewarm_signature。
         const signature = prewarmSignature(commands);
         const gc_gen = self.text_renderer.atlas.gc_generation;
@@ -674,7 +674,7 @@ pub const RenderCommandEncoder = struct {
             return;
         }
 
-        // 只为把缺失字形提前塞进 atlas —— 关掉实例产出，避免"文本编码两遍"
+        // 只为把缺失字形提前塞进 atlas，关掉实例产出，避免"文本编码两遍"
         // （审查报告 P1）。base_* 仍保留做兜底断言：理论上 glyph_only 下
         // 实例数不该变，若变了说明有路径绕过了这个开关。
         const base_nearest = self.text_renderer.instances_nearest.items.len;
@@ -757,7 +757,7 @@ pub const RenderCommandEncoder = struct {
         self.text_renderer.instances_nearest.shrinkRetainingCapacity(base_nearest);
         self.text_renderer.instances_linear.shrinkRetainingCapacity(base_linear);
 
-        // 只有真正跑完整趟 prewarm 才记签名 —— 此刻 atlas 对这份文本必然完备。
+        // 只有真正跑完整趟 prewarm 才记签名，此刻 atlas 对这份文本必然完备。
         // 注意读的是**跑完之后**的 gc_generation：本帧插入过程中若触发
         // forceEvictOldestPage，代号会变，那就不能拿旧值当基线。
         self.text_renderer.prewarm_signature = signature;
@@ -793,7 +793,7 @@ pub const RenderCommandEncoder = struct {
             if (paint_fp.isBeginStructuralToken(tok)) {
                 if (paint_fp.tryFindNoOpStructuralBlock(commands, i)) |block| {
                     // GPU retained（2026-07-30 审查修正）：被整块跳过的空结构块
-                    // 里可能含 begin_opacity_layer —— 预扫描已经给它们编了号，
+                    // 里可能含 begin_opacity_layer，预扫描已经给它们编了号，
                     // 这里不补推 retained_begin_seq 的话，**后续所有层都会拿到
                     // 前移一位的错误指纹**，跨帧稳定的错误指纹 = 内容变了却判
                     // 命中 = 画面停在陈旧内容。
@@ -845,22 +845,22 @@ pub const RenderCommandEncoder = struct {
     /// 那是 layer **根节点自己**的 content version（node_dirty 里 markLayoutDirty
     /// 等处 +1），descendant 内容变化并不会让它变。CPU 侧的缓存路径之所以安全，
     /// 是因为它另外查了 `subtree_render` 脏位；encoder 拿不到那个信息。
-    /// 曾经直接用它做 key —— 结果 Modal 打开时命中了上一帧的空纹理，
+    /// 曾经直接用它做 key，结果 Modal 打开时命中了上一帧的空纹理，
     /// 整个对话框画不出来（e2e 逮到）。
     ///
     /// 现在改成对 begin..end 之间**实际要编码的命令**取哈希：内容变了指纹必变，
-    /// 内容没变指纹必同，与 descendant 深度无关 —— 这是自洽的判据，不依赖上游
+    /// 内容没变指纹必同，与 descendant 深度无关，这是自洽的判据，不依赖上游
     /// 脏标记的语义。代价是每帧一次线性扫描（无分配，纯算术）。
     ///
     /// 指纹只覆盖会影响**离屏纹理像素**的字段。合成参数（opacity/transform/
-    /// draw_*）故意**不计入** —— 它们只影响回贴，正是 retained 想省下的
+    /// draw_*）故意**不计入**，它们只影响回贴，正是 retained 想省下的
     /// "内容不变、只改 transform/opacity" 的场景。
     pub fn computeRetainedContentHashes(self: *RenderCommandEncoder, commands: anytype) void {
         self.retained_hash_count = 0;
         self.damage_scratch_count = 0;
         self.damage_ranges = [_]DamageRange{.{}} ** 64;
         // backdrop：子树里有背景模糊（玻璃）。玻璃像素取决于层**身后**的画面，
-        // 身后一变缓存就过期，而层内容指纹看不见身后 —— 这种层（及其所有
+        // 身后一变缓存就过期，而层内容指纹看不见身后，这种层（及其所有
         // 外层，外层纹理里烘着内层玻璃）永不复用缓存纹理。
         var stack: [64]struct { idx: usize, hasher: std.hash.Wyhash, backdrop: bool = false } = undefined;
         var depth: usize = 0;
@@ -870,12 +870,12 @@ pub const RenderCommandEncoder = struct {
         //           begin 自身合成参数；bounds = 合成矩形外扩）。运行时安全性：
         //           子层内容 pass 画进自己的纹理，父 pass 的 damage scissor 在
         //           end 恢复时由 applyOffscreenTargetViewport 重新取交生效。
-        //   clip_rects：push_clip 的矩形栈 —— pop_clip 作为 item 时 bounds 取
+        //   clip_rects：push_clip 的矩形栈，pop_clip 作为 item 时 bounds 取
         //           配对 push 的矩形（clip 参数变化经 index-diff 会把新旧矩形都
         //           并入脏区，覆盖裁剪可见性变化）。clip 全走 shader uniform，
         //           不碰 GPU scissor，运行时无需额外处理。
         //   nest_offsets：**平移-only** 嵌套 opacity 子树（无 transform/rotate）
-        //           不折叠 —— 逐条递归捕获，bounds 加上嵌套层在父坐标系的偏移。
+        //           不折叠，逐条递归捕获，bounds 加上嵌套层在父坐标系的偏移。
         //           这是 overlay（Modal/Popover 内容都包在嵌套 surface 里）能拿到
         //           细粒度脏区的关键：折叠粒度 = 整个弹层矩形，永远超 60% 阈值。
         //           带 transform 的子树才回退折叠（合成矩形无法逐条映射）。
@@ -893,7 +893,7 @@ pub const RenderCommandEncoder = struct {
             // 命令逐条记 {单条指纹, 外扩 bounds}。层自己的 end token 不算内容。
             // path（bounds 从点集算）、push/pop_clip（矩形/圆角/椭圆）、嵌套
             // opacity 子树（折叠）都可捕获；blur/rounded_clip 子树、polygon clip、
-            // 非轴对齐 transform 的嵌套层保持 unsafe → 整层重画。
+            // 非轴对齐 transform 的嵌套层保持 unsafe -> 整层重画。
             if (fold_depth > 0) {
                 paint_fp.hashPaintItemInto(&fold_hasher, it);
                 if (it.kind == .control) switch (it.control_kind) {
@@ -934,7 +934,7 @@ pub const RenderCommandEncoder = struct {
                         if (it.kind == .control) {
                             switch (it.control_kind) {
                                 .push_clip => {
-                                    // polygon clip 的点集只有指针、不进指纹 → 保守 unsafe
+                                    // polygon clip 的点集只有指针、不进指纹 -> 保守 unsafe
                                     if (it.clip_shape_kind == 3 or clip_count >= clip_rects.len) {
                                         range.safe = false;
                                         break :capture;
@@ -944,7 +944,7 @@ pub const RenderCommandEncoder = struct {
                                     clip_count += 1;
                                 },
                                 .pop_clip => {
-                                    // 弹出的 clip 不是本层压的（不配对）→ unsafe
+                                    // 弹出的 clip 不是本层压的（不配对）-> unsafe
                                     if (clip_count == 0) {
                                         range.safe = false;
                                         break :capture;
@@ -955,8 +955,8 @@ pub const RenderCommandEncoder = struct {
                                 .begin_opacity_layer => {
                                     // 坐标合同（由合成公式推导，见 endOpacityLayer 第 6.5/7 步）：
                                     // 嵌套纹理 (0,0) 对应嵌套-local 点 (geom.x, geom.y)，合成落在
-                                    // parent-raw 的 draw 原点 → 嵌套-local q 映射到 parent-raw =
-                                    // q + (draw_origin - geom.xy)。plain（无 dt）时 draw==geom →
+                                    // parent-raw 的 draw 原点 -> 嵌套-local q 映射到 parent-raw =
+                                    // q + (draw_origin - geom.xy)。plain（无 dt）时 draw==geom ->
                                     // 偏移 0（in-flow 子层内容坐标本来就与父同系）。
                                     const translate_only = it.use_draw_transform and it.rotate == 0 and
                                         it.draw_transform[0] == 1 and it.draw_transform[1] == 0 and
@@ -1031,12 +1031,12 @@ pub const RenderCommandEncoder = struct {
             // 先把本条命令喂给所有还开着的层（嵌套层共享内层内容）。
             //
             // ⚠️ **begin_opacity_layer 也必须喂给外层**（2026-07-30 Sheet 冻结
-            // 回归的根因）：嵌套子层的合成发生在**父层缓存纹理内部** —— 父层
+            // 回归的根因）：嵌套子层的合成发生在**父层缓存纹理内部**，父层
             // hit 时子层合成整个被跳过，像素烤在父纹理里。子层的 transform/
             // opacity 每帧在变（Sheet 滑入、Popover 缩放），父层指纹看不见的话
             // 就会帧帧 stale hit，整窗画面冻结到动画结束才跳变。
             // "合成参数不计入指纹"只对**本层自己的** begin token 成立（它的
-            // 合成在缓存内容之外）—— 所以喂外层（stack[0..depth]，不含刚要
+            // 合成在缓存内容之外），所以喂外层（stack[0..depth]，不含刚要
             // 压栈的自己）。
             var di: usize = 0;
             while (di < depth) : (di += 1) paint_fp.hashPaintItemInto(&stack[di].hasher, it);
@@ -1055,7 +1055,7 @@ pub const RenderCommandEncoder = struct {
                         hasher.update(std.mem.asBytes(&it.geom.h));
                         // scale 也必须进指纹（2026-07-30 审查补）：池的尺寸键是
                         // 64px 桶化后的 alloc 尺寸，跨显示器/分数缩放切换时新旧
-                        // 物理尺寸可能落同一桶 —— 不喂 scale 会命中按旧 scale
+                        // 物理尺寸可能落同一桶，不喂 scale 会命中按旧 scale
                         // 光栅化的像素（模糊/拉伸 + UV 对不上旧 used 区域）。
                         hasher.update(std.mem.asBytes(&self.scale));
                         stack[depth] = .{ .idx = self.retained_hash_count, .hasher = hasher };
@@ -1083,7 +1083,7 @@ pub const RenderCommandEncoder = struct {
                         untracked_depth += 1;
                     }
                     // 每个 begin 都要占一个槽（即使栈满也要占，否则 begin 与
-                    // 消费端的序号对不上 —— 序号错位 = 拿错别人的指纹）。
+                    // 消费端的序号对不上，序号错位 = 拿错别人的指纹）。
                     if (self.retained_hash_count < self.retained_hashes.len) {
                         self.retained_hashes[self.retained_hash_count] = 0;
                     }
@@ -1102,7 +1102,7 @@ pub const RenderCommandEncoder = struct {
                             // 0 是"无效指纹"哨兵，真算出 0 时挪一位避免误判。
                             // 含玻璃的层恒为 0：强制每帧重画（背景采样必须是当前帧的）。
                             const h = fr.hasher.final();
-                            // 含玻璃的层恒为 0（无效指纹 → 永不 retained 命中）：
+                            // 含玻璃的层恒为 0（无效指纹 -> 永不 retained 命中）：
                             // 背景采样必须是当前帧的。
                             self.retained_hashes[fr.idx] = if (fr.backdrop) 0 else if (h == 0) 1 else h;
                         }
@@ -1127,14 +1127,14 @@ pub const RenderCommandEncoder = struct {
         cluster.clear();
     }
 
-    /// 统一命令分发 — 通过 anytype 接 DisplayItem union（render 模块不直接依赖 ui 模块）
+    /// 统一命令分发，通过 anytype 接 DisplayItem union（render 模块不直接依赖 ui 模块）
     ///
     /// Z-order barrier: SDF (rect/border/shadow) 和 text 分属不同 GPU pipeline，
-    /// 各自积累 instances 后批量 flush。默认 flush 顺序 SDF→Image→Text 意味着
-    /// 背景总在文字下方——但节点树的 z-order 可能要求"后来的背景遮住先前的文字"
+    /// 各自积累 instances 后批量 flush。默认 flush 顺序 SDF->Image->Text 意味着
+    /// 背景总在文字下方，但节点树的 z-order 可能要求"后来的背景遮住先前的文字"
     /// (如 sticky gutter 覆盖滚动文本、z-index overlay 等)。
     /// 解决: 当即将分派 SDF 命令时，若 text pipeline 已有 pending instances，
-    /// 说明这个 SDF 图元需要画在已有文字上方——必须先 flush 清空所有 pipeline，
+    /// 说明这个 SDF 图元需要画在已有文字上方，必须先 flush 清空所有 pipeline，
     /// 再开始新的一批，从而保证正确的 z-order 绘制顺序。
     /// 获取当前离屏层的坐标偏移（将屏幕坐标转换为离屏局部坐标）
     /// 在主 pass 中返回 (0, 0)；在离屏层中返回 (-layer.x, -layer.y)
@@ -1255,13 +1255,13 @@ pub const RenderCommandEncoder = struct {
     ///
     /// 这里曾经是一路 `try`：任一 renderer 返回 `UniformSlotsExhausted`
     /// （每帧 uniform 槽 256 个，一次 rounded-clip 变化吃一个），错误就沿
-    /// `flushAllPending → dispatchCommand → encodeCommands` 抛到最外层，
-    /// 调用方 `enc.encodeDisplay(...) catch {}` 又把它吞掉 —— 于是这一批
+    /// `flushAllPending -> dispatchCommand -> encodeCommands` 抛到最外层，
+    /// 调用方 `enc.encodeDisplay(...) catch {}` 又把它吞掉，于是这一批
     /// 之后的**所有**命令静默不发射，且没有任何报错。
     ///
     /// 实测：git diff 滚动时 52 行 diff 每行一次 clip 变化，256 槽在一帧内
     /// 耗尽，排在行区后面的动作栏（Discard/Stage）整条从画面消失，而布局
-    /// rect、display list、命令流全部正常 —— 只看节点树永远查不出来。
+    /// rect、display list、命令流全部正常，只看节点树永远查不出来。
     ///
     /// 现在每个 renderer 各自 catch：一个失败只损失它自己那一批，后续
     /// renderer 与后续命令照常编码。错误计数仍留在各 renderer 里供诊断。
@@ -1371,7 +1371,7 @@ pub const RenderCommandEncoder = struct {
 
     /// dispatchCommand 主路径吃 paint_table.DisplayItem。
     ///
-    /// it: paint_table.DisplayItem (anytype) — encoder 不引 ui-side type，duck typing
+    /// it: paint_table.DisplayItem (anytype), encoder 不引 ui-side type，duck typing
     /// .kind/.control_kind/.geom/.color/.radii 等字段访问。
     ///
     /// kind 与 source variant 的映射 (lowerDisplayItem 写入)：
@@ -1417,7 +1417,7 @@ pub const RenderCommandEncoder = struct {
         const oy = off[1];
 
         // path 合批的顺序 fence：path pending 存在时，任何非 path-pipeline 命令
-        // （含 arc——它走 sdf）编码前必须先把 path 落盘，否则 path 晚 flush 会
+        // （含 arc，它走 sdf）编码前必须先把 path 落盘，否则 path 晚 flush 会
         // 盖到后画的内容之上。path 命令自身在 .path 分支做反向 flushNonPathPending。
         // ⚠ 「是不是 arc」只能有一份判据。此前这里用 arc_outer_radius <= 0，
         // 而下面 .path 分支用 (radius>0 and stroke>0 and alpha>0)，两者的
@@ -1432,7 +1432,7 @@ pub const RenderCommandEncoder = struct {
             .rect => {
                 // 形状上下文：非矩形（椭圆）时，本条命令产出的所有实例
                 // （填充/描边/渐变/噪声/阴影）都用该形状的 SDF。
-                // defer 复位是**必须**的 —— 残留会让后面无关的矩形变椭圆。
+                // defer 复位是**必须**的，残留会让后面无关的矩形变椭圆。
                 self.sdf_renderer.current_shape =
                     if (it.shape_kind == 1) .ellipse else .rect;
                 defer self.sdf_renderer.current_shape = .rect;
@@ -1464,12 +1464,12 @@ pub const RenderCommandEncoder = struct {
                 // ── 椭圆：填充与描边都走 addEllipse（shape_type=4 的 SDF）──
                 // 必须在 per-side / stroke / fill 三条 rect 路径**之前**拦截：
                 // 那三条都会写 shape_type=rect，椭圆掉进去就退回圆角矩形
-                // （宽高比大时就是"胶囊"）。per-side 宽度在入口折叠成统一宽度 ——
+                // （宽高比大时就是"胶囊"）。per-side 宽度在入口折叠成统一宽度,
                 // 椭圆没有"四条边"，且 shader 的 per-side 分支硬编码矩形内轮廓。
                 // ── 椭圆：填充与描边都走 addEllipse（shape_type=4 的 SDF）──
                 // 必须在 per-side / stroke / fill 三条 rect 路径**之前**拦截：
                 // 那三条都会写 shape_type=rect，椭圆掉进去就退回圆角矩形（宽高
-                // 比大时就是"胶囊"）。per-side 宽度在入口折叠成统一宽度 ——
+                // 比大时就是"胶囊"）。per-side 宽度在入口折叠成统一宽度,
                 // 椭圆没有"四条边"，且 shader 的 per-side 分支硬编码矩形内轮廓。
                 if (it.shape_kind == 1) {
                     try self.sdf_renderer.addEllipse(
@@ -1761,7 +1761,7 @@ pub const RenderCommandEncoder = struct {
                     return;
                 }
                 // fill_path / stroke_path：先落盘其它 pipeline 保证 z-order，
-                // 自身在 path_renderer 里累积——连续多条 path 合并为一次 flush
+                // 自身在 path_renderer 里累积，连续多条 path 合并为一次 flush
                 //（反向 fence 在 dispatchCommand 顶部：非 path 命令先 flush path pending）
                 const geo_ptr = it.path_geometry_ptr orelse return;
                 try self.flushNonPathPending();
@@ -1835,7 +1835,7 @@ pub const RenderCommandEncoder = struct {
                     return;
                 }
                 // 带 corner_radius（rounded-clip 折叠进 opacity layer）时不可走
-                // noop 短路——mask 依赖 composite blit 施加。
+                // noop 短路，mask 依赖 composite blit 施加。
                 const trivial = it.opacity >= 0.999 and
                     blend_mode_val == .normal and
                     !it.use_draw_transform and
@@ -1866,7 +1866,7 @@ pub const RenderCommandEncoder = struct {
                     // 命中：内容 pass 整个跳过，end 处只做一次合成 draw。
                     .hit => self.retained_skip_depth = 1,
                     // retained 已经替我们开好层了（画进专属纹理），内容命令照常
-                    // 编码。**绝不能再调一次 beginOpacityLayer** —— 那会套两层。
+                    // 编码。**绝不能再调一次 beginOpacityLayer**，那会套两层。
                     .opened_for_repaint => self.pushOpacityMode(.layer),
                     .declined => {
                         const opened = try opacity_layer.beginOpacityLayer(
@@ -1979,7 +1979,7 @@ pub const RenderCommandEncoder = struct {
                 const draw_y = if (std.math.isNan(it.draw_y)) it.geom.y else it.draw_y;
                 const draw_w = if (std.math.isNan(it.draw_w)) it.geom.w else it.draw_w;
                 const draw_h = if (std.math.isNan(it.draw_h)) it.geom.h else it.draw_h;
-                // 测试 mock item 无此字段——@hasField 守卫（生产 PaintItem 恒有）。
+                // 测试 mock item 无此字段，@hasField 守卫（生产 PaintItem 恒有）。
                 const glass_owner: u32 = if (@hasField(@TypeOf(it), "glass_owner_id")) it.glass_owner_id else std.math.maxInt(u32);
                 // 同 owner 一帧只合成一次背板（见 blur_applied_owners 注释）。
                 if (glass_owner != std.math.maxInt(u32)) {
@@ -2042,7 +2042,7 @@ pub const RenderCommandEncoder = struct {
 
     /// paint_table.DisplayItem 主路径的 fill_path 编码。
     /// it 是 paint_table.DisplayItem (anytype)，geo 是 source PathGeometry ptr (来自 it.path_geometry_ptr)。
-    /// Phase C：path mesh 缓存键 —— 几何逐 tag payload + fill/stroke 判别 +
+    /// Phase C：path mesh 缓存键，几何逐 tag payload + fill/stroke 判别 +
     /// scale（fringe/stroke expand 的 AA 宽度依赖 scale）+ stroke 参数。
     /// offset 不进 key（mesh 平移不变，缓存存 path-local 顶点）。
     fn pathMeshKey(geo: anytype, scale: f32, is_stroke: bool, stroke_width: f32, line_join: u8) u64 {
@@ -2098,17 +2098,17 @@ pub const RenderCommandEncoder = struct {
         // FLATNESS_THRESHOLD/scale，无点数上限），这是唯一正确形态：
         // 此前这里优先走 ≤32 点 clip 多边形的快速路径（直边弦多边形、
         // 每段 cubic 最多 12 步），填充边界与描边边界是两套分辨率的几何
-        // —— 曲线段上弦误差肉眼可见，描边与填充之间露出楔形缺口。
+        // 曲线段上弦误差肉眼可见，描边与填充之间露出楔形缺口。
         // clip 多边形是 clip 的专用结构（display_list 的 32 点上限），
         // 不该复用为填充渲染器。
         // 已知取舍：earclip 逐轮廓三角化，多轮廓挖洞（nonzero/evenodd 的
-        // hole 语义）不自洽 —— 该局限对超出 32 点的填充一直存在，矢量填充
+        // hole 语义）不自洽，该局限对超出 32 点的填充一直存在，矢量填充
         // 的实际使用域（单轮廓 path）不受影响；多轮廓正确性属于离屏
         // alpha mask 那一层。
         if (geo.commands.len == 0) return;
         // 渐变填充：把 DisplayItem 上的 stop 列表转成 renderer 的 FillGradient。
         // 逐顶点着色（GPU 侧 PathVertex.color 早就支持，见 path.metal），
-        // 多边形（三角/星形）的渐变填充就靠这条 —— 此前只能退化成纯色。
+        // 多边形（三角/星形）的渐变填充就靠这条，此前只能退化成纯色。
         var grad_stops: [16]PathRendererMod.FillGradient.GradientStopIn = undefined;
         var fill_grad: ?PathRendererMod.FillGradient = null;
         if (it.gradient_direction != 0 and it.mg_stop_count > 0) {
@@ -2133,7 +2133,7 @@ pub const RenderCommandEncoder = struct {
                 .start_angle = it.gradient_conic_start_angle,
             };
         }
-        // Phase C：mesh 缓存 —— 命中跳过 flatten + earclip/fringe。
+        // Phase C：mesh 缓存，命中跳过 flatten + earclip/fringe。
         // ⚠ 渐变**必须绕开缓存**：`appendCachedMesh` 回放时会把统一色重新写进
         // 每个顶点（它就是为纯色设计的），命中一次渐变就被拍平成纯色。
         path_rend.setFrame(self.frame_index);
@@ -2178,7 +2178,7 @@ pub const RenderCommandEncoder = struct {
 
         const PathLineJoin = @import("path_renderer.zig").LineJoin;
         const line_join: PathLineJoin = @enumFromInt(it.path_line_join);
-        // Phase C：mesh 缓存 —— 命中跳过 flatten + stroke expand
+        // Phase C：mesh 缓存，命中跳过 flatten + stroke expand
         path_rend.setFrame(self.frame_index);
         // `stroke_width` 与 path 顶点一样都已经是逻辑像素。PathRenderer 的
         // viewport/shader 会把逻辑坐标映射到 Retina 物理像素；这里只需把
@@ -2215,8 +2215,8 @@ pub const RenderCommandEncoder = struct {
     }
 
     /// z-order 屏障：即将分派 SDF 命令时，若 text/image/icon 任一 pipeline 有
-    /// pending instances，说明这个 SDF 图元需要画在它们上方——默认 flush 顺序
-    /// SDF→Image→Text 会把后来的 SDF 沉到底下（例：画布首个孩子是全幅点阵底图，
+    /// pending instances，说明这个 SDF 图元需要画在它们上方，默认 flush 顺序
+    /// SDF->Image->Text 会把后来的 SDF 沉到底下（例：画布首个孩子是全幅点阵底图，
     /// 其后的 SDF 盒子全被底图盖住）。先整体 flush 清空再开新批。
     /// 代价是 SDF 与图片/图标交错时批次变碎；先正确后快（下游应用）。
     fn flushIfTextPending(self: *RenderCommandEncoder) !void {
@@ -2278,7 +2278,7 @@ pub const RenderCommandEncoder = struct {
         shader_snap: bool,
     ) !void {
         if (self.fonts) |fonts| {
-            // 字体决策**全部**交给 FontSelector.resolveFonts —— 与测量端同一个
+            // 字体决策**全部**交给 FontSelector.resolveFonts，与测量端同一个
             // 函数。这里曾经内联一整条 if 链 + selectCjkFallbackFont，与
             // measureTextWidth 各选各的，于是同一段文字量出来和画出来不一样宽
             // （symbols 覆盖 / CJK 内容相关回退 / force_linear 三处分岔）。
@@ -2337,7 +2337,7 @@ pub const RenderCommandEncoder = struct {
     ) !void {
         if (self.fonts) |fonts| {
             // 同 drawText：字体决策收口到 FontSelector.resolveFonts。
-            // 这里原本是第二份一模一样的 if 链 —— 两份拷贝各自演化正是
+            // 这里原本是第二份一模一样的 if 链，两份拷贝各自演化正是
             // 「量的和画的不一样」能反复复发的原因。
             const resolved = fonts.resolveFonts(content, .{
                 .font_size = font_size,
@@ -2512,7 +2512,7 @@ pub const RenderCommandEncoder = struct {
 
     /// 弹出裁剪区域（延迟 flush：只更新 clip stack，实际 GPU scissor 恢复推迟到下一个绘制命令）
     pub fn popClip(self: *RenderCommandEncoder) !void {
-        // 先抵消栈满时被忽略的 push —— 它们没压栈，对应的 pop 也不能弹。
+        // 先抵消栈满时被忽略的 push，它们没压栈，对应的 pop 也不能弹。
         if (self.clip_overflow_depth > 0) {
             self.clip_overflow_depth -= 1;
             return;

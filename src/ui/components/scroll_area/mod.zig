@@ -32,7 +32,7 @@ const scroll_event = @import("event.zig");
 const scroll_scrollbar = @import("scrollbar.zig");
 pub const scroll_physics = @import("physics.zig");
 
-// Re-exports — 保持外部 API 不变
+// Re-exports，保持外部 API 不变
 pub const ScrollDirection = state_mod.ScrollDirection;
 pub const ScrollbarVisual = state_mod.ScrollbarVisual;
 pub const ScrollbarAxisMetrics = state_mod.ScrollbarAxisMetrics;
@@ -117,7 +117,7 @@ pub fn mountScrollArea(props: ScrollAreaProps, scope: *Scope, cx: *Cx) !ScrollAr
                 .height = .{ .fit = .{} },
             }, .{});
             errdefer cx.freeNode(content);
-            // 标 will_change_transform → compositor_plan 自动 promote scroll content。
+            // 标 will_change_transform -> compositor_plan 自动 promote scroll content。
             // 矩阵 #3：scroll = 改 promoted layer transform，不重录 paint chunks。
             (try content.style.ensureExtFallible(allocator)).will_change_transform = true;
             try container.appendChild(allocator, content);
@@ -194,7 +194,7 @@ pub fn mountScrollArea(props: ScrollAreaProps, scope: *Scope, cx: *Cx) !ScrollAr
         // 节点 on_cleanup 的中转格：必须能比 my_scope 活得久（见 ScrollCtxCell），
         // 所以挂到 Cx 上兜底回收，而不是 my_scope。
         // 登记成功后所有权即归 Cx（deinit 统一释放），因此 errdefer 只能覆盖
-        // "分配了但还没登记上"这一小段——用 block 把它限制在这几行内。
+        // "分配了但还没登记上"这一小段，用 block 把它限制在这几行内。
         const cell = blk: {
             const c = try allocator.create(ScrollCtxCell);
             errdefer allocator.destroy(c);
@@ -262,7 +262,7 @@ pub fn mountScrollArea(props: ScrollAreaProps, scope: *Scope, cx: *Cx) !ScrollAr
 
         // 反向：节点先于 scope 释放（如祖先 freeNode 把容器子节点逐个释放、但
         // ScrollArea scope 是更外层 scope 的子树，要等更外层 dispose 才执行 cleanup）
-        // → 节点 freeNode 时立即把 event_ctx 上对应字段置 null，
+        // -> 节点 freeNode 时立即把 event_ctx 上对应字段置 null，
         //   后续 detachScrollAreaBindings 看到 null 直接跳过，避免 use-after-free。
         // context 是 **cell 而非 event_ctx**：节点可能比 ctx 活得久、且解绑够不着
         // （见 ScrollCtxCell）。写 cell 恒定安全，ctx 没了就是空转。
@@ -308,10 +308,10 @@ pub fn mountScrollArea(props: ScrollAreaProps, scope: *Scope, cx: *Cx) !ScrollAr
 }
 
 // ============================================================================
-// 程序化滚动 —— 公共 API
+// 程序化滚动，公共 API
 //
 // 在这之前，应用要把某个元素滚进视野只能直接写 `state.scroll_y`。那样会
-// 跳过三件必须做的事：clamp、动量/回弹状态重置、translate 的像素对齐——
+// 跳过三件必须做的事：clamp、动量/回弹状态重置、translate 的像素对齐,
 // 结果就是残留惯性把内容又滚走、以及文字半像素抖动（harness 的
 // scroll-into-view 坑就是这么踩出来的）。这里给出唯一正确的入口。
 // ============================================================================
@@ -339,7 +339,7 @@ pub fn setScrollY(state: *ScrollState, content: *Node, y: f32) void {
     state.bonus_y = 0;
     state.bonus_velocity = 0;
     state.bounce_active_y = false;
-    state.suppress_outward_momentum_y = false;
+    state.momentum_spent_y = false;
     // 与 scrollbarBeforeRender 同款的像素对齐（消除文字抖动）
     content.style.translate_y = state.contentTranslateY();
     content.markCompositePropDirty();
@@ -386,7 +386,7 @@ pub fn scrollIntoView(
     const nr = node.rectFromWorldOrFallback();
     if (nr.h <= 0) return; // 尚未布局：不要拿全 0 的 rect 把视口滚到奇怪的位置
 
-    // 沿 parent 链把 layout-local 的 y 累加到 content 为止 —— 得到的就是
+    // 沿 parent 链把 layout-local 的 y 累加到 content 为止，得到的就是
     // 内容坐标系下的偏移（不含 content 自身的 translate/scroll，正是所需）。
     var top: f32 = 0;
     var cur: ?*Node = node;
@@ -578,17 +578,10 @@ test "ScrollArea: scroll state" {
     try std.testing.expect(result.content.style.translate_y < 0);
 }
 
-test "ScrollArea: suppress outward momentum after phase ended" {
-    var ctx = try Cx.init(std.testing.allocator);
-    defer ctx.deinit();
-
+/// 单个 300x200 的纵向 ScrollArea（内容 600），返回挂好的 result。
+fn mountTestScrollArea(ctx: *Cx, scope: *Scope) !ScrollAreaResult {
     const root = try box(ctx, .{ .width = .{ .px = 400 }, .height = .{ .px = 300 } }, .{});
     ctx.root = root;
-
-    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
-
-    defer scope.dispose();
-
     const result = try mountScrollArea(.{
         .width = 300,
         .height = 200,
@@ -596,135 +589,193 @@ test "ScrollArea: suppress outward momentum after phase ended" {
     }, scope, ctx);
     try root.appendChild(std.testing.allocator, result.container);
     ctx.layout();
+    return result;
+}
 
+fn testState(result: ScrollAreaResult) *ScrollState {
     const event_ctx: *ScrollEventCtx = @ptrCast(@alignCast(result.container.behavior.events.event_context.?));
-    const state = event_ctx.state;
-    state.scroll_y = 0;
-    state.bonus_y = 0;
-    state.user_scrolling = true;
+    return event_ctx.state;
+}
 
-    const phase_end = core.Event{ .scroll = .{
-        .x = 150,
-        .y = 100,
-        .dx = 0,
-        .dy = 0,
-        .phase_ended = true,
-        .is_trackpad = true,
-    } };
-    _ = scrollEventHandler(phase_end, result.container.behavior.events.event_context);
-    try std.testing.expect(state.suppress_outward_momentum_y);
+fn sendScroll(result: ScrollAreaResult, ev: @import("../../events.zig").ScrollEvent) core.EventResult {
+    return scrollEventHandler(.{ .scroll = ev }, result.container.behavior.events.event_context);
+}
 
-    const outward_momentum = core.Event{ .scroll = .{
-        .x = 150,
-        .y = 100,
-        .dx = 0,
-        .dy = 1,
-        .is_momentum = true,
-    } };
-    const suppressed = scrollEventHandler(outward_momentum, result.container.behavior.events.event_context);
-    try std.testing.expectEqual(core.EventResult.stop, suppressed);
+fn settleSpring(state: *ScrollState) void {
+    var ms: f64 = 1000.0;
+    state.tickBonus(ms);
+    while ((state.bounce_active_y or state.bounce_active_x) and ms < 4000.0) {
+        ms += 16.667;
+        state.tickBonus(ms);
+        state.tickBonusX(ms);
+    }
+}
+
+test "ScrollArea: lifting while overscrolled hands outward momentum to the spring" {
+    var ctx = try Cx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const result = try mountTestScrollArea(ctx, scope);
+    const state = testState(result);
+
+    // 手指把内容拉过底部
+    state.scroll_y = state.maxScrollY();
+    _ = sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = 0, .phase = .began });
+    _ = sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = -30, .phase = .changed });
+    try std.testing.expect(state.touching);
+    try std.testing.expect(state.bonus_y > 0);
+    _ = sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = 0, .phase = .ended });
+    try std.testing.expect(!state.touching);
+
+    // 松手后朝外的惯性不再推内容，越界量归弹簧
+    const bonus_at_lift = state.bonus_y;
+    try std.testing.expectEqual(core.EventResult.stop, sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = -80, .momentum = .began }));
+    try std.testing.expectEqual(bonus_at_lift, state.bonus_y);
+    try std.testing.expectEqual(state.maxScrollY(), state.scroll_y);
+
+    // 回弹结束后，同一段惯性的朝外尾巴也不会再次越界
+    settleSpring(state);
     try std.testing.expectEqual(@as(f32, 0), state.bonus_y);
+    _ = sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = -80, .momentum = .changed });
+    try std.testing.expectEqual(@as(f32, 0), state.bonus_y);
+
+    // 朝内的惯性照常滚动
+    _ = sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = 20, .momentum = .changed });
+    try std.testing.expect(state.scroll_y < state.maxScrollY());
+}
+
+test "ScrollArea: momentum that reaches the edge bounces once per stream" {
+    var ctx = try Cx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const result = try mountTestScrollArea(ctx, scope);
+    const state = testState(result);
+
+    state.scroll_y = 5;
+    _ = sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = 40, .momentum = .began });
     try std.testing.expectEqual(@as(f32, 0), state.scroll_y);
-
-    const inward_momentum = core.Event{ .scroll = .{
-        .x = 150,
-        .y = 100,
-        .dx = 0,
-        .dy = -2,
-        .is_momentum = true,
-    } };
-    _ = scrollEventHandler(inward_momentum, result.container.behavior.events.event_context);
-    try std.testing.expect(state.scroll_y > 0);
-    try std.testing.expect(!state.suppress_outward_momentum_y);
-}
-
-test "ScrollArea: phase-end guard does not hard-cut active bonus momentum" {
-    var ctx = try Cx.init(std.testing.allocator);
-    defer ctx.deinit();
-
-    const root = try box(ctx, .{ .width = .{ .px = 400 }, .height = .{ .px = 300 } }, .{});
-    ctx.root = root;
-
-    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
-    defer scope.dispose();
-
-    const result = try mountScrollArea(.{
-        .width = 300,
-        .height = 200,
-        .content_height = 600,
-    }, scope, ctx);
-    try root.appendChild(std.testing.allocator, result.container);
-    ctx.layout();
-
-    const event_ctx: *ScrollEventCtx = @ptrCast(@alignCast(result.container.behavior.events.event_context.?));
-    const state = event_ctx.state;
-    const max = state.maxScrollY();
-    state.scroll_y = max;
-    state.bonus_y = 8;
-    state.user_scrolling = true;
-
-    const phase_end = core.Event{ .scroll = .{
-        .x = 150,
-        .y = 100,
-        .dx = 0,
-        .dy = 0,
-        .phase_ended = true,
-        .is_trackpad = true,
-    } };
-    _ = scrollEventHandler(phase_end, result.container.behavior.events.event_context);
-    try std.testing.expect(state.phase_end_guard_frames > 0);
-
-    const prev_bonus = state.bonus_y;
-    const outward_momentum = core.Event{ .scroll = .{
-        .x = 150,
-        .y = 100,
-        .dx = 0,
-        .dy = -80,
-        .is_momentum = true,
-    } };
-    const handled = scrollEventHandler(outward_momentum, result.container.behavior.events.event_context);
-    try std.testing.expectEqual(core.EventResult.stop, handled);
-    try std.testing.expect(state.bonus_y > prev_bonus);
-    try std.testing.expect(state.suppress_outward_momentum_y);
-}
-
-test "ScrollArea: outward suppress only filters tiny tail after bonus rests" {
-    var ctx = try Cx.init(std.testing.allocator);
-    defer ctx.deinit();
-
-    const root = try box(ctx, .{ .width = .{ .px = 400 }, .height = .{ .px = 300 } }, .{});
-    ctx.root = root;
-
-    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
-    defer scope.dispose();
-
-    const result = try mountScrollArea(.{
-        .width = 300,
-        .height = 200,
-        .content_height = 600,
-    }, scope, ctx);
-    try root.appendChild(std.testing.allocator, result.container);
-    ctx.layout();
-
-    const event_ctx: *ScrollEventCtx = @ptrCast(@alignCast(result.container.behavior.events.event_context.?));
-    const state = event_ctx.state;
-    state.scroll_y = 0;
-    state.bonus_y = 0;
-    state.suppress_outward_momentum_y = true;
-    state.phase_end_guard_frames = 0;
-    state.bounce_active_y = false;
-
-    const outward_momentum = core.Event{ .scroll = .{
-        .x = 150,
-        .y = 100,
-        .dx = 0,
-        .dy = 40,
-        .is_momentum = true,
-    } };
-    const handled = scrollEventHandler(outward_momentum, result.container.behavior.events.event_context);
-    try std.testing.expectEqual(core.EventResult.stop, handled);
     try std.testing.expect(state.bonus_y < 0);
-    try std.testing.expect(!state.suppress_outward_momentum_y);
+    try std.testing.expect(state.momentum_spent_y);
+
+    settleSpring(state);
+    for (0..5) |_| {
+        _ = sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = 30, .momentum = .changed });
+        try std.testing.expectEqual(@as(f32, 0), state.bonus_y);
+    }
+
+    // 下一个手势可以再次拉出越界
+    _ = sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = 0, .phase = .began });
+    try std.testing.expect(!state.momentum_spent_y);
+    _ = sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = 20, .phase = .changed });
+    try std.testing.expect(state.bonus_y < 0);
+}
+
+test "ScrollArea: momentum means the finger is up, so the spring can run" {
+    var ctx = try Cx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const result = try mountTestScrollArea(ctx, scope);
+    const state = testState(result);
+
+    _ = sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = 20, .phase = .changed });
+    try std.testing.expect(state.touching);
+    // ended 丢失，直接来了惯性
+    _ = sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = 5, .momentum = .began });
+    try std.testing.expect(!state.touching);
+    try std.testing.expect(state.momentum_active);
+}
+
+test "ScrollArea: inputActive follows begin/end signals without timers" {
+    var ctx = try Cx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const result = try mountTestScrollArea(ctx, scope);
+    const state = testState(result);
+    state.scroll_y = 200;
+
+    try std.testing.expect(!state.inputActive());
+    _ = sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = 0, .phase = .began });
+    _ = sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = -10, .phase = .changed });
+    try std.testing.expect(state.inputActive());
+    _ = sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = 0, .phase = .ended });
+    try std.testing.expect(!state.inputActive());
+    _ = sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = -10, .momentum = .began });
+    try std.testing.expect(state.inputActive());
+    // 任意多帧过去都不会自己变回 idle，只看信号
+    for (0..100) |_| scrollbarBeforeRender(result.container);
+    try std.testing.expect(state.inputActive());
+    _ = sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = 0, .momentum = .ended });
+    try std.testing.expect(!state.inputActive());
+
+    // 新手势打断惯性
+    _ = sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = -10, .momentum = .began });
+    _ = sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = 0, .phase = .may_begin });
+    try std.testing.expect(!state.momentum_active);
+}
+
+test "ScrollArea: input_serial counts applied input only" {
+    var ctx = try Cx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const result = try mountTestScrollArea(ctx, scope);
+    const state = testState(result);
+    state.scroll_y = 200;
+
+    const s0 = state.input_serial;
+    _ = sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = -10 });
+    try std.testing.expectEqual(s0 + 1, state.input_serial);
+    _ = sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = -10, .phase = .changed });
+    try std.testing.expectEqual(s0 + 2, state.input_serial);
+    _ = sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = 0, .phase = .ended });
+    try std.testing.expectEqual(s0 + 2, state.input_serial);
+}
+
+test "ScrollArea: mouse wheel stops at the edge without rubber band" {
+    var ctx = try Cx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const result = try mountTestScrollArea(ctx, scope);
+    const state = testState(result);
+
+    state.scroll_y = 3;
+    _ = sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = 40 });
+    try std.testing.expectEqual(@as(f32, 0), state.scroll_y);
+    try std.testing.expectEqual(@as(f32, 0), state.bonus_y);
+    try std.testing.expect(!state.touching);
+    try std.testing.expect(!state.inputActive());
+}
+
+test "ScrollArea: finger down catches a running bounce" {
+    var ctx = try Cx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const result = try mountTestScrollArea(ctx, scope);
+    const state = testState(result);
+
+    state.bonus_y = -20;
+    state.tickBonus(1000.0);
+    state.tickBonus(1032.0);
+    try std.testing.expect(state.bounce_active_y);
+    const held = state.bonus_y;
+
+    _ = sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = 0, .phase = .may_begin });
+    try std.testing.expect(state.touching);
+    try std.testing.expect(!state.bounce_active_y);
+    try std.testing.expectEqual(held, state.bonus_y);
+    // 按住期间弹簧不跑
+    state.tickBonus(1100.0);
+    try std.testing.expectEqual(held, state.bonus_y);
+    // 抬起后弹簧接手
+    _ = sendScroll(result, .{ .x = 150, .y = 100, .dx = 0, .dy = 0, .phase = .cancelled });
+    settleSpring(state);
+    try std.testing.expectEqual(@as(f32, 0), state.bonus_y);
 }
 
 test "ScrollArea: nested chain delegates outward boundary scroll to ancestor" {
@@ -769,7 +820,7 @@ test "ScrollArea: nested chain delegates outward boundary scroll to ancestor" {
     const inner_global = inner.container.globalRect();
     const px = inner_global.x + 8;
     const py = inner_global.y + 8;
-    ctx.handleScrollEx(px, py, 0, 8, false, false, true);
+    ctx.handleScroll(.{ .x = px, .y = py, .dx = 0, .dy = 8, .phase = .changed });
 
     try std.testing.expectEqual(@as(f32, 0), inner_ctx.state.scroll_y);
     try std.testing.expectEqual(@as(f32, 0), inner_ctx.state.bonus_y);
@@ -813,15 +864,13 @@ test "ScrollArea: nested chain delegates on boundary crossing frame" {
     const inner_ctx: *ScrollEventCtx = @ptrCast(@alignCast(inner.container.behavior.events.event_context.?));
     outer_ctx.state.scroll_y = 0;
     outer_ctx.state.bonus_y = 0;
-    // 确保 outer 不被误判为 active（idle_frames 需超过 wheel_release_frames）
-    outer_ctx.state.scroll_event_idle_frames = ScrollState.scroll_tuning.wheel_release_frames + 1;
     inner_ctx.state.scroll_y = 2; // 尚未到边界，但本帧会越界
     inner_ctx.state.bonus_y = 0;
 
     const inner_global = inner.container.globalRect();
     const px = inner_global.x + 8;
     const py = inner_global.y + 8;
-    ctx.handleScrollEx(px, py, 0, 8, false, false, true);
+    ctx.handleScroll(.{ .x = px, .y = py, .dx = 0, .dy = 8, .phase = .changed });
 
     try std.testing.expectEqual(@as(f32, 0), inner_ctx.state.scroll_y);
     try std.testing.expectEqual(@as(f32, 0), inner_ctx.state.bonus_y);
@@ -861,225 +910,191 @@ test "ScrollArea: nested chain snaps inner to boundary before delegating" {
     ctx.layout();
     _ = ctx.render(); // 确保 hitTest scene 更新
 
-    const outer_ctx: *ScrollEventCtx = @ptrCast(@alignCast(outer.container.behavior.events.event_context.?));
     const inner_ctx: *ScrollEventCtx = @ptrCast(@alignCast(inner.container.behavior.events.event_context.?));
-    // 确保 outer 不被误判为 active（idle_frames 需超过 wheel_release_frames）
-    outer_ctx.state.scroll_event_idle_frames = ScrollState.scroll_tuning.wheel_release_frames + 1;
     inner_ctx.state.scroll_y = inner_ctx.state.maxScrollY() - 2;
     inner_ctx.state.bonus_y = 0;
 
     const inner_global = inner.container.globalRect();
     const px = inner_global.x + 8;
     const py = inner_global.y + 8;
-    ctx.handleScrollEx(px, py, 0, -8, false, false, true);
+    ctx.handleScroll(.{ .x = px, .y = py, .dx = 0, .dy = -8, .phase = .changed });
 
     try std.testing.expectApproxEqAbs(inner_ctx.state.maxScrollY(), inner_ctx.state.scroll_y, 0.01);
     try std.testing.expectEqual(@as(f32, 0), inner_ctx.state.bonus_y);
 }
 
-test "ScrollArea: active outer blocks inner scroll input" {
+test "ScrollArea: an outer layer holding the gesture keeps it over an inner one" {
     var ctx = try Cx.init(std.testing.allocator);
     defer ctx.deinit();
 
     const root = try box(ctx, .{ .width = .{ .px = 500 }, .height = .{ .px = 400 } }, .{});
     ctx.root = root;
-
     const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
-
     defer scope.dispose();
 
-    const outer = try mountScrollArea(.{
-        .width = 320,
-        .height = 220,
-    }, scope, ctx);
+    const outer = try mountScrollArea(.{ .width = 320, .height = 220 }, scope, ctx);
     try root.appendChild(std.testing.allocator, outer.container);
-
-    const inner = try mountScrollArea(.{
-        .width = 280,
-        .height = 120,
-        .content_height = 420,
-    }, scope, ctx);
+    const inner = try mountScrollArea(.{ .width = 280, .height = 120, .content_height = 420 }, scope, ctx);
     try outer.content.appendChild(std.testing.allocator, inner.container);
-
-    const spacer = try box(ctx, .{
-        .width = .{ .grow = .{} },
-        .height = .{ .px = 420 },
-    }, .{});
+    const spacer = try box(ctx, .{ .width = .{ .grow = .{} }, .height = .{ .px = 420 } }, .{});
     try outer.content.appendChild(std.testing.allocator, spacer);
-
     ctx.layout();
+    _ = ctx.render();
 
-    const outer_ctx: *ScrollEventCtx = @ptrCast(@alignCast(outer.container.behavior.events.event_context.?));
-    const inner_ctx: *ScrollEventCtx = @ptrCast(@alignCast(inner.container.behavior.events.event_context.?));
-    outer_ctx.state.user_scrolling = true; // 模拟 outer 正在滚动中
-    inner_ctx.state.scroll_y = 60;
-    inner_ctx.state.bonus_y = 0;
+    const outer_state = testState(outer);
+    const inner_state = testState(inner);
+    inner_state.scroll_y = 60;
+    const g = inner.container.globalRect();
 
-    const prev_inner = inner_ctx.state.scroll_y;
-    const inner_global = inner.container.globalRect();
-    const px = inner_global.x + 8;
-    const py = inner_global.y + 8;
-    ctx.handleScrollEx(px, py, 0, -6, false, false, true);
+    // outer 空闲：指针下的 inner 正常滚动
+    ctx.handleScroll(.{ .x = g.x + 8, .y = g.y + 8, .dx = 0, .dy = -6, .phase = .changed });
+    try std.testing.expectEqual(@as(f32, 66), inner_state.scroll_y);
+    ctx.handleScroll(.{ .x = g.x + 8, .y = g.y + 8, .dx = 0, .dy = 0, .phase = .ended });
 
-    try std.testing.expectEqual(prev_inner + 6, inner_ctx.state.scroll_y);
+    // outer 正持有手势（手指在板上、内容在指针下移动）：中途不换手给 inner
+    outer_state.touching = true;
+    const outer_before = outer_state.scroll_y;
+    ctx.handleScroll(.{ .x = g.x + 8, .y = g.y + 8, .dx = 0, .dy = -6, .phase = .changed });
+    try std.testing.expectEqual(@as(f32, 66), inner_state.scroll_y);
+    try std.testing.expect(outer_state.scroll_y > outer_before);
 }
 
-test "ScrollArea: phase ended ignores residual non-momentum delta" {
+test "ScrollArea: an outer bounce does not steal a gesture that starts on the inner layer" {
     var ctx = try Cx.init(std.testing.allocator);
     defer ctx.deinit();
 
-    const root = try box(ctx, .{ .width = .{ .px = 400 }, .height = .{ .px = 300 } }, .{});
+    const root = try box(ctx, .{ .width = .{ .px = 500 }, .height = .{ .px = 400 } }, .{});
     ctx.root = root;
-
     const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
-
     defer scope.dispose();
 
-    const result = try mountScrollArea(.{
-        .width = 300,
-        .height = 200,
-        .content_height = 600,
-    }, scope, ctx);
-    try root.appendChild(std.testing.allocator, result.container);
+    const outer = try mountScrollArea(.{ .width = 320, .height = 220 }, scope, ctx);
+    try root.appendChild(std.testing.allocator, outer.container);
+    const inner = try mountScrollArea(.{ .width = 280, .height = 120, .content_height = 420 }, scope, ctx);
+    try outer.content.appendChild(std.testing.allocator, inner.container);
+    const spacer = try box(ctx, .{ .width = .{ .grow = .{} }, .height = .{ .px = 420 } }, .{});
+    try outer.content.appendChild(std.testing.allocator, spacer);
     ctx.layout();
+    _ = ctx.render();
 
-    const event_ctx: *ScrollEventCtx = @ptrCast(@alignCast(result.container.behavior.events.event_context.?));
-    const state = event_ctx.state;
-    state.scroll_y = 0;
-    state.bonus_y = 0;
-    state.user_scrolling = true;
+    const outer_state = testState(outer);
+    const inner_state = testState(inner);
+    // 外层正在回弹
+    outer_state.bonus_y = -12;
+    outer_state.tickBonus(1000.0);
+    try std.testing.expect(outer_state.bounce_active_y);
+    inner_state.scroll_y = 60;
 
-    const event = core.Event{ .scroll = .{
-        .x = 150,
-        .y = 100,
-        .dx = 0,
-        .dy = 120,
-        .phase_ended = true,
-        .is_trackpad = true,
-        .is_momentum = false,
-    } };
-    const handled = scrollEventHandler(event, result.container.behavior.events.event_context);
-    try std.testing.expectEqual(core.EventResult.stop, handled);
-    try std.testing.expectEqual(@as(f32, 0), state.bonus_y);
-    try std.testing.expect(!state.user_scrolling);
+    const g = inner.container.globalRect();
+    ctx.handleScroll(.{ .x = g.x + 8, .y = g.y + 8, .dx = 0, .dy = 0, .phase = .began });
+    try std.testing.expect(!outer_state.touching);
+    ctx.handleScroll(.{ .x = g.x + 8, .y = g.y + 8, .dx = 0, .dy = -6, .phase = .changed });
+    try std.testing.expectEqual(@as(f32, 66), inner_state.scroll_y);
 }
 
-test "ScrollArea: phase ended keeps filtering small outward residuals until real reengage" {
+test "ScrollArea: ended reaches every layer of a delegated nested gesture" {
     var ctx = try Cx.init(std.testing.allocator);
     defer ctx.deinit();
 
-    const root = try box(ctx, .{ .width = .{ .px = 400 }, .height = .{ .px = 300 } }, .{});
+    const root = try box(ctx, .{ .width = .{ .px = 500 }, .height = .{ .px = 400 } }, .{});
     ctx.root = root;
-
     const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
-
     defer scope.dispose();
 
-    const result = try mountScrollArea(.{
-        .width = 300,
-        .height = 200,
-        .content_height = 600,
-    }, scope, ctx);
-    try root.appendChild(std.testing.allocator, result.container);
+    const outer = try mountScrollArea(.{ .width = 320, .height = 220 }, scope, ctx);
+    try root.appendChild(std.testing.allocator, outer.container);
+    const inner = try mountScrollArea(.{ .width = 280, .height = 120, .content_height = 420 }, scope, ctx);
+    try outer.content.appendChild(std.testing.allocator, inner.container);
+    const spacer = try box(ctx, .{ .width = .{ .grow = .{} }, .height = .{ .px = 420 } }, .{});
+    try outer.content.appendChild(std.testing.allocator, spacer);
     ctx.layout();
+    _ = ctx.render();
 
-    const event_ctx: *ScrollEventCtx = @ptrCast(@alignCast(result.container.behavior.events.event_context.?));
-    const state = event_ctx.state;
-    state.scroll_y = 0;
-    state.bonus_y = 0;
-    state.user_scrolling = true;
+    const outer_state = testState(outer);
+    const inner_state = testState(inner);
+    // 手势已委托给 outer；inner 自己还留着上次的越界量
+    outer_state.touching = true;
+    inner_state.bonus_y = 5;
 
-    const phase_end = core.Event{ .scroll = .{
-        .x = 150,
-        .y = 100,
-        .dx = 0,
-        .dy = 0,
-        .phase_ended = true,
-        .is_trackpad = true,
-    } };
-    _ = scrollEventHandler(phase_end, result.container.behavior.events.event_context);
-    try std.testing.expect(state.awaiting_trackpad_reengage);
-
-    const tiny_residual = core.Event{
-        .scroll = .{
-            .x = 150,
-            .y = 100,
-            .dx = 0,
-            .dy = 14, // 顶部向外的小尾巴输入
-            .is_momentum = true, // phase_ended 后的残余是 momentum 系统产生
-            .is_trackpad = false, // 覆盖 bridge 侧可能出现的误标记
-        },
-    };
-    const ignored = scrollEventHandler(tiny_residual, result.container.behavior.events.event_context);
-    try std.testing.expectEqual(core.EventResult.stop, ignored);
-    try std.testing.expectEqual(@as(f32, 0), state.scroll_y);
-    try std.testing.expectEqual(@as(f32, 0), state.bonus_y);
-    try std.testing.expect(state.awaiting_trackpad_reengage);
-
-    // 模拟足够帧数让 phase_end_guard_frames 归零
-    state.phase_end_guard_frames = 0;
-
-    const real_reengage = core.Event{ .scroll = .{
-        .x = 150,
-        .y = 100,
-        .dx = 0,
-        .dy = 40,
-        .is_trackpad = true,
-    } };
-    _ = scrollEventHandler(real_reengage, result.container.behavior.events.event_context);
-    try std.testing.expect(!state.awaiting_trackpad_reengage);
-    try std.testing.expect(state.bonus_y < 0);
+    const g = inner.container.globalRect();
+    ctx.handleScroll(.{ .x = g.x + 8, .y = g.y + 8, .dx = 0, .dy = 0, .phase = .began });
+    ctx.handleScroll(.{ .x = g.x + 8, .y = g.y + 8, .dx = 0, .dy = 0, .phase = .ended });
+    try std.testing.expect(!outer_state.touching);
+    try std.testing.expect(!inner_state.touching);
 }
 
-test "ScrollArea: phase ended guard suppresses immediate outward spike" {
+test "ScrollArea: a gesture whose ended was lost is cancelled when the next one begins" {
     var ctx = try Cx.init(std.testing.allocator);
     defer ctx.deinit();
 
-    const root = try box(ctx, .{ .width = .{ .px = 400 }, .height = .{ .px = 300 } }, .{});
+    const root = try box(ctx, .{ .width = .{ .px = 700 }, .height = .{ .px = 300 }, .direction = .row }, .{});
     ctx.root = root;
-
     const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
-
     defer scope.dispose();
 
-    const result = try mountScrollArea(.{
-        .width = 300,
-        .height = 200,
-        .content_height = 600,
-    }, scope, ctx);
-    try root.appendChild(std.testing.allocator, result.container);
+    const a = try mountScrollArea(.{ .width = 300, .height = 200, .content_height = 600 }, scope, ctx);
+    try root.appendChild(std.testing.allocator, a.container);
+    const b = try mountScrollArea(.{ .width = 300, .height = 200, .content_height = 600 }, scope, ctx);
+    try root.appendChild(std.testing.allocator, b.container);
     ctx.layout();
+    _ = ctx.render();
 
-    const event_ctx: *ScrollEventCtx = @ptrCast(@alignCast(result.container.behavior.events.event_context.?));
-    const state = event_ctx.state;
-    state.scroll_y = state.maxScrollY();
-    state.bonus_y = 0;
-    state.user_scrolling = true;
+    const a_state = testState(a);
+    const b_state = testState(b);
+    a_state.scroll_y = 100;
+    b_state.scroll_y = 100;
+    const ga = a.container.globalRect();
+    const gb = b.container.globalRect();
 
-    const phase_end = core.Event{ .scroll = .{
-        .x = 150,
-        .y = 100,
-        .dx = 0,
-        .dy = 0,
-        .phase_ended = true,
-        .is_trackpad = true,
-    } };
-    _ = scrollEventHandler(phase_end, result.container.behavior.events.event_context);
-    try std.testing.expect(state.phase_end_guard_frames > 0);
+    ctx.handleScroll(.{ .x = ga.x + 20, .y = ga.y + 20, .dx = 0, .dy = 0, .phase = .began });
+    ctx.handleScroll(.{ .x = ga.x + 20, .y = ga.y + 20, .dx = 0, .dy = -10, .phase = .changed });
+    try std.testing.expect(a_state.touching);
 
-    const immediate_spike = core.Event{
-        .scroll = .{
-            .x = 150,
-            .y = 100,
-            .dx = 0,
-            .dy = -150, // 底部向外的大残余尖峰
-            .is_momentum = true, // phase_ended 后的残余是 momentum 系统产生
-            .is_trackpad = false,
-        },
-    };
-    const handled = scrollEventHandler(immediate_spike, result.container.behavior.events.event_context);
-    try std.testing.expectEqual(core.EventResult.stop, handled);
-    try std.testing.expectEqual(@as(f32, 0), state.bonus_y);
+    ctx.handleScroll(.{ .x = gb.x + 20, .y = gb.y + 20, .dx = 0, .dy = 0, .phase = .began });
+    ctx.handleScroll(.{ .x = gb.x + 20, .y = gb.y + 20, .dx = 0, .dy = -10, .phase = .changed });
+    try std.testing.expect(!a_state.touching);
+    try std.testing.expect(b_state.touching);
+}
+
+test "ScrollArea: window blur cancels an in-progress gesture" {
+    var ctx = try Cx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const result = try mountTestScrollArea(ctx, scope);
+    _ = ctx.render();
+    const state = testState(result);
+    state.scroll_y = 200;
+
+    const g = result.container.globalRect();
+    ctx.handleScroll(.{ .x = g.x + 20, .y = g.y + 20, .dx = 0, .dy = 0, .phase = .began });
+    ctx.handleScroll(.{ .x = g.x + 20, .y = g.y + 20, .dx = 0, .dy = -10, .phase = .changed });
+    try std.testing.expect(state.touching);
+
+    ctx.cancelPointerInteractions(.window_blur);
+    try std.testing.expect(!state.touching);
+    try std.testing.expect(!state.inputActive());
+}
+
+test "ScrollArea: window blur ends in-progress momentum" {
+    var ctx = try Cx.init(std.testing.allocator);
+    defer ctx.deinit();
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const result = try mountTestScrollArea(ctx, scope);
+    _ = ctx.render();
+    const state = testState(result);
+    state.scroll_y = 200;
+
+    const g = result.container.globalRect();
+    ctx.handleScroll(.{ .x = g.x + 20, .y = g.y + 20, .dx = 0, .dy = 0, .phase = .began });
+    ctx.handleScroll(.{ .x = g.x + 20, .y = g.y + 20, .dx = 0, .dy = -10, .phase = .changed });
+    ctx.handleScroll(.{ .x = g.x + 20, .y = g.y + 20, .dx = 0, .dy = 0, .phase = .ended });
+    ctx.handleScroll(.{ .x = g.x + 20, .y = g.y + 20, .dx = 0, .dy = -10, .momentum = .began });
+    try std.testing.expect(state.momentum_active);
+
+    ctx.cancelPointerInteractions(.window_blur);
+    try std.testing.expect(!state.momentum_active);
 }
 
 test "ScrollArea: bounce animation blocks outward momentum" {
@@ -1090,7 +1105,6 @@ test "ScrollArea: bounce animation blocks outward momentum" {
         .viewport_height = 200,
         .scroll_y = 0,
         .bonus_y = -20,
-        .user_scrolling = false,
     };
 
     // 启动回弹
@@ -1111,148 +1125,6 @@ test "ScrollArea: bounce animation blocks outward momentum" {
     }
     try std.testing.expectEqual(@as(f32, 0), state.bonus_y);
     try std.testing.expect(!state.bounce_active_y);
-}
-
-test "ScrollArea: idle residual tail suppressed without phase ended" {
-    var ctx = try Cx.init(std.testing.allocator);
-    defer ctx.deinit();
-
-    const root = try box(ctx, .{ .width = .{ .px = 400 }, .height = .{ .px = 300 } }, .{});
-    ctx.root = root;
-
-    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
-
-    defer scope.dispose();
-
-    const result = try mountScrollArea(.{
-        .width = 300,
-        .height = 200,
-        .content_height = 600,
-    }, scope, ctx);
-    try root.appendChild(std.testing.allocator, result.container);
-    ctx.layout();
-
-    const event_ctx: *ScrollEventCtx = @ptrCast(@alignCast(result.container.behavior.events.event_context.?));
-    const state = event_ctx.state;
-    state.scroll_y = 0;
-    state.bonus_y = 0;
-    state.user_scrolling = false;
-    state.has_scroll_history = true; // idle-tail 抑制只在有历史滚动的情况下生效
-    state.scroll_event_idle_frames = ScrollState.scroll_tuning.wheel_release_frames + 5;
-    state.tail_idle_frames = ScrollState.scroll_tuning.wheel_release_frames + 5;
-
-    const tiny_tail = core.Event{
-        .scroll = .{
-            .x = 150,
-            .y = 100,
-            .dx = 0,
-            .dy = 6, // 顶部向外的小尾巴
-            .is_trackpad = true,
-        },
-    };
-    const ignored = scrollEventHandler(tiny_tail, result.container.behavior.events.event_context);
-    try std.testing.expectEqual(core.EventResult.stop, ignored);
-    try std.testing.expectEqual(@as(f32, 0), state.bonus_y);
-
-    state.scroll_event_idle_frames = ScrollState.scroll_tuning.wheel_release_frames + 5;
-    state.tail_idle_frames = ScrollState.scroll_tuning.wheel_release_frames + 5;
-    const real_input = core.Event{
-        .scroll = .{
-            .x = 150,
-            .y = 100,
-            .dx = 0,
-            .dy = 20, // 真实新手势
-            .is_trackpad = true,
-        },
-    };
-    _ = scrollEventHandler(real_input, result.container.behavior.events.event_context);
-    try std.testing.expect(state.bonus_y < 0);
-}
-
-test "ScrollArea: first gesture is not blocked by idle-tail suppression" {
-    var ctx = try Cx.init(std.testing.allocator);
-    defer ctx.deinit();
-
-    const root = try box(ctx, .{ .width = .{ .px = 400 }, .height = .{ .px = 300 } }, .{});
-    ctx.root = root;
-
-    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
-
-    defer scope.dispose();
-
-    const result = try mountScrollArea(.{
-        .width = 300,
-        .height = 200,
-        .content_height = 600,
-    }, scope, ctx);
-    try root.appendChild(std.testing.allocator, result.container);
-    ctx.layout();
-
-    const event_ctx: *ScrollEventCtx = @ptrCast(@alignCast(result.container.behavior.events.event_context.?));
-    const state = event_ctx.state;
-    state.scroll_y = 0;
-    state.bonus_y = 0;
-    state.user_scrolling = false;
-    state.has_scroll_history = false;
-    state.scroll_event_idle_frames = ScrollState.scroll_tuning.wheel_release_frames + 30;
-    state.tail_idle_frames = ScrollState.scroll_tuning.wheel_release_frames + 30;
-
-    const first_small_gesture = core.Event{
-        .scroll = .{
-            .x = 150,
-            .y = 100,
-            .dx = 0,
-            .dy = 6, // 首轮手势小输入，不应被误判为尾巴
-            .is_trackpad = true,
-        },
-    };
-    _ = scrollEventHandler(first_small_gesture, result.container.behavior.events.event_context);
-    try std.testing.expect(state.bonus_y < 0);
-}
-
-test "ScrollArea: momentum does not use idle-tail suppression" {
-    var ctx = try Cx.init(std.testing.allocator);
-    defer ctx.deinit();
-
-    const root = try box(ctx, .{ .width = .{ .px = 400 }, .height = .{ .px = 300 } }, .{});
-    ctx.root = root;
-
-    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
-    defer scope.dispose();
-
-    const result = try mountScrollArea(.{
-        .width = 300,
-        .height = 200,
-        .content_height = 600,
-    }, scope, ctx);
-    try root.appendChild(std.testing.allocator, result.container);
-    ctx.layout();
-
-    const event_ctx: *ScrollEventCtx = @ptrCast(@alignCast(result.container.behavior.events.event_context.?));
-    const state = event_ctx.state;
-    state.scroll_y = 0;
-    state.bonus_y = 0;
-    state.user_scrolling = false;
-    state.has_scroll_history = true;
-    state.scroll_event_idle_frames = ScrollState.scroll_tuning.wheel_release_frames + 80;
-    state.tail_idle_frames = ScrollState.scroll_tuning.wheel_release_frames + 80;
-    state.phase_end_guard_frames = 0;
-    state.bounce_active_y = false;
-    state.awaiting_trackpad_reengage = false;
-
-    const momentum_tail = core.Event{
-        .scroll = .{
-            .x = 150,
-            .y = 100,
-            .dx = 0,
-            .dy = 6,
-            .is_momentum = true,
-            .is_trackpad = true,
-        },
-    };
-    const handled = scrollEventHandler(momentum_tail, result.container.behavior.events.event_context);
-    try std.testing.expectEqual(core.EventResult.stop, handled);
-    try std.testing.expect(state.bonus_y < 0);
 }
 
 test "ScrollArea: both mode does not inject bonus on non-scrollable axis" {
@@ -1286,7 +1158,7 @@ test "ScrollArea: both mode does not inject bonus on non-scrollable axis" {
             .y = 100,
             .dx = 0,
             .dy = 24,
-            .is_trackpad = true,
+            .phase = .changed,
         },
     };
     const routed = scrollEventHandler(y_only, result.container.behavior.events.event_context);
@@ -1320,8 +1192,6 @@ test "ScrollArea: both-mode momentum x bounce does not block vertical scrolling"
     state.scroll_y = 329;
     state.bonus_x = -0.04;
     state.bonus_y = 0;
-    state.user_scrolling = false;
-    state.has_scroll_history = true;
 
     const momentum_vertical = core.Event{
         .scroll = .{
@@ -1329,8 +1199,7 @@ test "ScrollArea: both-mode momentum x bounce does not block vertical scrolling"
             .y = 100,
             .dx = 0,
             .dy = -38,
-            .is_momentum = true,
-            .is_trackpad = true,
+            .momentum = .changed,
         },
     };
 
@@ -1381,7 +1250,6 @@ test "ScrollState: duration-based bounce decay" {
     };
 
     state.bonus_y = 100;
-    state.user_scrolling = false;
     state.tickBonus(1000.0);
     // 第一帧: bonus 应该开始减小
     try std.testing.expect(state.bonus_y <= 100);
@@ -1398,7 +1266,7 @@ test "ScrollState: duration-based bounce decay" {
     try std.testing.expect(!state.bounce_active_y);
 }
 
-test "ScrollState: bonus bounce blocked during user_scrolling" {
+test "ScrollState: bonus bounce blocked while touching" {
     const render_engine = @import("../../core/render_engine/mod.zig");
     render_engine.current_frame_time_ms = 1000.0;
     var state = ScrollState{
@@ -1407,7 +1275,7 @@ test "ScrollState: bonus bounce blocked during user_scrolling" {
     };
 
     state.bonus_y = 100;
-    state.user_scrolling = true;
+    state.touching = true;
     state.tickBonus(1000.0);
     // 弹簧不启动
     try std.testing.expect(!state.bounce_active_y);
@@ -1421,13 +1289,11 @@ test "ScrollState: larger displacement settles later (critically damped spring)"
         .content_height = 500,
         .viewport_height = 200,
         .bonus_y = 20,
-        .user_scrolling = false,
     };
     var large = ScrollState{
         .content_height = 500,
         .viewport_height = 200,
         .bonus_y = 120,
-        .user_scrolling = false,
     };
 
     small.tickBonus(1000.0);
@@ -1455,12 +1321,11 @@ test "ScrollState: spring bounce carries inbound velocity (overshoot then return
         .viewport_height = 200,
         .bonus_y = 30,
         .bonus_velocity = 800, // 入射惯性仍在向外冲
-        .user_scrolling = false,
     };
     state.tickBonus(1000.0);
     try std.testing.expect(state.bounce_active_y);
 
-    // 短时间内应先加深（速度连续 → 无换挡感）
+    // 短时间内应先加深（速度连续 -> 无换挡感）
     state.tickBonus(1030.0);
     try std.testing.expect(state.bonus_y > 30);
 
@@ -1473,7 +1338,7 @@ test "ScrollState: spring bounce carries inbound velocity (overshoot then return
 }
 
 test "ScrollState: rubberBand round-trip (via physics.RubberBand)" {
-    // clamp → unclamp 应该恢复原始值 (测试通过 ScrollState.rubber_band 访问)
+    // clamp -> unclamp 应该恢复原始值 (测试通过 ScrollState.rubber_band 访问)
     const rb = physics.RubberBand{};
     const dim: f32 = 200;
     const inputs = [_]f32{ 5, 20, 50, 100, -10, -80 };
@@ -1509,23 +1374,23 @@ test "applyVerticalScroll: boundary bonus with damping" {
     };
 
     // 正常滚动
-    applyVerticalScroll(&state, -5, 1, false);
+    applyVerticalScroll(&state, -5, 1, .gesture);
     try std.testing.expectEqual(@as(f32, 0), state.bonus_y);
     try std.testing.expect(state.scroll_y > 0);
 
-    // 越过顶部 → bonus 变负 (有阻尼衰减)
+    // 越过顶部 -> bonus 变负 (有阻尼衰减)
     state.scroll_y = 0;
     state.bonus_y = 0;
-    applyVerticalScroll(&state, 10, 1, false); // delta = -10
+    applyVerticalScroll(&state, 10, 1, .gesture); // delta = -10
     try std.testing.expectEqual(@as(f32, 0), state.scroll_y);
     try std.testing.expect(state.bonus_y < 0);
     // 阻尼：bonus 的绝对值应该小于 10（衰减后）
     try std.testing.expect(@abs(state.bonus_y) <= 10);
 
-    // 越过底部 → bonus 变正 (有阻尼衰减)
+    // 越过底部 -> bonus 变正 (有阻尼衰减)
     state.scroll_y = 300;
     state.bonus_y = 0;
-    applyVerticalScroll(&state, -10, 1, false); // delta = +10
+    applyVerticalScroll(&state, -10, 1, .gesture); // delta = +10
     try std.testing.expectEqual(@as(f32, 300), state.scroll_y);
     try std.testing.expect(state.bonus_y > 0);
     try std.testing.expect(state.bonus_y <= 10);
@@ -1533,10 +1398,10 @@ test "applyVerticalScroll: boundary bonus with damping" {
     // 连续越界：阻力累积，每次增量越来越小
     state.scroll_y = 0;
     state.bonus_y = 0;
-    applyVerticalScroll(&state, 5, 1, false);
+    applyVerticalScroll(&state, 5, 1, .gesture);
     const first_bonus = @abs(state.bonus_y);
     const prev_bonus = state.bonus_y;
-    applyVerticalScroll(&state, 5, 1, false);
+    applyVerticalScroll(&state, 5, 1, .gesture);
     const second_increment = @abs(state.bonus_y - prev_bonus);
     try std.testing.expect(second_increment < first_bonus);
 }
@@ -1583,36 +1448,6 @@ test "ScrollState: overscroll shrinks vertical thumb and pins to edge" {
     try std.testing.expectApproxEqAbs(@as(f32, 198), bottom.pos + bottom.length, 0.05);
 }
 
-test "applyVerticalScroll: outward momentum keeps compressing overscroll" {
-    var state = ScrollState{
-        .content_height = 500,
-        .viewport_height = 200,
-        .scroll_y = 300,
-    };
-
-    state.user_scrolling = false;
-    applyVerticalScroll(&state, -18, 1, true);
-    const first_bonus = state.bonus_y;
-    try std.testing.expect(first_bonus > 0);
-
-    applyVerticalScroll(&state, -18, 1, true);
-    try std.testing.expect(state.bonus_y > first_bonus);
-}
-
-test "applyVerticalScroll: tiny outward momentum tail does not re-inject active bonus" {
-    var state = ScrollState{
-        .content_height = 500,
-        .viewport_height = 200,
-        .scroll_y = 300,
-        .bonus_y = 8,
-    };
-    state.user_scrolling = false;
-    const prev_bonus = state.bonus_y;
-    // raw_delta=12，小于 momentum_bonus_tail_cutoff=14，不应继续注能
-    applyVerticalScroll(&state, -12, 1, true);
-    try std.testing.expectEqual(prev_bonus, state.bonus_y);
-}
-
 test "ScrollArea: scrollbar thumb rect updates in before-render hook" {
     var ctx = try Cx.init(std.testing.allocator);
     defer ctx.deinit();
@@ -1650,40 +1485,6 @@ test "ScrollArea: scrollbar thumb rect updates in before-render hook" {
     state.scroll_y = state.maxScrollY();
     scrollbarBeforeRender(result.container);
     try std.testing.expect(thumb_node.rectFromWorldOrFallback().y > first_y);
-}
-
-test "ScrollArea: before-render idle counters saturate at max" {
-    var ctx = try Cx.init(std.testing.allocator);
-    defer ctx.deinit();
-
-    const root = try box(ctx, .{ .width = .{ .px = 400 }, .height = .{ .px = 300 } }, .{});
-    ctx.root = root;
-
-    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
-    defer scope.dispose();
-
-    const result = try mountScrollArea(.{
-        .width = 300,
-        .height = 200,
-        .content_height = 600,
-    }, scope, ctx);
-    try root.appendChild(std.testing.allocator, result.container);
-    ctx.layout();
-
-    const event_ctx: *ScrollEventCtx = @ptrCast(@alignCast(result.container.behavior.events.event_context.?));
-    const state = event_ctx.state;
-    state.scroll_event_idle_frames = std.math.maxInt(u32);
-    state.tail_idle_frames = std.math.maxInt(u32);
-    state.momentum_idle_frames = std.math.maxInt(u32);
-    state.scroll_idle_frames = std.math.maxInt(u32);
-    state.user_scrolling = true;
-
-    scrollbarBeforeRender(result.container);
-
-    try std.testing.expectEqual(std.math.maxInt(u32), state.scroll_event_idle_frames);
-    try std.testing.expectEqual(std.math.maxInt(u32), state.tail_idle_frames);
-    try std.testing.expectEqual(std.math.maxInt(u32), state.momentum_idle_frames);
-    try std.testing.expectEqual(std.math.maxInt(u32), state.scroll_idle_frames);
 }
 
 test "ScrollArea: scope dispose detaches before-render hook and event handlers" {
@@ -1784,17 +1585,17 @@ test "setScrollY: clamp + 动量复位 + 像素对齐（裸写 scroll_y 三样�
     state.bonus_y = 37;
     state.bonus_velocity = 900;
     state.bounce_active_y = true;
-    state.suppress_outward_momentum_y = true;
+    state.momentum_spent_y = true;
 
     setScrollY(&state, content, 300.4);
 
     try testing.expectEqual(@as(f32, 300.4), state.scroll_y);
-    // 动量/回弹全部复位——否则接下来几帧惯性会把内容又推走
+    // 动量/回弹全部复位，否则接下来几帧惯性会把内容又推走
     try testing.expectEqual(@as(f32, 0), state.bonus_y);
     try testing.expectEqual(@as(f32, 0), state.bonus_velocity);
     try testing.expect(!state.bounce_active_y);
-    try testing.expect(!state.suppress_outward_momentum_y);
-    // translate 对齐到物理像素网格（pixel_scale=2 → 0.5px 栅格）
+    try testing.expect(!state.momentum_spent_y);
+    // translate 对齐到物理像素网格（pixel_scale=2 -> 0.5px 栅格）
     const ty = content.style.translate_y;
     try testing.expectEqual(@as(f32, -300.5), ty);
 
@@ -1824,15 +1625,15 @@ test "scrollRectIntoView: 四种对齐" {
     scrollRectIntoView(&state, content, 500, 40, .center);
     try testing.expectEqual(@as(f32, 420), state.scroll_y); // 500 + (40-200)/2
 
-    // nearest：已完整可见 → 不动
+    // nearest：已完整可见 -> 不动
     state.scroll_y = 480;
     scrollRectIntoView(&state, content, 500, 40, .nearest);
     try testing.expectEqual(@as(f32, 480), state.scroll_y);
-    // nearest：在视口下方 → 底部对齐（最小移动）
+    // nearest：在视口下方 -> 底部对齐（最小移动）
     state.scroll_y = 200;
     scrollRectIntoView(&state, content, 500, 40, .nearest);
     try testing.expectEqual(@as(f32, 340), state.scroll_y);
-    // nearest：在视口上方 → 顶部对齐
+    // nearest：在视口上方 -> 顶部对齐
     state.scroll_y = 700;
     scrollRectIntoView(&state, content, 500, 40, .nearest);
     try testing.expectEqual(@as(f32, 500), state.scroll_y);
@@ -1870,7 +1671,7 @@ test "scrollIntoView: 按节点 rect 把子节点滚进视野" {
     scrollIntoView(sa.state, sa.content, target, .end);
     try testing.expectEqual(@as(f32, 440), sa.state.scroll_y); // 640 - 200
 
-    // 不在本 ScrollArea 内的节点 → no-op，不会把视口滚飞
+    // 不在本 ScrollArea 内的节点 -> no-op，不会把视口滚飞
     const outsider = try box(cx, .{ .width = .{ .px = 10 }, .height = .{ .px = 10 } }, .{});
     try root.appendChild(testing.allocator, outsider); // 挂在 ScrollArea 之外
     outsider.setLayoutRect(.{ .x = 0, .y = 0, .w = 10, .h = 10 });
@@ -1975,7 +1776,7 @@ test "ScrollArea: mountScrollArea 在任意分配点失败时不泄漏" {
 }
 
 test "ScrollArea: mountScrollArea 在 childScope 下失败时不泄漏" {
-    // 上一个测试用的是根 scope 且不把 container 挂进任何父树 —— 结果是干净的。
+    // 上一个测试用的是根 scope 且不把 container 挂进任何父树，结果是干净的。
     // 消费方（下游编辑器 line_virtual_list）的调用形态不同：传进来的是
     // scope.childScope() 派生的 scope，并且 container 随后要挂进 main_lane。
     // 这个测试复制那个形态，用来判定"依赖侧泄漏"到底需不需要消费方上下文。
@@ -2042,7 +1843,7 @@ test "ScrollArea: mountScrollArea 在 childScope 下失败时不泄漏" {
             } else |_| {
                 induced += 1;
                 // ⚠️ 关键：失败路径上**只 dispose scope，不额外 freeNode**。
-                // 这正是消费方 LineVirtualList 的形态 —— mountScrollArea 内部失败时，
+                // 这正是消费方 LineVirtualList 的形态，mountScrollArea 内部失败时，
                 // 调用方拿不到 sa，只能靠 scope 清理。若这里也顺手 freeNode，
                 // 就把缺陷掩盖了（本测试第一版就是这样，结果 0 泄漏）。
             }
@@ -2154,7 +1955,7 @@ test "ScrollArea: ext.max_height（popover autosize 的写法）夹住的列容�
 
 test "ScrollArea: px 0 + overflow_hidden 的隐藏容器里，fit 可收缩子节点保持内容尺寸（隐藏惯用法）" {
     // Modal 关着时 barrier = px 0 + overflow_hidden，showNode 同款。隐藏期子节点必须保持
-    // 内容尺寸只被裁剪 —— 收缩规则若对 px 父节点生效，会把它压成 0，Quick Open 重开后
+    // 内容尺寸只被裁剪，收缩规则若对 px 父节点生效，会把它压成 0，Quick Open 重开后
     // 面板停在 0 高（native gate panel_infra / save_path_identity 实测）。
     const t = std.testing;
     var ctx = try Cx.init(t.allocator);

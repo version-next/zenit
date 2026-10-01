@@ -377,7 +377,7 @@ pub fn parseSvgDocumentPathCommands(allocator: Allocator, svg_data: []const u8) 
     return all.toOwnedSlice(allocator);
 }
 
-/// 委托 svg_geometry 的实现——它有本函数曾缺失的"前一字符必须是空白或 <"
+/// 委托 svg_geometry 的实现，它有本函数曾缺失的"前一字符必须是空白或 <"
 /// 校验。旧的等价实现只查匹配后是否为 `=`，`<path id="foo" d="M0 0">`
 /// 会把 `id` 里的 `d` 当属性名，返回 "foo" 使整个节点构建失败。
 fn findSvgAttribute(tag: []const u8, name: []const u8) ?[]const u8 {

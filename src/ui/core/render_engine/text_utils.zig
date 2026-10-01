@@ -10,7 +10,7 @@ pub inline fn measureSegmentWidth(text: []const u8, font_size: f32, font_weight:
     return text_layout.measureTextWidthByFontKind(text, font_size, font_weight, use_italic, use_monospace);
 }
 
-/// cx-aware variant — 走 RenderContext.shaping_cache (GlyphRun pipeline)
+/// cx-aware variant，走 RenderContext.shaping_cache (GlyphRun pipeline)
 /// 替代 measureTextWidthByFontKind 直调 platform 桥。
 /// 权威 width-as-drawn 回调不依赖 shaping_cache / font_system；只有宿主未安装
 /// 回调时的兼容 shaper 才需要它们。两条路径都不可用时降级旧 platform measure。

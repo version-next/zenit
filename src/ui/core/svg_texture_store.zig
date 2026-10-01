@@ -1,8 +1,8 @@
-//! SVG 贴图缓存与命中几何 —— 从 `Cx` 析出的有状态子系统。
+//! SVG 贴图缓存与命中几何，从 `Cx` 析出的有状态子系统。
 //!
 //! 管两张表：
-//!   - `hit_shapes`   texture_id → PathGeometry，贴图的精确命中形状
-//!   - `texture_cache` (svg 内容哈希, w, h) → texture_id，避免同一张图重复栅格化
+//!   - `hit_shapes`   texture_id -> PathGeometry，贴图的精确命中形状
+//!   - `texture_cache` (svg 内容哈希, w, h) -> texture_id，避免同一张图重复栅格化
 //!
 //! 这两张表加上 `loader` 原本是 `Cx` 上的三个字段 + 六个方法。它们自成一个
 //! 所有权闭环（geometry 要 free、texture 要经 loader 的 unload 回调释放），
@@ -128,7 +128,7 @@ pub const SvgTextureStore = struct {
         // put 失败时必须连命中几何一起摘掉：errdefer 已经把 texture_id 还给
         // loader 了，几何再留在表里就是一条「指向已卸载贴图」的残留条目。
         // loader 若复用 id（完全合法，它就是个 u32 句柄），下一张 SVG 拿到
-        // 同一个 id 时 lookupHit 会命中**上一张图的几何** —— 命中区域错位，
+        // 同一个 id 时 lookupHit 会命中**上一张图的几何**，命中区域错位，
         // 不崩不报错。
         errdefer self.dropHit(texture_id);
         try self.texture_cache.put(key, texture_id);
@@ -268,7 +268,7 @@ test "put 失败时不留下指向已卸载贴图的残留命中条目" {
     // glmx 交叉审查发现（2026-09-22，既有行为非重构引入）：
     // load() 的 errdefer 只把 texture_id 还给 loader，命中几何却留在
     // hit_shapes 里。loader 复用 id（它就是个 u32 句柄，复用完全合法）时，
-    // 下一张 SVG 拿到同一 id 会命中上一张图的几何 —— 命中区域错位，不崩不报错。
+    // 下一张 SVG 拿到同一 id 会命中上一张图的几何，命中区域错位，不崩不报错。
     TestLoader.reset();
 
     // 让 texture_cache.put 的那次分配失败：前面的分配都放行，之后失败
@@ -279,7 +279,7 @@ test "put 失败时不留下指向已卸载贴图的残留命中条目" {
 
     // fail_index=5 是实测选的：2..5 命中 texture_cache.put 那次分配，7+ 会在
     // 更早的分配就失败导致走不到断言。这里**直接断言 load 必须失败**而不是
-    // 在成功时 SkipZigTest —— 若将来分配次数变了，这个测试要当场红，好过
+    // 在成功时 SkipZigTest，若将来分配次数变了，这个测试要当场红，好过
     // 悄悄变成永远跳过的空壳。
     try std.testing.expectError(error.OutOfMemory, store.load(test_svg, 16, 16));
 

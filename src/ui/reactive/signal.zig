@@ -95,7 +95,7 @@ pub fn Signal(comptime T: type) type {
 
         /// 读取值并自动注册依赖
         ///
-        /// 单轨追踪——graph.tracking_stack 是唯一依赖源。
+        /// 单轨追踪，graph.tracking_stack 是唯一依赖源。
         /// 旧 EffectBase.dependencies + SignalBase.subscribers 已废弃（v0.3-P4/P5 删字段）。
         /// untrack 跳过"发起 untrack 的当前 Effect"的追踪。
         pub fn get(self: *Self) T {
@@ -139,9 +139,9 @@ pub fn Signal(comptime T: type) type {
             //   1. signal.version++
             //   2. observers 标 dirty（effect 入 pending_effects）
             //   3. batch_depth == 0 时 drainPendingEffects（按拓扑深度排序运行）
-            //   4. drain 时调每个 effect 的 graphRecomputeCb → EffectBase.runWithTracking
+            //   4. drain 时调每个 effect 的 graphRecomputeCb -> EffectBase.runWithTracking
             //
-            // 旧 push DFS 路径（self.base.notifyAll）已删除——graph 路径覆盖所有调度
+            // 旧 push DFS 路径（self.base.notifyAll）已删除，graph 路径覆盖所有调度
             // 行为且具有：拓扑序、无 16 上限、diamond glitch freedom。
             if (self.base.graph_node_raw != 0xFFFFFFFF) {
                 const gid: @import("graph.zig").NodeId = @bitCast(self.base.graph_node_raw);

@@ -24,10 +24,10 @@ const control_shell = @import("../control_shell/mod.zig");
 const svg_assets = @import("../../svg_assets.zig");
 const controlShell = control_shell.controlShell;
 
-/// 按钮变体 — 别名到 ControlVariant（兼容）
+/// 按钮变体，别名到 ControlVariant（兼容）
 pub const ButtonVariant = control_shell.ControlVariant;
 
-/// 按钮尺寸 — 别名到 ControlSize（兼容）
+/// 按钮尺寸，别名到 ControlSize（兼容）
 pub const ButtonSize = control_shell.ControlSize;
 
 /// 按钮属性
@@ -202,8 +202,8 @@ pub const ButtonBuilder = struct {
 
         // fit 宽 Button 放进 align_items=.stretch 的 column（框架默认）时，会被拉伸到
         // 整列宽，其 justify=center 的内容随之被推到列中央、跑出按钮自身可视框（label
-        // 看似消失 —— Modal/Sheet/Form 的触发按钮全中招）。no_cross_stretch 只拒绝继承的
-        // stretch（→ 按 .start 排、保持 intrinsic 宽），父显式 align_items=.center/.end
+        // 看似消失，Modal/Sheet/Form 的触发按钮全中招）。no_cross_stretch 只拒绝继承的
+        // stretch（-> 按 .start 排、保持 intrinsic 宽），父显式 align_items=.center/.end
         // 仍照常生效（旧实现写死 align_self=.start，父容器永远无法居中按钮）。
         // block 走 grow 主动填充，需要 stretch 配合，故排除。
         if (!p.block) {
@@ -216,9 +216,9 @@ pub const ButtonBuilder = struct {
             node.style.width = .{ .grow = .{} };
         }
 
-        // ── icon → icon_slot ──────────────────────────────────────
+        // ── icon -> icon_slot ──────────────────────────────────────
         // loading 时由 spinner 取代 leading icon（二者都进 icon_slot，
-        // 同时渲染会重叠 —— 尤其 icon_only 下叠成 X+转圈）。
+        // 同时渲染会重叠，尤其 icon_only 下叠成 X+转圈）。
         if (!p.loading) {
             if (p.icon_asset) |asset| {
                 const tint = p.icon_tint orelse text_color;
@@ -239,7 +239,7 @@ pub const ButtonBuilder = struct {
             }
         }
 
-        // ── spinner → icon_slot（仅 loading 时创建，在文字左侧）─
+        // ── spinner -> icon_slot（仅 loading 时创建，在文字左侧）─
         if (p.loading) {
             const spinner_size: f32 = metrics.icon_size;
             const spinner_wrap = try box(cx, .{
@@ -266,7 +266,7 @@ pub const ButtonBuilder = struct {
             try spinner_wrap.appendChild(cx.allocator, spinner_node);
         }
 
-        // ── label → content_slot ─────────────────────────────────
+        // ── label -> content_slot ─────────────────────────────────
         shell.content_slot.meta.ownership.meta.component_name = "Button.content";
 
         if (p.label) |lbl| {
@@ -338,7 +338,7 @@ test "Button: basic creation" {
 
     try root.appendChild(std.testing.allocator, btn);
 
-    // 文本在 content_slot 子节点里（无 icon 时 btn → [content_slot]）
+    // 文本在 content_slot 子节点里（无 icon 时 btn -> [content_slot]）
     try std.testing.expect(btn.children.items.len >= 1);
     const content_slot = btn.children.items[0];
     try std.testing.expect(content_slot.children.items.len > 0);
@@ -473,7 +473,7 @@ test "Button: label stays inside pill when placed in a stretch column" {
     // Regression: a fit-width Button directly under an align_items=.stretch
     // column (framework default) used to be stretched to the column width,
     // and its justify=center content got centered against that stretched
-    // width — landing far outside the pill's own visual box (label looked
+    // width, landing far outside the pill's own visual box (label looked
     // missing in Modal/Sheet/Form trigger buttons). no_cross_stretch fixes it.
     const allocator = std.testing.allocator;
     var ctx = try Cx.init(allocator);
@@ -501,8 +501,8 @@ test "Button: label stays inside pill when placed in a stretch column" {
     try std.testing.expect(br.w < 400);
 
     // The content slot's rect is relative to the button: it must sit inside
-    // the button's own box. (The previous version compared the label rect —
-    // relative to the content slot — against the button rect, which was
+    // the button's own box. (The previous version compared the label rect,
+    // relative to the content slot, against the button rect, which was
     // vacuous: it passed even when the slot had drifted to x≈366.)
     const content_slot = btn.children.items[btn.children.items.len - 1];
     const sr = content_slot.rectFromWorldOrFallback();
@@ -617,7 +617,7 @@ test "Button: mount (retained mode)" {
 
     try root.appendChild(allocator, btn);
 
-    // 验证节点属性（无 icon 时 btn → [content_slot]）
+    // 验证节点属性（无 icon 时 btn -> [content_slot]）
     try std.testing.expect(btn.children.items.len >= 1);
     const content_slot = btn.children.items[0];
     try std.testing.expect(content_slot.children.items.len > 0);

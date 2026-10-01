@@ -1,4 +1,4 @@
-//! counter_reactive 样式表 —— 与业务逻辑（Signal / Memo / 事件绑定）分离。
+//! counter_reactive 样式表，与业务逻辑（Signal / Memo / 事件绑定）分离。
 //!
 //! 约定（见 docs/styling.md）：
 //!   - 每个样式是 `fn (*const ui.ThemeTokens) BoxStyle/TextStyle` 纯函数，
@@ -30,7 +30,7 @@ pub fn title(t: *const ui.ThemeTokens) ui.TextStyle {
 }
 
 pub fn counterText(t: *const ui.ThemeTokens) ui.TextStyle {
-    // 18px 不在 font_size scale 上（xl=16 / xxl=20），是有意的视觉决定 ——
+    // 18px 不在 font_size scale 上（xl=16 / xxl=20），是有意的视觉决定,
     // 用 ui.arb.px 逃生舱显式标记（对标 Panda 的 arbitrary values）。
     return .{ .font_size = ui.arb.px(18), .color = t.color.fg_primary };
 }

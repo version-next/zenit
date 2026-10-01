@@ -1,4 +1,4 @@
-/// Tree — 样式层
+/// Tree，样式层
 ///
 /// 具名样式函数；业务逻辑/State/事件处理在 mod.zig。
 const core = @import("../../core.zig");
@@ -25,7 +25,7 @@ pub fn treeRowStyle(_: *const theme.ThemeTokens) core.BoxStyle {
     };
 }
 
-/// 选中行背景 — 由 applySelectionStyles 运行时驱动
+/// 选中行背景，由 applySelectionStyles 运行时驱动
 pub fn treeSelectionBg(t: *const theme.ThemeTokens) Color {
     return t.color.list_selection_bg;
 }

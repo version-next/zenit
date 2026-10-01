@@ -1,8 +1,8 @@
-//! TextShaper → GlyphRun 适配器（v0.5 §5 GlyphRun pipeline 起步）
+//! TextShaper -> GlyphRun 适配器（v0.5 §5 GlyphRun pipeline 起步）
 //!
 //! src/text/types.zig.ShapedGlyph 是低级 shaping 输出（每 glyph 一条），包含
 //! cluster 字段 (utf-8 byte offset)。zenit IR `GlyphRun` (src/ui/core/glyph_run.zig)
-//! 是高级聚合：glyph 序列 + cluster_map (byte_offset → glyph index range) +
+//! 是高级聚合：glyph 序列 + cluster_map (byte_offset -> glyph index range) +
 //! FontMetrics + total_advance。
 //!
 //! 这个 adapter 只做格式翻译，不调任何平台 API，因此 ui_core 不需要 native

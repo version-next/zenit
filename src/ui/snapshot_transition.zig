@@ -14,7 +14,7 @@ pub const Transition = struct {
         outgoing: *Node,
         duration_s: f32,
     ) !void {
-        // captureDisplayed 优先用 promoted_cached_commands / cached_commands —
+        // captureDisplayed 优先用 promoted_cached_commands / cached_commands,
         // 对于复杂 editor 这种子树大量 promoted 的场景，才能抓到完整视觉；
         // 裸 Snapshot.capture 会错过 promoted 子树内容，导致 snapshot 只剩外壳白底。
         // captureDisplayed 走 cache 路径时 commands 空间是 parent-relative，bounds.y 已含

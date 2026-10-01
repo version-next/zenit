@@ -1,14 +1,14 @@
-//! Phase 0 — Dim trait / 统一的 SumTree seek 维度入口
+//! Phase 0, Dim trait / 统一的 SumTree seek 维度入口
 //!
 //! 对齐 Zed `crates/sum_tree/src/sum_tree.rs:95-110` 的
 //! `trait Dimension<'a, S: Summary>`。
 //!
 //! SumTree 的 Cursor 需要按不同维度 seek：
-//!   - ByteDim / ByteOffset  — 按字节偏移
-//!   - LineDim / Row         — 按行号
-//!   - PointDim              — 按 (row, column)
-//!   - CharDim               — 按字符数
-//!   - OffsetUtf16           — 按 UTF-16 code unit
+//!   - ByteDim / ByteOffset，按字节偏移
+//!   - LineDim / Row，按行号
+//!   - PointDim，按 (row, column)
+//!   - CharDim，按字符数
+//!   - OffsetUtf16，按 UTF-16 code unit
 //!
 //! 每个维度都实现一个"从 Summary 提取值 + 累加两个值"的契约。Phase 0 只定义
 //! 契约 + 空壳，具体维度在 Phase 2 `src/core/rope/summary.zig` 里逐一实现。

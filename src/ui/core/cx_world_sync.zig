@@ -1,4 +1,4 @@
-//! Cx → World 表同步：节点挂接 World（ElementTag 映射）、layerize、
+//! Cx -> World 表同步：节点挂接 World（ElementTag 映射）、layerize、
 //! layout / paint / interaction 三张表的逐帧同步，以及 layout shadow-sync 完整性校验。
 
 const std = @import("std");
@@ -13,7 +13,7 @@ const paint_table = core.paint_table;
 const render_engine = core.render_engine;
 const world = core.world;
 
-/// Node.tag (UI 端) → ElementTable.ElementTag (SoA 端) 映射。
+/// Node.tag (UI 端) -> ElementTable.ElementTag (SoA 端) 映射。
 /// 两套 enum 不耦合：UI 端是组件级别（box/button/scroll/list/...），
 /// SoA 端是渲染端类别（container/text/image/input/component/...）。
 pub fn nodeTagToWorldTag(t: ElementTag) world.ElementTag {
@@ -35,10 +35,10 @@ pub fn linkNodeToWorld(self: *Cx, node: *Node) void {
     node.element_id_raw = eid.raw();
 }
 
-/// 帧开始 layerize—— 把 World.elements 分组到 LayerTree。
+/// 帧开始 layerize，把 World.elements 分组到 LayerTree。
 /// 返回 layer 数量（含 root）。
 ///
-/// 从 World.interaction 自动收集 PromotionHint —— scroll containers
+/// 从 World.interaction 自动收集 PromotionHint, scroll containers
 /// 自动提为独立 layer。无需 caller 传 hints。
 /// PaintTable.bounds 为主 + LayoutTable.rect fallback。
 fn paintChunkBoundsOrLayoutFallback(w: *world.World, eid: world.ElementId) paint_table.Bounds {
@@ -68,7 +68,7 @@ pub fn layerizeFrame(self: *Cx, extra_hints: []const layerize_mod.LayerizeInput)
     while (iter.next()) |entry| {
         const eid = world.ElementId.fromRaw(entry.key_ptr.*);
         const data = entry.value_ptr.*;
-        // scroll_id 有效 → promotion hint = scroll container
+        // scroll_id 有效 -> promotion hint = scroll container
         if (data.scroll_id != std.math.maxInt(u32)) {
             // 从 PaintTable 取 chunk bounds（shadow-sync 已就绪）。
             const bounds = paintChunkBoundsOrLayoutFallback(&self.world, eid);
@@ -186,11 +186,11 @@ fn syncPaintNodeRecursive(self: *Cx, node: *Node) void {
                     var i: usize = 0;
                     while (i < count) : (i += 1) {
                         const di = self.display_list.items.items[start + i];
-                        // 唯一的 display_list → paint_table
+                        // 唯一的 display_list -> paint_table
                         // 映射点 (从 cx 内 mapDisplayItem 合并到 shadow 路径的
                         // lowerDisplayItem)。两个路径产 identical paint_table.DisplayItem。
                         const mapped = gpu_draw_shadow.lowerDisplayItem(di);
-                        // 失败会让本节点的 paint chunk **少掉若干 item** →
+                        // 失败会让本节点的 paint chunk **少掉若干 item** ->
                         // 画面局部缺失且无任何信号。计数以便诊断
                         // （审查报告 §3 的静默吞错家族）。
                         self.world.paint.pushItem(eid, mapped) catch {
@@ -203,7 +203,7 @@ fn syncPaintNodeRecursive(self: *Cx, node: *Node) void {
         }
         // 单次 get 合并两笔写：cache hit 也要更新 property_state
         // （transform_id / scroll_id 会变）；chunk.bounds 是 world-space
-        // element rect —— pushItem 内部 unionWith 累积的 local_bounds
+        // element rect, pushItem 内部 unionWith 累积的 local_bounds
         // （item-local 坐标）与 world bounds 语义不符，这里覆盖。下游
         // （LayerTree.layerizeFrame）要的是 world bounds。
         if (self.world.paint.get(eid)) |chunk| {
@@ -214,9 +214,9 @@ fn syncPaintNodeRecursive(self: *Cx, node: *Node) void {
     for (node.children.items) |child| syncPaintNodeRecursive(self, child);
 }
 
-/// 轻量 content hash —— Stage 3-3 Phase 1+ 用于 cache invalidation。
+/// 轻量 content hash, Stage 3-3 Phase 1+ 用于 cache invalidation。
 /// 取 background + border + opacity + width/height + text + image/icon refs。
-/// session 43: 扩展从 background-only 到 8 个常见可视属性 — 让 PaintTable cache
+/// session 43: 扩展从 background-only 到 8 个常见可视属性，让 PaintTable cache
 /// invalidation 覆盖更多真实修改场景。
 fn paintContentHash(node: *const Node, rect: ComputedRect) u64 {
     var h = std.hash.Wyhash.init(0);
@@ -279,7 +279,7 @@ fn syncInteractionNodeRecursive(self: *Cx, node: *Node) void {
                 .a11y_role = role,
                 .scroll_id = existing_scroll_id,
             };
-            // 失败 → 该节点这一帧**不可命中**（点击/hover 全失效），
+            // 失败 -> 该节点这一帧**不可命中**（点击/hover 全失效），
             // 且完全无信号。与 core.paint_push_failures 同属"静默劣化"家族。
             self.world.interaction.put(eid, data) catch {
                 core.interaction_put_failures += 1;
@@ -322,7 +322,7 @@ fn assertLayoutSyncIntegrityRecursive(self: *Cx, node: *Node) bool {
                 if (@abs(chunk.bounds.max_y - (lr.y + lr.height)) > eps) return false;
             }
         }
-        // v0.5-P3 Stage 3-2 Phase 2 attempt (session 41 — REVERTED):
+        // v0.5-P3 Stage 3-2 Phase 2 attempt (session 41, REVERTED):
         // 试图加 ElementTable 父子链结构一致性 invariant，但 Input/某些组件路径下
         // Node.parent 与 World.elements parent 在 layout pass 中间会有 stale 状态
         // （Input 组件内部 reparent 时序复杂）。撞墙 panic，已 revert。

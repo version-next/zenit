@@ -160,7 +160,7 @@ pub const AnimatedColor = struct {
 
 // ========== 测试 ==========
 
-/// 测试辅助：模拟帧推进 (默认 150ms duration, 60 FPS → 每帧 ~16.67ms)
+/// 测试辅助：模拟帧推进 (默认 150ms duration, 60 FPS -> 每帧 ~16.67ms)
 const test_dt_ms: f64 = 1000.0 / 60.0;
 
 test "AnimatedColor: init" {
@@ -285,7 +285,7 @@ test "AnimatedColor: custom config" {
 }
 
 test "AnimatedColor: transparent to opaque no dark flash" {
-    // 核心场景: rgba(0,0,0,0) → rgba(238,241,248,255) 不应出现暗色中间帧
+    // 核心场景: rgba(0,0,0,0) -> rgba(238,241,248,255) 不应出现暗色中间帧
     const transparent = Color.rgba(0, 0, 0, 0);
     const opaque_color = Color.rgba(238, 241, 248, 255);
     var anim = AnimatedColor.initWithConfig(transparent, .{
@@ -312,7 +312,7 @@ test "AnimatedColor: transparent to opaque no dark flash" {
 }
 
 test "AnimatedColor: low-alpha hover to opaque active no dark flash" {
-    // 场景: hover 中 rgba(0,0,0,15) → active rgba(238,241,248,255)
+    // 场景: hover 中 rgba(0,0,0,15) -> active rgba(238,241,248,255)
     const hover_bg = Color.rgba(0, 0, 0, 15);
     const active_bg = Color.rgba(238, 241, 248, 255);
     var anim = AnimatedColor.initWithConfig(hover_bg, .{

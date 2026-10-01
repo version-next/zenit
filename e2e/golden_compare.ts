@@ -42,7 +42,7 @@ export interface GoldenConfig {
   max_rmse: number;
 }
 
-/** 单 case 比较结果。dimension mismatch / 解码失败 → ok=false + error（不 throw）。 */
+/** 单 case 比较结果。dimension mismatch / 解码失败 -> ok=false + error（不 throw）。 */
 export interface GoldenResult {
   ok: boolean;
   changed_ratio: number | null;
@@ -61,7 +61,7 @@ export function compareGolden(baseline: DecodedPng, actual: DecodedPng, config: 
   }
 }
 
-/** 对两个 PNG 文件路径做 golden 比较。缺文件/解码失败 → ok=false + error。 */
+/** 对两个 PNG 文件路径做 golden 比较。缺文件/解码失败 -> ok=false + error。 */
 export function compareGoldenFiles(baselinePath: string, actualPath: string, config: GoldenConfig): GoldenResult {
   for (const p of [baselinePath, actualPath]) {
     if (!existsSync(p)) return { ok: false, changed_ratio: null, rmse: null, error: `missing file: ${p}` };

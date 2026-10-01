@@ -71,7 +71,7 @@ pub const HoverHighlightState = struct {
     /// allocator (用于 ensureExt 等需要分配内存的操作，scale 等字段必须设置)
     allocator: ?std.mem.Allocator = null,
     /// 冻结：为 true 时 before_render 钩子不再写入样式，把该节点的样式让给外部控制者。
-    /// 用于 RadioGroup 选中项——选中态 border 必须钉死 accent，不能被 hover 插值覆盖。
+    /// 用于 RadioGroup 选中项，选中态 border 必须钉死 accent，不能被 hover 插值覆盖。
     frozen: bool = false,
 };
 
@@ -123,7 +123,7 @@ fn hoverHighlightBeforeRender(node: *Node) void {
                     anim.update(now_ms, dt);
                     const v = anim.get();
                     // composite 类属性统一走权威失效组合，而非 markRenderDirty 慢路径
-                    // ——与 transition tick / node_animator 一致（setOpacity 内部已收口）；
+                    // 与 transition tick / node_animator 一致（setOpacity 内部已收口）；
                     // markCompositeDirty 内部已置 redraw.requested，动画期无需额外标脏。
                     switch (state.style_field) {
                         .opacity => node.setOpacity(v),
@@ -164,14 +164,6 @@ pub fn onCleanup(node: *Node, handler: core.HandlerRef) void {
     node.meta.ownership.hooks.on_cleanup = handler;
 }
 
-fn hasBeforeRenderHook(node: *const Node, hook: *const fn (*Node) void) bool {
-    if (node.meta.per_frame.hooks.before_render.main == hook) return true;
-    for (node.meta.per_frame.hooks.before_render.hooks[0..node.meta.per_frame.hooks.before_render.count]) |existing| {
-        if (existing == hook) return true;
-    }
-    return false;
-}
-
 /// 在 clearNodeScopes / dispose 之前使 hook 状态与节点脱钩，
 /// 避免资源析构时再去访问已经脱离生命周期管理的 Node 指针。
 pub fn invalidateSubtreeHookState(node: *Node) void {
@@ -186,24 +178,25 @@ pub fn invalidateSubtreeHookState(node: *Node) void {
         node.meta.per_frame.hooks.slots.hover_highlight_state = null;
     }
     if (node.meta.per_frame.hooks.slots.focus_ring_anim) |ptr| {
-        if (hasBeforeRenderHook(node, focusRingBeforeRender)) {
+        if (node.meta.per_frame.hooks.slots.focus_ring_owned) {
             const state: *FocusRingAnimState = @ptrCast(@alignCast(ptr));
             state.node = null;
         }
         node.meta.per_frame.hooks.slots.focus_ring_anim = null;
     }
+    node.meta.per_frame.hooks.slots.focus_ring_owned = false;
     // 组件自定义 anim_state（Spinner / Skeleton shimmer 等无限动画）。
     //
     // 此前这里**只**清 animated_bg / hover_highlight / focus_ring 三个槽，漏了
     // anim_state，且从不摘除 before_render hook 本身。后果不是崩溃（各 hook
     // 首行都是 `slots.anim_state orelse return`），而是**卸载后的子树仍每帧
     // 被 tick**：`freeNode` 在 tick_depth>0 时延迟释放，排队期间 hook 照跑，
-    // Spinner 每帧 markRenderDirty() → wantsFrame 恒真 → **idle 永不停帧**。
+    // Spinner 每帧 markRenderDirty() -> wantsFrame 恒真 -> **idle 永不停帧**。
     //
     // 实测：storybook 切到纯静态页（Divider）后静置 10s 仍跑满 60fps，标脏源
     // 全是已被 Show 销毁的 story.button 子树里的 Button.loading spinner。
     //
-    // 摘 hook 是关键——只清状态不摘 hook，hook 仍会被调用；无限动画组件
+    // 摘 hook 是关键，只清状态不摘 hook，hook 仍会被调用；无限动画组件
     // 不像有限 transition 那样会自行收敛，必须显式断开。
     node.meta.per_frame.hooks.slots.anim_state = null;
     node.meta.per_frame.hooks.before_render.main = null;
@@ -254,7 +247,7 @@ pub const AnimBgState = struct {
 
     /// Override the hover/pressed colors the same way. An "active"（选中态）
     /// button that overrides its resting color to a solid accent must also
-    /// override hover —— 否则 hover 一瞬间弹回 recipe 的 ghost 浅底，
+    /// override hover，否则 hover 一瞬间弹回 recipe 的 ghost 浅底，
     /// 浅色图标直接隐形。Pass null to restore the recipe colors.
     pub fn setInteractionOverride(self: *AnimBgState, hover: ?Color, pressed: ?Color) void {
         self.hover_override = hover;
@@ -350,9 +343,9 @@ pub fn useAnimatedBackground(scope: *Scope, cx: *Cx, node: *Node, config: Animat
         }.destroy);
     }
     // （date_picker OOM sweep 抓到的 UAF）：state 一登记进 scope，destroy 就会解引用 s.node；
-    // 而节点被释放时靠 invalidateSubtreeHookState 顺着 node→slot 回链把 s.node 置 null。原来回链
+    // 而节点被释放时靠 invalidateSubtreeHookState 顺着 node->slot 回链把 s.node 置 null。原来回链
     // 在函数末尾才挂，中间 addDebugState / useHover / onCleanup 任一步 OOM 返回后：state 已登记、
-    // 回链没挂 → 节点释放时清不到 → 之后 scope dispose 解引用已释放节点。回链必须紧跟登记。
+    // 回链没挂 -> 节点释放时清不到 -> 之后 scope dispose 解引用已释放节点。回链必须紧跟登记。
     node.meta.per_frame.hooks.slots.animated_bg_state = anim_state;
     node.addDebugState(@ptrCast(anim_state));
 
@@ -360,11 +353,11 @@ pub fn useAnimatedBackground(scope: *Scope, cx: *Cx, node: *Node, config: Animat
     anim_state.hover_signal = is_hovered;
 
     // hover_signal 是**借用**：它归 scope 所有，而 Scope.dispose 的相位顺序是
-    //   2) cleanups → 3) effects → 4) signals → 5) resources
+    //   2) cleanups -> 3) effects -> 4) signals -> 5) resources
     // 也就是说信号在第 4 步就被 destroy，而本 hook 的注销挂在第 5 步的
     // resource cleanup 上。中间这一格里 animBgBeforeRender 若被触发
-    // （hit-test 会在同一帧里跑 tickBeforeRender —— 线上崩溃栈正是
-    // handleMouseMove → ensureHitTestSceneFresh → tickBeforeRender → 本 hook），
+    // （hit-test 会在同一帧里跑 tickBeforeRender，线上崩溃栈正是
+    // handleMouseMove -> ensureHitTestSceneFresh -> tickBeforeRender -> 本 hook），
     // `state.hover_signal.get()` 读的就是已释放内存。
     //
     // 用 onCleanup 在**第 2 相位**把借用解开：信号还活着时先置 null，
@@ -532,7 +525,10 @@ pub fn useFocusRing(scope: *Scope, cx: *Cx, node: *Node, config: FocusRingConfig
             fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
                 const s: *FocusRingAnimState = @ptrCast(@alignCast(ptr));
                 if (s.node) |n| {
-                    if (n.meta.per_frame.hooks.slots.focus_ring_anim == ptr) n.meta.per_frame.hooks.slots.focus_ring_anim = null;
+                    if (n.meta.per_frame.hooks.slots.focus_ring_anim == ptr) {
+                        n.meta.per_frame.hooks.slots.focus_ring_anim = null;
+                        n.meta.per_frame.hooks.slots.focus_ring_owned = false;
+                    }
                     n.removeBeforeRender(focusRingBeforeRender);
                 }
                 s.node = null;
@@ -544,6 +540,7 @@ pub fn useFocusRing(scope: *Scope, cx: *Cx, node: *Node, config: FocusRingConfig
     // 注册为扩展回调（不覆盖主 on_before_render）
     node.addBeforeRender(focusRingBeforeRender);
     node.meta.per_frame.hooks.slots.focus_ring_anim = anim_state;
+    node.meta.per_frame.hooks.slots.focus_ring_owned = true;
 
     // Handler 上下文
     const ring_ctx = try scope.allocator.create(FocusRingCtx);
@@ -578,7 +575,7 @@ pub fn useFocusRing(scope: *Scope, cx: *Cx, node: *Node, config: FocusRingConfig
                         state.opacity_anim.setTo(1.0, now_ms);
                         if (state.node) |n| {
                             // 本回调是 void，无法传播；z_index 只是视觉层级，
-                            // 分配失败时保持原值降级即可 —— 但绝不能 @panic 掉整个进程。
+                            // 分配失败时保持原值降级即可，但绝不能 @panic 掉整个进程。
                             if (n.style.ensureExtFallible(state.allocator)) |ext| {
                                 ext.z_index = 1;
                             } else |_| {}
@@ -614,7 +611,7 @@ pub fn useFocusRing(scope: *Scope, cx: *Cx, node: *Node, config: FocusRingConfig
                     state.opacity_anim.setTo(0.0, @import("core/render_engine/mod.zig").current_frame_time_ms);
                     if (state.node) |n| {
                         // 本回调是 void，无法传播；z_index 只是视觉层级，
-                        // 分配失败时保持原值降级即可 —— 但绝不能 @panic 掉整个进程。
+                        // 分配失败时保持原值降级即可，但绝不能 @panic 掉整个进程。
                         if (n.style.ensureExtFallible(state.allocator)) |ext| {
                             ext.z_index = 0;
                         } else |_| {}
@@ -639,7 +636,7 @@ pub fn useFocusRing(scope: *Scope, cx: *Cx, node: *Node, config: FocusRingConfig
             if (c.is_focused.get()) {
                 c.anim_state.opacity_anim.setTo(1.0, now_ms);
                 // 本回调是 void，无法传播；z_index 只是视觉层级，
-                // 分配失败时保持原值降级即可 —— 但绝不能 @panic 掉整个进程。
+                // 分配失败时保持原值降级即可，但绝不能 @panic 掉整个进程。
                 if (c.node.style.ensureExtFallible(c.allocator)) |ext| {
                     ext.z_index = 1;
                 } else |_| {}
@@ -721,7 +718,7 @@ pub const ToggleState = struct {
     checked: bool = false,
     disabled: bool = false,
     /// 2026-07-31 并轨：统一 `?core.HandlerRef`（context 已含在内）。
-    /// 用 invokeWithBool 触发 —— 注册方若用的是无参 handler，会退化为
+    /// 用 invokeWithBool 触发，注册方若用的是无参 handler，会退化为
     /// 无参调用而不是丢事件。
     on_change: ?core.HandlerRef = null,
 

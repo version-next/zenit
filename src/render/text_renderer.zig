@@ -93,11 +93,11 @@ const Segment = struct {
 /// 栈上最大段数（超过则 fallback 到整行缓存）
 const MAX_SEGMENTS = 256;
 
-/// 段级缓存 — 每个段最多内联存储的 glyph 数。
+/// 段级缓存，每个段最多内联存储的 glyph 数。
 ///
 /// 这个上限决定了哪些段能进缓存：超过的段每帧现场 shape。代码文本里
 /// 最长的段（`compute(alpha_00042,` 这类标识符/调用表达式，一段就是
-/// 一行的大半字节）普遍在 12～32 之间 —— 取 12 时它们全部逐帧重 shape，
+/// 一行的大半字节）普遍在 12～32 之间，取 12 时它们全部逐帧重 shape，
 /// git diff 滚动实测 encode 的 ~85% 都烧在 CTLineCreateWithAttributedString
 /// 上。32 覆盖绝大多数代码 token；更长的段默认走 owned 路径，
 /// 显式开启 cache_long_segments 时可进入有界 spill cache。
@@ -191,7 +191,7 @@ const FallbackFontCacheEntry = struct {
 
 /// 主字体覆盖判定缓存的键：cmap 覆盖是 (字体, 码点) 的纯函数。
 /// 只有长命字体（selector 档位 / derived cache）会当 primary 进来，
-/// 指针作键安全 —— 与 fallback wrapper 那个「run 级 CTFontRef 指针不稳定」
+/// 指针作键安全，与 fallback wrapper 那个「run 级 CTFontRef 指针不稳定」
 /// 的教训不冲突：那是 CoreText 现场造的临时实例，这里是我们持有的。
 const PrimaryCovKey = struct { font_ptr: usize, cp: u21 };
 const PRIMARY_COVERAGE_CACHE_MAX = 16384;
@@ -244,11 +244,11 @@ fn isCJK(cp: u21) bool {
 }
 
 /// BMP 内可带 emoji 表现的码点（U+1F000 以下）。这些字符本身是普通符号，
-/// 跟上 VS16(U+FE0F) 才转成彩色 emoji（如 ❤ U+2764 → ❤️）。
+/// 跟上 VS16(U+FE0F) 才转成彩色 emoji（如 ❤ U+2764 -> ❤️）。
 ///
 /// 必须和 `cp >= 0x1F000` 一起进 emoji 分支：否则它们落到"其他 Unicode
 /// 逐码点独立"分支，基字与 VS16 被切成两段分别 shape，CoreText 看不到
-/// 这个组合 → 退回单色文本形态，且宽度按窄字形算（12.742 vs 19.0），
+/// 这个组合 -> 退回单色文本形态，且宽度按窄字形算（12.742 vs 19.0），
 /// 光标随之偏移。
 fn isEmojiCapable(cp: u21) bool {
     return (cp >= 0x2190 and cp <= 0x21FF) or // 箭头
@@ -365,7 +365,7 @@ fn segmentText(text: []const u8, out: *[MAX_SEGMENTS]Segment) u32 {
                 };
                 // 只在**前一个码点是 ZWJ** 时才接受 BMP emoji 基字
                 // （如 ❤‍🔥 = U+1F525 ZWJ U+2764）。无条件接受 isEmojiCapable
-                // 会把紧跟 emoji 的普通符号（→ ■ 等）误吞进同一段。
+                // 会把紧跟 emoji 的普通符号（-> ■ 等）误吞进同一段。
                 const prev_was_zwj = i >= 3 and text[i - 3] == 0xE2 and text[i - 2] == 0x80 and text[i - 1] == 0x8D;
                 if (isJoiner(ncp) or ncp >= 0x1F000 or (prev_was_zwj and isEmojiCapable(ncp))) {
                     i += ncl;
@@ -386,7 +386,7 @@ fn segmentText(text: []const u8, out: *[MAX_SEGMENTS]Segment) u32 {
             i += 1;
         } else if (isRtlScript(cp)) {
             // RTL：连续的 RTL 码点**整段**扫下来交给 CoreText。
-            // 不能像下面 else 那样逐码点切 —— 那会同时毁掉 bidi 重排、
+            // 不能像下面 else 那样逐码点切，那会同时毁掉 bidi 重排、
             // 阿拉伯连写形态和变音符号挂载（见 isRtlScript 注释）。
             // 段内允许夹空格：RTL 词间空格属于同一个 bidi run，单独成段
             // 会把一句话切成多个 run 并按 LTR 累加 cursor 拼回去。
@@ -444,7 +444,7 @@ pub var text_draw_calls: u64 = 0;
 /// 模块级累计：uniform 槽位溢出到备用 buffer 的次数。
 ///
 /// 溢出本身**不再丢字**（见 TextRenderer.flush 的注释），但它是「一帧内 clip
-/// 切换次数超出预期」的直接信号 —— 那正是 2026-08 那轮 clip flush 风暴的
+/// 切换次数超出预期」的直接信号，那正是 2026-08 那轮 clip flush 风暴的
 /// 特征。恒为 0 是健康态；持续增长说明该去查 clip 链是否又在逐行重发。
 /// 导出到这里是为了让 e2e / /perf 能断言它，而不是只能靠翻日志。
 pub var text_uniform_overflow_total: u64 = 0;
@@ -457,7 +457,7 @@ pub const TextRenderer = struct {
     allocator: std.mem.Allocator,
     device: *gpu.Backend.Device,
     pipeline: gpu.Backend.RenderPipeline,
-    /// Triple-buffered uniform buffers —— 必须与 instance buffers 一样按帧轮转。
+    /// Triple-buffered uniform buffers，必须与 instance buffers 一样按帧轮转。
     /// 曾经是**单个** buffer 而每帧把 uniform_write_offset 归零：三帧在飞时第 N+1
     /// 帧会覆写 GPU 尚未消费的第 N 帧 viewport/clip/scale，表现为偶发闪烁/错误裁剪。
     uniform_buffers: [BUFFER_COUNT]gpu.Backend.Buffer,
@@ -469,7 +469,7 @@ pub const TextRenderer = struct {
     ///
     /// 曾经：槽位用尽直接 `return error.UniformSlotsExhausted` 丢掉整批字。
     /// 因为 flush 失败时 instances **不清空**，下一批带着旧实例再来一次、
-    /// 再次溢出 —— 从耗尽那一刻起该帧剩余文本**全部不画**。用户可见症状是
+    /// 再次溢出，从耗尽那一刻起该帧剩余文本**全部不画**。用户可见症状是
     /// 「大段文字消失但位置留白、逐帧闪烁」，而节点树/布局 rect 全对，
     /// 只看 app_state 永远查不出来。
     ///
@@ -488,7 +488,7 @@ pub const TextRenderer = struct {
 
     /// 溢出实例缓冲（每帧槽位各一个，随需增长后**保留**）。
     ///
-    /// 旧实现在 MAX_INSTANCES 用尽后对**每一批**都 createBuffer + destroy ——
+    /// 旧实现在 MAX_INSTANCES 用尽后对**每一批**都 createBuffer + destroy,
     /// 重文本帧每帧多次 driver 分配（走驱动，非 malloc）。改为按帧槽位持有
     /// 一个可增长的 buffer：容量够就直接复用，不够才重建一次。槽位随
     /// current_buffer 轮转，因此不会覆写 GPU 尚在消费的在飞帧数据。
@@ -504,7 +504,7 @@ pub const TextRenderer = struct {
     /// 显式字体回退栈（应用注入；null = 维持纯 CoreText 级联行为）。
     /// 见 font_fallback_stack.zig 的文件头注释。
     fallback_stack: ?*FontFallbackStack = null,
-    /// (primary 字体, 码点) → 是否覆盖。selectSegmentFont 的热路径缓存：
+    /// (primary 字体, 码点) -> 是否覆盖。selectSegmentFont 的热路径缓存：
     /// 命中后每个非 ASCII 段只付一次 hash 查找，不再走 CoreText FFI。
     primary_coverage_cache: std.AutoHashMap(PrimaryCovKey, bool),
 
@@ -523,24 +523,24 @@ pub const TextRenderer = struct {
     /// prewarm 唯一的产物是「缺失字形进 atlas」。若本帧的文本负载与上一帧
     /// 逐字节相同、且期间没有发生 atlas 页驱逐，那么所需字形**必然**已经
     /// 全部驻留，整趟 prewarm 是纯粹的空转（实测滚动 448 帧里 434 帧
-    /// inserts=0，白烧 8ms/帧 —— 比 encode 本身还贵）。
-    /// 签名一致 + gc_generation 一致 → 直接跳过。
+    /// inserts=0，白烧 8ms/帧，比 encode 本身还贵）。
+    /// 签名一致 + gc_generation 一致 -> 直接跳过。
     /// 任一不符（文本变了 / 页被驱逐）都退回完整 prewarm，方向是安全的。
     prewarm_signature: u64 = 0,
     prewarm_signature_valid: bool = false,
     prewarm_gc_generation: u32 = 0,
     shaper: TextShaper,
 
-    // 段级塑形缓存 — 词/CJK 单字粒度，内联存储无 alloc
+    // 段级塑形缓存，词/CJK 单字粒度，内联存储无 alloc
     segment_cache: std.AutoHashMap(SegmentCacheKey, SegmentCacheEntry),
     cache_long_segments: bool = false,
     long_segment_cache: LongSegmentCache = .{},
-    // 整行 fallback 缓存 — 段溢出时使用
+    // 整行 fallback 缓存，段溢出时使用
     // CoreText 实际 fallback CTFontRef -> borrowed Font wrapper。
     // run 级 CTFontRef 可能每次 shape 都重新 materialize，故必须做容量控制。
     fallback_font_cache: std.AutoHashMap(u64, FallbackFontCacheEntry),
     current_frame: u64 = 0,
-    /// GC 本帧回收了 atlas 页面 → 上层需要清除渲染命令缓存
+    /// GC 本帧回收了 atlas 页面 -> 上层需要清除渲染命令缓存
     atlas_gc_happened: bool = false,
 
     // 当前帧的实例数据
@@ -563,7 +563,7 @@ pub const TextRenderer = struct {
     clip_x_max: f32 = std.math.inf(f32),
     /// 当前 pass 目标的**逻辑像素**宽（beginFrame/setViewport 的 width 参数）。
     /// setRectClip(null) 要把 clip_x_min/max 恢复成整个目标宽度，
-    /// 不能用 viewport_width —— 那是乘过 scale 的物理像素。
+    /// 不能用 viewport_width，那是乘过 scale 的物理像素。
     viewport_logical_width: f32 = 0,
     /// 右端淡出遮罩窗口（逻辑像素，与 draw x 同空间；类 CSS mask-image 的
     /// 文本专用最小实现）：glyph 左缘落在 [fade_x0, fade_x1] 内时 alpha 按
@@ -588,7 +588,7 @@ pub const TextRenderer = struct {
         defer fragment_func.deinit();
 
         // 创建 pipeline。此行之后每个可失败步骤都必须有 errdefer 覆盖已建
-        // 资源——GPU 对象 GPA 检测不到，泄漏的是 MTLBuffer/PSO/CoreText 资源。
+        // 资源，GPU 对象 GPA 检测不到，泄漏的是 MTLBuffer/PSO/CoreText 资源。
         // 注意：errdefer 声明在 for 循环体内会随迭代作用域失效（等于死代码，
         // 这里曾经就是这么写的），计数必须放在循环外。
         var pipeline = try gpu.Backend.createRenderPipeline(device, .{
@@ -749,7 +749,7 @@ pub const TextRenderer = struct {
     }
 
     /// 仅更新 viewport 尺寸（离屏合成 render pass 切换时使用）
-    /// 不重置 buffer/instances/轮转——帧内状态保持连续
+    /// 不重置 buffer/instances/轮转，帧内状态保持连续
     pub fn setViewport(self: *TextRenderer, width: f32, height: f32, scale: f32) void {
         self.viewport_width = width * scale;
         self.viewport_height = height * scale;
@@ -782,7 +782,7 @@ pub const TextRenderer = struct {
     }
 
     /// 除了记录 per-instance 的 rect_clip，还把它的 x 范围并进
-    /// clip_x_min/x_max —— draw 路径的 emit 循环按这对边界做左跳过/右截断。
+    /// clip_x_min/x_max, draw 路径的 emit 循环按这对边界做左跳过/右截断。
     /// 此前这对边界只在 beginFrame 设为整窗宽：rect clip 内的长行（split
     /// 视图的半宽代码列、横滚窗口）会一路 emit 到窗口右缘，每个不可见
     /// glyph 白付一次 atlas 查找 + instance append，最后由 GPU 按
@@ -963,10 +963,10 @@ pub const TextRenderer = struct {
         // 键必须是字体**身份**（PS 名+size+traits），不能是 CTFontRef 指针：
         // CoreText 每次 shape 给的 run 级 fallback ref 不是稳定实例。指针作键
         // 的实测后果（2026-08-22 定案，用户可见 bug）：
-        //   1. wrapper 每帧全量 miss —— 滚动 CJK 文档 240 帧创建 36.8 万个
+        //   1. wrapper 每帧全量 miss，滚动 CJK 文档 240 帧创建 36.8 万个
         //      wrapper Font（缓存 256 上限被打成 130↔194 的驱逐抖动）；
-        //   2. wrapper 堆地址进 GlyphKey.font_ptr → 同一字形以无数“新字体”
-        //      重复收录进 glyph atlas → 32 页耗尽 → AtlasFull → 后续 CJK 字形
+        //   2. wrapper 堆地址进 GlyphKey.font_ptr -> 同一字形以无数“新字体”
+        //      重复收录进 glyph atlas -> 32 页耗尽 -> AtlasFull -> 后续 CJK 字形
         //      被静默丢弃（中文逐字消失、位置留白、ASCII 因主字体指针稳定而
         //      不受影响）；地址被 allocator 复用时则是键混叠，指鹿为马。
         const key = text_module.fallbackFontRefIdentityHash(fallback_font_ref);
@@ -1012,7 +1012,7 @@ pub const TextRenderer = struct {
         if (self.fallback_stack == stack) return;
         self.fallback_stack = stack;
         self.primary_coverage_cache.clearRetainingCapacity();
-        // 字体选择变了 → prewarm 的「上一帧字形必然已驻留」基线失效。
+        // 字体选择变了 -> prewarm 的「上一帧字形必然已驻留」基线失效。
         self.prewarm_signature_valid = false;
     }
 
@@ -1028,17 +1028,17 @@ pub const TextRenderer = struct {
     }
 
     /// shaping **前**的显式字体选择（CSS font-family 语义）：
-    /// 段首码点 → primary 覆盖则 primary（隐式栈首），否则问回退栈拿第一个
-    /// 覆盖它的族的字体，用它直接 shape —— 选择确定、CTFont 由我们持有
+    /// 段首码点 -> primary 覆盖则 primary（隐式栈首），否则问回退栈拿第一个
+    /// 覆盖它的族的字体，用它直接 shape，选择确定、CTFont 由我们持有
     /// （指针稳定）、跳过 CoreText 级联开销。都答不上才维持 primary，
     /// 让 run 级联做最后兜底（emoji、罕见符号）。
     ///
     /// 判定只看段首码点：segmentText 已把 CJK 切成单码点段，混脚本段
     /// （RTL/emoji 序列）本来就该整段一个字体。ASCII 段第一字节 < 0x80
-    /// 直接短路 —— ASCII 热路径零开销。
+    /// 直接短路，ASCII 热路径零开销。
     ///
     /// ⚠ draw（shapeAndEmitSegment*）与 measure（measureTextWidthAsDrawn）
-    /// 必须都走这里 —— 单边接入就是「量出来和画出来不一样宽」的老病复发。
+    /// 必须都走这里，单边接入就是「量出来和画出来不一样宽」的老病复发。
     fn selectSegmentFont(self: *TextRenderer, seg_text: []const u8, font: *Font, requested_size: f32) *Font {
         const stack = self.fallback_stack orelse return font;
         if (seg_text.len == 0 or seg_text[0] < 0x80) return font;
@@ -1165,7 +1165,7 @@ pub const TextRenderer = struct {
     };
 
     /// 取 glyphs[i] 的 cluster_span = next_cluster - cur_cluster，最后一个 glyph 用 segment 末尾 byte 偏移。
-    /// fixed_advance 模式下用此 span 把 ligature glyph 推进 N 格，保持 byte_col → pixel_x 恒等式。
+    /// fixed_advance 模式下用此 span 把 ligature glyph 推进 N 格，保持 byte_col -> pixel_x 恒等式。
     fn clusterSpanAt(glyphs: []const text_module.ShapedGlyph, idx: usize, segment_end_byte: u32) u32 {
         const cur = glyphs[idx].cluster;
         const next = if (idx + 1 < glyphs.len) glyphs[idx + 1].cluster else segment_end_byte;
@@ -1174,7 +1174,7 @@ pub const TextRenderer = struct {
 
     /// `cluster_span` 是该 glyph 覆盖的源 byte 数 (`next_cluster - glyph.cluster`)。
     /// 在 fixed_advance 模式下，ligature glyph 的 cluster_span > 1，需要按 N × cell 推进
-    /// 以保持 byte_col → pixel_x = byte_col × cell_width 的恒等式。
+    /// 以保持 byte_col -> pixel_x = byte_col × cell_width 的恒等式。
     fn glyphAdvance(glyph: text_module.ShapedGlyph, cluster_span: u32, p: EmitParams) f32 {
         const advance = glyph.x_advance * p.layout_scale;
         if (p.fixed_advance > 0 and !glyph.is_fallback_font) {
@@ -1186,7 +1186,7 @@ pub const TextRenderer = struct {
 
     /// 注意：fixed_advance 模式下不能强制 clamp glyph_x >= cell_x。
     /// JetBrains Mono 的 calt overhang（如 `less_slash.liga` xMin=-470）依赖
-    /// 字形从 cell 起点向左延伸来形成 `</` 视觉连字 — 强行 clamp 会让 alt 字形
+    /// 字形从 cell 起点向左延伸来形成 `</` 视觉连字，强行 clamp 会让 alt 字形
     /// 被推回 cell 内，与右侧字符重叠。让字体自己负 bearing 决定位置。
     fn clampFixedAdvanceGlyphX(x: f32, cell_x: f32, glyph: text_module.ShapedGlyph, p: EmitParams) f32 {
         _ = cell_x;
@@ -1328,7 +1328,7 @@ pub const TextRenderer = struct {
 
     /// 段级缓存查找/插入。miss 时 shape 一次：能进缓存就进缓存（借出），
     /// 进不了（超长 / put 失败）就把这次 shape 的结果**连所有权一起交给
-    /// 调用方**，绝不丢弃重来 —— 旧实现对超长段先 shape、发现超限后 free
+    /// 调用方**，绝不丢弃重来，旧实现对超长段先 shape、发现超限后 free
     /// 掉返回 null，调用方拿到 null 再 shape 一遍：代码行里最长的那几个段
     /// （标识符/调用表达式）每帧每行付两次 CTLine 创建，git diff 滚动实测
     /// encode 的大头就是它。丢弃路径还只 free 不 release fallback_font_ref，
@@ -1356,7 +1356,7 @@ pub const TextRenderer = struct {
                 return .{ .glyphs = glyphs, .owned = false };
         }
 
-        // cache miss — shape 这个段
+        // cache miss, shape 这个段
         const shaped = try self.shaper.shapeWithOptions(seg_text, font, use_italic);
 
         // 超过内联容量时尝试有界长段缓存；失败仍把所有权交给调用方。
@@ -1378,7 +1378,7 @@ pub const TextRenderer = struct {
         const gop = self.segment_cache.getOrPut(cache_key) catch {
             // put 失败（极罕见）：条目没进缓存，refs 无人接管，所有权交回调用方。
             // 旧实现在这里把栈上 entry 连同已 memcpy 进去的 fallback refs 一起
-            // 丢掉 —— 每个 ref 泄漏一个 retain。
+            // 丢掉，每个 ref 泄漏一个 retain。
             return .{ .glyphs = shaped, .owned = true };
         };
         gop.value_ptr.* = entry;
@@ -1388,18 +1388,18 @@ pub const TextRenderer = struct {
         return .{ .glyphs = gop.value_ptr.glyphs_buf[0..gop.value_ptr.glyph_count], .owned = false };
     }
 
-    /// 一段文本**实际会被画成多宽** —— 与 drawTextWithOptions 的 emit 循环
+    /// 一段文本**实际会被画成多宽**，与 drawTextWithOptions 的 emit 循环
     /// 同一套分段、同一个 shaper、同一份 glyphAdvance 公式，只是不 emit。
     ///
     /// == 为什么布局必须用这个,而不是另测一次 ==
     /// `.fit` 宽度本质是「先测一次、再画一次」,两次答案不一致 = 容器按 A 收紧、
     /// 字按 B 画,尾部被裁。而绘制端的宽度并不是"文本 + 字号"的纯函数,它还取决于:
     ///   1. 用哪个 *Font shape（italic/mono/symbols/脚本回退各选各的）
-    ///   2. **分段方式** —— 绘制按 segmentText 逐段 shape(CJK 逐码点、ASCII 成词),
+    ///   2. **分段方式**，绘制按 segmentText 逐段 shape(CJK 逐码点、ASCII 成词),
     ///      整串一次 shape 会多出跨段 kerning/连字,与逐段累加的结果不等
     ///   3. fixed_advance(等宽网格)对 ligature 的按格推进
     /// 任何"重新实现一遍测量"的函数都必须同时复刻这三条才可能对得上,而它们会
-    /// 各自演进 —— 于是分岔是必然的,不是偶然的。所以这里不提供第二套算法,
+    /// 各自演进，于是分岔是必然的,不是偶然的。所以这里不提供第二套算法,
     /// 只提供**同一套算法的不 emit 版本**。
     ///
     /// 参数与 drawTextWithOptions 一一对应,调用方必须原样传它给渲染时会传的值。
@@ -1603,7 +1603,7 @@ pub const TextRenderer = struct {
         return cursor_x;
     }
 
-    /// 文本颜色 span — 用于 drawTextWithSpans 逐 glyph 着色
+    /// 文本颜色 span，用于 drawTextWithSpans 逐 glyph 着色
     pub const ColorSpan = struct {
         start: u32, // content 中的字节偏移
         end: u32,
@@ -1754,7 +1754,7 @@ pub const TextRenderer = struct {
 
         // 更新 uniform buffer
         //
-        // 溢出**不能** clamp 到最后一槽 —— 那会让本批及后续 draw 别名同一块随后
+        // 溢出**不能** clamp 到最后一槽，那会让本批及后续 draw 别名同一块随后
         // 被覆写的内存，静默画错。也**不能**丢掉这一批：flush 失败时下面的
         // clearRetainingCapacity 到不了，实例留在原地，下一批带着它再溢出一次，
         // 于是该帧从此刻起一个字都画不出来（症状：整段中文消失、位置留白、闪烁）。
@@ -1800,7 +1800,7 @@ pub const TextRenderer = struct {
         render_pass.setVertexBuffer(0, uniform_buffer, @intCast(uniform_byte_offset));
         render_pass.setFragmentBuffer(0, uniform_buffer, @intCast(uniform_byte_offset));
 
-        // Nearest pass (1:1 缩放) — 按 page_index 分桶
+        // Nearest pass (1:1 缩放)，按 page_index 分桶
         if (nearest_count > 0) {
             if (self.atlas.getSamplerNearest()) |sampler| {
                 render_pass.setFragmentSampler(0, sampler);
@@ -1808,7 +1808,7 @@ pub const TextRenderer = struct {
             try self.flushInstanceList(&self.instances_nearest, render_pass);
         }
 
-        // Linear pass (非 1:1 缩放) — 按 page_index 分桶
+        // Linear pass (非 1:1 缩放)，按 page_index 分桶
         if (linear_count > 0) {
             if (self.atlas.getSamplerLinear()) |sampler| {
                 render_pass.setFragmentSampler(0, sampler);
@@ -1874,7 +1874,7 @@ pub const TextRenderer = struct {
                 // regresses.
                 //
                 // ⚠️ 跳过 = 这一页桶里的字形**全部不画**（用户可见：整页范围内
-                // 同一批字消失、位置留白）。这条路径按设计永远不该走到 ——
+                // 同一批字消失、位置留白）。这条路径按设计永远不该走到,
                 // 走到了必须大声报出来，否则又是一个只能靠截图猜的静默丢字点。
                 std.log.warn("[TextRenderer] stale atlas page index {d} (pages: {d}); dropping batch segment of {d} glyphs", .{ cur_page, self.atlas.getPageCount(), batch_end - batch_start });
                 batch_start = batch_end;
@@ -1891,7 +1891,7 @@ pub const TextRenderer = struct {
             }
 
             // 写入 instance buffer 并 draw
-            // 注意：Metal command buffer 延迟执行，同一帧内不能回绕覆写 —
+            // 注意：Metal command buffer 延迟执行，同一帧内不能回绕覆写,
             // 否则 commit 时先前 draw call 引用的 offset 处数据已被覆盖
             var seg_offset = batch_start;
             while (seg_offset < batch_end) {
@@ -2087,7 +2087,7 @@ test "segmentText: 字节覆盖完整 —— 实测丢字文档的原文行（�
 
 test "segmentText: emoji 后的普通符号不被吞进 emoji 段" {
     var buf: [MAX_SEGMENTS]Segment = undefined;
-    // 🔥 后跟箭头 →（U+2192，在 isEmojiCapable 范围内但非 ZWJ 连接）
+    // 🔥 后跟箭头 ->（U+2192，在 isEmojiCapable 范围内但非 ZWJ 连接）
     const n = segCountOf("\u{1F525}\u{2192}", &buf);
     try seg_testing.expectEqual(@as(u32, 2), n);
 }
@@ -2178,7 +2178,7 @@ test "long segment cache preserves real shaped glyphs including fallback fonts" 
 }
 
 /// 只装配 fallback wrapper 路径用到的字段（allocator / fallback_font_cache /
-/// current_frame / atlas.cache），其余 GPU 资源保持 undefined —— 被测函数不碰它们。
+/// current_frame / atlas.cache），其余 GPU 资源保持 undefined，被测函数不碰它们。
 fn fallbackOnlyRendererForTest(allocator: std.mem.Allocator) TextRenderer {
     var tr: TextRenderer = undefined;
     tr.allocator = allocator;

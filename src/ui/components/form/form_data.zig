@@ -1,4 +1,4 @@
-/// FormOf(T) — comptime 泛型表单数据 + 验证层
+/// FormOf(T), comptime 泛型表单数据 + 验证层
 ///
 /// 基于 StoreOf(T) 实现细粒度表单状态管理：
 /// - 每字段独立 Signal（值 + error + touched + dirty）
@@ -141,7 +141,7 @@ pub fn FormOf(comptime T: type) type {
 
         /// setValue 的拷贝版（仅 []const u8 字段）：value 只需在调用期间有效
         /// （如 Input on_change 传入的内部缓冲切片），form 自持一份副本。
-        /// 先分配新副本、set、再释放旧副本 —— Signal 按内容比较，旧值必须仍可读。
+        /// 先分配新副本、set、再释放旧副本，Signal 按内容比较，旧值必须仍可读。
         pub fn setValueCopy(self: *Self, comptime field: FieldEnum, value: []const u8) !void {
             comptime std.debug.assert(FieldType(field) == []const u8);
             const idx = @intFromEnum(field);
@@ -176,7 +176,7 @@ pub fn FormOf(comptime T: type) type {
                     return;
                 }
             }
-            // 无规则 → 清空错误
+            // 无规则 -> 清空错误
             self.metas[idx].error_sig.set(null);
         }
 
@@ -200,7 +200,7 @@ pub fn FormOf(comptime T: type) type {
             return all_valid;
         }
 
-        /// 提交处理：全量验证 → 通过则回调
+        /// 提交处理：全量验证 -> 通过则回调
         pub fn handleSubmit(self: *Self) void {
             if (!self.validateAll()) return;
             if (self.on_submit) |cb| {
@@ -345,11 +345,11 @@ test "FormOf: on_change trigger auto-validates" {
         .trigger = .on_change,
     });
 
-    // 设置空值 → 自动验证报错
+    // 设置空值 -> 自动验证报错
     form.setValue(.email, "");
     try std.testing.expectEqualStrings("Required", form.meta(.email).error_sig.peek().?);
 
-    // 设置有效值 → 自动清除错误
+    // 设置有效值 -> 自动清除错误
     form.setValue(.email, "a@b.com");
     try std.testing.expect(form.meta(.email).error_sig.peek() == null);
 }
@@ -513,11 +513,11 @@ test "FormOf: handleSubmit" {
         .submit_context = @ptrCast(&cb_state),
     });
 
-    // 空 email → 验证失败 → 不提交
+    // 空 email -> 验证失败 -> 不提交
     form.handleSubmit();
     try std.testing.expect(!cb_state.submitted);
 
-    // 填写有效值 → 提交
+    // 填写有效值 -> 提交
     form.setValue(.email, "a@b.com");
     form.handleSubmit();
     try std.testing.expect(cb_state.submitted);
@@ -565,7 +565,7 @@ test "FormOf: no rules struct" {
 
     const form = try FormOf(SimpleForm).create(scope, .{ .text = "hello", .count = 0 }, .{});
 
-    // 无规则 → validateAll 应返回 true
+    // 无规则 -> validateAll 应返回 true
     try std.testing.expect(form.validateAll());
     try std.testing.expect(!form.hasErrors());
 

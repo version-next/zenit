@@ -1,16 +1,16 @@
 //! macOS NSAccessibility C ABI bridge (zig 侧 export)
 //!
-//! v0.6 §2.1 — 让 macOS NSAccessibility 协议方法 (accessibilityChildren /
+//! v0.6 §2.1，让 macOS NSAccessibility 协议方法 (accessibilityChildren /
 //! accessibilityHitTest: / accessibilityRole / etc.) 通过 C ABI 回弹 zig，
 //! 从 cx.accessibility_tree 拉 a11y node 数据。
 //!
-//! 反向 (zig → ObjC notify_*) 由本模块的 retained-tree push hooks 精确定位；
+//! 反向 (zig -> ObjC notify_*) 由本模块的 retained-tree push hooks 精确定位；
 //! system_sdk 的 snapshot API 仅作为显式兼容入口保留。
 //!
 //! 设计:
 //! - element_handle = ElementId.raw() (u32 packed)。ObjC 侧懒生成 NSAccessibilityElement
 //!   代理对象时只持 handle，不持 zig 内存
-//! - 字符串通过 cx.a11y_label_buf hash → []const u8 反查；C ABI 把 UTF-8 字节 copy 到
+//! - 字符串通过 cx.a11y_label_buf hash -> []const u8 反查；C ABI 把 UTF-8 字节 copy 到
 //!   ObjC 提供的 buffer
 //! - active context 按 window_id 路由（见 `g_active` 表）。ObjC 侧的
 //!   ZenitA11yElement / MetalView 代理各自持所属 window_id，每次回调带进来
@@ -46,7 +46,7 @@ comptime {
 }
 
 /// caller 必须实现的"从 ID 查 cx-level 字符串"接口。Cx 持有 a11y_label_buf
-/// (hash → []const u8)，把指向 buf 的 fn ptr 注入 setActiveContext。
+/// (hash -> []const u8)，把指向 buf 的 fn ptr 注入 setActiveContext。
 pub const LabelResolver = *const fn (ctx: *anyopaque, hash: u64) ?[]const u8;
 
 pub const Action = enum(u8) { press = 0, toggle = 1, increment = 2, decrement = 3 };
@@ -190,7 +190,7 @@ fn lookup(window_id: u32) ?ActiveContext {
 /// 持所属 window_id 回调进来时命中各自的槽位，互不覆盖。
 /// 同一 window_id 重复注册 = 原地更新（每帧 syncA11yTree 都会调）。
 ///
-/// 表满时静默丢弃（返回 false）—— a11y 降级好过让渲染路径报错。
+/// 表满时静默丢弃（返回 false），a11y 降级好过让渲染路径报错。
 pub fn setActiveContext(
     window_id: u32,
     tree: *AccessibilityTree,
@@ -336,7 +336,7 @@ pub fn activeContextCount() usize {
 // ============================================================================
 // C ABI exports (ObjC 调进来)
 // ----------------------------------------------------------------------------
-// 每个 export 的首参都是 `window_id` —— ObjC 侧的 ZenitA11yElement / MetalView
+// 每个 export 的首参都是 `window_id`, ObjC 侧的 ZenitA11yElement / MetalView
 // 代理持所属窗口的 id 并在每次协议方法里带进来，zig 端据此路由到该窗口自己的
 // AccessibilityTree。传 ANY_WINDOW(0) 退化成"第一个已注册窗口"（旧行为）。
 // ============================================================================
@@ -557,7 +557,7 @@ fn nthExposedChild(tree: *const AccessibilityTree, parent: ElementId, requested:
     return null;
 }
 
-/// 节点 role（a11y_tree.Role 的 u16）。无效 handle 或不存在 → .none (0)。
+/// 节点 role（a11y_tree.Role 的 u16）。无效 handle 或不存在 -> .none (0)。
 export fn zenit_a11y_role(window_id: u32, handle: u32) c_int {
     const active = lookup(window_id) orelse return 0;
     const id = ElementId.fromRaw(handle);
@@ -941,7 +941,7 @@ fn resolveStringFromNode(window_id: u32, handle: u32, field: StringField, buf: ?
     const str = active.label_resolver(active.label_ctx, hash) orelse return 0;
     if (str.len == 0) return 0;
 
-    // probe 模式：buf=NULL → 返实际长度
+    // probe 模式：buf=NULL -> 返实际长度
     if (buf == null or buf_len <= 0) return @intCast(str.len);
 
     const write_len = @min(@as(usize, @intCast(buf_len)), str.len);
@@ -950,7 +950,7 @@ fn resolveStringFromNode(window_id: u32, handle: u32, field: StringField, buf: ?
 }
 
 // ============================================================================
-// Push side (zig → ObjC NSAccessibilityPostNotification)
+// Push side (zig -> ObjC NSAccessibilityPostNotification)
 // ----------------------------------------------------------------------------
 // cx.render() 末尾 a11y_router.flushToBridge 把 dirty queue 推到
 // 这里。window_id 由 PushCxRef 携带（cx 持的 system_sdk WindowId），ObjC 端
@@ -961,7 +961,7 @@ fn resolveStringFromNode(window_id: u32, handle: u32, field: StringField, buf: ?
 // not automatically duplicate focus notifications through that path.
 // ============================================================================
 
-/// Platform push hooks — example builds (window_bridge.m linked) override 这些 fn ptr
+/// Platform push hooks, example builds (window_bridge.m linked) override 这些 fn ptr
 /// 把通知发到 NSAccessibilityPostNotification；test builds 默认 no-op 不触发 link 错误。
 /// 设计上类比 weak symbol; runtime register via setPushHooks.
 pub const PushHooks = struct {
@@ -969,7 +969,7 @@ pub const PushHooks = struct {
     focus_changed: ?*const fn (window_id: u32, element_raw: u32) callconv(.c) c_int = null,
     children_changed: ?*const fn (window_id: u32, element_raw: u32) callconv(.c) c_int = null,
     announce: ?*const fn (window_id: u32, text_ptr: [*]const u8, text_len: c_int, priority: u8) callconv(.c) c_int = null,
-    /// aria-activedescendant — caller pass container ElementId
+    /// aria-activedescendant, caller pass container ElementId
     /// (combobox/listbox/grid) + 当前 active 子项 ElementId。当 active.isNull() 时
     /// 表示无 active descendant (popover 关闭等)。
     active_descendant_changed: ?*const fn (window_id: u32, container_raw: u32, active_raw: u32) callconv(.c) c_int = null,
@@ -982,7 +982,7 @@ pub fn setPushHooks(hooks: PushHooks) void {
     g_push_hooks = hooks;
 }
 
-/// Caller-supplied context — cx 实例化时塞 window_id + 自己的 label_buf 指针。
+/// Caller-supplied context, cx 实例化时塞 window_id + 自己的 label_buf 指针。
 pub const PushCxRef = struct {
     window_id: u32,
     label_ctx: *anyopaque,
@@ -1510,11 +1510,11 @@ test "macos_bridge: two windows route independently" {
     try testing.expect(setActiveContext(WIN_B, &tree_b, &ctx_b, &TestLabelCtx.resolve));
     try testing.expectEqual(@as(usize, 2), activeContextCount());
 
-    // 各查各的 root 数 —— 旧的单槽实现下 B 会覆盖 A，这里 A 会变成 2。
+    // 各查各的 root 数，旧的单槽实现下 B 会覆盖 A，这里 A 会变成 2。
     try testing.expectEqual(@as(c_int, 1), zenit_a11y_root_count(WIN_A));
     try testing.expectEqual(@as(c_int, 2), zenit_a11y_root_count(WIN_B));
 
-    // 同一个 handle raw 值在两个窗口里指向不同节点 —— role 必须各自解析。
+    // 同一个 handle raw 值在两个窗口里指向不同节点，role 必须各自解析。
     try testing.expectEqual(
         @as(c_int, @intFromEnum(tree_mod.Role.button)),
         zenit_a11y_role(WIN_A, a_root.raw()),
@@ -1530,7 +1530,7 @@ test "macos_bridge: two windows route independently" {
     try testing.expectEqualStrings(label_a, buf[0..@intCast(na)]);
     const nb = zenit_a11y_label(WIN_B, b_root1.raw(), &buf, buf.len);
     try testing.expectEqualStrings(label_b, buf[0..@intCast(nb)]);
-    // A 的 hash 在 B 的表里查不到 —— 证明 label_ctx 没串。
+    // A 的 hash 在 B 的表里查不到，证明 label_ctx 没串。
     try testing.expectEqual(@as(c_int, 0), zenit_a11y_label(WIN_B, b_root2.raw(), &buf, buf.len));
 
     // 注销 A 不影响 B。
@@ -1553,7 +1553,7 @@ test "macos_bridge: ANY_WINDOW falls back to first registered window" {
     try testing.expect(setActiveContext(99, &tree, &ctx, &TestLabelCtx.resolve));
     // 未接线的 ObjC 代理传 0 时仍能拿到树（旧 single-window 行为兼容）。
     try testing.expectEqual(@as(c_int, 1), zenit_a11y_root_count(ANY_WINDOW));
-    // 但错的具体 window_id 查不到 —— 通配不等于"任何 id 都命中"。
+    // 但错的具体 window_id 查不到，通配不等于"任何 id 都命中"。
     try testing.expectEqual(@as(c_int, 0), zenit_a11y_root_count(98));
 }
 

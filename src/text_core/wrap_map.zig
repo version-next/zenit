@@ -1,15 +1,15 @@
-/// WrapMap — 通用 Soft Wrap 映射
+/// WrapMap，通用 Soft Wrap 映射
 ///
-/// 维护 buffer line → display line 映射。每个 display line 固定行高，
+/// 维护 buffer line -> display line 映射。每个 display line 固定行高，
 /// wrap 只改变一个 buffer line 占几个 display line。
 ///
 /// 泛型参数 Doc: 任何提供以下 read-only API 的文档类型:
-///   lineCount() → usize
-///   totalLength() → usize
-///   getLineStart(line) → usize
-///   getLineLength(line) → usize
-///   getTextBuf(start, len, buf) → ![]const u8
-///   getTextAlloc(alloc, start, len) → ![]const u8
+///   lineCount() -> usize
+///   totalLength() -> usize
+///   getLineStart(line) -> usize
+///   getLineLength(line) -> usize
+///   getTextBuf(start, len, buf) -> ![]const u8
+///   getTextAlloc(alloc, start, len) -> ![]const u8
 ///
 /// Phase 1B: Fenwick Tree 加速前缀和
 /// - applyEdit 行数不变时: O(K·logN) 增量更新（替代 O(N) rebuildPrefixSums）
@@ -48,7 +48,7 @@ pub const MeasureCtxFn = *const fn (*anyopaque, [*]const u8, usize, f32, u16, bo
 /// 单个 buffer line 的 wrap 信息
 pub const WrapEntry = struct {
     /// wrap 断点字节偏移列表（相对于行首）
-    /// N 个断点 → N+1 个 display line
+    /// N 个断点 -> N+1 个 display line
     breaks: []u32 = &.{},
     /// 断点是否由 WrapMap 分配（需要 free）
     owned: bool = false,
@@ -104,11 +104,11 @@ pub const DisplayLineRange = struct {
     end: usize,
 };
 
-/// WrapMap — 通用 Soft Wrap 映射
+/// WrapMap，通用 Soft Wrap 映射
 /// Doc: 任何提供 lineCount/getLineStart/getLineLength/getTextBuf/getTextAlloc/totalLength 的类型
 /// 从 Doc 类型推断 snapshot 返回值的 payload 类型
 /// 位置 i 之前那个**字符**的首字节（跳过 UTF-8 continuation 字节）。
-/// wrap 断词的"CJK/emoji 之后可断"规则必须看前一字符的 lead byte——
+/// wrap 断词的"CJK/emoji 之后可断"规则必须看前一字符的 lead byte,
 /// 直接看 text[i-1] 对多字节字符拿到的是 continuation（<0xE0），规则永不生效，
 /// 导致 "，后跟拉丁词" 时断点退到 "，" 之前：标点被推去下一行行首，
 /// 与渲染端的折行不一致（选区矩形/光标整段错位）。
@@ -159,7 +159,7 @@ pub fn WrapMap(comptime Doc: type) type {
         measure_ctx: ?*anyopaque = null,
         font_size: f32 = 14,
         font_weight: u16 = 400,
-        /// 等宽字体的单字符宽度（ASCII）— 用于快速 wrap 计算
+        /// 等宽字体的单字符宽度（ASCII），用于快速 wrap 计算
         char_width: f32 = 0,
         /// 是否启用精确换行（逐字符真实测量，精度高但更慢）
         precise_wrap: bool = false,
@@ -171,7 +171,7 @@ pub fn WrapMap(comptime Doc: type) type {
         revision: u64 = 0,
         /// 待消费的 patch（主线程每帧 takePendingPatch）
         pending_patch: ?WrapPatch = null,
-        /// 当前有 interpolated 行 → 下一帧需要做精确 rewrap
+        /// 当前有 interpolated 行 -> 下一帧需要做精确 rewrap
         has_interpolated_lines: bool = false,
         /// Structural allocation failed: use a coherent 1:1 mapping until retry.
         needs_rebuild: bool = false,
@@ -463,7 +463,7 @@ pub fn WrapMap(comptime Doc: type) type {
             self.has_interpolated_lines = true;
             // 拆掉 prepared 引信：该缓存是**编辑前**文本的 segment 快照，
             // content_hash 全仓从未被比较过。生产组件都设 precise_wrap=true
-            // 绕开快路径才没踩中——任何新消费者忘设这个 flag，
+            // 绕开快路径才没踩中，任何新消费者忘设这个 flag，
             // rewrapInterpolated 就会用旧 segment 重算换行（光标/选区错位）。
             // 行已标插值 ⇒ 快照必然过期，直接释放，快路径自然退化到重读文档。
             if (entry.prepared) |prepared| {
@@ -537,7 +537,7 @@ pub fn WrapMap(comptime Doc: type) type {
                             // 失败 fallback 到 wrapSingleLine
                             entry.breaks = &.{};
                             entry.owned = false;
-                            // 不得先置 entry.prepared = null —— freeWrapEntry 靠
+                            // 不得先置 entry.prepared = null, freeWrapEntry 靠
                             // `if (entry.prepared)` 释放 PreparedWrapLine（含 segments
                             // 堆数组），提前抹掉指针 = 整块泄漏（它内部会置 null）
                             self.freeWrapEntry(entry);
@@ -566,7 +566,7 @@ pub fn WrapMap(comptime Doc: type) type {
                     }
                 }
 
-                // 慢路径：没有 prepared，或 precise_wrap 模式 → 重读 doc
+                // 慢路径：没有 prepared，或 precise_wrap 模式 -> 重读 doc
                 self.freeWrapEntry(entry);
                 entry.* = self.wrapSingleLine(doc, i);
                 const new_display_count: i32 = @intCast(entry.breaks.len + 1);
@@ -629,7 +629,7 @@ pub fn WrapMap(comptime Doc: type) type {
                         entry.breaks = prepared.breaksForColumns(self.allocator, wrap_columns, self.tab_size) catch {
                             entry.breaks = &.{};
                             entry.owned = false;
-                            // 不得先置 entry.prepared = null —— freeWrapEntry 靠
+                            // 不得先置 entry.prepared = null, freeWrapEntry 靠
                             // `if (entry.prepared)` 释放 PreparedWrapLine（含 segments
                             // 堆数组），提前抹掉指针 = 整块泄漏（它内部会置 null）
                             self.freeWrapEntry(entry);
@@ -690,7 +690,7 @@ pub fn WrapMap(comptime Doc: type) type {
             none,
             /// 后台完成且已 apply
             applied: RewrapApplyStats,
-            /// 后台完成但编辑版本已变 → 结果丢弃
+            /// 后台完成但编辑版本已变 -> 结果丢弃
             stale,
             /// 后台失败（OOM / snapshot 失败等）
             failed,
@@ -881,7 +881,7 @@ pub fn WrapMap(comptime Doc: type) type {
                 self.bg_doc_snapshot = null;
             }
 
-            // stale: 编辑版本已变 → 丢弃结果（编辑改变了行号映射，强行 apply 会错位）
+            // stale: 编辑版本已变 -> 丢弃结果（编辑改变了行号映射，强行 apply 会错位）
             if (current_doc_version != self.bg_doc_version or self.bg_base_revision != self.revision or !self.enabled or self.needs_rebuild) {
                 for (self.bg_result.items) |*r| {
                     if (r.breaks.len > 0) self.allocator.free(r.breaks);
@@ -1048,7 +1048,7 @@ pub fn WrapMap(comptime Doc: type) type {
 
             const prepared = prepared_wrap_line.prepareLine(self.allocator, text) catch return self.computeWraps(text);
             // 注意：本函数返回类型非 !T，errdefer 永远不会触发（曾有一段
-            // errdefer 死代码给了"已覆盖"的假象）。失败路径必须显式清理——
+            // errdefer 死代码给了"已覆盖"的假象）。失败路径必须显式清理,
             // 对比 prepareAndComputeWrapsChunked 的正确写法。
             const breaks = prepared.breaksForColumns(self.allocator, self.wrapWidthColumns(), self.tab_size) catch {
                 prepared.deinit(self.allocator);
@@ -1185,7 +1185,7 @@ pub fn WrapMap(comptime Doc: type) type {
                 const byte = text[i];
                 // 步进单位必须是 extended grapheme cluster，不是码点：ZWJ 序列
                 // （👨‍👩‍👧）、肤色修饰（👋🏻）、VS16（❤️）、组合音标都是多码点单字形。
-                // 按码点走会把一个字形拆成多段——既按半个字形累加 advance，
+                // 按码点走会把一个字形拆成多段，既按半个字形累加 advance，
                 // 又可能把断点/last_word_boundary 落在簇内部，导致下游显示行段
                 // 起点非字形边界，光标 x 与选区宽度随之错位（emoji 光标停左边、
                 // 选区只盖半个）。整簇测量同时保证 advance 与 shaping 同源。
@@ -1234,7 +1234,7 @@ pub fn WrapMap(comptime Doc: type) type {
 
                 // 断点规则与渲染端 text_layout.findLineBreak 严格同源：CJK 之后
                 // 可断；其余位置按 UAX #14 pair table（i18n.linebreak）。记录必须
-                // 发生在溢出判定之后——当前簇若已溢出，断点只能取之前的簇。
+                // 发生在溢出判定之后，当前簇若已溢出，断点只能取之前的簇。
                 // 旧的 lead-byte 启发式把 emoji 当 CJK（前后都可断），而渲染端
                 // classify 把 emoji 归为 AL（AL×AL 不断）：同一处溢出时两边选到
                 // 不同断点，WrapMap 行段与渲染行从此错位，选区/光标整段偏移。
@@ -1289,7 +1289,7 @@ pub fn WrapMap(comptime Doc: type) type {
             return w;
         }
 
-        /// buffer line → 该行的首个 display line 编号（Fenwick O(logN)）
+        /// buffer line -> 该行的首个 display line 编号（Fenwick O(logN)）
         pub fn bufferLineToDisplayLine(self: *const Self, buf_line: usize) u32 {
             if (!self.enabled or self.needs_rebuild) return saturatingU32(buf_line);
             if (self.fenwick) |ft| {
@@ -1302,7 +1302,7 @@ pub fn WrapMap(comptime Doc: type) type {
             return total;
         }
 
-        /// buffer 坐标 → display 坐标
+        /// buffer 坐标 -> display 坐标
         pub fn bufferToDisplay(self: *const Self, buf_line: usize, byte_col: usize) DisplayPoint {
             if (!self.enabled or self.needs_rebuild) return .{ .display_line = saturatingU32(buf_line), .display_col = byte_col };
 
@@ -1336,7 +1336,7 @@ pub fn WrapMap(comptime Doc: type) type {
             return self.bufferLineToDisplayLine(buf_line) + @as(u32, @intCast(self.wrapIndexForBufferByte(buf_line, byte_col)));
         }
 
-        /// display line → buffer line + wrap 段信息（Fenwick O(logN)）。
+        /// display line -> buffer line + wrap 段信息（Fenwick O(logN)）。
         ///
         /// `line_wraps` 在增量编辑后的插值窗口中可能暂时保留旧断点，因此
         /// 必须用当前文档行长钳位。把 `doc` 作为必需参数可保证所有调用者
@@ -1660,13 +1660,13 @@ test "WrapMap context measurement stays isolated across windows" {
 //
 // 回归根因：两个 wrap 循环都按“UTF-8 码点”步进（lead byte 推 1/2/3/4 字节）。
 // ZWJ 序列（👨‍👩‍👧 = 8 码点 / 1 字形）、肤色修饰（👋🏻）、VS16（❤️）、组合音标
-// 都是多码点单字形——按码点走既把单字形的 advance 拆成多段累加，又会把断点
+// 都是多码点单字形，按码点走既把单字形的 advance 拆成多段累加，又会把断点
 // （以及 last_word_boundary）落到簇内部。下游把 display line 的 byte_start
 // 当作显示行段起点喂给 shaping/caret，段首是“半个字形”时整段 caret x 与
 // 选区矩形集体错位：emoji 光标停在左边、选区只盖半个字形。
 //
 // 修复后断点单位 = grapheme cluster，此测试锁住该不变量（修复前 ZWJ/肤色
-// 两例 byte_start 落在簇内 → 断言红）。
+// 两例 byte_start 落在簇内 -> 断言红）。
 test "soft wrap 断点落在 grapheme cluster 边界（emoji/ZWJ/肤色/组合）" {
     const M = struct {
         fn ctx(_: *anyopaque, ptr: [*]const u8, len: usize, _: f32, _: u16, _: bool) f32 {
@@ -1713,7 +1713,7 @@ test "soft wrap 断点落在 grapheme cluster 边界（emoji/ZWJ/肤色/组合�
 // 回归根因：旧实现用 lead-byte 启发式（任何 ≥0xE0 的字符前后都可断），把 emoji
 // 当 CJK；渲染端 i18n.linebreak.classify 把 emoji 归为 AL（AL×AL 不断）。文本
 // "asfd🎩一样的欠fds🍰奥asdfasdf" 在 🍰 处溢出时：渲染端退回"欠"后断行
-// （line1 = "fds🍰…"），WrapMap 却在 🍰 前断行（line1 = "🍰…"）——编辑态
+// （line1 = "fds🍰…"），WrapMap 却在 🍰 前断行（line1 = "🍰…"），编辑态
 // 选区/光标基于 WrapMap 行段，从第一个 wrap 起与渲染整段错位。
 test "precise wrap 断点规则与渲染端一致：emoji 前不断行" {
     const M = struct {
@@ -1741,7 +1741,7 @@ test "precise wrap 断点规则与渲染端一致：emoji 前不断行" {
     var dummy: u8 = 0;
     wm.measure_ctx = @ptrCast(&dummy);
     // "asfd🎩一样的欠fds" = 4*7+21+4*16+3*7 = 134 ≤ 140；+🍰(21) = 155 > 140。
-    // 渲染端：🍰(AL) 前不可断 → 退回"欠"后（byte 20）。旧实现会在 🍰 前断（byte 23）。
+    // 渲染端：🍰(AL) 前不可断 -> 退回"欠"后（byte 20）。旧实现会在 🍰 前断（byte 23）。
     wm.setWrapWidth(140, &doc);
     wm.setEnabled(true, &doc);
     _ = wm.rewrapInterpolatedAll(&doc);

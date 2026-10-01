@@ -77,7 +77,7 @@ test "SVG numeric helpers reject malformed and non-finite input" {
 // 锁两条更基本的不变式，否则畸形输入能把整个宿主进程带走：
 //
 //   1. 任何字节序列都不得 panic / 越界 / 死循环
-//   2. index 只能前进或不变，**绝不能倒退** —— 调用方普遍写成
+//   2. index 只能前进或不变，**绝不能倒退**，调用方普遍写成
 //      `while (i < s.len) { ... parseFiniteNumber(s, &i) ... }`，
 //      index 倒退一次就是无限循环（挂死，不是崩溃，更难查）
 

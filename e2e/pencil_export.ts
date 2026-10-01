@@ -1,5 +1,5 @@
 /**
- * e2e/pencil_export.ts — .pen → PNG 导出 adapter（design_source）
+ * e2e/pencil_export.ts, .pen -> PNG 导出 adapter（design_source）
  *
  * 通过 Pencil MCP（stdio JSON-RPC 2.0）调 `export_nodes`，把 .pen 的某个节点导出成
  * PNG，作为 scenario 里 `expect.design.reference` 的来源。对应

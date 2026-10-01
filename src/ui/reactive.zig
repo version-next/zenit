@@ -2,7 +2,7 @@
 // Phase 1: Owner-based Reactive System (Zig-optimized)
 
 pub const SignalOwner = @import("reactive/owner.zig").SignalOwner;
-/// 延迟销毁队列的入口类型导出给消费方——"节点还在队列里、它借用的资源不能立刻释放"
+/// 延迟销毁队列的入口类型导出给消费方，"节点还在队列里、它借用的资源不能立刻释放"
 /// 的场景（Global Find EditorPool 在 reactive 回调里被销毁）需要把资源的释放排进**同一条**队列
 ///（FIFO：节点先、资源后）。Entry 的存储归资源自己，直到回调跑完或 cancel。
 pub const DeferredDisposal = @import("reactive/deferred_disposal.zig").Entry;
@@ -192,16 +192,16 @@ test "Reactive System: diamond glitch freedom (Memo + Effect)" {
         }
     }.run);
 
-    // 初次：a=1 → b=10, c=101
+    // 初次：a=1 -> b=10, c=101
     try std.testing.expectEqual(@as(i32, 10), observed.b);
     try std.testing.expectEqual(@as(i32, 101), observed.c);
     try std.testing.expectEqual(@as(u32, 1), observed.run);
 
-    // 写 a=5 → 必须最终 b=50, c=105，且没有任何"中间观察值"
+    // 写 a=5 -> 必须最终 b=50, c=105，且没有任何"中间观察值"
     a.set(5);
     try std.testing.expectEqual(@as(i32, 50), observed.b);
     try std.testing.expectEqual(@as(i32, 105), observed.c);
-    // run 计数取决于 push 模型：可能 2 或 3 次（b 重算→push、c 重算→push 或合并）
+    // run 计数取决于 push 模型：可能 2 或 3 次（b 重算->push、c 重算->push 或合并）
     // 但最终值必须一致。这里允许 1-3 次重跑，关键是值一致。
     try std.testing.expect(observed.run >= 2);
 }
@@ -262,7 +262,7 @@ test "Reactive System: signal f32 NaN does not renotify" {
     try std.testing.expectEqual(@as(u32, 2), run_count);
 }
 
-// cross-scope cleanup adversarial test —— 在删除双轨保护前 land。
+// cross-scope cleanup adversarial test，在删除双轨保护前 land。
 //
 // 场景：owner-arena managed signal × scope-managed effect。
 // scope.dispose 后，signal 仍存活；signal.set 应当：
@@ -300,7 +300,7 @@ test "Reactive System: cross-scope cleanup — owner signal + scope effect" {
     counter.set(1);
     try std.testing.expectEqual(@as(u32, 2), effect_run_count);
 
-    // 销毁 scope —— effect 应当被 dispose；signal 仍存活
+    // 销毁 scope, effect 应当被 dispose；signal 仍存活
     scope.dispose();
 
     // 关键断言：dispose 后 signal.set 必须**不**触发已销毁的 effect。
@@ -352,14 +352,14 @@ test "Reactive System: owner.deinit cleans up graph nodes" {
     try std.testing.expectEqual(@as(usize, 150), owner.graph.nodeCount());
 
     owner.deinit();
-    // owner 已 deinit；graph 也跟着销毁——本测试主要验证不 leak
+    // owner 已 deinit；graph 也跟着销毁，本测试主要验证不 leak
     // （由 testing.allocator 在 test 末尾报告 leak 检出）
 }
 
 // 回归：memo 的 compute 在 updateIfNecessary 递归中创建 reactive 节点，
 // 会让 graph.nodes（ArrayListUnmanaged）realloc。修复前 updateIfNecessary
 // 把 `*GraphNode` 缓存跨递归使用，realloc 后通过已释放内存读
-// n.seen_versions.items → segfault（graph.zig:468）。
+// n.seen_versions.items -> segfault（graph.zig:468）。
 //
 // 触发形状必须是**两级 memo 链**：memoB 依赖 memoA 才会进入 .check 分支
 // 并递归 updateIfNecessary(memoA)，进而在递归内跑 memoA 的 compute。
@@ -378,7 +378,7 @@ test "regression: memo compute allocating reactive nodes must not dangle updateI
         s: *Signal(u32),
         fn compute(self: *@This()) u32 {
             const v = self.s.get();
-            // compute 内创建新 reactive 节点 → nodes.append → realloc
+            // compute 内创建新 reactive 节点 -> nodes.append -> realloc
             const tmp = self.sc.createSignal(u32, v) catch return v;
             return tmp.get();
         }

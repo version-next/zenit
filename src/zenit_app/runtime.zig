@@ -1,4 +1,4 @@
-/// runtime — zenit 应用运行时（App helper）
+/// runtime, zenit 应用运行时（App helper）
 ///
 /// 把 main() 里的 ~110 行启动 + 主循环 boilerplate 一行解决：
 ///
@@ -27,7 +27,7 @@
 ///   - UI Cx 初始化 + 视口设置 + measure_fn 接线
 ///   - 主循环（事件 pump + 类型转换 + dispatch + resize 检测 + frame）
 ///
-/// 不覆盖（应用层关注点 — 用户自己写）：
+/// 不覆盖（应用层关注点，用户自己写）：
 ///   - mountUI() 构建 UI 树（这是应用的业务）
 ///   - devtools、热重载、IME 高级路径、devtools deferred dispatch
 ///   - 复杂字体配置（Inter/Lora/JetBrains 等多家族 + 多字重）
@@ -100,13 +100,13 @@ fn isolateOsPointer() bool {
     return v;
 }
 
-// E2E test harness 全局 cx 引用 (单窗口应用 — 多窗口需要扩展)
+// E2E test harness 全局 cx 引用 (单窗口应用，多窗口需要扩展)
 var g_test_cx: ?*ui.Cx = null;
 fn getTestCx() ?*ui.Cx {
     return g_test_cx;
 }
 
-// E2E test harness 截图 — 全局 App 引用（单窗口）。callback 只登记请求，
+// E2E test harness 截图，全局 App 引用（单窗口）。callback 只登记请求，
 // 真实读像素在 renderer.frame() 内 present 前做。
 var g_screenshot_app: ?*App = null;
 fn getFrameStats() test_harness.FrameStatsSnapshot {
@@ -137,7 +137,7 @@ fn getFrameStats() test_harness.FrameStatsSnapshot {
     };
 }
 
-/// 清空跨帧计时环 —— e2e 性能门禁切到重场景、等其 settle 后调用，
+/// 清空跨帧计时环，e2e 性能门禁切到重场景、等其 settle 后调用，
 /// 使随后的 P95 只反映该场景本身（不混入上一个 story 的样本）。
 fn resetTiming() void {
     const app = g_screenshot_app orelse return;
@@ -163,7 +163,7 @@ fn resizeWindowForHarness(width: u32, height: u32) bool {
 fn captureScreenshot(path: []const u8) bool {
     const app = g_screenshot_app orelse return false;
     // 首选:读上一次**真实呈现**帧的保留拷贝(不驱动新帧)。
-    // 驱动新帧会把 pending 布局/标脏顺带跑完,截到的比屏幕上新 ——
+    // 驱动新帧会把 pending 布局/标脏顺带跑完,截到的比屏幕上新,
     // 呈现层 bug 期间"屏幕满残影、截图干净",e2e 全绿误判了三天。
     if (app.renderer.captureRetainedToPng(path)) return true;
     // 兜底(启动初期还没有保留帧):旧路径,驱动一帧再 readback。
@@ -280,7 +280,7 @@ pub const Config = struct {
     pump_timeout_ms: u32 = 16,
     /// 帧节奏来源：
     /// - `.display_link`（默认）：CVDisplayLink 每 vsync 唤醒主线程，pump 长超时
-    ///   纯阻塞等事件；idle 时 link 停掉 → CPU 完全静默。ProMotion 下自动 120Hz。
+    ///   纯阻塞等事件；idle 时 link 停掉 -> CPU 完全静默。ProMotion 下自动 120Hz。
     /// - `.poll`：旧行为，pump(pump_timeout_ms) 定时轮询。回滚开关。
     /// 环境变量 `ZENIT_FRAME_PACING=poll|display_link` 可覆盖（App.init 读取）。
     frame_pacing: FramePacing = .display_link,
@@ -292,7 +292,7 @@ pub const Config = struct {
     idle_skip_frames: bool = true,
 };
 
-/// App — 一站式应用运行时
+/// App，一站式应用运行时
 ///
 /// 字段都是 pub 以便高级用户绕过 run() 自己写主循环：
 ///   var app = try App.init(...);
@@ -315,7 +315,7 @@ pub const App = struct {
     renderer: *AppRenderer,
     font_manager: FontManager,
     /// 宿主装上来的字体族注册表(可选)。App 只借指针,负责在 scale 变化时
-    /// 通知它 —— 见 setFontRegistry。
+    /// 通知它，见 setFontRegistry。
     font_registry: ?*render.FontRegistry = null,
     fonts: [3]*Font, // small / medium / large
     /// 基础字体实际解析到的字体族（按字重加载时沿用）。
@@ -347,7 +347,7 @@ pub const App = struct {
         // 窗口 / Metal device / 字体装配同样在任何 run loop pool 之外。
         const pool = AutoreleasePool.push();
         defer pool.pop();
-        // App 自己堆分配 — 否则 cx.measure_fn 全局桩拿不到稳定指针。
+        // App 自己堆分配，否则 cx.measure_fn 全局桩拿不到稳定指针。
         var app = try allocator.create(App);
         errdefer allocator.destroy(app);
 
@@ -370,7 +370,7 @@ pub const App = struct {
         }
 
         // 把 macOS NSAccessibility push-side hooks (window_bridge.m
-        // 实装的 zenit_a11y_push_*) 注册到 ui.a11y.macos_bridge — cx.render() 末尾
+        // 实装的 zenit_a11y_push_*) 注册到 ui.a11y.macos_bridge, cx.render() 末尾
         // flushToBridge 通过这些 fn ptr 把 dirty event 推到 NSAccessibilityPostNotification。
         ui.a11y.macos_bridge.setPushHooks(.{
             .property_changed = zenit_a11y_push_property_changed,
@@ -412,7 +412,7 @@ pub const App = struct {
         errdefer app.device.deinit();
         errdefer app.queue.deinit();
 
-        // Surface。句柄按 `*anyopaque` 交给后端解释——App 运行时不认识
+        // Surface。句柄按 `*anyopaque` 交给后端解释，App 运行时不认识
         // CAMetalLayer，也不该认识（见 Surface.init 的注释）。
         app.surface = gpu.Backend.Surface.init(app.win.getNativeSurfaceHandle());
         errdefer app.surface.deinit();
@@ -463,7 +463,7 @@ pub const App = struct {
 
         // 本窗口的真实系统 id（macOS = NSWindow.windowNumber）。以前这里硬编码 1，
         // 两个 App 并存时 a11y / 系统 API 会全部路由到同一个 id 上互相覆盖。
-        // 0 说明底层没拿到窗口；此时用进程内单调递增的合成 id 兜底 —— 不能都
+        // 0 说明底层没拿到窗口；此时用进程内单调递增的合成 id 兜底，不能都
         // 退回同一个常数（两个 App 都拿 0 时会以同键注册、静默回到互相覆盖），
         // 合成 id 从高位段起，避免与真实 windowNumber 撞号。
         const window_id: system_sdk.events.WindowId = blk: {
@@ -493,7 +493,7 @@ pub const App = struct {
         app.cx.setWindowMetrics(app.viewport_w, app.viewport_h, app.scale);
 
         // 命中驱动拖拽区（下游应用）：custom_inset 标题栏内 mouseDown
-        // 先做真实 hit-test——点在任意交互控件上就正常下发事件，其余空白才拖窗口。
+        // 先做真实 hit-test，点在任意交互控件上就正常下发事件，其余空白才拖窗口。
         // 矩形模型（drag_right_inset）仍生效，作为回调之前的粗筛。
         if (config.window.titlebar == .custom_inset) {
             app.win.setTitlebarHitCallback(titlebarHitTestCb, app);
@@ -501,13 +501,13 @@ pub const App = struct {
 
         // 接 measure_fn。优先用**带 context** 的版本：它把本 App 自己的
         // FontSelector 作为 context 传下去，多个 App 并存时各测各的字体。
-        // 无 context 的全局指针保留为兜底（旧 API 兼容），但不再是主路径 ——
+        // 无 context 的全局指针保留为兜底（旧 API 兼容），但不再是主路径,
         // 它曾是多窗口的两处非 World 全局依赖之一。
         app.cx.text.measure_ctx_fn = measureTextWithCtx;
         app.cx.text.measure_ctx = @ptrCast(&app.font_selector);
         app.cx.text.measure_fn = measureText;
 
-        // GlyphRun pipeline 接管旧 measure 路径起步 — 把 FontManager
+        // GlyphRun pipeline 接管旧 measure 路径起步，把 FontManager
         // 注入 cx，让 cx.shapeText 能找 Font + 调 TextShaper。
         // setSystemSdk 风格：单向注入，cx 持有 ?*FontSystem 弱引用，App.deinit
         // 时 cx.deinit 在 font_manager.deinit 之前（生命周期由 App 兜底）。
@@ -533,10 +533,10 @@ pub const App = struct {
     /// == 为什么必须有这个 API，而不能只调 renderer.setFonts ==
     /// 「谁来回答一段文本有多宽」在 runtime 里有**四个**出口，init() 时全部
     /// 绑到内建字体上：
-    ///   1. `renderer.fonts`              —— 真正画字形的那套
-    ///   2. `cx.measure_ctx`              —— measure_ctx_fn 的 context
-    ///   3. `g_font_selector_for_measure` —— 无 context 的 measure_fn 兜底
-    ///   4. GlyphRun 管线（shapeViaPipeline）自己解析的字体 —— 光标定位、
+    ///   1. `renderer.fonts`，真正画字形的那套
+    ///   2. `cx.measure_ctx`, measure_ctx_fn 的 context
+    ///   3. `g_font_selector_for_measure`，无 context 的 measure_fn 兜底
+    ///   4. GlyphRun 管线（shapeViaPipeline）自己解析的字体，光标定位、
     ///      选区端点、命中测试走的就是它
     ///
     /// 前三个走 FontSelector，第四个**完全不经过 FontSelector**。所以
@@ -544,7 +544,7 @@ pub const App = struct {
     ///
     /// 第 4 个不能用 `font_manager.setDefaultFamily("Inter")` 糊过去：那只是
     /// 把 "system" 换个名字再去查**系统已安装**字体，而 Inter/Lora 是 App 用
-    /// loadFont(path) 从仓库文件装的，系统库里没有 —— 查不到就静默回退到别的
+    /// loadFont(path) 从仓库文件装的，系统库里没有，查不到就静默回退到别的
     /// 族，偏差反而从 1.442px 放大到 3.783px（实测）。只有把 FontSelector
     /// 本身交给管线当解析器，才能保证「量的和画的是同一个 *Font 对象」。
     ///
@@ -554,11 +554,11 @@ pub const App = struct {
     /// measure_ctx_fn / measure_fn（走出口 1~3）。于是同一行文本、同一组
     /// 参数，在「钩子装着」与「钩子没装」两种环境下得到不同答案：
     ///   fs=14 fw=450 "ssdf x😊"（Inter 排版、default_family 还是 HelveticaNeue）
-    ///     钩子装着（GlyphRun/HelveticaNeue）= 57.906   ← computeCursorPos 走这条
-    ///     钩子没装（FontSelector/Inter）    = 59.348   ← 布局与绘制走这条
+    ///     钩子装着（GlyphRun/HelveticaNeue）= 57.906   <- computeCursorPos 走这条
+    ///     钩子没装（FontSelector/Inter）    = 59.348   <- 布局与绘制走这条
     ///   差 1.442px，光标与选区端点因此**短**在字形右缘里侧，越往行尾差越大。
-    /// 逐字符看，拉丁段每个字母都差（s 7.465→7.266、d 8.614→8.554、
-    /// f 5.247→4.410…），emoji 段两边都是 19.000 —— 这个 bug 与 emoji 无关，
+    /// 逐字符看，拉丁段每个字母都差（s 7.465->7.266、d 8.614->8.554、
+    /// f 5.247->4.410…），emoji 段两边都是 19.000，这个 bug 与 emoji 无关，
     /// 纯英文行同样错，只是行尾 emoji 让缺口最显眼。
     ///
     /// `selector` 由调用方持有，生命周期必须覆盖整个 App；这里只借指针。
@@ -579,7 +579,7 @@ pub const App = struct {
 
     /// 装上字体族解析器(render.FontRegistry)。
     ///
-    /// 装到**当前生效的** FontSelector 上 —— 内建的那个,或宿主经
+    /// 装到**当前生效的** FontSelector 上，内建的那个,或宿主经
     /// `setFontSelector` 换上来的那个。因为 resolveFonts 是测量与渲染
     /// 共用的唯一入口,装在这一处就同时覆盖四个出口。
     ///
@@ -589,13 +589,13 @@ pub const App = struct {
         sel.family_resolve_fn = &resolveFamilyFont;
         sel.family_resolve_ctx = @ptrCast(registry);
         self.font_registry = registry;
-        // 立刻对齐当前 scale —— 装载时可能已经在 2x 屏上了,
+        // 立刻对齐当前 scale，装载时可能已经在 2x 屏上了,
         // 等下一次 scale **变化**才同步的话首屏就是糊的。
         registry.setScaleFactor(self.scale);
     }
 
     pub fn deinit(self: *App) void {
-        // Invalidate every native→Zig edge before releasing Cx/render state.
+        // Invalidate every native->Zig edge before releasing Cx/render state.
         // A closing window can still be inside live resize, IME composition, or
         // a drag session, so teardown order is part of the public contract.
         self.win.setRenderCallback(null, null);
@@ -627,13 +627,13 @@ pub const App = struct {
         // FontSelector,而它的生命周期不归 App 管。宿主惯常写法是
         //   var app = try App.init(...);   defer app.deinit();
         //   const font_set = try loadFonts(...);  defer font_set.deinit();
-        // ——defer 是 LIFO,于是 font_set 先释放、App.deinit 后执行,
+        // defer 是 LIFO,于是 font_set 先释放、App.deinit 后执行,
         // `deinitFontDerivedCache()` 就会去遍历一份**已释放**的 selector:
         // EXC_BAD_ACCESS,栈顶正是 `runtime.App.deinit`(实测下游编辑器
         // 每次关窗必崩)。
         //
         // 让 App 在拆自己之前先回到内建 selector:外来那份由宿主自己负责,
-        // 我们既不释放它、也不再读它。这样宿主两种 defer 顺序都安全 ——
+        // 我们既不释放它、也不再读它。这样宿主两种 defer 顺序都安全,
         // 生命周期契约不该由调用方的声明次序来保证。
         if (self.renderer.fonts != &self.font_selector) {
             self.renderer.setFonts(&self.font_selector);
@@ -655,14 +655,14 @@ pub const App = struct {
         allocator.destroy(self);
     }
 
-    /// Mount 函数签名 — `runWith` / `mount` 接受这种回调。
+    /// Mount 函数签名，`runWith` / `mount` 接受这种回调。
     /// scope 由 App 创建并持有；返回的 root node 直接装上去。
     pub const MountFn = *const fn (cx: *ui.Cx, scope: *ui.Scope) anyerror!*ui.Node;
 
     /// 创建 root_scope、调用 mount_fn 构建 UI 树、把 root 装上 cx。
     /// 这把每个 mountUI() 都写过的 4 行 boilerplate 一次性吃掉。
     /// test-mode：把 file-RPC harness 的目标重新绑到本 App。
-    /// `mount()` 的注册是"后到者赢"——多窗口宿主（DevTools 等辅助窗口也走
+    /// `mount()` 的注册是"后到者赢"，多窗口宿主（DevTools 等辅助窗口也走
     /// App.mount）会把 g_test_cx / g_screenshot_app 顶成辅助窗口，此后所有
     /// RPC 按键/截图都打到错误的窗口上。宿主创建完辅助窗口后调用本方法把
     /// 主窗抢回来。非 test-mode 下是 no-op。
@@ -674,7 +674,7 @@ pub const App = struct {
 
     pub fn mount(self: *App, mount_fn: MountFn) !void {
         // Build-first / commit-last 事务：任何一步失败都必须让 App 回到"未 mount"
-        // 状态，且不留下任何指向已释放内存的字段 —— 用户惯用 `defer app.deinit()`，
+        // 状态，且不留下任何指向已释放内存的字段，用户惯用 `defer app.deinit()`，
         // deinit 第一件事就是 cx.deinit()，会重新走一遍 root_scope / root。
         //
         // 注意不能简单地把赋值挪到最后：mount_fn 里的 `cx.provide()` 会调
@@ -705,10 +705,10 @@ pub const App = struct {
         errdefer if (portal_orphan) portal.destroy(allocator);
         portal.meta.ownership.meta.component_name = "WindowOverlayPortal";
         (try portal.style.ensureExtFallible(allocator)).z_index = ui.Cx.window_portal_z_index;
-        // 注意：不能用 setHitTestVisible(false) —— hit-test 构建在不可见节点处直接
-        // 剪掉**整棵子树**（hit_runtime.buildRecursive: !participates → return），会让
+        // 注意：不能用 setHitTestVisible(false), hit-test 构建在不可见节点处直接
+        // 剪掉**整棵子树**（hit_runtime.buildRecursive: !participates -> return），会让
         // portal 里的 Modal/Sheet 全部不可点（× 关不掉、遮罩点不消）。空 box 默认就没有
-        // pointer hit role（defaultRoles: 无 handler/非 focusable/非 button → pointer=false），
+        // pointer hit role（defaultRoles: 无 handler/非 focusable/非 button -> pointer=false），
         // portal 自身本就不拦截命中，其子树（barrier/dialog）正常参与 hit-test。
         // Scope 晚于两个节点创建，errdefer 时会先 dispose scope，
         // 让 portaled content 的 resource cleanup 还能安全访问 portal，然后再销毁树。
@@ -810,11 +810,11 @@ pub const App = struct {
         // 首帧必渲染（needs_redraw 默认 true 也兜底，双保险）。
         var force_frame = true;
         const display_link_mode = self.config.frame_pacing == .display_link;
-        // ZENIT_DEBUG_FRAMEPACE=1：帧节奏统计——每 120 个连续渲染帧打一行
+        // ZENIT_DEBUG_FRAMEPACE=1：帧节奏统计，每 120 个连续渲染帧打一行
         // mean/min/max/stddev dt（ms）。验证 vsync 对齐（60Hz 下应紧贴 16.67ms、
         // 无 16/33ms 交替的 beat pattern）。idle 间隙（>100ms）不计入。
         const pace_debug = std.posix.getenv("ZENIT_DEBUG_FRAMEPACE") != null;
-        // ZENIT_DEBUG_JANK=1：逐帧探针 —— 连续渲染帧间隔 > 20ms 时打一行
+        // ZENIT_DEBUG_JANK=1：逐帧探针，连续渲染帧间隔 > 20ms 时打一行
         // （100ms 以上视为 idle 间隙不计）。定位动画卡顿用。
         const jank_debug = std.posix.getenv("ZENIT_DEBUG_JANK") != null;
         var jank_prev: ?std.time.Instant = null;
@@ -825,7 +825,7 @@ pub const App = struct {
             const pool = AutoreleasePool.push();
             defer pool.pop();
             // .poll：定时轮询（旧行为逐字保留）。
-            // .display_link：pump 长超时纯阻塞——link 运行时每 vsync 由空事件唤醒；
+            // .display_link：pump 长超时纯阻塞，link 运行时每 vsync 由空事件唤醒；
             // link 停掉（idle）时靠输入事件唤醒，超时钳到最近的 wake deadline
             // （光标闪烁 scheduleRedrawAfterNs / deferred 任务），兜底 idle_wait_ms。
             const pump_timeout: u32 = if (display_link_mode)
@@ -849,7 +849,7 @@ pub const App = struct {
             // idle 停帧门控：树全 clean、无动画、无 deferred work 时跳过整个
             // GPU acquire/encode/present（改动前 idle 稳定 ~60fps 空转提交）。
             // needs_redraw 由 advanceFrameClock 在帧内边沿消费（时钟读完后清），
-            // 这里不要提前清——会把本次唤醒的帧时钟冻住，时间驱动的 overlay
+            // 这里不要提前清，会把本次唤醒的帧时钟冻住，时间驱动的 overlay
             // 入场动画会永远停在 0。
             const want = !self.config.idle_skip_frames or force_frame or self.cx.wantsFrame() or self.renderer.recording_active;
             // display link start/stop 与 idle 门控同一决策点：want 沿变启停。
@@ -912,7 +912,7 @@ pub const App = struct {
     }
 
     /// display-link 模式的 pump 超时：min(idle_wait_ms, 距最近 wake deadline)。
-    /// test harness 下钳到 16ms——e2e RPC 命令写在文件里，纯事件阻塞不会被唤醒。
+    /// test harness 下钳到 16ms, e2e RPC 命令写在文件里，纯事件阻塞不会被唤醒。
     fn computeIdleTimeoutMs(self: *App) u32 {
         var timeout_ms: u64 = self.config.idle_wait_ms;
         if (test_harness.enabled) timeout_ms = @min(timeout_ms, 16);
@@ -925,7 +925,7 @@ pub const App = struct {
     }
 
     /// 每轮唤醒按 want 沿启停 CVDisplayLink。
-    /// 启动即时（保证下一 vsync 就有节拍）；停止带 2 次防抖——动画收尾帧常在
+    /// 启动即时（保证下一 vsync 就有节拍）；停止带 2 次防抖，动画收尾帧常在
     /// clean/dirty 边界抖动，立即 stop 会造成 link 频繁启停。
     fn syncDisplayLink(self: *App, want: bool) void {
         if (want) {
@@ -986,7 +986,7 @@ pub const App = struct {
                     self.cx.handleMouseUpEx(e.x, e.y, ui_btn, ui_mods);
                 }
             },
-            .mouse_wheel => |e| self.cx.handleScrollWithModifiers(e.x, e.y, e.dx, e.dy, e.is_momentum, e.phase_ended, e.is_trackpad, sdkModifiersToUi(e.modifiers)),
+            .mouse_wheel => |e| self.cx.handleSdkWheel(e),
             .magnify => |e| self.cx.handleMagnify(e.magnification, e.x, e.y, @enumFromInt(e.phase)),
             .drag => |e| {
                 // kind=4 = 拖拽源完成回执（cx.handleDrag 侧防御性忽略）。
@@ -1016,7 +1016,7 @@ pub const App = struct {
     }
 
     /// surface 配置的单一出口：init 与 resize 重配必须产出一致的配置。
-    /// usage 依赖 test-mode——test 下 drawable 必须 CPU 可读（framebufferOnly=false），
+    /// usage 依赖 test-mode, test 下 drawable 必须 CPU 可读（framebufferOnly=false），
     /// 否则 e2e 截图的 getBytes 读不到像素；此前 resize 路径硬编码
     /// .color_target_only，重配后 readback 花屏。生产构建仍走快路径。
     fn surfaceConfigFor(width: u32, height: u32) gpu.Backend.SurfaceConfiguration {
@@ -1048,7 +1048,7 @@ pub const App = struct {
         //
         // 这里用**每帧轮询**而非 windowDidChangeBackingProperties 观察者：
         // 本函数已经每帧跑、且已经在处理由同一事件引起的 drawable 尺寸变化，
-        // 轮询一个 CGFloat 的成本可忽略，而加观察者要跨 ObjC→Zig 再引一套
+        // 轮询一个 CGFloat 的成本可忽略，而加观察者要跨 ObjC->Zig 再引一套
         // 事件队列，多一条独立的时序路径（观察者先到、drawable 后到）反而更难
         // 保证两者同帧一致。system_sdk 侧本来也已经是轮询 getScaleFactor 的。
         const new_scale = self.win.getScaleFactor();
@@ -1056,26 +1056,26 @@ pub const App = struct {
         if (scale_changed) {
             self.scale = new_scale;
             // 字体必须按新 scale 重新光栅化。Font.scale_factor 就地可变、
-            // 不改变 Font 指针 —— glyph atlas 的 GlyphKey 含 scale_q，所以
+            // 不改变 Font 指针，glyph atlas 的 GlyphKey 含 scale_q，所以
             // 新 scale 会自然产生新缓存条目，旧条目则随页面 age-based GC
             // （EVICT_THRESHOLD）被回收，无需在此手动清空图集。
             //
             // 走 font_selector 而非只遍历 self.fonts：后者只有 small/medium/
             // large 三个基准字体，而非标准字号的文本实际用的是 FontSelector
-            // 里的扩展槽位与 lazy derived font —— 漏掉它们会表现为"部分字号
+            // 里的扩展槽位与 lazy derived font，漏掉它们会表现为"部分字号
             // 变清晰了、另一些依旧糊"。
             // 宿主经 setFontSelector 换上的 selector（renderer.fonts）才是真正
-            // 画字/测量的那份，必须一并更新 —— 只改内建那份时换屏后宿主字体
+            // 画字/测量的那份，必须一并更新，只改内建那份时换屏后宿主字体
             // 停在旧 scale。
             selector_scale.syncSelectorScale(&self.font_selector, self.renderer.fonts, new_scale);
             // 字体族注册表的 face 是独立创建的,不在 font_selector 的槽位链上,
-            // 必须单独跟 scale —— 否则换屏后画布上自定义字体的文字继续糊。
+            // 必须单独跟 scale，否则换屏后画布上自定义字体的文字继续糊。
             if (self.font_registry) |reg| reg.setScaleFactor(new_scale);
         }
 
         // 刷新率同步给 Cx：DevTools Performance 面板的目标线/柱高基准、
         // renderer 的帧间隔钳制都读 cx.display_refresh_hz。与 scale 同为
-        // 每帧轮询——把窗口拖到 ProMotion↔60Hz 混合屏之间必须跟上，
+        // 每帧轮询，把窗口拖到 ProMotion↔60Hz 混合屏之间必须跟上，
         // 且读一个 f32 的成本可忽略。
         const refresh_hz = self.win.getDisplayRefreshRate();
         if (refresh_hz > 0 and refresh_hz != self.cx.display_refresh_hz) {
@@ -1420,7 +1420,7 @@ fn liveResizeRender(ctx: ?*anyopaque) callconv(.c) void {
         std.log.scoped(.zenit_runtime).warn("live-resize surface reconfigure failed: {s}", .{@errorName(err)});
         return;
     };
-    // 既被 setFrameSize:（尺寸变了 → maybeReconfigureSurface 置 needs_redraw）调用，
+    // 既被 setFrameSize:（尺寸变了 -> maybeReconfigureSurface 置 needs_redraw）调用，
     // 也被原生 live-resize ticker 按刷新率调用（拖动按住期间驱动动画）；
     // 静止且尺寸未变时不重画。
     if (!app.cx.wantsFrame()) return;
@@ -1429,7 +1429,7 @@ fn liveResizeRender(ctx: ?*anyopaque) callconv(.c) void {
     };
 }
 
-/// 字体 fallback 链 — 找到第一个能用的就返回。
+/// 字体 fallback 链，找到第一个能用的就返回。
 /// macOS 还会尝试系统字体目录绝对路径作为最后兜底。
 const ResolvedFont = struct { font: *Font, family: []const u8 };
 
@@ -1490,7 +1490,7 @@ fn installProcessTextHooks(ctx: ?*anyopaque) void {
     }
 }
 
-/// 带 context 的测量 —— context 是本 App 的 FontSelector，故多 App 并存
+/// 带 context 的测量，context 是本 App 的 FontSelector，故多 App 并存
 /// 时不会互相覆盖（对比下面读全局静态指针的 measureText）。
 fn measureTextWithCtx(ctx: *anyopaque, text_ptr: [*]const u8, text_len: usize, font_size: f32, font_weight: u16, use_italic: bool) f32 {
     const fs: *FontSelector = @ptrCast(@alignCast(ctx));
@@ -1498,7 +1498,7 @@ fn measureTextWithCtx(ctx: *anyopaque, text_ptr: [*]const u8, text_len: usize, f
 }
 
 /// GlyphRun 管线的字体解析器：与渲染共用 FontSelector.resolveFonts，
-/// 且**带 content** —— 含汉字/假名/谚文时和渲染一样切到回退字体。
+/// 且**带 content**，含汉字/假名/谚文时和渲染一样切到回退字体。
 ///
 /// == 为什么用 shapingFont() 而不是 `fallback orelse primary` ==
 /// 渲染端（command_encoder.encodeText）把 `primary` 交给 shaper 当**整段
@@ -1509,7 +1509,7 @@ fn measureTextWithCtx(ctx: *anyopaque, text_ptr: [*]const u8, text_len: usize, f
 /// 斜体是这条错路唯一必然踩中的场景：resolveContentFallback 对 italic
 /// 恒返回 upright 的 regular_font（给 italic 面缺字形时兜底），于是
 /// **每一段斜体文本**都按直立字体测量、按斜体字体绘制。Inter Italic 比
-/// upright 宽，`.fit` 容器因此照直立宽度收紧，斜体字被裁在右缘 ——
+/// upright 宽，`.fit` 容器因此照直立宽度收紧，斜体字被裁在右缘,
 /// 下游编辑器的 preview file tab（单击预览＝斜体）长文件名尾部丢字即此因。
 fn resolveFamilyFont(
     ctx: *anyopaque,
@@ -1535,7 +1535,7 @@ fn resolveShapeFont(
     return fs.resolveFonts(content, .{
         .font_size = font_size,
         .font_weight = font_weight,
-        // 必须原样传下去 —— 这是出口 4,漏了它测量端就用默认族、
+        // 必须原样传下去，这是出口 4,漏了它测量端就用默认族、
         // 渲染端用用户选的族,光标/选区系统性偏移。
         .font_family = font_family,
         .use_italic = use_italic,

@@ -17,13 +17,13 @@ pub const backend_contract = @import("backend_contract.zig");
 // ============================================================================
 
 /// 可选后端。`metal` 是生产后端；`null_backend` 是无设备的确定性参考实现，
-/// 用来**证伪抽象**——只有第二个实现真的编译通过，才能确认 `Backend.*` 的
+/// 用来**证伪抽象**，只有第二个实现真的编译通过，才能确认 `Backend.*` 的
 /// 签名是 backend-neutral 的，而不是把 Metal 语义焊死在了里面。
 pub const BackendKind = enum { metal, null_backend };
 
 /// 选中的后端种类。
 ///
-/// 默认跟随平台（macOS → Metal）。`-Dgpu-backend=null` 可切到参考实现，
+/// 默认跟随平台（macOS -> Metal）。`-Dgpu-backend=null` 可切到参考实现，
 /// 这是 C1「让抽象长出第二个实现」的入口。选择发生在**编译期**：切换后端
 /// 不引入任何运行时分支或虚调用（见 RENDERER_RHI_PLAN.md §8 的停止条件）。
 pub const backend_kind: BackendKind = blk: {
@@ -461,7 +461,7 @@ pub const InstanceDescriptor = struct {
     /// 见 build.zig），运行时描述符管不着；Metal / Null 两个后端的 `Instance.init`
     /// 都直接丢弃整个 descriptor。
     ///
-    /// 保留这个字段只为对齐 wgpu 的描述符形状，设置它不会有任何效果——尤其是
+    /// 保留这个字段只为对齐 wgpu 的描述符形状，设置它不会有任何效果，尤其是
     /// `Backends` 里列出的 vulkan / dx12 / dx11 / gl / browser_webgpu **都没有
     /// 对应实现**，别把它当成"打开某后端"的开关。
     backends: Backends = .all,
@@ -896,13 +896,13 @@ pub const ComputePassDescriptor = struct {
 };
 
 test {
-    // ⚠ Zig 不会递归收集被 import 文件里的 test 块 —— `pub const x =
+    // ⚠ Zig 不会递归收集被 import 文件里的 test 块，`pub const x =
     // @import(...)` 这种顶层再导出**不会**让它的 test 被收集（见 build.zig
-    // 里 text.zig→font_catalog 那次「3ms 就跑完了」的记录）。要跑就必须在
+    // 里 text.zig->font_catalog 那次「3ms 就跑完了」的记录）。要跑就必须在
     // 这里显式引用一次。
     //
     // 2026-09-22 实测：加 resource_pool / bind_group / conv 之前 test-gpu 是
-    // 10 个，之后 22 个 —— 前面 12 个（含 ABA、epoch 退休等关键不变量）
+    // 10 个，之后 22 个，前面 12 个（含 ABA、epoch 退休等关键不变量）
     // 一直没跑过。
     _ = rhi;
     _ = backend_contract;
@@ -917,7 +917,7 @@ test {
 
 test "both backends satisfy the renderer contract" {
     // C1 的核心断言：契约不是只对**当前选中**的后端成立，而是对**两个**
-    // 后端都成立。只校验选中的那个是循环论证——那正是"抽象从未被证伪"
+    // 后端都成立。只校验选中的那个是循环论证，那正是"抽象从未被证伪"
     // 的老状态（见 docs/internal/RHI_SECOND_BACKEND_ASSESSMENT.md）。
     //
     // verify 是 comptime 的：这两行任一不满足都会让本文件编译失败，

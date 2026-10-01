@@ -1,12 +1,12 @@
-//! font_catalog.zig —— 系统字体目录（字体选择器的数据层）
+//! font_catalog.zig，系统字体目录（字体选择器的数据层）
 //!
-//! 职责：枚举系统已安装的字体家族，并为每个家族回答一个问题 ——
+//! 职责：枚举系统已安装的字体家族，并为每个家族回答一个问题,
 //! **「这一行该画什么，才能让用户看出这个字体长什么样？」**
 //!
 //! == 为什么这件事不是「把家族名用该字体画出来」那么简单 ==
 //!
 //! 本机实测（macOS，272 family / 990 face）：
-//!   · **47 个家族（17%）渲染不了自己的名字** —— 阿拉伯/希伯来/天城文/
+//!   · **47 个家族（17%）渲染不了自己的名字**，阿拉伯/希伯来/天城文/
 //!     CJK/缅甸/藏文… 它们的名字是拉丁字母，字体里却没有拉丁字形。
 //!     直接用自身渲染 = 一片空白或豆腐块。
 //!   · **9 个符号字体**（Wingdings/Webdings/Zapf Dingbats/…）更阴险：
@@ -16,11 +16,11 @@
 //! 所以 `previewPlan()` 把每个家族归到四条路线之一，实测 272 个家族
 //! **100% 有解**（见 tests）：
 //!
-//!   1. `.self`         —— 名字用字体自身渲染（拉丁字体，主流路线）
-//!   2. `.glyph_sample` —— 符号字体：名字用 UI 字体，另附字形示例
+//!   1. `.self`，名字用字体自身渲染（拉丁字体，主流路线）
+//!   2. `.glyph_sample`，符号字体：名字用 UI 字体，另附字形示例
 //!                          （抄 CorelDRAW，是调研里唯一文档化此处理的一家）
-//!   3. `.lang_sample`  —— 非拉丁：名字用 UI 字体，另附该语言样例串
-//!   4. `.codepoints`   —— 兜底：从字体自己的 character set 取可渲染码点
+//!   3. `.lang_sample`，非拉丁：名字用 UI 字体，另附该语言样例串
+//!   4. `.codepoints`，兜底：从字体自己的 character set 取可渲染码点
 //!                          （实测只有 Noto Sans Batak / Tagalog 落到这里）
 //!
 //! == 用法 ==
@@ -76,7 +76,7 @@ pub const Family = struct {
     /// 所以没有"真的不可用"的字体。但两类选了会让用户困惑:
     ///   · 符号字体(9 个):打 "hello" 出来是一串图形;
     ///   · 无拉丁字形(43 个):打英文得到空白/豆腐块。
-    /// 这两类在 UI 上给 disabled 视觉(仍可点 —— 用户可能就是要打阿拉伯语),
+    /// 这两类在 UI 上给 disabled 视觉(仍可点，用户可能就是要打阿拉伯语),
     /// 属于**提示**而不是**禁止**。
     pub fn isUsableForLatinText(self: Family) bool {
         return self.has_latin and !self.is_symbolic;
@@ -92,15 +92,15 @@ pub const Family = struct {
     }
 };
 
-/// 语言标签 → 该语言的短样例串。
+/// 语言标签 -> 该语言的短样例串。
 ///
 /// 只覆盖实测中真正出现过的标签（macOS 上渲染不了自己名字的 47 个家族里，
 /// 41 个能给出标签，分布：ar×20 he×5 my×2 bo×2 bgc×2 gu×2 zh/hy/kn/or/pa/
-/// brx/nqo/syr 各 1）。命中不了就返回 null，走码点兜底 —— 所以这张表
+/// brx/nqo/syr 各 1）。命中不了就返回 null，走码点兜底，所以这张表
 /// **不需要穷举世界上所有语言**，漏了也不会出现空白行。
 fn sampleForLang(tag: []const u8) ?[]const u8 {
     if (tag.len == 0) return null;
-    // 按主语言子标签比对（"zh-Hans" → "zh"）。
+    // 按主语言子标签比对（"zh-Hans" -> "zh"）。
     const primary = blk: {
         const dash = std.mem.indexOfScalar(u8, tag, '-') orelse break :blk tag;
         break :blk tag[0..dash];
@@ -155,7 +155,7 @@ pub const FontCatalog = struct {
 
     /// 扫描系统字体。实测 ~40ms（272 family），**建议后台线程调用**。
     ///
-    /// 非 macOS 返回空目录 —— 枚举桥只在 CoreText 后端有实现。
+    /// 非 macOS 返回空目录，枚举桥只在 CoreText 后端有实现。
     pub fn scan(allocator: std.mem.Allocator) !FontCatalog {
         var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
@@ -192,7 +192,7 @@ pub const FontCatalog = struct {
 
             var info: bridge.CoreTextFamilyInfo = undefined;
             if (bridge.coretext_family_info(cname, &info) != 0) continue;
-            // descriptor 查不到 face 的（如 SF Pro）不进列表 —— 选中了也用不了。
+            // descriptor 查不到 face 的（如 SF Pro）不进列表，选中了也用不了。
             if (info.face_count == 0) continue;
 
             const name = try a.dupe(u8, std.mem.span(cname));
@@ -250,7 +250,7 @@ pub const FontCatalog = struct {
 
 /// 用户存盘的字体名是否**真的**能解析回同一个字体。
 ///
-/// ⚠ 必须用它，不能只看 `coretext_find_font` 是否返回非 null ——
+/// ⚠ 必须用它，不能只看 `coretext_find_font` 是否返回非 null,
 /// 那个函数对不存在的家族会静默返回一个替身，于是「字体丢失」会
 /// 伪装成「字体正常」，用户看到的是另一个字体却没有任何提示。
 pub fn familyExists(name: [:0]const u8) bool {
@@ -263,7 +263,7 @@ pub fn familyExists(name: [:0]const u8) bool {
 /// 可变字体按 100~900 铺满也只有 9 个。16 给足余量。
 pub const MAX_WEIGHTS: usize = 16;
 
-/// 标准字重档位的显示名（CSS 数值 → UI 文案）。
+/// 标准字重档位的显示名（CSS 数值 -> UI 文案）。
 /// 与 CoreText 的 style name 不同：CT 给的是"Demi Bold"/"Heavy"这类
 /// **家族自定名**，同一个 600 在不同家族叫法不一。下拉要的是统一刻度。
 pub fn weightLabel(css: u16) []const u8 {
@@ -283,12 +283,12 @@ pub fn weightLabel(css: u16) []const u8 {
 
 /// 该家族**实际可用**的字重档位（CSS 100~900，升序去重）。
 ///
-/// ⚠ 必须用它来生成字重下拉，不能挂一张固定的 100~900 列表 ——
+/// ⚠ 必须用它来生成字重下拉，不能挂一张固定的 100~900 列表,
 /// CoreText 对拿不到的字重**静默降级且不报错**：实测 Zapfino 只有一个
 /// face，问它要 Bold 会安静地返回 Regular；Menlo 要 Light 同样回 Regular。
 /// 给出字体没有的档位 = 用户选了画面纹丝不动，且没有任何失败信号。
 ///
-/// 非 macOS 与查不到 face 的家族一律回退成单档 400 —— 空列表会让
+/// 非 macOS 与查不到 face 的家族一律回退成单档 400，空列表会让
 /// 下拉变成一个点不开的死控件。
 pub fn familyWeights(name: [:0]const u8, out: []u16) usize {
     if (out.len == 0) return 0;
@@ -314,14 +314,14 @@ pub fn familyWeights(name: [:0]const u8, out: []u16) usize {
 // tests
 //
 // 这些断言钉的是**本机实测基线**（见下游应用侧调研文档）。
-// 换一台机器装了不同字体，数字会变 —— 所以断言写成「结构性不变量」
+// 换一台机器装了不同字体，数字会变，所以断言写成「结构性不变量」
 // （每个家族都有解、符号字体不为零…），而不是硬编码 272/9/47。
 // ===========================================================================
 
 test "CoreTextFamilyInfo 的 Zig 声明与 C 侧布局一致" {
     // ⚠ 这个结构体跨语言共享,字段顺序/数量必须逐位对齐。
     // 我改过一次:Zig 侧加了 has_latin、C 侧的 patch 却因为脚本断言失败
-    // 没落盘 —— 编译**照样通过**,但 lang 会读到错位的字节。
+    // 没落盘，编译**照样通过**,但 lang 会读到错位的字节。
     // 这条测试钉住大小与关键字段偏移,ABI 一旦漂移立刻红。
     const I = bridge.CoreTextFamilyInfo;
     // 6 个 c_int(is_symbolic/can_render_name/is_variable/face_count/
@@ -366,7 +366,7 @@ test "catalog: 符号字体走 glyph_sample 而不是 self" {
     defer cat.deinit();
 
     // Wingdings 的 can_render_name 实测是 true（它有 'A' 的字形，
-    // 只不过画出来是图形）—— 如果 previewPlan 的判定顺序被人调换，
+    // 只不过画出来是图形），如果 previewPlan 的判定顺序被人调换，
     // 这条会立刻红。这正是本测试存在的理由。
     if (cat.find("Wingdings")) |w| {
         try std.testing.expect(w.is_symbolic);
@@ -445,7 +445,7 @@ test "familyWeights: 单 face 家族只给一档（不谎报字体没有的字�
     // SKIP-REASON: 依赖本机安装了特定字体家族，精简/CI 镜像可能没有
     if (builtin.target.os.tag != .macos) return error.SkipZigTest;
     // Zapfino 实测只有 1 个 face。CoreText 对它要 Bold 会静默返回 Regular,
-    // 所以下拉里绝不能出现 Bold —— 这条就是钉住"不谎报"。
+    // 所以下拉里绝不能出现 Bold，这条就是钉住"不谎报"。
     // SKIP-REASON: 依赖本机安装了特定字体家族，精简/CI 镜像可能没有
     if (!familyExists("Zapfino")) return error.SkipZigTest;
     var buf: [MAX_WEIGHTS]u16 = undefined;

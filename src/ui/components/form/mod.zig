@@ -1,9 +1,9 @@
 /// Form 组件模块
 ///
 /// 三层架构:
-/// - Layer 0: FormOf(T) — 数据 + 验证层
-/// - Layer 1: FormFieldOf(T) — 字段容器 UI
-/// - Layer 2: Form — 布局容器
+/// - Layer 0: FormOf(T)，数据 + 验证层
+/// - Layer 1: FormFieldOf(T)，字段容器 UI
+/// - Layer 2: Form，布局容器
 const std = @import("std");
 
 // Layer 0: 数据 + 验证层

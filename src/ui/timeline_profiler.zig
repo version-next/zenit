@@ -1,4 +1,4 @@
-/// 帧级 Timeline Profiler — 记录最近 128 帧各阶段耗时
+/// 帧级 Timeline Profiler，记录最近 128 帧各阶段耗时
 ///
 /// 用法:
 /// ```zig

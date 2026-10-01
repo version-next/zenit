@@ -1,25 +1,25 @@
-//! a11y 树投影（Node → AccessibilityTree）—— 从 `Cx` 析出。
+//! a11y 树投影（Node -> AccessibilityTree），从 `Cx` 析出。
 //!
 //! 原本散在 `Cx` 上的六样东西：`mapA11yRoleToTreeRole` / `parseLiveRegion` /
 //! `stringHash` 三个纯函数，加 `projectA11yNode` / `syncA11yNodeRecursive` /
 //! `firstSubtreeText` 三个投影函数。它们对 `Cx` 的**全部**依赖只有四项：
 //!
-//!   * `allocator` —— a11y_label_buf 的 put；
-//!   * `accessibility_tree` —— upsert / remove 的目标；
-//!   * `a11y_label_buf` —— hash→字符串的旁路查找表；
-//!   * `focus_manager.current_focus` —— 只读「这个节点是否持焦」一个 bool。
+//!   * `allocator`, a11y_label_buf 的 put；
+//!   * `accessibility_tree`, upsert / remove 的目标；
+//!   * `a11y_label_buf`, hash->字符串的旁路查找表；
+//!   * `focus_manager.current_focus`，只读「这个节点是否持焦」一个 bool。
 //!
 //! 接口因此切在：**投影函数接收显式参数，不接收 `*Cx`**。焦点解析留在 Cx 侧
 //! （`FocusProbe` 函数指针注入，同 text_input_session 的 Host 手法）；9 个
 //! `cxA11y*` C-ABI 回调、macos_bridge 上下文注册、flushToBridge 也留在
-//! `Cx.syncA11yTreeFromInteractions` —— 那是平台适配层，不是投影逻辑。
+//! `Cx.syncA11yTreeFromInteractions`，那是平台适配层，不是投影逻辑。
 //! `accessibility_tree` / `a11y_label_buf` 两个字段同样留在 Cx 上（大量组件
 //! 测试直接读 `cx.accessibility_tree.get(...)`，动字段是大面积改动）。
 //!
-//! 拆出来的直接收益：这些规则此前只能靠「建 Cx → mount → layout → render」
+//! 拆出来的直接收益：这些规则此前只能靠「建 Cx -> mount -> layout -> render」
 //! 整条链路驱动，现在拿一个裸 Node + 一棵 AccessibilityTree 就能断言。
 //! 这里历史上出过「十个状态位硬编码 false / value_now 恒 0」的批量事故
-//! （见 projectNode 内注释）—— 组件即使正确声明也被原地丢弃。本文件的
+//! （见 projectNode 内注释），组件即使正确声明也被原地丢弃。本文件的
 //! 逐字段测试就是为钉住那类回归而写。
 
 const std = @import("std");
@@ -35,19 +35,19 @@ const ElementId = element_id_mod.ElementId;
 const A11yProps = types.A11yProps;
 const A11yRole = types.A11yRole;
 
-/// hash→字符串旁路表。A11yNode 只存 hash 不存 slice（见 tree.zig 头注释），
+/// hash->字符串旁路表。A11yNode 只存 hash 不存 slice（见 tree.zig 头注释），
 /// AT 工具读字符串时经 label_resolver 回这张表查。
 pub const LabelBuf = std.AutoHashMapUnmanaged(u64, []const u8);
 
 /// 焦点探针：Cx 实现为「比较 focus_manager.current_focus 指针」。
-/// 投影层不需要（也不能）import Cx，于是把它做成注入 —— 与
+/// 投影层不需要（也不能）import Cx，于是把它做成注入，与
 /// text_input_session.Host、custom_cursor.RasterizeFn 同一手法。
 pub const FocusProbe = struct {
     ctx: ?*const anyopaque = null,
     isFocused: *const fn (ctx: ?*const anyopaque, node: *const Node) bool,
 };
 
-/// types.A11yRole → a11y_tree.Role 映射。后者更细 (40+ ARIA roles)，
+/// types.A11yRole -> a11y_tree.Role 映射。后者更细 (40+ ARIA roles)，
 /// 前者是 Node 上的 24-variant subset。无对应时退化 .generic (focusable 容器) 或 .none。
 pub fn mapA11yRoleToTreeRole(role: A11yRole, focusable: bool) a11y_tree_mod.Role {
     return switch (role) {
@@ -151,7 +151,7 @@ pub fn projectNode(
     const label_str = if (props.label) |l| l else firstSubtreeText(node);
     const label_hash = stringHash(label_str);
     if (label_str.len > 0) {
-        // 可降级：a11y_label_buf 只是 hash→字符串的旁路查找表，每次
+        // 可降级：a11y_label_buf 只是 hash->字符串的旁路查找表，每次
         // syncA11yTreeFromInteractions 都 clearRetainingCapacity 后整体重建。
         // put 失败只让本次 lookupA11yString 返回 null（该条 label 这一轮读不
         // 出来），不影响 a11y 树结构本身，下一次同步即自愈。
@@ -203,7 +203,7 @@ pub fn projectNode(
     // ⚠ 2026-07-31 前这里把 pressed/required/invalid/readonly/busy/
     // selected/modal/haspopup/multiline/multiselectable 十个位全部
     // 硬编码成 false，value_now/min/max 硬编码成 0。后果是组件即使
-    // 正确声明也被原地丢弃 —— ComboBox / DatePicker / SelectHeadless
+    // 正确声明也被原地丢弃，ComboBox / DatePicker / SelectHeadless
     // 都设了 has_popup，AT 侧却永远收不到；slider / progressbar 永远
     // 报不出数值。现按 props 如实投影。
     const a11y_state: a11y_tree_mod.State = .{
@@ -245,7 +245,7 @@ pub fn projectNode(
     } else null;
     const numeric = props.value_range;
 
-    // active_descendant 投影 — caller 通过
+    // active_descendant 投影，caller 通过
     // node.behavior.interaction.a11y.active_descendant_element_id 设
     // 当前激活的子项 element_id_raw (combobox/listbox/grid 虚拟焦点模式)。
     const active_desc = if (props.active_descendant_element_id == 0xFFFFFFFF)
@@ -303,7 +303,7 @@ pub fn projectNode(
 ///
 /// 节点不再合格（无 a11y props 且不 focusable）时走 remove：remove 失败会
 /// 把陈旧条目留在树上，VoiceOver 会继续朗读一个界面上已经不存在的元素，
-/// 且下次同步不会再走到这里重试 —— 故 OOM 直接 panic。
+/// 且下次同步不会再走到这里重试，故 OOM 直接 panic。
 pub fn syncSubtree(
     allocator: Allocator,
     tree: *a11y_tree_mod.AccessibilityTree,
@@ -393,7 +393,7 @@ fn makeText(content: []const u8) !*Node {
 }
 
 /// standalone content 表按 node 指针 key、进程级存活，不清会把陈旧文本
-/// 泄给复用同一地址的后续节点 —— 递归清掉再销毁。
+/// 泄给复用同一地址的后续节点，递归清掉再销毁。
 fn destroyTree(root: *Node) void {
     clearTextEntries(root);
     root.destroy(testing.allocator);
@@ -624,7 +624,7 @@ test "projectNode: live 文本解析优先级 live_text > value_text > label > �
     var labels: LabelBuf = .{};
     defer labels.deinit(testing.allocator);
 
-    // live = off → 不解析任何播报文本
+    // live = off -> 不解析任何播报文本
     const off = try makeBox();
     defer destroyTree(off);
     off.behavior.interaction.a11y = .{ .role = .status, .live_text = "不应被采用" };
@@ -633,7 +633,7 @@ test "projectNode: live 文本解析优先级 live_text > value_text > label > �
     try testing.expectEqual(a11y_tree_mod.LiveRegion.off, a_off.live);
     try testing.expectEqual(@as(u64, 0), a_off.live_text_hash);
 
-    // live_text 显式给 → 直接用
+    // live_text 显式给 -> 直接用
     const explicit = try makeBox();
     defer destroyTree(explicit);
     explicit.behavior.interaction.a11y = .{
@@ -649,14 +649,14 @@ test "projectNode: live 文本解析优先级 live_text > value_text > label > �
     try testing.expectEqual(stringHash("Disk full"), a_exp.live_text_hash);
     try testing.expectEqualStrings("Disk full", labels.get(a_exp.live_text_hash).?);
 
-    // 无 live_text → value_text
+    // 无 live_text -> value_text
     const by_value = try makeBox();
     defer destroyTree(by_value);
     by_value.behavior.interaction.a11y = .{ .role = .status, .live = "polite", .value_text = "3 files" };
     try testing.expect(projectNode(testing.allocator, &tree, &labels, by_value, makeEid(3), .NULL, 0, false, false));
     try testing.expectEqual(stringHash("3 files"), tree.get(makeEid(3)).?.live_text_hash);
 
-    // 无 live_text/value_text → 非空 label；label 为空串则继续退到子树文本
+    // 无 live_text/value_text -> 非空 label；label 为空串则继续退到子树文本
     const by_label = try makeBox();
     defer destroyTree(by_label);
     by_label.behavior.interaction.a11y = .{ .role = .status, .live = "polite", .label = "Saved" };
@@ -802,7 +802,7 @@ test "projectNode: checked/expanded 的可选三态（null → false；expanded_
     try testing.expect(!a1.state.expanded_present);
 
     // checked = false（显式未选中）/ expanded = false（显式折叠）：
-    // 值仍为 false，但「支持展开」这个事实必须能表达 —— expanded_present = true。
+    // 值仍为 false，但「支持展开」这个事实必须能表达，expanded_present = true。
     // 这正是叶 treeitem 与不支持展开元素的分界（tree.zig State 注释）。
     const declared_false = try makeBox();
     defer destroyTree(declared_false);
@@ -878,7 +878,7 @@ test "projectNode: value_range 优先于 legacy value_now/min/max；present 与 
     try testing.expect(projectNode(testing.allocator, &tree, &labels, none, makeEid(3), .NULL, 0, false, false));
     try testing.expect(!tree.get(makeEid(3)).?.numeric_value_present);
 
-    // setter + context + 未禁用/只读 → can_set_numeric_value
+    // setter + context + 未禁用/只读 -> can_set_numeric_value
     const settable = try makeBox();
     defer destroyTree(settable);
     settable.behavior.interaction.a11y = .{
@@ -909,7 +909,7 @@ test "projectNode: actions 只按「角色 × 实际可路由的回调」宣告"
     var labels: LabelBuf = .{};
     defer labels.deinit(testing.allocator);
 
-    // button + on_click → press；button 不是 toggle 角色 → toggle 关
+    // button + on_click -> press；button 不是 toggle 角色 -> toggle 关
     const btn = try makeBox();
     defer destroyTree(btn);
     btn.behavior.interaction.a11y = .{ .role = .button, .label = "B" };
@@ -927,7 +927,7 @@ test "projectNode: actions 只按「角色 × 实际可路由的回调」宣告"
     try testing.expect(projectNode(testing.allocator, &tree, &labels, dead, makeEid(2), .NULL, 0, false, false));
     try testing.expect(!tree.get(makeEid(2)).?.actions.press);
 
-    // checkbox + on_click → toggle；radio/menuitemcheckbox/menuitemradio 同类
+    // checkbox + on_click -> toggle；radio/menuitemcheckbox/menuitemradio 同类
     const cb = try makeBox();
     defer destroyTree(cb);
     cb.behavior.interaction.a11y = .{ .role = .checkbox, .label = "C" };
@@ -935,7 +935,7 @@ test "projectNode: actions 只按「角色 × 实际可路由的回调」宣告"
     try testing.expect(projectNode(testing.allocator, &tree, &labels, cb, makeEid(3), .NULL, 0, false, false));
     try testing.expect(tree.get(makeEid(3)).?.actions.toggle);
 
-    // slider + on_key_down → increment/decrement
+    // slider + on_key_down -> increment/decrement
     const slider = try makeBox();
     defer destroyTree(slider);
     slider.behavior.interaction.a11y = .{ .role = .slider, .label = "S" };
@@ -992,7 +992,7 @@ test "projectNode: editable_text 选区透传，can_set_* 受 disabled/readonly 
     try testing.expect(e1.can_set_selection); // 未 disabled/readonly
     try testing.expect(!e1.can_set_value); // 未发布 set_value
 
-    // 发布 set_value → can_set_value
+    // 发布 set_value -> can_set_value
     const n2 = try makeBox();
     defer destroyTree(n2);
     var with_setter = editableProps;
@@ -1030,7 +1030,7 @@ test "projectNode: editable_text 选区透传，can_set_* 受 disabled/readonly 
     try testing.expect(projectNode(testing.allocator, &tree, &labels, n4, makeEid(4), .NULL, 0, false, false));
     try testing.expect(!tree.get(makeEid(4)).?.editable_text.?.can_set_selection);
 
-    // 未发布 editable_text（只有 textbox 角色）→ null，平台桥必须 fail closed
+    // 未发布 editable_text（只有 textbox 角色）-> null，平台桥必须 fail closed
     const n5 = try makeBox();
     defer destroyTree(n5);
     n5.behavior.interaction.a11y = .{ .role = .textbox, .label = "T5" };
@@ -1091,7 +1091,7 @@ test "projectNode: active_descendant / 表格元数据 / orientation / frame" {
     try testing.expectEqual(@as(f32, 7), nested.frame.width);
     try testing.expectEqual(@as(f32, 8), nested.frame.height);
 
-    // 0xFFFFFFFF 哨兵 → NULL（无 active descendant）
+    // 0xFFFFFFFF 哨兵 -> NULL（无 active descendant）
     const n2 = try makeBox();
     defer destroyTree(n2);
     n2.behavior.interaction.a11y = .{ .role = .combobox, .label = "cb" };
@@ -1160,7 +1160,7 @@ test "syncSubtree: parent 是最近已投影祖先，sibling_index 只数已投�
     try testing.expectEqual(@as(u32, 0), tree.get(one_eid).?.sibling_index);
     try testing.expectEqual(@as(u32, 1), tree.get(two_eid).?.sibling_index);
     try testing.expectEqual(@as(u32, 0), tree.get(root_eid).?.sibling_index);
-    // wrapper 未投影 → inner 的 a11y parent 是 first，且在自己的兄弟序里从 0 起
+    // wrapper 未投影 -> inner 的 a11y parent 是 first，且在自己的兄弟序里从 0 起
     try testing.expect(tree.get(inner_eid).?.parent.eql(one_eid));
     try testing.expectEqual(@as(u32, 0), tree.get(inner_eid).?.sibling_index);
 }
@@ -1222,7 +1222,7 @@ test "syncSubtree: 不再合格的节点被 remove（陈旧条目不能留给 Vo
     syncSubtree(testing.allocator, &tree, &labels, root, .NULL, &counter, false, .{ .isFocused = neverFocused });
     try testing.expectEqual(@as(usize, 1), tree.count());
 
-    // 节点失去 a11y props 与 focusable → 下一次同步必须把它摘掉
+    // 节点失去 a11y props 与 focusable -> 下一次同步必须把它摘掉
     root.behavior.interaction.a11y = null;
     root.behavior.interaction.focusable = false;
     var counter2: u32 = 0;

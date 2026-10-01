@@ -1,17 +1,17 @@
-//! Reactive Graph — Phase 1 push-pull 混合调度核心
+//! Reactive Graph, Phase 1 push-pull 混合调度核心
 //!
 //! 为什么需要这个：原 reactive 系统是朴素深度优先 push（signal.notifyImpl 直接
 //! 同步驱动 effect.runWithTracking），三个根问题：
-//!   1. 钻石依赖：A→B(memo)→C, A→C，C 可能在 B 重算前看到陈旧 memo 值
+//!   1. 钻石依赖：A->B(memo)->C, A->C，C 可能在 B 重算前看到陈旧 memo 值
 //!   2. memo eager 计算：未读也跑
 //!   3. batch flush 16 次硬上限 + 插入序遍历，diamond 内必然 glitch
 //!
 //! 工业参考（吸取的 + 避坑的）：
-//!   - Solid v1：dirty/check 双阶段标记 + lazy memo —— 我们采用
-//!   - Reactively（论文）：version stamp + pull-up 比对 —— 我们采用
-//!   - SwiftUI AttributeGraph：纯 pull —— 部分采用（memo lazy）；effect 仍 push
-//!     避坑：AG 早期黑盒批评 —— 我们提供 dumpGraph + traceUpdate
-//!   - React fiber 优先级队列：太重 —— 不抄
+//!   - Solid v1：dirty/check 双阶段标记 + lazy memo，我们采用
+//!   - Reactively（论文）：version stamp + pull-up 比对，我们采用
+//!   - SwiftUI AttributeGraph：纯 pull，部分采用（memo lazy）；effect 仍 push
+//!     避坑：AG 早期黑盒批评，我们提供 dumpGraph + traceUpdate
+//!   - React fiber 优先级队列：太重，不抄
 //!
 //! 数据模型：
 //!   GraphNode {
@@ -31,7 +31,7 @@
 //!
 //!   markCheck(node):
 //!     if node.state == clean: node.state = check
-//!     for obs: markCheck(obs)  // 仅在 clean→check 转移时递归（防止重复）
+//!     for obs: markCheck(obs)  // 仅在 clean->check 转移时递归（防止重复）
 //!
 //!   read(memo):
 //!     updateIfNecessary(memo)
@@ -122,11 +122,11 @@ pub const GraphNode = struct {
 };
 
 // ============================================================================
-// ReactiveGraph — 全局调度器
+// ReactiveGraph，全局调度器
 // ============================================================================
 
 /// 依赖追踪压栈失败次数（OOM / 栈满）。每次都意味着一次 recompute 被跳过、
-/// 节点保持陈旧值 —— 稳态下必须恒为 0。
+/// 节点保持陈旧值，稳态下必须恒为 0。
 pub var reactive_tracking_failures: u64 = 0;
 /// Reactive dependency chains deeper than this are rejected before they can
 /// exhaust the process stack. Real UI graphs are normally shallow; the bound
@@ -258,14 +258,14 @@ pub const ReactiveGraph = struct {
         return id;
     }
 
-    /// 不立即跑的版本——facade 层（reactive/effect.zig）需要先建立
+    /// 不立即跑的版本，facade 层（reactive/effect.zig）需要先建立
     /// EffectBase 与 graph node 的双向引用，再由 facade 自己触发首次 run。
     /// 否则首次 graph.recomputeNode 调 callback 时 EffectBase.graph_node_raw
     /// 还没 set，依赖追踪会缺一帧。
     ///
-    /// 重要：effect 创建时 state = .clean（不是 .dirty）—— facade 层会立即
+    /// 重要：effect 创建时 state = .clean（不是 .dirty），facade 层会立即
     /// 通过 EffectBase.runWithTracking 完成首次运行 + 依赖收集；之后 signal
-    /// propagate 时才能正确从 clean → dirty 转移并入 pending_effects。
+    /// propagate 时才能正确从 clean -> dirty 转移并入 pending_effects。
     /// 若初始 state = .dirty，propagate 会跳过它（因 "if obs.state == .dirty continue"）。
     pub fn createNodeRaw(
         self: *ReactiveGraph,
@@ -291,7 +291,7 @@ pub const ReactiveGraph = struct {
     fn createNode(self: *ReactiveGraph, node: GraphNode) !NodeId {
         // 世代退役（防 ABA，对齐 element_id.SlotMap）：generation 推进到
         // 0xFF（=NULL 的 generation）的 slot 永久退役不再复用。alive 位挡不住
-        // 复用后的假匹配——第 255 次复用回卷后，陈旧 NodeId 会重新 isAlive，
+        // 复用后的假匹配，第 255 次复用回卷后，陈旧 NodeId 会重新 isAlive，
         // 悬垂的 graph_node_raw 静默指到无关节点。
         while (self.free_list.pop()) |idx| {
             const next_gen = self.generations.items[idx] +% 1;
@@ -364,7 +364,7 @@ pub const ReactiveGraph = struct {
     // 依赖追踪
     // ------------------------------------------------------------------------
 
-    /// 在读 signal/memo 时调用以建立 caller → callee 边。
+    /// 在读 signal/memo 时调用以建立 caller -> callee 边。
     /// 由 facade 在 get/peek 路径调用。
     pub fn trackRead(self: *ReactiveGraph, source_id: NodeId) !void {
         if (!self.tracking_enabled) return;
@@ -394,8 +394,8 @@ pub const ReactiveGraph = struct {
             }
         }
         // 四表先全部预留、再不可失败地写入：中途 OOM 不得留下半建边
-        // （sources 已增而 seen_versions/source_runs 缺失 → version 比较错位，
-        // 该重算的 memo 静默不重算；或正向边无反向 observer → 永不被唤醒）。
+        // （sources 已增而 seen_versions/source_runs 缺失 -> version 比较错位，
+        // 该重算的 memo 静默不重算；或正向边无反向 observer -> 永不被唤醒）。
         try r.sources.ensureUnusedCapacity(self.allocator, 1);
         try r.seen_versions.ensureUnusedCapacity(self.allocator, 1);
         try r.source_runs.ensureUnusedCapacity(self.allocator, 1);
@@ -409,7 +409,7 @@ pub const ReactiveGraph = struct {
         if (s.depth + 1 > r.depth) r.depth = s.depth + 1;
     }
 
-    /// 公共版本——facade（EffectBase.runWithTracking）在 effectFn run
+    /// 公共版本，facade（EffectBase.runWithTracking）在 effectFn run
     /// 之前调，配合动态依赖追踪。
     pub fn clearSourcesPub(self: *ReactiveGraph, id: NodeId) void {
         self.clearSources(id);
@@ -473,7 +473,7 @@ pub const ReactiveGraph = struct {
         self.propagation_stack.clearRetainingCapacity();
 
         const src = self.getNode(source_id) orelse return;
-        // 不拷贝 observer 列表——直接遍历。observer 在 propagate 内部不会变：
+        // 不拷贝 observer 列表，直接遍历。observer 在 propagate 内部不会变：
         // 1. 我们只改 obs.state 和 obs.kind 的 pending 入队，不增删 observers
         // 2. 真正的 effect run 在 drainPendingEffects 才发生，那时 propagate 已结束
         // 这避免 O(N) 的拷贝；对 1k fanout 显著降开销。
@@ -485,7 +485,7 @@ pub const ReactiveGraph = struct {
             const obs = self.getNode(obs_id) orelse continue;
             if (obs.state == .dirty) continue;
             // **先入队、后置位**：顺序反过来时，append OOM 会让 effect 停在
-            // "dirty 但不在 pending"——此后每次写入都因 `state == .dirty`
+            // "dirty 但不在 pending"，此后每次写入都因 `state == .dirty`
             // 跳过它，一次瞬时 OOM 把 effect 永久毒聋（且只有一行日志）。
             // 先入队则 OOM 时 observer 保持原态，下一次写入可完整重试。
             // observers 经 addEdge 去重，同一 reader 不会重复入队。
@@ -606,14 +606,14 @@ pub const ReactiveGraph = struct {
             nn.is_running = false;
         };
 
-        // epoch 化依赖追踪——不再 clearSources（O(observers)）；
+        // epoch 化依赖追踪，不再 clearSources（O(observers)）；
         // 而是 bump current_run，addEdge 标 source_runs 槽，结束后 prune 未命中的 source。
         // 静态依赖路径（1k fanout）：trackRead 命中 dedup 直接 return，零 alloc 零 remove。
         n.tracking_failed = false;
         n.current_run +%= 1;
         const this_run = n.current_run;
 
-        // pushTracking 失败（OOM / 追踪栈满）意味着**这次 recompute 整个不跑** ——
+        // pushTracking 失败（OOM / 追踪栈满）意味着**这次 recompute 整个不跑**,
         // 节点保持陈旧值且没有任何信号，是最难排查的一类静默失败
         // （审查报告 §3）。这里至少留下日志与计数。
         self.pushTracking(id) catch |err| {
@@ -655,7 +655,7 @@ pub const ReactiveGraph = struct {
         for (after.sources.items) |src_id| {
             const s = self.getNode(src_id) orelse continue;
             // 不可降级：seen_versions 必须与 sources 逐项对齐，短一项会让
-            // 后续 version 比较错位/漏比 → 该重算的 memo 静默不重算。
+            // 后续 version 比较错位/漏比 -> 该重算的 memo 静默不重算。
             after.seen_versions.append(self.allocator, s.version) catch @panic("OOM: ReactiveGraph seen_versions resync");
         }
 
@@ -686,7 +686,7 @@ pub const ReactiveGraph = struct {
     }
 
     /// 按拓扑深度排序后 drain，保证浅依赖先于深依赖更新。
-    /// 同一 effect 在一轮内最多跑一次（state 检查负责去重——effect run 后
+    /// 同一 effect 在一轮内最多跑一次（state 检查负责去重，effect run 后
     /// state 变 clean，下次循环遇到同 id 直接 skip）。
     fn drainPendingEffects(self: *ReactiveGraph) !void {
         if (self.flushing) return;
@@ -941,12 +941,12 @@ test "ReactiveGraph: batch coalesces multiple writes" {
     _ = try g.createEffect(&eff, &ctx);
     try testing.expectEqual(@as(u32, 1), ctx.run_count);
 
-    // 不 batch：两次 set → 两次 effect
+    // 不 batch：两次 set -> 两次 effect
     try g.markSignalWritten(ctx.a_id);
     try g.markSignalWritten(ctx.b_id);
     try testing.expectEqual(@as(u32, 3), ctx.run_count);
 
-    // batch：两次 set → 一次 effect
+    // batch：两次 set -> 一次 effect
     g.beginBatch();
     try g.markSignalWritten(ctx.a_id);
     try g.markSignalWritten(ctx.b_id);
@@ -1031,7 +1031,7 @@ const OneShotFailingAllocator = struct {
 };
 
 test "propagate: 一次瞬时 OOM 不得把 effect 永久毒聋" {
-    // 回归（先入队后置位）：旧序是先 obs.state = .dirty 再 try append——
+    // 回归（先入队后置位）：旧序是先 obs.state = .dirty 再 try append,
     // append OOM 后 effect 停在 dirty-but-not-pending，后续每次写入都因
     // `state == .dirty` 被跳过，一次 OOM 永久失聪。
     var one_shot = OneShotFailingAllocator{ .backing = testing.allocator };
@@ -1254,11 +1254,11 @@ test "reactive recompute chain stops at explicit recursion budget" {
 //
 // batch1 把 recomputeNode 末尾的 `seen_versions.append(...) catch {}` 改成了
 // @panic。本测试锁的是那条 panic 所**保护的不变式**：seen_versions 必须与
-// sources 逐项等长对齐（短一项 → version 比较错位 → 该重算的 memo 静默不重算）。
+// sources 逐项等长对齐（短一项 -> version 比较错位 -> 该重算的 memo 静默不重算）。
 //
 // 实测结论（重要，别据此误判覆盖率）：那条 @panic 实际是**防御性不可达**的。
 // addEdge 对四张表（sources / seen_versions / source_runs / observers）先
-// ensureUnusedCapacity 全部预留、再 appendAssumeCapacity 不可失败地写入——
+// ensureUnusedCapacity 全部预留、再 appendAssumeCapacity 不可失败地写入,
 // 半建边在结构上不可能；而 resync 循环前只调 clearRetainingCapacity
 // （保留容量），重同步时 append 永远不需要新分配。
 //
@@ -1271,7 +1271,7 @@ test "reactive recompute chain stops at explicit recursion budget" {
 // 不再依赖巧合。
 //
 // 本测试断言的是 OOM 下真正可观测的性质：依赖边要么完整建立（memo 能被该
-// source 唤醒），要么完整缺失且 trackRead 返回 error 让调用方知情 ——
+// source 唤醒），要么完整缺失且 trackRead 返回 error 让调用方知情,
 // 不存在「边半建成 + 调用方以为成功」的中间态。这里刻意记录 trackRead 的
 // 失败次数而非 `catch {}` 丢掉，边丢了才能被下面的断言观测到。
 test "allocation campaign: ReactiveGraph dependency edge is fully committed or absent" {
@@ -1301,7 +1301,7 @@ test "allocation campaign: ReactiveGraph dependency edge is fully committed or a
             g: *ReactiveGraph,
             signals: []const NodeId,
             read_count: usize,
-            /// trackRead 失败次数 —— 即「这一轮有边没建上」的信号。
+            /// trackRead 失败次数，即「这一轮有边没建上」的信号。
             track_failures: usize = 0,
             /// 本轮 recompute 回调是否真的跑了。
             ran: bool = false,
@@ -1338,19 +1338,19 @@ test "allocation campaign: ReactiveGraph dependency edge is fully committed or a
             // 三个平行数组必须**始终**等长（结构性不变式）。这条断言不受
             // ctx.ran 影响：即使这轮没重算，残留状态也不允许错位。
             // （实测：把 addEdge 里 source_runs.append 的 try 换成 catch {}，
-            //  这两条断言之一必红 —— 见下方 ran 守卫的注意事项。）
+            //  这两条断言之一必红，见下方 ran 守卫的注意事项。）
             try testing.expectEqual(m.sources.items.len, m.seen_versions.items.len);
             try testing.expectEqual(m.sources.items.len, m.source_runs.items.len);
 
             // 下面的条数比较才依赖「本轮真的重算过」：markSignalWritten 自身
             // 可能 OOM 导致 memo 没被标脏，此时 sources 还是上一轮的内容。
-            // 注意别把这个 continue 提到上面 —— 那会把真正暴露错位的轮次跳过去，
+            // 注意别把这个 continue 提到上面，那会把真正暴露错位的轮次跳过去，
             // 测试就再也验不出东西了（本次开发中踩过）。
             if (!ctx.ran) continue;
 
             // 核心断言：本轮成功读取的 source 全部建成了边。
             // sources 可能还含上一轮遗留、尚未 prune 的边，故用 >=；
-            // 但绝不能少于「本轮成功 trackRead 的条数」—— 少了就意味着有边
+            // 但绝不能少于「本轮成功 trackRead 的条数」，少了就意味着有边
             // 被静默丢弃，而调用方（track_failures）却毫不知情，那正是
             // 「该更新的 memo 静默不更新」的直接成因。
             try testing.expect(m.sources.items.len >= ctx.read_count - ctx.track_failures);

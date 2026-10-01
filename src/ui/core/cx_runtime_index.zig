@@ -94,7 +94,7 @@ fn partialInteractionRootForLayoutNode(node: *Node) ?*Node {
     // 一个 in-flow 子节点的盒子尺寸变化（如 Accordion content 展开高度变化）会让
     // **父容器重跑 layoutChildren**，从而把它**后面的兄弟节点整体位移**。若 partial
     // interaction 重建只覆盖这个变化节点自己的子树，被位移的兄弟（及其后代）的命中
-    // 区域仍停在旧位置 → hit-test 命中旧布局（用户报的 Accordion 展开后点下方 item
+    // 区域仍停在旧位置 -> hit-test 命中旧布局（用户报的 Accordion 展开后点下方 item
     // 命中错位/落空 bug）。所以把重建根上提到**父节点**，覆盖所有被 reflow 的兄弟。
     //
     // 仅 in-flow 节点这么做：absolute/out-of-flow 节点的尺寸变化不影响兄弟排布，
@@ -106,7 +106,7 @@ fn partialInteractionRootForLayoutNode(node: *Node) ?*Node {
 }
 
 /// loose 三位（pipeline.interaction/hit.geometry/hit.semantics）不冒泡，
-/// 只能全树扫——曾是帧结构采样最大单项（每帧最多 6 个调用点）。按
+/// 只能全树扫，曾是帧结构采样最大单项（每帧最多 6 个调用点）。按
 /// (root, node_dirty.g_loose_interaction_gen) 记忆：所有置位/清位点都
 /// bump 代数（见 node_dirty.bumpLooseInteractionGen 注释的约定），
 /// 代数不变 ⇒ 位集不变 ⇒ 结果不变，语义与逐次扫描精确等价。
@@ -199,7 +199,7 @@ pub fn fullRebuildRuntimeIndexes(self: *Cx, root: *Node) !void {
 fn rebuildDirtyRuntimeSubtrees(self: *Cx, node: *Node) !void {
     if (!node.frame_state.state_bits.dirty.runtime.subtree_dirty) return;
     if (node.frame_state.state_bits.dirty.runtime.dirty) {
-        // 增量重建只是把这棵子树从 registry/focus_order 摘掉再重灌 ——
+        // 增量重建只是把这棵子树从 registry/focus_order 摘掉再重灌,
         // 节点本身不销毁。unregisterFocusableSubtree 会顺手把落在子树内的
         // current_focus 清空（对"子树将被释放"的调用方是正确的），这里
         // 必须在重灌后把焦点还回去，否则任何"重绘当前焦点行"的组件
@@ -367,7 +367,7 @@ fn subtreeSupportsIncrementalFocusRepair(node: *Node) bool {
 /// effective focus can change (the first is setFocusWithReason, which
 /// reconciles via on_focus_settled). A rebuild detaches the subtree from
 /// registry/focus_order and re-registers it, so focus can be cleared and
-/// restored — `restoreFocusAfterSubtreeRebuild` writes the fields directly
+/// restored, `restoreFocusAfterSubtreeRebuild` writes the fields directly
 /// and deliberately fires no blur/focus events.
 ///
 /// The window-level native IME gate is *derived* from focus, so it has to
@@ -392,7 +392,7 @@ fn reconcileFocusedAfterRuntimeRebuild(self: *Cx) void {
             else
                 false;
             if (!alive) {
-                // clearFocus 走 setFocusWithReason → on_focus_settled 已
+                // clearFocus 走 setFocusWithReason -> on_focus_settled 已
                 // 刷过原生闸，这里不必重复。
                 self.focus_manager.clearFocus();
                 self.focused_node = null;

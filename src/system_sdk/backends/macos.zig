@@ -479,9 +479,8 @@ const WindowEntry = struct {
                     .y = scroll.y,
                     .dx = scroll.dx,
                     .dy = scroll.dy,
-                    .is_momentum = scroll.is_momentum,
-                    .phase_ended = scroll.phase_ended,
-                    .is_trackpad = scroll.is_trackpad,
+                    .phase = @enumFromInt(scroll.phase),
+                    .momentum = @enumFromInt(scroll.momentum),
                     .modifiers = MacOSBackend.toModifiers(scroll.modifiers),
                 } },
             });
@@ -1157,7 +1156,7 @@ pub const MacOSBackend = struct {
         return clipboardReadSlice(buffer, len);
     }
 
-    /// 同步弹出原生对话框（runModal 嵌套 run loop，期间帧循环阻塞——与既有
+    /// 同步弹出原生对话框（runModal 嵌套 run loop，期间帧循环阻塞，与既有
     /// pick_folder/save_panel 行为一致）。返回 null = 用户取消。
     fn dialogRunImpl(ctx: *anyopaque, request: backend.DialogRequest, path_buffer: []u8) SdkError!?[]const u8 {
         _ = ctx;

@@ -1,4 +1,4 @@
-/// E2E Test Runner — 极简测试框架
+/// E2E Test Runner，极简测试框架
 import { mkdirSync, writeFileSync, appendFileSync } from "fs";
 import { randomUUID } from "crypto";
 

@@ -8,6 +8,7 @@ const Cx = core.Cx;
 const cx_render = @import("cx_render.zig");
 const cx_platform = @import("cx_platform.zig");
 const event_dispatcher_mod = @import("../event_dispatcher.zig");
+const system_sdk_mod = @import("system_sdk");
 const CursorShape = core.CursorShape;
 const CursorToken = core.CursorToken;
 const CustomCursorDesc = core.CustomCursorDesc;
@@ -50,7 +51,7 @@ pub fn handleMouseDownEx(self: *Cx, x: f32, y: f32, button: MouseButton, modifie
         return;
     }
     // feed gesture_arena。只对 left button (主键) 启 gesture
-    // arena — 右键 / 中键各自走 dispatcher 但不参与手势识别 (UIKit 同样
+    // arena，右键 / 中键各自走 dispatcher 但不参与手势识别 (UIKit 同样
     // 只把 primary touch 入 arena)。
     if (button == .left) {
         self.gesture_arena.reset();
@@ -224,7 +225,7 @@ pub fn resyncPointerAfterCaptureRelease(self: *Cx, x: f32, y: f32, fallback_hand
 /// node_registry.put / focus_order.append**。所以中途 OOM 会留下
 /// 「节点已标记为干净、但不在 node_registry / focus_order 里」的状态：
 /// 该节点从此 hit-test 打不中、Tab 走不到，而且再没有 dirty 位能触发重试
-/// —— 静默且永久的错乱。fullRebuildRuntimeIndexes 更糟：它先 clear()，
+/// 静默且永久的错乱。fullRebuildRuntimeIndexes 更糟：它先 clear()，
 /// OOM 会让整棵树的索引空掉而所有节点都是干净的。
 ///
 /// 这些调用点位于 handleMouse* / render 等 Stable 签名（见
@@ -234,7 +235,7 @@ pub fn rebuildRuntimeIndexesIfCurrentRootDirty(self: *Cx) void {
     if (!root.frame_state.state_bits.dirty.runtime.subtree_dirty) return;
     // 结构变更几乎总伴随布局脏（新换入的子树 rect 还是 0）。此时直接重建会按未布局的
     // 几何建出空命中代理（0 尺寸不出代理，但 plannedProxyCount 不看尺寸，partial 校验照样通过），
-    // 随后 clearInteractionDirtyRecursive 把整棵子树的 hit 脏位消费掉——之后的布局不会再
+    // 随后 clearInteractionDirtyRecursive 把整棵子树的 hit 脏位消费掉，之后的布局不会再
     // 触发命中重建，这些节点永久点不中。先布局再重建：与事件入口 ensureHitTestSceneFresh 同一路径。
     if ((root.frame_state.state_bits.dirty.core.layout or root.frame_state.state_bits.dirty.core.subtree_layout) and
         self.tick_depth == 0 and !self.draining_deferred_frees)
@@ -250,7 +251,7 @@ pub fn handleMouseMove(self: *Cx, x: f32, y: f32) void {
 }
 
 pub fn handleMouseMoveEx(self: *Cx, x: f32, y: f32, modifiers: Modifiers) void {
-    // R4a: 只在鼠标实际移动时标脏——hover 命中随指针位置变化，需要一帧
+    // R4a: 只在鼠标实际移动时标脏，hover 命中随指针位置变化，需要一帧
     // 重新 dispatch；位置不变的 move 事件不该唤醒新帧（idle 停帧门控依赖这一点）
     const hit_tests_before = self.perf.hit_test_count;
     cx_render.ensureHitTestSceneFresh(self);
@@ -277,7 +278,7 @@ pub fn handleMouseMoveEx(self: *Cx, x: f32, y: f32, modifiers: Modifiers) void {
         // Hover 滞回：partial interaction rebuild 在子树重建的间隙对新节点
         // 的收录有缺口（多处 app 侧撞过的同一堵墙），移动中的查询会在
         // 有效坐标上间歇 MISS。MISS 时若上一个 hovered 节点仍存活且几何
-        // 上仍包含指针，保持 hover —— 否则光标会在 pointer↔default 之间
+        // 上仍包含指针，保持 hover，否则光标会在 pointer↔default 之间
         // 抖（实弹：file tab 关闭按钮附近 hover 状态机最活跃，逐事件标脏
         // 场景，光标持续闪烁）。真离开时旧节点 rect 不再包含指针，照常清。
         if (raw_hovered == null and !has_capture) {
@@ -326,6 +327,8 @@ pub fn cancelPointerInteractions(self: *Cx, reason: interaction_drag.CancelReaso
     // gesture：中断把 began/changed 转 cancelled（此前无人写 .cancelled，
     // 系统级中断后识别器卡死在中途态）
     self.gesture_arena.onTouchCancel(std.time.nanoTimestamp());
+    // 进行中的触控板滚动同理：结束信号可能永远不会来，主动补发
+    self.dispatcher.cancelScrollGesture();
     cx_cursor.updateCursorShape(self);
 }
 
@@ -380,7 +383,7 @@ pub fn handleCommand(self: *Cx, command_id: u64) void {
     const delivery = self.action_dispatcher.dispatchActionWithDelivery(action, target);
     // 焦点链上没人接：菜单命令是 app 级的，不能因为"当前没聚焦到绑定
     // 上下文里"就静默丢弃（实锤：cx.root 是 App 的内部 wrapper，用户
-    // mount root 绑的 context 在向上遍历里永远走不到 —— 真菜单点击
+    // mount root 绑的 context 在向上遍历里永远走不到，真菜单点击
     // verify_menu.sh 逮到）。降级为全树找第一个匹配 context 的节点。
     if (delivery.result == .ignored and !delivery.delivered) {
         if (self.root) |root| {
@@ -546,44 +549,71 @@ pub fn handleImeCommitReplace(self: *Cx, commit_text: []const u8, replace_start_
     if (deferred and result != .stop) self.needs_redraw = true;
 }
 
-pub fn handleScrollEx(self: *Cx, x: f32, y: f32, dx: f32, dy: f32, is_momentum: bool, phase_ended: bool, is_trackpad: bool) void {
-    self.handleScrollWithModifiers(x, y, dx, dy, is_momentum, phase_ended, is_trackpad, .{});
+pub fn scrollEventFromSdk(wheel: system_sdk_mod.events.MouseWheel) events_mod.ScrollEvent {
+    return .{
+        .x = wheel.x,
+        .y = wheel.y,
+        .dx = wheel.dx,
+        .dy = wheel.dy,
+        .phase = switch (wheel.phase) {
+            .none => .none,
+            .may_begin => .may_begin,
+            .began => .began,
+            .changed => .changed,
+            .ended => .ended,
+            .cancelled => .cancelled,
+        },
+        .momentum = switch (wheel.momentum) {
+            .none => .none,
+            .began => .began,
+            .changed => .changed,
+            .ended => .ended,
+        },
+        .modifiers = .{
+            .shift = wheel.modifiers.shift,
+            .ctrl = wheel.modifiers.ctrl,
+            .alt = wheel.modifiers.alt,
+            .super = wheel.modifiers.super,
+        },
+    };
 }
 
-pub fn handleScrollWithModifiers(self: *Cx, x: f32, y: f32, dx: f32, dy: f32, is_momentum: bool, phase_ended: bool, is_trackpad: bool, modifiers: Modifiers) void {
+pub fn handleScroll(self: *Cx, scroll: events_mod.ScrollEvent) void {
     // pinch 手势进行中抑制 trackpad 滚动派发（捏合与双指平移同源，
-    // 同时派发会导致缩放时画面乱跳）——同一手势期间不同时收到 pan/scroll。
-    if (self.magnify_target_handle != null and is_trackpad) return;
+    // 同时派发会导致缩放时画面乱跳），同一手势期间不同时收到 pan/scroll。
+    if (self.magnify_target_handle != null and scroll.isTrackpad()) return;
     self.needs_redraw = true;
+    // 先结束丢失了 ended 的上一个手势，再做命中测试
+    self.dispatcher.beginScrollEvent(scroll);
     cx_render.ensureHitTestSceneFresh(self);
     if (self.root != null) {
         const scroll_hit = self.hitTestQuery(.{
             .kind = .scroll,
-            .world_x = x,
-            .world_y = y,
+            .world_x = scroll.x,
+            .world_y = scroll.y,
         });
         const pointer_hit = self.hitTestQuery(.{
             .kind = .pointer,
-            .world_x = x,
-            .world_y = y,
+            .world_x = scroll.x,
+            .world_y = scroll.y,
         });
         const raw_pointer_target = if (pointer_hit) |result|
             self.node_registry.resolve(result.handle, &self.perf)
         else
             null;
         const pointer_target = resolveInteractionTarget(raw_pointer_target);
-        const preferred_target = event_dispatcher_mod.nearestCompatibleScrollOwner(pointer_target, dx, dy);
+        const preferred_target = event_dispatcher_mod.nearestCompatibleScrollOwner(pointer_target, scroll.dx, scroll.dy);
         const scroll_target = if (scroll_hit) |result|
             self.node_registry.resolve(result.handle, &self.perf)
         else
             null;
-        const hit_target = preferred_target orelse event_dispatcher_mod.nearestCompatibleScrollOwner(scroll_target, dx, dy);
+        const hit_target = preferred_target orelse event_dispatcher_mod.nearestCompatibleScrollOwner(scroll_target, scroll.dx, scroll.dy);
 
         if (devtoolsHitDebugEnabled()) {
             ensureDevtoolsHitDebugBanner();
             std.debug.print(
-                "[devtools-hit] scroll win={d} xy=({d:.1},{d:.1}) delta=({d:.1},{d:.1}) momentum={any} phase_ended={any} trackpad={any}\n",
-                .{ self.window_id, x, y, dx, dy, is_momentum, phase_ended, is_trackpad },
+                "[devtools-hit] scroll win={d} xy=({d:.1},{d:.1}) delta=({d:.1},{d:.1}) momentum={s} phase={s}\n",
+                .{ self.window_id, scroll.x, scroll.y, scroll.dx, scroll.dy, @tagName(scroll.momentum), @tagName(scroll.phase) },
             );
             if (raw_pointer_target != pointer_target) logDebugNodeSummary("raw_pointer_hit", raw_pointer_target);
             logDebugNodeSummary("pointer_hit", pointer_target);
@@ -591,12 +621,12 @@ pub fn handleScrollWithModifiers(self: *Cx, x: f32, y: f32, dx: f32, dy: f32, is
             logDebugNodeSummary("scroll_hit", scroll_target);
             logDebugNodeSummary("dispatch_scroll_target", hit_target);
         }
-        if (is_momentum) {
+        if (scroll.isMomentum()) {
             self.interaction_index.setScrollMomentumOwner(scroll_hit);
         } else {
             self.interaction_index.setScrollSessionOwner(scroll_hit);
         }
-        _ = self.dispatcher.dispatchScrollWithModifiers(x, y, dx, dy, is_momentum, phase_ended, is_trackpad, modifiers, hit_target);
+        _ = self.dispatcher.dispatchScroll(scroll, hit_target);
     }
 }
 
@@ -636,7 +666,7 @@ pub fn handlePlatformDrag(self: *Cx, x: f32, y: f32, kind: u8, paths: []const u8
 fn handleDragPayload(self: *Cx, x: f32, y: f32, kind: u8, paths: []const u8, payload_kind_raw: u8, payload_truncated: bool, payload_is_untrusted: bool) void {
     self.needs_redraw = true;
     // kind=4 = 拖拽源完成回执（beginDrag 的 completion/cancellation，带
-    // source_token/operation），不是指针位置事件 —— 不进 hit-test 派发。
+    // source_token/operation），不是指针位置事件，不进 hit-test 派发。
     // 未来更大的 kind 同样防御性忽略：@enumFromInt 对未知值是 checked
     // panic（实锤：verify_interop_probe.sh 里拖出松手即整个 app abort）。
     if (kind > @intFromEnum(events_mod.DragEvent.Kind.dropped)) return;

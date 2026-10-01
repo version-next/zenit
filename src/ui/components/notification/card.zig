@@ -33,6 +33,7 @@ const TextInputState = @import("../input/state.zig").TextInputState;
 
 const model = @import("model.zig");
 const styles = @import("styles.zig");
+const hint_mod = @import("hint.zig");
 const M = styles.Metrics;
 
 // ============================================================================
@@ -59,6 +60,8 @@ pub const Action = struct {
     primary: bool = false,
     /// 回调里用于区分按钮的标记。
     tag: []const u8 = "",
+    /// 按钮内嵌键帽（仅文案提示的胶囊按钮显示，如「⌘Z」）。
+    shortcut: []const u8 = "",
 };
 
 pub const Progress = struct {
@@ -90,6 +93,9 @@ pub const ContentSpec = struct {
     progress: ?Progress = null,
     /// 是否显示底部生命条。
     life_bar: bool = true,
+    /// 文案提示（kind = .hint）的行首标记与键帽行。
+    hint_mark: hint_mod.Mark = .none,
+    keycap: ?hint_mod.Keycap = null,
 };
 
 pub const Strings = struct {
@@ -124,6 +130,7 @@ pub fn defaultLead(kind: model.Kind, tone: model.Tone, has_avatar: bool) Lead {
     return switch (kind) {
         .progress => .spinner,
         .undo => .ring,
+        .hint => .chip,
         .default => if (has_avatar) .avatar else if (tone == .quiet) .dot else .chip,
     };
 }
@@ -145,7 +152,7 @@ pub fn formatCount(buf: []u8, template: []const u8, n: u64) []const u8 {
 // 内容层
 // ============================================================================
 
-/// 按钮点击 → Notifier。每个按钮一个固定上下文（card 地址 + 下标）。
+/// 按钮点击 -> Notifier。每个按钮一个固定上下文（card 地址 + 下标）。
 pub const ButtonContext = struct {
     card: *Card,
     index: u8,
@@ -160,11 +167,14 @@ pub const Content = struct {
     /// 内容层自己的 scope（按钮 / 回复框），整体替换时整体 dispose。
     scope: *Scope,
     root: *Node,
-    lead_box: *Node,
-    lead: *Node,
-    title_row: *Node,
+    /// 以下四项文案提示没有（胶囊只有一行）。
+    lead_box: ?*Node = null,
+    lead: ?*Node = null,
+    title_row: ?*Node = null,
     title: *Node,
-    timestamp: *Node,
+    timestamp: ?*Node = null,
+    /// 旋转指示器（custom draw，常转需逐帧重画）。
+    spinner: ?*Node = null,
     body: ?*Node = null,
     quote: ?*Node = null,
     progress_block: ?*Node = null,
@@ -214,6 +224,8 @@ pub const Card = struct {
     // ── 生命周期（帧时钟 ms）──
     measured: bool = false,
     natural_height: f32 = 0,
+    /// 自然宽度：卡片恒为满宽；文案提示胶囊随内容（量到后写入）。
+    natural_width: f32 = 0,
     born_ms: f64 = 0,
     born_wall_ms: i64 = 0,
     life: model.Life = .{},
@@ -225,7 +237,7 @@ pub const Card = struct {
     /// 「全部清除」退场：保留占位不补位，原地淡出。
     hold_space: bool = false,
     fling_x: f32 = 0,
-    /// 本卡是否由用户关闭（✕ / 拖拽）——回调区分自动到期。
+    /// 本卡是否由用户关闭（✕ / 拖拽），回调区分自动到期。
     closed_by_user: bool = false,
 
     // ── 原地转换 ──
@@ -245,7 +257,7 @@ pub const Card = struct {
     destroying: bool = false,
     /// 触控板双指横扫驱动的拖拽（无 up 事件，靠静默超时收尾）。
     scroll_dragging: bool = false,
-    /// 最近一次横扫事件的真实墙钟（ms）——衡量的是真实输入间隔，不用帧时钟。
+    /// 最近一次横扫事件的真实墙钟（ms），衡量的是真实输入间隔，不用帧时钟。
     last_scroll_wall_ms: i64 = 0,
     /// 最近一次发出的回复（失败时恢复进输入框）。
     last_reply: ?[]u8 = null,
@@ -336,13 +348,6 @@ pub fn buildShell(card: *Card, p: BuildParams) !void {
     pext.hit_behavior = .self_and_children;
     // 不挂 will_change_*：静止（alpha 1、scale 1）时直接绘制；只在淡入淡出 / 缩放
     // 期间才进离屏层（含玻璃的层不复用缓存纹理，常驻离屏会每帧重画）。
-    // 三段投影（16.3 第 8 层）：近 = 接触、中 = 离地高度、远 = 让边界不生硬。
-    // 两段负 spread 先把阴影矩形收小再模糊——去掉会明显变重、变低。
-    pext.setShadowList(&.{
-        .{ .color = pal.shadow(0.08), .blur = 2, .offset_y = 1 },
-        .{ .color = pal.shadow(0.17), .blur = 24, .offset_y = 8, .spread = -6 },
-        .{ .color = pal.shadow(0.22), .blur = 64, .offset_y = 28, .spread = -24 },
-    });
     pext.corner_radius = core.CornerRadius.uniform(M.radius);
     // opacity 0 的预测量帧仍需参与 layout。
     pext.keep_rendering_when_transparent = true;
@@ -356,58 +361,11 @@ pub fn buildShell(card: *Card, p: BuildParams) !void {
         .background = pal.glass(model.Spec.glass_front),
     }, .{});
     try appendOwned(cx, positioner, surface);
-    const sext = try ext(cx, surface);
-    sext.corner_radius = core.CornerRadius.uniform(M.radius);
-    // 材质与编辑器浮条（下游编辑器 media_glass）一致：白玻璃 + 凸面折射高光。
-    sext.glass = .{
-        .backdrop_blur = 24,
-        .backdrop_saturation = 1.4,
-        .backdrop_brightness = 1.03,
-        .glass_intensity = 0.30,
-        .surface = .convex_squircle,
-        .bottom_surface = .flat,
-        .specular_opacity = 0.16,
-        .refraction_level = 0.10,
-        .warp_gain = 0.10,
-        .edge_field_strength = 0.10,
-    };
-    // 暗色模式保留 0.5px 暗边（offset −1，压住亮边外溢）；亮色的边由 1px 白描边负责。
-    if (pal.glass_outline.a > 0) sext.outline = .{ .color = pal.glass_outline, .width = 0.5, .offset = -1 };
-    // 第 7 层：三段内阴影——顶部 1px 白 95% / 底部 1px 暗 9% / 内发光 22px 白 35%。
-    sext.setInsetShadowList(&.{
-        .{ .color = pal.inset_top, .blur = 0, .offset_y = 1 },
-        .{ .color = pal.inset_bottom, .blur = 0, .offset_y = -1 },
-        .{ .color = pal.inset_glow, .blur = 22 },
-    });
+    try applyGlassMaterial(cx, surface, pal, M.radius);
     surface.style.overflow_hidden = true;
     surface.style.flex_shrink = 0;
     surface.meta.ownership.meta.component_name = "Notification.surface";
-
-    const sheen = try box(cx, .{ .position = .absolute, .width = .fill(), .height = .fill() }, .{});
-    try appendOwned(cx, surface, sheen);
-    const shext = try ext(cx, sheen);
-    shext.inset = .{ .left = .{ .px = 0 }, .top = .{ .px = 0 }, .right = .{ .px = 0 }, .bottom = .{ .px = 0 } };
-    shext.hit_behavior = .pass_through;
-    shext.multi_gradient = core.MultiGradient.fromSlice(&.{
-        .{ .color = pal.sheen_top, .position = 0 },
-        .{ .color = pal.sheen_bottom, .position = 1 },
-    }, .vertical);
-
-    // 径向高光：中心在 (12%, −10%)，尺寸 120% × 100%（16.3 第 3 层）。
-    // 第 3 层：左上角径向光斑 radial-gradient(120% 100% at 12% −10%, 白 55% → 0 @58%)。
-    const highlight = try box(cx, .{ .position = .absolute, .width = .fill(), .height = .fill() }, .{});
-    try appendOwned(cx, surface, highlight);
-    const hext = try ext(cx, highlight);
-    hext.inset = .{ .left = .{ .px = 0 }, .top = .{ .px = 0 }, .right = .{ .px = 0 }, .bottom = .{ .px = 0 } };
-    hext.hit_behavior = .pass_through;
-    var radial = core.MultiGradient.fromSlice(&.{
-        .{ .color = pal.highlight, .position = 0 },
-        .{ .color = pal.highlight.withAlpha(0), .position = 0.58 },
-        .{ .color = pal.highlight.withAlpha(0), .position = 1 },
-    }, .radial);
-    radial.radial_center = .{ 0.12, -0.10 };
-    radial.radial_radius = .{ 1.2, 1.0 };
-    hext.multi_gradient = radial;
+    const layers = try buildGlassLayers(cx, surface, pal);
 
     // 生命条在流里：卡片高度 = 内容 + 1.5（设计稿 16.2）；无生命条的类型高度为 0。
     const lifebar = try box(cx, .{
@@ -423,6 +381,106 @@ pub fn buildShell(card: *Card, p: BuildParams) !void {
     lext.corner_radius = .{ .each = .{ 0, 1, 1, 0 } };
     lifebar.style.flex_shrink = 0;
 
+    try buildClose(card, p, positioner, surface, layers, lifebar);
+    applyShellForm(card, p);
+}
+
+/// 外壳随形态切换（卡片 ↔ 文案提示胶囊）：宽度、投影、生命条宽度。
+/// 建壳时与原地转换时各调用一次。
+pub fn applyShellForm(card: *Card, p: BuildParams) void {
+    const pal = p.palette;
+    const is_hint = card.spec.kind == .hint;
+    const positioner = card.positioner;
+    const w: core.Sizing = if (is_hint) .{ .fit = .{} } else .fixed(p.width);
+    positioner.style.width = w;
+    card.surface.style.width = if (is_hint) .{ .fit = .{} } else .fill();
+    card.lifebar.style.width = .fixed(if (is_hint) 0 else p.width);
+    if (positioner.style.ext) |pext| {
+        if (is_hint) {
+            // 胶囊投影约为卡片的一半：y1/b2 · y6/b16 · y16/b36。
+            pext.setShadowList(&.{
+                .{ .color = pal.shadow(0.10), .blur = 2, .offset_y = 1 },
+                .{ .color = pal.shadow(0.12), .blur = 16, .offset_y = 6 },
+                .{ .color = pal.shadow(0.08), .blur = 36, .offset_y = 16 },
+            });
+        } else {
+            // 三段投影（16.3 第 8 层）：近 = 接触、中 = 离地高度、远 = 让边界不生硬。
+            // 两段负 spread 先把阴影矩形收小再模糊，去掉会明显变重、变低。
+            pext.setShadowList(&.{
+                .{ .color = pal.shadow(0.08), .blur = 2, .offset_y = 1 },
+                .{ .color = pal.shadow(0.17), .blur = 24, .offset_y = 8, .spread = -6 },
+                .{ .color = pal.shadow(0.22), .blur = 64, .offset_y = 28, .spread = -24 },
+            });
+        }
+    }
+    positioner.markSizingDirty();
+    card.surface.markSizingDirty();
+    card.lifebar.markSizingDirty();
+    positioner.markRenderDirty();
+}
+
+/// 提醒玻璃材质（卡片与文案提示共用）：底色 / 亮边 / 模糊 / 内阴影。
+pub fn applyGlassMaterial(cx: *Cx, surface: *Node, pal: *const styles.Palette, radius: f32) !void {
+    const sext = try ext(cx, surface);
+    sext.corner_radius = core.CornerRadius.uniform(radius);
+    // 材质与编辑器浮条（下游编辑器 media_glass）一致：白玻璃 + 凸面折射高光。
+    sext.glass = .{
+        .backdrop_blur = 24,
+        .backdrop_saturation = 1.4,
+        .backdrop_brightness = 1.03,
+        .glass_intensity = 0.30,
+        .surface = .convex_squircle,
+        .bottom_surface = .flat,
+        .specular_opacity = 0.16,
+        .refraction_level = 0.10,
+        .warp_gain = 0.10,
+        .edge_field_strength = 0.10,
+    };
+    // 暗色模式保留 0.5px 暗边（offset −1，压住亮边外溢）；亮色的边由 1px 白描边负责。
+    if (pal.glass_outline.a > 0) sext.outline = .{ .color = pal.glass_outline, .width = 0.5, .offset = -1 };
+    // 第 7 层：三段内阴影，顶部 1px 白 95% / 底部 1px 暗 9% / 内发光 22px 白 35%。
+    sext.setInsetShadowList(&.{
+        .{ .color = pal.inset_top, .blur = 0, .offset_y = 1 },
+        .{ .color = pal.inset_bottom, .blur = 0, .offset_y = -1 },
+        .{ .color = pal.inset_glow, .blur = 22 },
+    });
+}
+
+pub const GlassLayers = struct { sheen: *Node, highlight: *Node };
+
+/// 玻璃上的两层高光：线性光泽 + 左上角径向光斑（卡片与文案提示共用）。
+pub fn buildGlassLayers(cx: *Cx, surface: *Node, pal: *const styles.Palette) !GlassLayers {
+    const sheen = try box(cx, .{ .position = .absolute, .width = .fill(), .height = .fill() }, .{});
+    try appendOwned(cx, surface, sheen);
+    const shext = try ext(cx, sheen);
+    shext.inset = .{ .left = .{ .px = 0 }, .top = .{ .px = 0 }, .right = .{ .px = 0 }, .bottom = .{ .px = 0 } };
+    shext.hit_behavior = .pass_through;
+    shext.multi_gradient = core.MultiGradient.fromSlice(&.{
+        .{ .color = pal.sheen_top, .position = 0 },
+        .{ .color = pal.sheen_bottom, .position = 1 },
+    }, .vertical);
+
+    // 径向高光：中心在 (12%, −10%)，尺寸 120% × 100%（16.3 第 3 层）。
+    // 第 3 层：左上角径向光斑 radial-gradient(120% 100% at 12% −10%, 白 55% -> 0 @58%)。
+    const highlight = try box(cx, .{ .position = .absolute, .width = .fill(), .height = .fill() }, .{});
+    try appendOwned(cx, surface, highlight);
+    const hext = try ext(cx, highlight);
+    hext.inset = .{ .left = .{ .px = 0 }, .top = .{ .px = 0 }, .right = .{ .px = 0 }, .bottom = .{ .px = 0 } };
+    hext.hit_behavior = .pass_through;
+    var radial = core.MultiGradient.fromSlice(&.{
+        .{ .color = pal.highlight, .position = 0 },
+        .{ .color = pal.highlight.withAlpha(0), .position = 0.58 },
+        .{ .color = pal.highlight.withAlpha(0), .position = 1 },
+    }, .radial);
+    radial.radial_center = .{ 0.12, -0.10 };
+    radial.radial_radius = .{ 1.2, 1.0 };
+    hext.multi_gradient = radial;
+    return .{ .sheen = sheen, .highlight = highlight };
+}
+
+fn buildClose(card: *Card, p: BuildParams, positioner: *Node, surface: *Node, layers: GlassLayers, lifebar: *Node) !void {
+    const cx = p.cx;
+    const pal = p.palette;
     // 关闭钮：原生同款深色圆形白叉，压在左上角盖住图标一角；平时不可见。
     const close = try box(cx, .{
         .position = .absolute,
@@ -457,8 +515,8 @@ pub fn buildShell(card: *Card, p: BuildParams) !void {
 
     card.positioner = positioner;
     card.surface = surface;
-    card.sheen = sheen;
-    card.highlight = highlight;
+    card.sheen = layers.sheen;
+    card.highlight = layers.highlight;
     card.lifebar = lifebar;
     card.close = close;
     card.close_glyph_dark = glyph_dark;
@@ -497,6 +555,14 @@ fn setMonospace(node: *Node) void {
 
 /// 构建内容层并挂到 surface（位于光泽层之后、生命条之前）。
 pub fn buildContent(card: *Card, p: BuildParams) !Content {
+    if (card.spec.kind == .hint) {
+        var content = try hint_mod.buildContent(card, p);
+        errdefer destroyContent(p.cx, card.surface, &content);
+        setLifebarHeight(card, 0);
+        try card.surface.appendChild(p.cx.allocator, content.root);
+        reorderSurface(card, content.root) catch {};
+        return content;
+    }
     const cx = p.cx;
     const pal = p.palette;
     const spec = card.spec;
@@ -558,6 +624,7 @@ pub fn buildContent(card: *Card, p: BuildParams) !Content {
     if (spec.lead == .ring) {
         content.ring_secs = lead_box.children.items[1].children.items[0];
     }
+    if (spec.lead == .spinner) content.spinner = lead.children.items[0];
 
     if (spec.body.len > 0) {
         const body = try core.text(cx, spec.body, .{
@@ -650,7 +717,7 @@ pub fn buildContent(card: *Card, p: BuildParams) !Content {
                     .size = .sm,
                     .block = true,
                     .on_event = buttonEvent,
-                    // 注意：content 按值返回，上下文必须指向 card 内的稳定地址——
+                    // 注意：content 按值返回，上下文必须指向 card 内的稳定地址,
                     // 由调用方在 content 落位后调用 rebindButtons 修正。
                     .event_context = null,
                     .style = .{
@@ -672,16 +739,19 @@ pub fn buildContent(card: *Card, p: BuildParams) !Content {
         }
     }
 
-    const bar_h: f32 = if (spec.life_bar) M.life_bar else 0;
-    if (card.lifebar.style.height != .px or card.lifebar.style.height.px != bar_h) {
-        card.lifebar.style.height = .fixed(bar_h);
-        card.lifebar.markSizingDirty();
-    }
+    setLifebarHeight(card, if (spec.life_bar) M.life_bar else 0);
 
     // 插到 lifebar 之前：光泽层在下，内容在中，生命条在上。
     try card.surface.appendChild(cx.allocator, root);
     reorderSurface(card, root) catch {};
     return content;
+}
+
+fn setLifebarHeight(card: *Card, bar_h: f32) void {
+    if (card.lifebar.style.height != .px or card.lifebar.style.height.px != bar_h) {
+        card.lifebar.style.height = .fixed(bar_h);
+        card.lifebar.markSizingDirty();
+    }
 }
 
 fn buildReply(card: *Card, p: BuildParams, scope: *Scope, row: *Node, content: *Content) !void {
@@ -874,6 +944,18 @@ fn buildLead(card: *Card, p: BuildParams, lead_box: *Node) !*Node {
 
 /// 销毁内容层：先失效 hook、dispose scope，再摘链释放（与 For 同序）。
 pub fn destroyContent(cx: *Cx, parent: *Node, content: *Content) void {
+    // 按钮的事件上下文指向 card.content 内的槽位：原地转换时 card.content 已换成新内容，
+    // 释放旧按钮会派发 blur 等事件（焦点在按钮上时），先摘掉处理器，免得读到新内容的槽位。
+    for (content.buttons) |maybe| {
+        if (maybe) |btn| {
+            btn.behavior.events.on_event = null;
+            btn.behavior.events.event_context = null;
+        }
+    }
+    if (content.send_button) |btn| {
+        btn.behavior.events.on_event = null;
+        btn.behavior.events.event_context = null;
+    }
     hooks.invalidateSubtreeHookState(content.root);
     if (!content.scope.disposed) content.scope.dispose();
     core.clearNodeScopes(content.root);

@@ -1,4 +1,4 @@
-//! GlassBox 样式层 — header 文本样式。
+//! GlassBox 样式层，header 文本样式。
 //! glass 材质本体（surface border/tint/blur 的 Resolved* 插值链）是运行时
 //! 渲染逻辑，留在 mod.zig（改动它必须肉眼看截图，见 memory）。
 const core = @import("../../core.zig");

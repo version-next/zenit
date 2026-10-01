@@ -103,7 +103,7 @@ pub const DropdownMenuState = struct {
     item_nodes: [MAX_ITEMS]?*Node = [_]?*Node{null} ** MAX_ITEMS,
     /// 实际渲染的项数
     item_count: usize = 0,
-    /// 虚拟高亮背景色 — mount 时从 DropdownMenuItemRecipe 的 hover 态 resolve 得到
+    /// 虚拟高亮背景色，mount 时从 DropdownMenuItemRecipe 的 hover 态 resolve 得到
     highlight_bg: Color,
     /// 菜单容器节点（aria-activedescendant 挂在它身上）
     menu_node: ?*Node = null,
@@ -154,7 +154,7 @@ pub const DropdownMenuState = struct {
                 node.setBackgroundRaw(self.highlight_bg);
                 node.markRenderDirty();
 
-                // 键盘高亮是"虚拟焦点"——真实焦点始终停在菜单容器上，只有
+                // 键盘高亮是"虚拟焦点"，真实焦点始终停在菜单容器上，只有
                 // aria-activedescendant 能告诉 AT 当前停在哪一项。缺了它，
                 // 用方向键在菜单里走一圈，屏幕阅读器全程一言不发。
                 if (self.menu_node) |menu| {
@@ -330,7 +330,7 @@ pub const DropdownMenuBuilder = struct {
                 .width = .{ .fit = .{} },
                 .height = .{ .fit = .{} },
             }, .{});
-            // 不加 errdefer —— adoptChild 已在 append 失败时释放它。
+            // 不加 errdefer, adoptChild 已在 append 失败时释放它。
             // 一个 child 只能有一个回收责任方（加了就是 double free，
             // 实测 0xaaaa 毒值 segfault）。
             label_node.setText(.{ .content = item.label_text, .color = fg, .font_size = label_fs });
@@ -652,13 +652,13 @@ test "DropdownMenu: escape closes menu" {
     try std.testing.expect(!result.state.is_open.peek());
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
 /// 一次性收养：append 失败时自己释放 child（与下游编辑器的 utils.adopt 同型）。
-/// 让「建好即挂」写起来不啰嗦 —— 窗口不存在就不需要门控 flag。
+/// 让「建好即挂」写起来不啰嗦，窗口不存在就不需要门控 flag。
 fn adoptChild(cx: *Cx, allocator: Allocator, parent: *Node, child: *Node) !*Node {
     errdefer cx.freeNode(child);
     try parent.appendChild(allocator, child);

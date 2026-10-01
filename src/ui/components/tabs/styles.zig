@@ -1,4 +1,4 @@
-//! Tabs 样式层 — TabsSlotRecipe + variant×size spec 表 + EditorTabs 具名样式函数
+//! Tabs 样式层，TabsSlotRecipe + variant×size spec 表 + EditorTabs 具名样式函数
 //!
 //! 业务逻辑（TabsState/Builder/mount/事件/before_render）在 mod.zig；
 //! 本文件只有样式声明。TabsVariant/TabsSize 是公共 API，留在 mod.zig，循环 import 取用。
@@ -14,11 +14,11 @@ const TabsVariant = mod.TabsVariant;
 const TabsSize = mod.TabsSize;
 
 // ============================================================================
-// TabsSlotRecipe — 5 slots: root, tab, highlight, badge, close
+// TabsSlotRecipe, 5 slots: root, tab, highlight, badge, close
 //
 // 样式全部收敛在这里：variant resolver 管颜色/字重/highlight 外观，
 // derived 管 variant × size 组合出的全部几何（padding/radius/gap/font_size）。
-// active 态不是独立 slot 而是 tab slot 的 .selected 条件——消费端
+// active 态不是独立 slot 而是 tab slot 的 .selected 条件，消费端
 // `slots.tab.resolve(.{ .is_selected = is_active })`。
 // mount/buildTab 只消费 resolve 结果，不再各自持有样式决策。
 // ============================================================================
@@ -120,7 +120,7 @@ pub const TabsSlotRecipe = recipe_mod.slotRecipe(struct {
         }.resolve,
     };
 
-    /// 跨维度几何 — variant × size 组合出的 padding/radius/gap/font_size 全在这里。
+    /// 跨维度几何，variant × size 组合出的 padding/radius/gap/font_size 全在这里。
     /// 只产出几何字段，禁碰 background（见 recipe.zig derived 约定）。
     pub fn derived(v: Variants, _: *const theme.ThemeTokens) Slots {
         const item_geo = StyleOverride{
@@ -144,7 +144,7 @@ pub const TabsSlotRecipe = recipe_mod.slotRecipe(struct {
 });
 
 // ============================================================================
-// Tabs 独立 spec 表 — 4 档 (xs/sm/md/lg)
+// Tabs 独立 spec 表，4 档 (xs/sm/md/lg)
 //
 // 只被 TabsSlotRecipe.derived 消费（tabIconSize 例外：icon 尺寸不是
 // StyleOverride 字段，由 buildTab 直接取）。组件逻辑不得直接调用。

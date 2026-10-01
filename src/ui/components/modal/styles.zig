@@ -1,4 +1,4 @@
-/// Modal — 样式层
+/// Modal，样式层
 ///
 /// 具名样式函数（迁移自 mount 内联样式，数值原样保留）；
 /// overlay/焦点陷阱/动画结构在 mod.zig。
@@ -38,7 +38,7 @@ pub fn headerStyle(t: *const theme.ThemeTokens) core.BoxStyle {
 }
 
 /// 标题盒吃满 header 剩余宽（而非 fit 内容宽），超长标题在盒内折行，
-/// 高度随折行数增长——固定 20px 高会把第二行裁掉。
+/// 高度随折行数增长，固定 20px 高会把第二行裁掉。
 pub fn titleBoxStyle(_: *const theme.ThemeTokens) core.BoxStyle {
     return .{ .width = .{ .grow = .{} } };
 }

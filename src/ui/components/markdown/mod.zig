@@ -1,11 +1,11 @@
 /// Markdown read-only renderer（只渲染，不编辑）
 ///
 /// 面向场景：tooltip 富文本、about / settings 页的简单文档展示、
-/// 任何"展示一段已有 markdown 字符串"的场景。**不**面向 WYSIWYG 编辑 ——
+/// 任何"展示一段已有 markdown 字符串"的场景。**不**面向 WYSIWYG 编辑,
 /// 真正的编辑器需要 parser 与编辑耦合，那是构建在 zenit 之上的应用代码。
 ///
 /// 设计原则：
-/// - 一趟字节扫描 → 扁平 Block 数组（每个 Block 内嵌 Inline 片段）
+/// - 一趟字节扫描 -> 扁平 Block 数组（每个 Block 内嵌 Inline 片段）
 /// - Inline 片段用 TextSpan 渲染（bold/italic/code）而不是拆多个 text node
 /// - `![alt](data:...)` 直接降级为 `[alt]` 文本 chip，绝不真拉图像
 /// - `<http://...>` autolinks 不展开，flatten 成普通文本
@@ -67,7 +67,7 @@ pub const MarkdownResult = struct {
 };
 
 // ============================================================================
-// 样式层已析出到 styles.zig — emitter 只消费，本文件不做视觉决策
+// 样式层已析出到 styles.zig, emitter 只消费，本文件不做视觉决策
 // ============================================================================
 
 const styles = @import("styles.zig");
@@ -179,7 +179,7 @@ const BlockScanner = struct {
                 }
                 self.pos = l.next;
             }
-            // EOF 未闭合 —— 全部当 code 吞掉
+            // EOF 未闭合，全部当 code 吞掉
             return .{ .code_block = .{ .content = trimTrailingNewline(self.src[content_start..self.src.len]) } };
         }
 
@@ -228,7 +228,7 @@ const BlockScanner = struct {
         // 段落：累积后续非空非特殊行
         // 首行无条件吞掉：走到这里说明它已不是任何块起始；若 break 条件
         // 与上面的块判定不一致（如 "#123" 不是合法 ATX 标题），不前进 pos
-        // 会让 next() 反复返回空段落 → renderInto 死循环。
+        // 会让 next() 反复返回空段落 -> renderInto 死循环。
         const para_start = self.pos;
         self.pos = line.next;
         while (self.pos < self.src.len) {
@@ -298,7 +298,7 @@ fn emitBlockquote(cx: *Cx, container: *Node, text: []const u8, opts: MarkdownOpt
 
 fn emitListItem(cx: *Cx, container: *Node, ordered: bool, marker: []const u8, text: []const u8, opts: MarkdownOptions) !void {
     const row = try core.adoptChild(cx, cx.allocator, container, try box(cx, mdListRowStyle(), .{}));
-    // label 只给正文，不含 "•"/"1." 这个 marker —— marker 是纯视觉的项目符号，
+    // label 只给正文，不含 "•"/"1." 这个 marker, marker 是纯视觉的项目符号，
     // 朗读出来只是噪音（AT 自己会播报"第 N 项"）。
     row.behavior.interaction.a11y = .{ .role = .listitem, .label = text };
     const marker_node = try core.adoptChild(cx, cx.allocator, row, try box(cx, .{}, .{}));
@@ -451,7 +451,7 @@ fn expandInline(builder: *InlineBuilder, raw: []const u8, opts: MarkdownOptions)
             }
         }
 
-        // _italic_ —— 下划线 italic（CommonMark 允许）
+        // _italic_，下划线 italic（CommonMark 允许）
         // 规避 snake_case：前面是字母/数字时不触发；后面 `_` 也要跟非字母数字
         if (c == '_') {
             const prev_is_word = i > 0 and isWordByte(normalised[i - 1]);
@@ -754,7 +754,7 @@ test "markdown: blank-only input yields no blocks" {
     try std.testing.expect((try scanner.next(std.testing.allocator)) == null);
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }

@@ -1,4 +1,4 @@
-/// png.ts — 最小 PNG 解码器（8-bit RGB/RGBA、非交错），供 e2e 做像素级断言。
+/// png.ts，最小 PNG 解码器（8-bit RGB/RGBA、非交错），供 e2e 做像素级断言。
 /// 只依赖 Bun.inflateSync；harness 截图固定为此格式。
 import { readFileSync } from "node:fs";
 import { inflateSync } from "node:zlib";
@@ -98,7 +98,7 @@ export function countDarkPixels(
 ///
 /// `countDarkPixels` 的 threshold=100 是近黑判据，只适合深色文字。浅色图形
 /// （spinner 的细线圈、skeleton 的浅灰占位块）在正常渲染下也只有个位数深色
-/// 像素 —— 用深色判据会把「画对了」误判成「像素空白」。
+/// 像素，用深色判据会把「画对了」误判成「像素空白」。
 ///
 /// 这个函数改问「这块区域是不是一片纯背景」：与背景色的亮度差超过 `minDelta`
 /// 即计数。它能同时抓住深色文字缺失和浅色图形缺失，代价是需要估计背景色

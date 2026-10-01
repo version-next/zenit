@@ -1,4 +1,4 @@
-/// 动画预设库 — 常用动画效果的一键封装
+/// 动画预设库，常用动画效果的一键封装
 ///
 /// 类似 GSAP registerEffect，每个预设内部调用 animateNode()。
 ///
@@ -25,7 +25,7 @@ pub const FadeOpts = struct {
     delay: f32 = 0,
 };
 
-/// 淡入：opacity 0 → 1
+/// 淡入：opacity 0 -> 1
 pub fn fadeIn(node: anytype, allocator: Allocator, opts: FadeOpts) void {
     animateNode(node, allocator, .{
         .prop = .opacity,

@@ -1,4 +1,4 @@
-/// 离屏纹理池 + 尺寸计算 — 从 command_encoder.zig 析出
+/// 离屏纹理池 + 尺寸计算，从 command_encoder.zig 析出
 ///
 /// 用于 opacity layer / backdrop blur / rounded clip 等需要离屏渲染的场景。
 const std = @import("std");
@@ -91,7 +91,7 @@ pub const RETAINED_IDLE_FRAMES: u64 = 60;
 /// damage 基线的旁路槽位数。
 ///
 /// 为什么不是 MAX_POOL（128）：damage 基线只对 **retained** 条目有意义，而
-/// 一帧里能拿到有效基线的 retained 层数有硬上限 —— command_encoder 的
+/// 一帧里能拿到有效基线的 retained 层数有硬上限，command_encoder 的
 /// `retained_hashes: [64]` 与 `damage_ranges: [64]`：
 ///   - 序号 ≥ 64 的 opacity layer 拿不到 content_version（`break :blk 0`），
 ///     0 指纹被 `acquireRetained` 直接拒绝 ⇒ 根本不是 retained 条目；
@@ -108,12 +108,12 @@ pub const MAX_DAMAGE_SLOTS = 64;
 
 pub const OffscreenTexturePool = struct {
     /// 2026-08-02 容量修订（下游回归性能项）：16 槽在 glass 工作负载下
-    /// 恒满 —— 每块玻璃岛一帧要 level0 capture + kawase 链 + glass/composite
+    /// 恒满，每块玻璃岛一帧要 level0 capture + kawase 链 + glass/composite
     /// 数张纹理，opacity/clip layer 又因 release() 的 in-flight 保护期需要
-    /// 每尺寸 ~4 份轮换；池满后新纹理全走 transient（帧末即毁）→ 同尺寸
+    /// 每尺寸 ~4 份轮换；池满后新纹理全走 transient（帧末即毁）-> 同尺寸
     /// 每帧 create/destroy。48 槽容纳多岛 + 多故事切换的工作集；内存上限
     /// 靠 `sweepIdle`（普通条目闲置若干帧即回收）兜底，不靠压条数。
-    /// 2026-08-12 再次修订 48 → 128（下游应用）：**同一个缺陷第二次复发**。
+    /// 2026-08-12 再次修订 48 -> 128（下游应用）：**同一个缺陷第二次复发**。
     ///
     /// 症状：下游应用里 7 个玻璃岛时池恒满（`[offpool] create ... (pool=48)`，
     /// 一帧 51 次 acquire / 6 次失败）。降采样链拿不到纹理就 `break`，
@@ -122,7 +122,7 @@ pub const OffscreenTexturePool = struct {
     /// 同步以 3 帧为周期抖动**（用户看到的是「Inspector 的填充行一直在闪、
     /// 工具栏图标忽有忽无」）。实测：改成 128 后逐帧像素差归零。
     ///
-    /// 实测（下游应用复现夹具，108 帧）：**扩容后显存反而降到 1/20**——
+    /// 实测（下游应用复现夹具，108 帧）：**扩容后显存反而降到 1/20**,
     ///
     ///   MAX_POOL=48 ：create 1414 次，池峰值卡死在 48，若全驻留 1135 MB
     ///   MAX_POOL=128：create  112 次，池峰值 111，        若全驻留   52 MB
@@ -136,7 +136,7 @@ pub const OffscreenTexturePool = struct {
     /// ⚠ 仍需注意：需求随「玻璃岛数 × 链深」线性增长，128 也只是当前工作集
     /// (111) 之上的一档余量。治本方向：(a) 容量按当帧 glass 岛数动态伸缩；
     /// (b) 保证同一岛的模糊级数帧间**稳定**（宁可恒定少一级，也不要在 4/5
-    /// 之间跳——跳变才是视觉上的"闪"）。
+    /// 之间跳，跳变才是视觉上的"闪"）。
     pub const MAX_POOL = 128;
     pub const MAX_TRANSIENT = 32;
     /// 普通池条目连续多少帧没被复用就销毁（防切换场景后一堆陈旧尺寸的
@@ -150,7 +150,7 @@ pub const OffscreenTexturePool = struct {
     count: usize = 0,
     /// `acquire` 彻底失败（池 **和** transient 都满）的累计次数。
     ///
-    /// ⚠ 语义边界（实测澄清，别误用）：池满但 transient 还有位时**不计数** ——
+    /// ⚠ 语义边界（实测澄清，别误用）：池满但 transient 还有位时**不计数**,
     /// 那条路是"新建一张、帧末即毁"，表现为性能颠簸（issue 33 实测：容量不足时
     /// 108 帧 create 1414 次）而**不是**画面降级，所以本计数器在那种情况下恒为 0。
     /// 换言之：`> 0` 一定有画面级降级；`== 0` **不代表**池够用。
@@ -206,7 +206,7 @@ pub const OffscreenTexturePool = struct {
     };
 
     /// 归还某条目占用的 damage 槽（幂等）。
-    /// **必须**在 retained 条目失去身份/被覆写/被销毁时调用 —— 漏掉会泄漏槽位，
+    /// **必须**在 retained 条目失去身份/被覆写/被销毁时调用，漏掉会泄漏槽位，
     /// 更糟的是让别的 layer 认领到旧条目时读到**别人的**基线（串味 = 漏脏区）。
     fn releaseDamageSlot(self: *OffscreenTexturePool, entry: *PoolEntry) void {
         const slot = entry.damage_slot;
@@ -215,7 +215,7 @@ pub const OffscreenTexturePool = struct {
         if (slot < MAX_DAMAGE_SLOTS) self.damage_slot_used[slot] = false;
     }
 
-    /// 为某条目分配一个 damage 槽（已有则复用）。槽位耗尽返回 null —— 调用方
+    /// 为某条目分配一个 damage 槽（已有则复用）。槽位耗尽返回 null，调用方
     /// 必须安全降级（不存基线 = 整层重画），不得截断。
     fn acquireDamageSlot(self: *OffscreenTexturePool, entry: *PoolEntry) ?*DamageSlot {
         if (entry.damage_slot != NO_DAMAGE_SLOT and entry.damage_slot < MAX_DAMAGE_SLOTS) {
@@ -351,7 +351,7 @@ pub const OffscreenTexturePool = struct {
             return self.transientLease(slot);
         }
         // 池 + transient 全满。调用方（blur 链、opacity layer）此时**静默降级**：
-        // 少一级模糊、或整层不合成。视觉上表现为"闪" —— 而且因为所有玻璃岛
+        // 少一级模糊、或整层不合成。视觉上表现为"闪"，而且因为所有玻璃岛
         // 共用这一个池，多个不相关的区域会同步抖动，极难归因（下游应用
         // 查了很久才定位到这里）。所以耗尽必须留下不依赖调试开关的痕迹。
         self.exhausted_count += 1;
@@ -370,7 +370,7 @@ pub const OffscreenTexturePool = struct {
     /// 新建一张离屏 RT。
     ///
     /// Private 存储：这些离屏 RT 是**纯 GPU 中间产物**（opacity layer 合成、
-    /// backdrop blur 的 ping-pong），CPU 从不读写它们 —— 全仓唯一的像素回读
+    /// backdrop blur 的 ping-pong），CPU 从不读写它们，全仓唯一的像素回读
     /// 是 e2e 截图，且只读 drawable，不碰这个池（renderer.zig:214）。
     /// Shared 会让 Apple Silicon 上的这些纹理走 CPU 可见的一致性路径，
     /// 白白牺牲带宽与压缩（审查报告 P2）。Private 让驱动可以启用无损压缩
@@ -388,7 +388,7 @@ pub const OffscreenTexturePool = struct {
 
     /// 池满时挑一个可安全驱逐的条目：!in_use 且 reusable_after_frame 已过
     /// （= 池自身的复用规则认定 GPU 不再引用），取 last_used_frame 最旧者。
-    /// 无安全候选（全部 in_use 或仍在 in-flight 保护期）→ null，新纹理不入池。
+    /// 无安全候选（全部 in_use 或仍在 in-flight 保护期）-> null，新纹理不入池。
     fn findLruSlot(self: *const OffscreenTexturePool, frame_index: u64) ?usize {
         var best: ?usize = null;
         var best_frame: u64 = std.math.maxInt(u64);
@@ -402,11 +402,11 @@ pub const OffscreenTexturePool = struct {
             }
         }
         if (best == null) {
-            // 没有普通条目可驱逐 —— 退而牺牲**本帧没被认领**的 retained 条目。
+            // 没有普通条目可驱逐，退而牺牲**本帧没被认领**的 retained 条目。
             //
             // 不做这一步的后果（实测）：retained 条目把 16 个槽位钉死后，
             // evictLruSlot 恒返 null，于是**所有**普通离屏纹理都走"创建了但
-            // 进不了池"的路径，每帧 create/release —— Modal / Sheet 的离屏合成
+            // 进不了池"的路径，每帧 create/release, Modal / Sheet 的离屏合成
             // 直接垮掉（e2e 逮到：对话框整块空白）。
             // GPU retained 是一项优化，绝不能把普通路径挤死。
             for (&self.entries, 0..) |*entry, i| {
@@ -427,7 +427,7 @@ pub const OffscreenTexturePool = struct {
     fn evictLruSlot(self: *OffscreenTexturePool, frame_index: u64) ?usize {
         const slot = self.findLruSlot(frame_index) orelse return null;
         if (self.entries[slot]) |*entry| {
-            // 条目整个消失 —— 槽位必须一起还，否则泄漏（槽位有限，泄光后
+            // 条目整个消失，槽位必须一起还，否则泄漏（槽位有限，泄光后
             // 所有 retained 层永久退化成整层重画）。
             self.releaseDamageSlot(entry);
             entry.texture.destroy();
@@ -458,7 +458,7 @@ pub const OffscreenTexturePool = struct {
         }
     }
 
-    /// 同帧立即复用释放 —— backdrop blur 内部链专用。
+    /// 同帧立即复用释放，backdrop blur 内部链专用。
     ///
     /// 前提：该纹理只被**当前 command buffer 内已编码完成的 pass** 读/写过
     /// （GPU-only 纹理 + 默认 hazard tracking 下，同一 command buffer 内
@@ -487,7 +487,7 @@ pub const OffscreenTexturePool = struct {
 
     /// 帧开始时重置所有 in_use 标记。
     ///
-    /// retained 条目**不**参与重置 —— 它们是跨帧持有的，in_use 恒为 true 表示
+    /// retained 条目**不**参与重置，它们是跨帧持有的，in_use 恒为 true 表示
     /// "归某个 layer 独占"。清掉就等于把还有人用的纹理还给了池。
     /// 它们的回收走 `sweepRetained`（idle 若干帧后）。
     pub fn resetFrame(self: *OffscreenTexturePool) void {
@@ -507,7 +507,7 @@ pub const OffscreenTexturePool = struct {
     /// GPU retained：认领属于 `retained_id` 的专属纹理。
     ///
     /// 返回 null 表示"这一帧不要走 retained 路径"（池满等），caller 必须回退到
-    /// 普通 acquire 的每帧重画路径 —— 永远是安全的降级方向。
+    /// 普通 acquire 的每帧重画路径，永远是安全的降级方向。
     ///
     /// `content_matches` 为 true 时表示纹理里已有的内容就是本帧要的内容，
     /// caller 可以跳过内容 pass 直接合成；false 时 caller 必须重画一遍。
@@ -550,14 +550,14 @@ pub const OffscreenTexturePool = struct {
                 if (!matches) {
                     // 要重画。上一次命中合成时 GPU 采样过这张纹理；若那一帧的
                     // command buffer 仍 in-flight（三重缓冲常态），本帧就地
-                    // clear+重画是写读竞争 —— 内容切换的一两帧会闪烁。
+                    // clear+重画是写读竞争，内容切换的一两帧会闪烁。
                     // 处于保护期内就拒绝认领，caller 走普通池路径（那边的临时
                     // 纹理过了保护期，安全），下一帧再回来重画专属纹理。
                     if (e.reusable_after_frame > frame_index) return null;
                 }
                 const matches_final = matches;
                 // miss：纹理即将被重画，旧像素不再对应任何已完成的版本。必须
-                // 先撤掉 primed —— 否则版本号已改写成新指纹而 primed 仍为
+                // 先撤掉 primed，否则版本号已改写成新指纹而 primed 仍为
                 // true，内容 pass 中途失败（没走到 markRetainedPrimed）时，
                 // 下一帧同指纹会命中半成品/陈旧像素。重画完成后 end 处
                 // markRetainedPrimed 再置回。was_primed 已在上面快照，部分
@@ -582,7 +582,7 @@ pub const OffscreenTexturePool = struct {
                 break :blk i;
             }
             break :blk self.evictLruSlot(frame_index) orelse {
-                // 池满且无可驱逐条目 —— 不入池就无法跨帧持有，retained 没意义。
+                // 池满且无可驱逐条目，不入池就无法跨帧持有，retained 没意义。
                 new_texture.destroy();
                 return null;
             };
@@ -601,7 +601,7 @@ pub const OffscreenTexturePool = struct {
     }
 
     /// 标记某 retained 纹理的内容已经画好，下一帧起可以直接复用。
-    /// 必须在内容 pass 真正编码完成后调用 —— 提前调会让下一帧复用到没画完的像素。
+    /// 必须在内容 pass 真正编码完成后调用，提前调会让下一帧复用到没画完的像素。
     pub fn markRetainedPrimed(self: *OffscreenTexturePool, lease: TextureLease) bool {
         if (lease.kind != .pooled) return false;
         const slot: usize = lease.slot;
@@ -633,7 +633,7 @@ pub const OffscreenTexturePool = struct {
                 if (e.retained_id != retained_id) continue;
                 if (items) |list| {
                     if (list.len <= MAX_DAMAGE_ITEMS) {
-                        // 槽位耗尽 → 落到下面的 release（invalid）＝整层重画。
+                        // 槽位耗尽 -> 落到下面的 release（invalid）＝整层重画。
                         if (self.acquireDamageSlot(e)) |slot| {
                             @memcpy(slot.items[0..list.len], list);
                             slot.count = @intCast(list.len);
@@ -649,7 +649,7 @@ pub const OffscreenTexturePool = struct {
 
     /// 回收连续 `POOL_IDLE_FRAMES` 帧没被任何 acquire 命中的普通条目。
     /// 与 sweepRetained 同节奏调用（每帧一次）。in_use / in-flight 保护期内
-    /// 的条目不碰 —— 只清确定无人引用的闲置纹理。
+    /// 的条目不碰，只清确定无人引用的闲置纹理。
     pub fn sweepIdle(self: *OffscreenTexturePool, frame_index: u64) void {
         for (&self.entries, 0..) |*entry, slot| {
             if (entry.*) |*e| {
@@ -771,7 +771,7 @@ test "computeOffscreenTextureSize rejects oversize textures" {
 // ============================================================================
 
 fn fakeTexture(width: u32, height: u32) gpu.Backend.Texture {
-    // 经由后端提供的构造器，而不是直写字段字面量——后者会把某个后端的
+    // 经由后端提供的构造器，而不是直写字段字面量，后者会把某个后端的
     // 字段布局（Metal 的 `.raw`）焊进渲染层测试，换后端即编译失败。
     return gpu.Backend.Texture.fakeForTesting(width, height, .bgra8_unorm_srgb);
 }
@@ -812,7 +812,7 @@ test "retained: content_version bump forces repaint" {
     var pool = OffscreenTexturePool{};
     seedRetained(&pool, 0, 42, 7, 128, 128);
 
-    // 内容变了 → 必须重画，否则画面停留在旧内容。
+    // 内容变了 -> 必须重画，否则画面停留在旧内容。
     const got = pool.acquireRetained(undefined, 42, 8, 128, 128, 5) orelse
         return error.TestUnexpectedResult;
     try std.testing.expect(got.lease.eql(pool.pooledLease(0))); // 纹理仍复用（省一次创建）
@@ -841,18 +841,18 @@ test "retained: not primed yet = miss even when version matches" {
 test "retained: miss 后内容 pass 未完成（未 markRetainedPrimed）下一帧同指纹不得命中" {
     var pool = OffscreenTexturePool{};
     seedRetained(&pool, 0, 42, 7, 128, 128);
-    // 帧 N：指纹 7→8，miss，开始重画……但内容 pass 中途失败，没走到 end 的
+    // 帧 N：指纹 7->8，miss，开始重画……但内容 pass 中途失败，没走到 end 的
     // markRetainedPrimed。
     const miss = pool.acquireRetained(undefined, 42, 8, 128, 128, 5) orelse
         return error.TestUnexpectedResult;
     try std.testing.expect(!miss.content_matches);
     try std.testing.expect(miss.was_primed); // 部分重绘判据仍按旧状态
-    // 帧 N+k（过了保护期）：同指纹 8 —— 纹理里是半成品，必须重画。
+    // 帧 N+k（过了保护期）：同指纹 8，纹理里是半成品，必须重画。
     const again = pool.acquireRetained(undefined, 42, 8, 128, 128, 5 + OffscreenTexturePool.REUSE_LAG_FRAMES) orelse
         return error.TestUnexpectedResult;
     try std.testing.expect(!again.content_matches);
     try std.testing.expect(!again.was_primed); // 旧像素不可信 → 不走部分重绘
-    // 这次画完了 → 之后同指纹命中。
+    // 这次画完了 -> 之后同指纹命中。
     try std.testing.expect(pool.markRetainedPrimed(again.lease));
     const hit = pool.acquireRetained(undefined, 42, 8, 128, 128, 5 + 2 * OffscreenTexturePool.REUSE_LAG_FRAMES) orelse
         return error.TestUnexpectedResult;
@@ -880,7 +880,7 @@ test "retained: size-keyed acquire never steals a retained texture" {
     pool.entries[0].?.in_use = false;
 
     // 尺寸完全匹配，但因为是 retained 条目，acquire 必须跳过它去走创建路径。
-    // 创建路径需要真 device，这里传 undefined 会 crash —— 所以改为验证
+    // 创建路径需要真 device，这里传 undefined 会 crash，所以改为验证
     // "命中扫描不会返回它"：先让池里只有这一个条目，且不可能有其它命中。
     var found_retained = false;
     for (pool.entries) |maybe| {
@@ -943,7 +943,7 @@ test "retained: zero fingerprint is rejected" {
 
 test "retained: NO_RETAINED_OWNER id is rejected" {
     var pool = OffscreenTexturePool{};
-    // 哨兵 id 不是合法身份 —— 必须拒绝，否则所有"不参与 retained"的 layer
+    // 哨兵 id 不是合法身份，必须拒绝，否则所有"不参与 retained"的 layer
     // 会共用同一张纹理互相覆写。
     try std.testing.expect(pool.acquireRetained(undefined, NO_RETAINED_OWNER, 0, 64, 64, 1) == null);
 }
@@ -959,7 +959,7 @@ test "retained: eviction may sacrifice an idle retained entry when pool is full"
         pool.entries[i].?.last_used_frame = 10;
         pool.entries[i].?.reusable_after_frame = 0;
     }
-    // 全是 retained，但都不是本帧认领的 → 允许牺牲最旧的一个。
+    // 全是 retained，但都不是本帧认领的 -> 允许牺牲最旧的一个。
     const victim = pool.findLruSlot(20);
     try std.testing.expect(victim != null);
 }
@@ -988,7 +988,7 @@ test "damage-rect: 基线存取 + 尺寸变化作废 + was_primed 语义" {
     try std.testing.expectEqual(@as(usize, 2), got_items.len);
     try std.testing.expectEqual(@as(u64, 222), got_items[1].digest);
 
-    // 内容 miss 但 primed + 同尺寸 → was_primed=true（部分重绘前提）
+    // 内容 miss 但 primed + 同尺寸 -> was_primed=true（部分重绘前提）
     const got = pool.acquireRetained(undefined, 42, 8, 128, 128, 100) orelse
         return error.TestUnexpectedResult;
     try std.testing.expect(!got.content_matches);
@@ -1001,7 +1001,7 @@ test "damage-rect: 基线存取 + 尺寸变化作废 + was_primed 语义" {
     // 重新存上，尺寸变化路径必须作废基线
     pool.storeRetainedDamageItems(42, items[0..]);
     pool.entries[0].?.reusable_after_frame = 0;
-    // 无法走真 createTexture（需要 device）——直接断言字段语义：
+    // 无法走真 createTexture（需要 device），直接断言字段语义：
     try std.testing.expect(pool.entries[0].?.damage_slot != OffscreenTexturePool.NO_DAMAGE_SLOT);
     pool.entries[0].?.width = 999; // 模拟尺寸不匹配前提
     // acquireRetained 尺寸不匹配分支需要真 device 创建纹理，无法在单测走通；
@@ -1019,7 +1019,7 @@ test "damage-rect: 旁路槽位随条目回收，绝不串味" {
     try std.testing.expect(slot != OffscreenTexturePool.NO_DAMAGE_SLOT);
     try std.testing.expect(pool.damage_slot_used[slot]);
 
-    // idle 回收 → 身份没了，槽必须还回去，基线读不到。
+    // idle 回收 -> 身份没了，槽必须还回去，基线读不到。
     pool.entries[0].?.last_used_frame = 100;
     pool.sweepRetained(100 + RETAINED_IDLE_FRAMES);
     try std.testing.expectEqual(OffscreenTexturePool.NO_DAMAGE_SLOT, pool.entries[0].?.damage_slot);
@@ -1057,7 +1057,7 @@ test "damage-rect: 槽位耗尽是安全降级（不截断、不复用别人的�
         pool.storeRetainedDamageItems(@intCast(i + 1), items[0..]);
         try std.testing.expect(pool.entries[i].?.damage_slot != OffscreenTexturePool.NO_DAMAGE_SLOT);
     }
-    // 第 N+1 个条目：拿不到槽 → 不存基线（下一帧整层重画），而不是抢别人的。
+    // 第 N+1 个条目：拿不到槽 -> 不存基线（下一帧整层重画），而不是抢别人的。
     seedRetained(&pool, fill_n, 9999, 7, 64, 64);
     pool.storeRetainedDamageItems(9999, items[0..]);
     try std.testing.expectEqual(
@@ -1090,7 +1090,7 @@ test "damage-rect: 超上限的 items 置 invalid 且释放已占槽" {
 // 结构体尺寸护栏
 // ----------------------------------------------------------------------------
 // 2026-08-12：`damage_items: [128]DamageItem` 曾内联在 PoolEntry 里，单条 3152 B，
-// `entries: [128]?PoolEntry` = 403 KB —— 而其中绝大多数是普通条目，永远不写
+// `entries: [128]?PoolEntry` = 403 KB，而其中绝大多数是普通条目，永远不写
 // damage 基线。拆成旁路后 PoolEntry 回到 ~72 B。
 // 这条断言是**防复发**用的：再有人往 PoolEntry 里内联大数组会在编译期炸。
 // 真需要加字段时，改这个数字并在 commit 里说明为什么值得。

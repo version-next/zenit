@@ -67,6 +67,10 @@ pub const Palette = struct {
     pill_fg: Color,
     pill_icon: Color,
     on_semantic: Color,
+    // 文案提示（16.13）
+    keycap_bg: Color,
+    keycap_edge: Color,
+    hint_kbd_bg: Color,
 
     pub fn tone(self: *const Palette, t: model.Tone) Color {
         return switch (t) {
@@ -150,6 +154,9 @@ pub const light = Palette{
     .pill_fg = hexA(0xFFFFFF, 0.94),
     .pill_icon = hexA(0xFFFFFF, 0.72),
     .on_semantic = Color.hex(0xFFFFFF),
+    .keycap_bg = hexA(0x5A544F, 0.08),
+    .keycap_edge = hexA(0x5A544F, 0.16),
+    .hint_kbd_bg = hexA(0xFFFFFF, 0.45),
 };
 
 pub const dark = Palette{
@@ -197,6 +204,9 @@ pub const dark = Palette{
     .pill_fg = hexA(0x2B2724, 0.94),
     .pill_icon = hexA(0x2B2724, 0.72),
     .on_semantic = Color.hex(0xFFFFFF),
+    .keycap_bg = hexA(0xFFFFFF, 0.09),
+    .keycap_edge = hexA(0xFFFFFF, 0.16),
+    .hint_kbd_bg = hexA(0x000000, 0.22),
 };
 
 pub fn palette(t: *const theme.ThemeTokens) *const Palette {
@@ -257,4 +267,41 @@ pub const Metrics = struct {
     pub const clear_gap: f32 = 6;
     pub const pill_font: f32 = 10.8;
     pub const pill_icon: f32 = 11;
+};
+
+/// 文案提示尺寸（设计稿 16.13）：没写到的数值与卡片一致。
+pub const HintMetrics = struct {
+    pub const height: f32 = 36;
+    pub const radius: f32 = 18;
+    pub const max_width: f32 = 480;
+    pub const pad_plain: f32 = 16;
+    /// 有标记（芯片 / 圆环）时左侧收窄。
+    pub const pad_marked: f32 = 14;
+    /// 有按钮时右侧收到 5，按钮与胶囊同心。
+    pub const pad_action: f32 = 5;
+    pub const gap: f32 = 8;
+    pub const keycap_gap: f32 = 6;
+    pub const font: f32 = 13;
+    pub const weight: u16 = 500;
+    pub const chip: f32 = 18;
+    pub const glyph: f32 = 12;
+    pub const spinner: f32 = 16;
+    /// 圆环 innerRadius 0.76 -> 线宽 = 8 × 0.24。
+    pub const spinner_stroke: f32 = 1.92;
+    pub const spinner_sweep_deg: f32 = 110;
+    pub const keycap_height: f32 = 20;
+    pub const keycap_radius: f32 = 5;
+    pub const keycap_font: f32 = 11;
+    pub const action_height: f32 = 26;
+    pub const action_radius: f32 = 13;
+    pub const action_padding = core.Padding{ .top = 0, .right = 6, .bottom = 0, .left = 11 };
+    pub const action_font: f32 = 12.5;
+    pub const action_kbd_height: f32 = 16;
+    pub const action_kbd_radius: f32 = 4;
+    pub const action_kbd_font: f32 = 10.5;
+    /// 按钮前额外留白（gap 8 + 4 + gap 8）。
+    pub const action_lead: f32 = 4;
+    /// 单独出现：底边离内容区底沿；与卡片堆叠同在底部正中时离堆叠上沿。
+    pub const bottom_inset: f32 = 16;
+    pub const stack_gap: f32 = 12;
 };

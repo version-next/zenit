@@ -21,10 +21,10 @@ pub fn syncA11yTreeFromInteractions(self: *Cx, root: *Node) void {
     var sibling_counter: u32 = 0;
     syncA11yNodeRecursive(self, root, ElementId.NULL, &sibling_counter, false);
     self.accessibility_tree.finishProjection() catch @panic("OOM: a11y tree stale-node sweep");
-    // 把 active 指针注入 macos_bridge — ObjC NSAccessibility 协议方法 (从 C 调进
+    // 把 active 指针注入 macos_bridge, ObjC NSAccessibility 协议方法 (从 C 调进
     // zenit_a11y_*) 会带上自己的 window_id 回来查这张表，多窗口各查各的树。
     // 注册失败只可能是表满（MAX_WINDOWS 个窗口），此时该窗口 a11y 降级为
-    // 不可读，但渲染照常 —— 计数出来供诊断，不吞成静默。
+    // 不可读，但渲染照常，计数出来供诊断，不吞成静默。
     if (!a11y_macos_bridge_mod.setActiveContextWithFullInteractions(
         cx_platform.a11yWindowKey(self),
         &self.accessibility_tree,

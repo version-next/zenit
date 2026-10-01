@@ -1,10 +1,10 @@
-/// interop_probe —— 富剪贴板 + 文件拖出的真机验证探针（脚本驱动，非产品 demo）。
+/// interop_probe，富剪贴板 + 文件拖出的真机验证探针（脚本驱动，非产品 demo）。
 ///
 /// 与 e2e 注入不同，本探针验证的是**真系统路径**：
-///   - 启动时先读系统剪贴板 HTML（外部脚本预置）→ 验证 get 路径；
-///   - 随后写入 text+HTML 富剪贴板 → 外部脚本读回验证 set 路径；
-///   - 窗口任意处 mouse_down → beginDrag(file_url) 起一次真 AppKit 拖拽
-///     会话 → 由 scripts/verify_interop_probe.sh 用 CGEvent 拖到 Finder，
+///   - 启动时先读系统剪贴板 HTML（外部脚本预置）-> 验证 get 路径；
+///   - 随后写入 text+HTML 富剪贴板 -> 外部脚本读回验证 set 路径；
+///   - 窗口任意处 mouse_down -> beginDrag(file_url) 起一次真 AppKit 拖拽
+///     会话 -> 由 scripts/verify_interop_probe.sh 用 CGEvent 拖到 Finder，
 ///     以目标目录出现文件为判据。
 ///
 /// 判据全部走 stdout 的 `[PROBE]` 行 + 外部系统状态，脚本 grep。
@@ -58,7 +58,7 @@ fn mountUI(cx: *ui.Cx, scope: *ui.Scope) anyerror!*ui.Node {
     }, .{});
     root.behavior.events.on_event = onProbeEvent;
     root.behavior.events.event_context = root; // 非 null 即可，handler 不用它
-    // 原生菜单验收：menu_command → ActionDispatcher → 此 handler 打印
+    // 原生菜单验收：menu_command -> ActionDispatcher -> 此 handler 打印
     root.behavior.interaction.key_context = "probe";
     root.behavior.events.on_action = onProbeAction;
     cx.bindCommandAction(100, .{ .context = "probe", .name = "ping" });

@@ -1,7 +1,7 @@
 # Getting Started with zenit
 
 This guide walks through building a real, runnable zenit application in a
-fresh project — independent of the zenit repository.
+fresh project, independent of the zenit repository.
 
 If you only want to play with the bundled examples, skip ahead to the
 "Running the bundled examples" section at the end.
@@ -24,7 +24,7 @@ myapp/
 ```
 
 After copying, adjust the `.path` in `build.zig.zon` to wherever your zenit
-checkout actually lives relative to the new location — e.g. if `myapp/` sits
+checkout actually lives relative to the new location, e.g. if `myapp/` sits
 next to the zenit checkout, use `.path = "../zenit"`.
 
 ## 2. Wire the dependency
@@ -53,7 +53,7 @@ In `build.zig.zon`:
 zenit's root `build.zig` is a public build API: once `.zenit` is declared in
 your `build.zig.zon`, `const zenit = @import("zenit");` works at the top of
 your `build.zig` (Zig 0.15.2), and a single `zenit.attach(zenit_dep, exe)`
-call wires everything — the `ui` / `zenit_app` module imports, the five macOS
+call wires everything: the `ui` / `zenit_app` module imports, the five macOS
 native ObjC bridges, and the system frameworks:
 
 ```zig
@@ -95,7 +95,7 @@ Reusable framework/package code should use `ui.system_icons.<semantic_name>`;
 application artwork can use the complete Lucide catalog through `ui.icons`.
 
 If you want to see (or customize) the manual wiring, read `attach` /
-`addNativeLibs` in zenit's `build.zig` — it is the same boilerplate this
+`addNativeLibs` in zenit's `build.zig`. It is the same boilerplate this
 helper replaces.
 
 The forwarded Harness options default to disabled and do not affect production
@@ -149,7 +149,7 @@ GPU surface configuration, font fallback) is internalized.
 
 ## 5. State and event handlers
 
-The recommended path uses `cx.bindState` + `cx.on` — no manual state ids:
+The recommended path uses `cx.bindState` + `cx.on`, with no manual state ids:
 
 ```zig
 const Counter = struct {
@@ -195,8 +195,8 @@ try scope.onCleanup(Canvas, canvas, Canvas.deinit); // ← without this, `items`
 ```
 
 If your app needs to look up state by a stable identifier across mount cycles
-(e.g. routing, hot-reload), use the lower-level `cx.state(T, id, init)` API —
-that's the explicit form `bindState` builds on top of.
+(e.g. routing, hot-reload), use the lower-level `cx.state(T, id, init)` API,
+which is the explicit form `bindState` builds on top of.
 
 ## 6. Reactive state (Signal / Memo / Effect)
 
@@ -223,7 +223,7 @@ Whenever `count.set(...)` runs, the bound text updates automatically. This is
 the pattern in [`examples/counter_reactive/`](../examples/counter_reactive/).
 
 If you do need to drive a node imperatively, use the text accessors rather
-than touching fields — `Node` exposes `getText()` / `setText()` /
+than touching fields: `Node` exposes `getText()` / `setText()` /
 `setTextContent()`, not a public `text` field:
 
 ```zig
@@ -281,12 +281,12 @@ so clicks/scrolls go through to the real node.
 
 Common uses:
 
-- **"Why isn't this aligned?"** — hover at the suspect spot and read the
+- **"Why isn't this aligned?"**: hover at the suspect spot and read the
   rect. Often the parent's padding/gap is off, not the child.
-- **"What component am I looking at?"** — the label shows
+- **"What component am I looking at?"**: the label shows
   `component_name`, which widget builders set automatically (`"Button"`,
   `"Popover"`, `"DatePicker"`, ...).
-- **"Why is this huge invisible area capturing clicks?"** — hover over it.
+- **"Why is this huge invisible area capturing clicks?"**: hover over it.
   An overflow node or absolute-positioned overlay will become obvious.
 
 You can pass a custom config:
@@ -300,7 +300,7 @@ _ = try ui.devtools.overlay.attach(cx, scope, root, .{
 ```
 
 For the heavier "elements / components / performance" tabs (a separate
-window with state inspection), use `ui.devtools.mountPanel` instead — it's
+window with state inspection), use `ui.devtools.mountPanel` instead; it's
 designed to live in a second window mounted alongside the app you're
 debugging.
 
@@ -323,7 +323,7 @@ open "zig-out/Hello Button.app"
 ```
 
 Each of the four examples is wired in `build.zig` with **only** `ui` and
-`zenit_app` as imports — they double as the build-time fence enforcing the
+`zenit_app` as imports, so they double as the build-time fence enforcing the
 [open-source boundary](UI_OSS_BOUNDARY.md).
 
 ## Troubleshooting
@@ -335,17 +335,17 @@ Each of the four examples is wired in `build.zig` with **only** `ui` and
 | `zig version too old` | zenit needs `0.15.2`; check `build.zig.zon`. |
 | `framework not found: Cocoa` | Install Xcode Command Line Tools (`xcode-select --install`). |
 | `error: import of file outside module path` running `zig test` on a single file | zenit modules use relative `@import("../X.zig")` paths. Run tests via `zig build test-ui` (or whichever step), not standalone `zig test`. |
-| `@import("zenit")` fails in your `build.zig` | Works on Zig 0.15.2 — but only when `.zenit` is declared in your `build.zig.zon` dependencies. Check the dep is named exactly `zenit` and the `.path`/`.url` resolves. See [`templates/minimal-app/build.zig`](../templates/minimal-app/build.zig). |
+| `@import("zenit")` fails in your `build.zig` | Works on Zig 0.15.2, but only when `.zenit` is declared in your `build.zig.zon` dependencies. Check the dep is named exactly `zenit` and the `.path`/`.url` resolves. See [`templates/minimal-app/build.zig`](../templates/minimal-app/build.zig). |
 | `error: expected path relative to build root; found absolute path` | `.path` in `build.zig.zon` must be relative to that file. Convert your absolute path. |
-| `invalid fingerprint: 0x0` | Replace the placeholder with a unique value. Easiest: delete the `.fingerprint` line, run `zig build` once — Zig prints the value to paste back. |
+| `invalid fingerprint: 0x0` | Replace the placeholder with a unique value. Easiest: delete the `.fingerprint` line, run `zig build` once. Zig prints the value to paste back. |
 
 ### Runtime / visuals
 
 | Symptom | Likely cause / fix |
 |---|---|
-| Black window / no text | Default font fallback chain (Helvetica Neue → Arial → Helvetica → Inter → Menlo) missed. Override via `App.init(.{ .font = .{ .fallback_families = &.{"YourFont"} } })`. |
+| Black window / no text | Default font fallback chain (Helvetica Neue -> Arial -> Helvetica -> Inter -> Menlo) missed. Override via `App.init(.{ .font = .{ .fallback_families = &.{"YourFont"} } })`. |
 | Layout looks wrong / element in unexpected position | Use the inspector overlay (see "Inspecting your UI" above). The dashed rect + dimension label nearly always reveals the issue. |
-| Click goes to the wrong node | Same — hover overlay shows you the actual hit-test target. If a transparent ancestor is capturing clicks, set `hit_behavior = .pass_through` on it via `style.ensureExt(allocator).hit_behavior`. |
+| Click goes to the wrong node | Same: hover overlay shows you the actual hit-test target. If a transparent ancestor is capturing clicks, set `hit_behavior = .pass_through` on it via `style.ensureExt(allocator).hit_behavior`. |
 | Hover/pressed state never resets | Make sure you're calling `app.processEvents()` each frame (or using `app.run()` / `app.runWith()`, which does it for you). |
 | Text appears clipped to a wrong line count | `text(...)` defaults to single-line. Pass `.wrap = .word` and an explicit `width` (or grow). |
 | Frame rate drops on large lists | Use `ui.widgets.VirtualList`. Plain `box` with thousands of children layouts every node every frame. |
@@ -354,7 +354,7 @@ Each of the four examples is wired in `build.zig` with **only** `ui` and
 
 | Symptom | Likely cause / fix |
 |---|---|
-| `error: StateNotFound` from `cx.handler(...)` | You used the explicit-id form without a prior `cx.state(T, id, init)`. Prefer `cx.bindState(T, init)` + `cx.on(T, ptr, T.method)` — no id needed. |
+| `error: StateNotFound` from `cx.handler(...)` | You used the explicit-id form without a prior `cx.state(T, id, init)`. Prefer `cx.bindState(T, init)` + `cx.on(T, ptr, T.method)`; no id needed. |
 | Effect never re-runs after `signal.set(...)` | Effects only track signals **read inside the compute closure** during their first run. Make sure `signal.get()` is on the read path, not stashed in a captured local. |
 | Memo recomputes every frame | Same: the memo's compute fn must read its inputs via `.get()`. If you accidentally captured a value snapshot, dependency tracking can't see the read. |
 
@@ -365,4 +365,4 @@ list of currently-quarantined tests and their failure modes. None of them
 affect the four bundled examples.
 
 If you hit something not listed, please file an issue. Repro snippets are
-welcome — the smaller, the better.
+welcome; the smaller, the better.

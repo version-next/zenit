@@ -1,14 +1,14 @@
 //! DevTools "goto source": resolve a node's `component_name` to a source
 //! location and open it in an external editor.
 //!
-//! The name→location table is produced offline by `tools/gen_component_index.zig`
+//! The name->location table is produced offline by `tools/gen_component_index.zig`
 //! (AST scan of `component_name = "..."` assignments); see that file for why the
 //! locations are scanned rather than captured with `@src()`.
 //!
 //! Two tables are consulted: zenit's own (compiled in) and, optionally, one
 //! registered by the host app for its components. Paths in both are relative to
 //! their respective source roots, which the app supplies at runtime via
-//! `configure` — a built binary has no idea where its sources live.
+//! `configure`, a built binary has no idea where its sources live.
 const std = @import("std");
 const builtin = @import("builtin");
 
@@ -69,7 +69,7 @@ pub fn configure(opts: struct {
     }
 }
 
-/// True if any index is usable — DevTools uses this to decide whether to render
+/// True if any index is usable, DevTools uses this to decide whether to render
 /// the goto affordance at all.
 pub fn isConfigured() bool {
     return g_framework_root != null or g_app != null;
@@ -196,12 +196,12 @@ fn findIn(entries: []const Entry, name: []const u8) ?Entry {
 ///
 /// The launcher is *not* waited on: `code --goto` is a Node.js wrapper that
 /// takes ~1.1s even when VS Code is already running, and this is called from a
-/// click handler on the UI thread. Instead we double-fork — the intermediate
+/// click handler on the UI thread. Instead we double-fork, the intermediate
 /// child is reaped immediately and the grandchild that execs the editor is
 /// re-parented to init, so it neither blocks us nor lingers as a zombie.
 pub fn open(alloc: std.mem.Allocator, loc: Resolved) !void {
     // ⚠ fork 纪律：这是个多线程 GUI 进程（CVDisplayLink/render 线程常驻），
-    // fork 出的子进程里只允许 async-signal-safe 调用 —— 任何堆分配都可能
+    // fork 出的子进程里只允许 async-signal-safe 调用，任何堆分配都可能
     // 死锁在别的线程 fork 瞬间持有的 malloc 锁上，触碰 ObjC/CF 会直接
     // abort（objc_initializeAfterForkError）。所以 argv 的展开、C 字符串
     // 化全部在 fork **之前**完成，孙进程只做 setsid + execvpe。

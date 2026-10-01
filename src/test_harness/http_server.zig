@@ -1,10 +1,11 @@
-/// http_server — 测试 HTTP 服务器（file RPC 模式）
+/// http_server，测试 HTTP 服务器（file RPC 模式）
 ///
 /// 监听 file RPC dir，TS 客户端写 req-XXX.json，server 读后写 res-XXX.json。
 /// 不用真 TCP socket 因为 zig 0.15 stdlib 上 TCP server API 不稳定。
 const std = @import("std");
 const build_options = @import("build_options");
 const command_queue = @import("command_queue.zig");
+const ui = @import("ui");
 const CommandQueue = command_queue.CommandQueue;
 const TestCommand = command_queue.TestCommand;
 const TextPayload = command_queue.TextPayload;
@@ -57,13 +58,13 @@ const OWNER_FILE = "owner.json";
 /// 单主锁：一个 file-RPC 目录同一时刻只允许一个 server 实例应答。
 ///
 /// 背景（2026-08-16 实测事故）：两份 e2e 并发共用默认目录时，server 用
-/// `rename(req→wrk)` 原子抢单——每个请求被**随机一个**实例应答，query 打到
+/// `rename(req->wrk)` 原子抢单，每个请求被**随机一个**实例应答，query 打到
 /// 另一实例的树，呈现为大面积 "test_id not found" 假失败。泄漏的旧实例
 /// 同理。冲突必须显式失败，不能静默错答。
 ///
 /// 协议：启动时以 O_EXCL 原子创建 owner.json（pid + 时间戳）。已存在则
-/// 探活 owner pid：活着 → 返回 error.FileRpcDirAlreadyOwned（调用方拒绝
-/// 服务并大声报错）；死了 → 视为 crash 残留，删除后重新竞争。owner.json
+/// 探活 owner pid：活着 -> 返回 error.FileRpcDirAlreadyOwned（调用方拒绝
+/// 服务并大声报错）；死了 -> 视为 crash 残留，删除后重新竞争。owner.json
 /// 不匹配 req-*.json 前缀，对请求扫描零干扰；进程退出不删（crash 留痕，
 /// 由下一个实例探活接管）。
 fn claimFileRpcOwnership(rpc_dir: []const u8) !void {
@@ -111,7 +112,7 @@ fn parseOwnerPid(text: []const u8) ?std.c.pid_t {
 
 fn pidIsAlive(pid: std.c.pid_t) bool {
     std.posix.kill(pid, 0) catch |err| switch (err) {
-        // EPERM：进程存在但无权限发信号 —— 算活着。
+        // EPERM：进程存在但无权限发信号，算活着。
         error.PermissionDenied => return true,
         else => return false,
     };
@@ -478,16 +479,29 @@ fn parseKeyDown(body: []const u8) ?TestCommand {
     return .{ .key_down = payload };
 }
 
+/// phase 缺省 = 鼠标滚轮（none）。触控板手势须显式给出 may_begin/began ->
+/// changed... -> ended/cancelled，与真实设备一致；松手后的惯性用
+/// "momentum": "began" | "changed" | "ended"。未知名称返回 400。
 fn parseScroll(body: []const u8) ?TestCommand {
     const x = findJsonNumber(body, "x") orelse return null;
     const y = findJsonNumber(body, "y") orelse return null;
     const dx = findJsonNumber(body, "dx") orelse 0;
     const dy = findJsonNumber(body, "dy") orelse 0;
+    const phase: ui.events.ScrollPhase = if (findJsonString(body, "phase")) |name|
+        std.meta.stringToEnum(ui.events.ScrollPhase, name) orelse return null
+    else
+        .none;
+    const momentum: ui.events.MomentumPhase = if (findJsonString(body, "momentum")) |name|
+        std.meta.stringToEnum(ui.events.MomentumPhase, name) orelse return null
+    else
+        .none;
     return .{ .scroll = .{
         .x = x,
         .y = y,
         .dx = dx,
         .dy = dy,
+        .phase = @intFromEnum(phase),
+        .momentum = @intFromEnum(momentum),
         .shift = std.mem.indexOf(u8, body, "\"shift\"") != null,
         .ctrl = std.mem.indexOf(u8, body, "\"ctrl\"") != null,
         .alt = std.mem.indexOf(u8, body, "\"alt\"") != null,
@@ -514,7 +528,7 @@ fn parseDrag(body: []const u8, allocator: std.mem.Allocator) ?TestCommand {
     const kind = findJsonNumber(body, "kind") orelse return null;
     var payload = command_queue.DragPayload{ .x = x, .y = y, .kind = @intFromFloat(kind) };
     // 必须走 escape-aware 的 Large 变体：多文件拖放的 paths 是 '\n' 分隔的，
-    // findJsonString 不解转义，会把字面 "\\n" 原样交出去 —— 于是整串被当成
+    // findJsonString 不解转义，会把字面 "\\n" 原样交出去，于是整串被当成
     // 单个路径，只有最后一段的 basename 显示出来（实测丢掉第一个文件）。
     if (findJsonStringLarge(body, "paths")) |paths| {
         defer std.heap.page_allocator.free(paths);
@@ -674,7 +688,7 @@ test "file-RPC owner: 活 pid 持有时二次 claim 被拒绝" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_path = try testTmpRpcDir(&tmp, &buf);
 
-    // 第一次 claim 写入的是本进程 pid —— 必然活着，模拟"另一个活实例持有"。
+    // 第一次 claim 写入的是本进程 pid，必然活着，模拟"另一个活实例持有"。
     try claimFileRpcOwnership(dir_path);
     try std.testing.expectError(error.FileRpcDirAlreadyOwned, claimFileRpcOwnership(dir_path));
 }
@@ -685,7 +699,7 @@ test "file-RPC owner: 死 pid 残留被接管" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_path = try testTmpRpcDir(&tmp, &buf);
 
-    // macOS pid_max = 99998，4000000 必不存在 → kill 得 ESRCH → 判死。
+    // macOS pid_max = 99998，4000000 必不存在 -> kill 得 ESRCH -> 判死。
     try tmp.dir.writeFile(.{ .sub_path = OWNER_FILE, .data = "{\"pid\":\"4000000\"}" });
     try claimFileRpcOwnership(dir_path);
 

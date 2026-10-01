@@ -3,8 +3,8 @@
 /// Phase 2：2D cell pool + visible range culling
 /// - cells 用 absolute 定位在 content 节点里，`margin.left/top` = `col_offset[ci] / row_y`
 /// - pool 大小恒定 = (viewport_rows + 2·overscan) × (viewport_cols + 2·overscan)
-/// - col_offsets[] prefix sum → O(log N) 二分定位 col_at_x
-/// - on_before_render hook 每帧调 updateVisibleCells → diff pool bindings
+/// - col_offsets[] prefix sum -> O(log N) 二分定位 col_at_x
+/// - on_before_render hook 每帧调 updateVisibleCells -> diff pool bindings
 ///
 /// 生命周期：state 由 Grid.mount 通过 scope.registerResource 注册，
 /// scope.dispose 时自动 cleanup（释放 pool 数组等）。
@@ -58,7 +58,7 @@ pub const GridProps = struct {
     /// 估算，否则 height=全内容高的 Grid 会为全部行分配 pool。
     row_window_height_hint: ?f32 = null,
     /// mount 时的初始外部行窗口。不传则首次 updateVisibleCells 按全行绑定
-    ///（旧行为），窗口稍后推送时再收缩——会产生一次全量绑定尖峰。
+    ///（旧行为），窗口稍后推送时再收缩，会产生一次全量绑定尖峰。
     external_row_window: ?ExternalRowWindow = null,
     /// Frozen 行数：表头不随 y 滚动（典型用途 = 1，锁住 header）
     frozen_rows: usize = 0,
@@ -157,7 +157,7 @@ pub const GridState = struct {
     /// 2. frozen col only (sticky 左列，不含角落)
     /// 3. frozen row only (sticky 顶行，不含角落；覆盖 frozen col 的重叠区域）
     /// 4. corner (角落：既在 frozen row 又在 frozen col，最顶)
-    /// 不使用 z_index — render order 由 content.children 顺序决定
+    /// 不使用 z_index, render order 由 content.children 顺序决定
     /// (memory: feedback_listening_and_diff_paths.md 说过 z_index > 0 会跳出祖先 clip)
     pool_nodes: []*Node,
     pool_bindings: []?CellBinding,
@@ -180,7 +180,7 @@ pub const GridState = struct {
     initialized: bool = false,
 
     /// 外部纵向行窗口（见 ExternalRowWindow 注释）。null = 行窗口用自身 scroll。
-    /// 调用方（宿主）每帧用当帧权威的滚动值推送 —— 不要用 world rect 反推，
+    /// 调用方（宿主）每帧用当帧权威的滚动值推送，不要用 world rect 反推，
     /// world rect 落后 translate 一帧，快速滚动会露出未绑定行。
     external_row_window: ?ExternalRowWindow = null,
     /// 强制保持绑定的行（按 PinOwner 分槽：编辑 pin / 命中测试瞬态 pin）。
@@ -192,7 +192,7 @@ pub const GridState = struct {
     /// 第一嫌疑就是它）。
     pool_exhausted_count: u32 = 0,
 
-    /// 上一帧 content.translate_x/y — 用于判断 translate 是否变化，
+    /// 上一帧 content.translate_x/y，用于判断 translate 是否变化，
     /// 避免 idle 时每帧无意义 markRenderDirty + markLayoutDirty。
     last_content_tx: f32 = 0,
     last_content_ty: f32 = 0,
@@ -375,7 +375,7 @@ pub const GridState = struct {
 
     /// 宿主坐标入口：宿主只需给出"自己视口"与"Grid root 顶边在宿主坐标系里的 y"。
     /// content 相对 grid root 的内部偏移（scroll_container 的 padding.top）由框架
-    /// 自己扣——这是 Grid 的私有布局知识，宿主不该复制（复制出错时会被 margin
+    /// 自己扣，这是 Grid 的私有布局知识，宿主不该复制（复制出错时会被 margin
     /// 静默吸收，永远发现不了）。
     pub fn setExternalRowWindowFromHost(
         self: *GridState,

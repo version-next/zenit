@@ -1,4 +1,4 @@
-/// virtual_list_perf — 演示 ui.widgets.VirtualList 渲染 100k 行
+/// virtual_list_perf，演示 ui.widgets.VirtualList 渲染 100k 行
 ///
 /// 关键观感（在 Apple Silicon 上）：
 ///   - 无论列表大小（10、10k、100k、1M），渲染开销基本不变

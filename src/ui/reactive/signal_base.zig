@@ -7,9 +7,9 @@ const std = @import("std");
 /// - 使用基类可以将 Signal(i32), Signal([]const u8) 等统一存储
 /// - 通过虚函数表实现多态
 ///
-/// 单轨追踪——subscribers 列表全部走 ReactiveGraph
+/// 单轨追踪，subscribers 列表全部走 ReactiveGraph
 /// （src/ui/reactive/graph.zig）。旧 subscribers / addSubscriber / removeSubscriber /
-/// notifyAll / VTable.notify 全部删除——graph.observers 是唯一 observer 源；
+/// notifyAll / VTable.notify 全部删除，graph.observers 是唯一 observer 源；
 /// signal.set 走 graph.markSignalWritten 而非 notifyAll。
 pub const SignalBase = struct {
     /// 虚函数表

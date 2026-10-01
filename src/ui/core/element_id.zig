@@ -1,11 +1,11 @@
-//! Generational ElementId — Phase 0 地基
+//! Generational ElementId, Phase 0 地基
 //!
 //! 替代跨帧持有 *Node 的 use-after-free 风险源。每个 ElementId 是
 //! u32（高 8 位 generation + 低 24 位 index）。free 时 generation++，
 //! 陈旧持有者下一帧解引用即检测到。
 //!
 //! 设计参考：Bevy ECS Entity / generational_arena / slotmap 模式。
-//! 不绑定具体 payload —— SlotMap(T) 在外层 wrap。
+//! 不绑定具体 payload, SlotMap(T) 在外层 wrap。
 //!
 //! 容量：24-bit index = 16M slot；8-bit generation = 256 次复用后回卷
 //! （回卷时该 slot 永久失效，避免 ABA）。
@@ -46,7 +46,7 @@ pub const ElementId = packed struct(u32) {
     }
 };
 
-/// SlotMap(T) — 按 ElementId 索引的稀疏存储。free 后 generation++，旧 id get() 返回 null。
+/// SlotMap(T)，按 ElementId 索引的稀疏存储。free 后 generation++，旧 id get() 返回 null。
 ///
 /// 实现：
 /// - `slots`: 紧凑数组，每个 slot 持 (generation, value | next_free)
@@ -233,7 +233,7 @@ test "SlotMap free list reuses slots in LIFO order" {
     const d = try sm.alloc(4);
     const e = try sm.alloc(5);
 
-    // free 顺序 a,c → free_head=c → 先复用 c 再复用 a
+    // free 顺序 a,c -> free_head=c -> 先复用 c 再复用 a
     try testing.expectEqual(c.index, d.index);
     try testing.expectEqual(a.index, e.index);
     _ = b;

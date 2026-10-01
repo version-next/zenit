@@ -1,4 +1,4 @@
-/// FormFieldOf(T) — comptime 泛型字段容器组件
+/// FormFieldOf(T), comptime 泛型字段容器组件
 ///
 /// 提取 Input 组件中的 label + error/helper 布局模式，
 /// 变成独立可复用的 FormField 包装。
@@ -31,7 +31,7 @@ const input_mod = @import("../input/mod.zig");
 pub const FormFieldResult = struct {
     /// wrapper 根节点（含 label + control_slot + helper）
     wrapper: *Node,
-    /// 控件挂载点 — 调用者将控件 mount 到此节点中
+    /// 控件挂载点，调用者将控件 mount 到此节点中
     control_slot: *Node,
     /// 辅助/错误文本节点
     helper_node: *Node,
@@ -75,7 +75,7 @@ pub fn FormFieldOf(comptime T: type) type {
             const t = cx.tokens;
             const m = form.meta(field_enum);
 
-            // wrapper (column, gap=4) — 和 Input 的结构一致
+            // wrapper (column, gap=4)，和 Input 的结构一致
             const wrapper = try box(cx, .{
                 .width = if (config.width) |w| .{ .px = w } else .{ .grow = .{} },
                 .height = .{ .fit = .{} },
@@ -87,7 +87,7 @@ pub fn FormFieldOf(comptime T: type) type {
             errdefer cx.freeNode(wrapper);
             try core.bindScopeToNode(my_scope, wrapper);
             // 必填在视觉上只是 label 后面一个红 "*"，校验失败只是 helper 文字
-            // 变红——两个信号 AT 用户都拿不到。required/invalid 是 ARIA 专门
+            // 变红，两个信号 AT 用户都拿不到。required/invalid 是 ARIA 专门
             // 为此设的位：屏幕阅读器会在念字段名时直接带上"必填""无效"。
             wrapper.behavior.interaction.a11y = .{
                 .role = .group,
@@ -125,13 +125,13 @@ pub fn FormFieldOf(comptime T: type) type {
                 }
             }
 
-            // control_slot — 控件挂载点
+            // control_slot，控件挂载点
             const control_slot = try core.adoptChild(cx, allocator, wrapper, try box(cx, .{
                 .width = .{ .grow = .{} },
                 .height = .{ .fit = .{} },
             }, .{}));
 
-            // helper_node — 动态显示 error 或 helper
+            // helper_node，动态显示 error 或 helper
             const helper_node = try core.adoptChild(cx, allocator, wrapper, try box(cx, .{
                 .height = .{ .fit = .{} },
             }, .{}));
@@ -143,7 +143,7 @@ pub fn FormFieldOf(comptime T: type) type {
                 .font_size = 12,
             });
 
-            // Effect: 订阅 error_sig → 自动更新 helper_node
+            // Effect: 订阅 error_sig -> 自动更新 helper_node
             try my_scope.createEffect(.{
                 .error_sig = m.error_sig,
                 .helper_node = helper_node,
@@ -220,12 +220,12 @@ pub fn FormFieldOf(comptime T: type) type {
 
             // 创建 Input，注入回调。
             // on_change 是 ?core.HandlerRef（2026-07-31 并轨），fn+context 已
-            // 合成一体 —— 此处曾写 props.context = ...，而 InputProps 从来没有
+            // 合成一体，此处曾写 props.context = ...，而 InputProps 从来没有
             // 这个字段；因零调用者又在 comptime return struct 内，从未被语义
             // 分析过，所以一直没暴露成编译错误。
             var props = input_props;
             props.on_change = Cx.strHandlerFrom(Adapter, adapter, Adapter.onChange);
-            // 不设置 label/helper/error — FormField 已经管了
+            // 不设置 label/helper/error, FormField 已经管了
             props.label_text = null;
             props.helper = null;
             props.error_msg = null;
@@ -325,7 +325,7 @@ test "FormField: no label creates 2 children" {
     const result = try FormFieldOf(TestForm).field(.value, .{}, form, scope, ctx);
     try root.appendChild(allocator, result.wrapper);
 
-    // 无 label → 只有 control_slot + helper_node
+    // 无 label -> 只有 control_slot + helper_node
     try std.testing.expectEqual(@as(usize, 2), result.wrapper.children.items.len);
 }
 
@@ -353,11 +353,11 @@ test "FormField: error signal updates helper" {
     // 初始状态应显示 helper 文本
     try std.testing.expectEqualStrings("Enter your name", result.helper_node.getText().?.content);
 
-    // 设置错误 → Effect 应自动更新 helper_node
+    // 设置错误 -> Effect 应自动更新 helper_node
     form.meta(.name).error_sig.set("Name is required");
     try std.testing.expectEqualStrings("Name is required", result.helper_node.getText().?.content);
 
-    // 清除错误 → 恢复 helper
+    // 清除错误 -> 恢复 helper
     form.meta(.name).error_sig.set(null);
     try std.testing.expectEqualStrings("Enter your name", result.helper_node.getText().?.content);
 }
@@ -393,14 +393,14 @@ test "a11y: FormField 的 required/invalid 到达 a11y 树且跟随校验结果"
     try std.testing.expect(n0.state.required);
     try std.testing.expect(!n0.state.invalid);
 
-    // 校验失败 → invalid 必须跟上（否则 AT 只看到 helper 变红，读不出"无效"）
+    // 校验失败 -> invalid 必须跟上（否则 AT 只看到 helper 变红，读不出"无效"）
     form.meta(.name).error_sig.set("Name is required");
     ctx.layout();
     _ = ctx.render();
     try std.testing.expect(ctx.accessibility_tree.get(eid).?.state.invalid);
     try std.testing.expectEqual(a11y_tree_mod.Role.group, ctx.accessibility_tree.get(eid).?.role);
 
-    // 改好了 → invalid 必须撤回，不能一直报错
+    // 改好了 -> invalid 必须撤回，不能一直报错
     form.meta(.name).error_sig.set(null);
     ctx.layout();
     _ = ctx.render();
@@ -412,7 +412,7 @@ test "FormField: inputField 可编译并绑定回值（守零调用者失效）"
     //
     // 它此前给 `props.context` 赋值，而 InputProps 从来没有这个字段
     //（on_change 早已并轨成自带 context 的 HandlerRef）。因为零调用者
-    // 且身处 comptime `return struct`，Zig 从不分析它 —— 于是一个
+    // 且身处 comptime `return struct`，Zig 从不分析它，于是一个
     // **编译不过**的函数带着文档示例公开导出，谁照文档抄谁踩坑。
     const TestForm = struct { email: []const u8 };
 

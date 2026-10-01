@@ -1,4 +1,4 @@
-/// multi_window — 两个真原生窗口并存的 demo（多窗口交付验证）
+/// multi_window，两个真原生窗口并存的 demo（多窗口交付验证）
 ///
 /// 验证点：
 ///   - `MultiWindowApp` 管理两个窗口（各自 Window/GPU surface/SystemSdk/Cx）

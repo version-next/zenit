@@ -20,7 +20,7 @@ pub const Surface = struct {
     /// 参数刻意是 `*anyopaque` 而非 `*mtl.CAMetalLayer`：调用方
     /// （`zenit_app/runtime.zig`）拿到的本来就是平台层返回的不透明指针
     /// （`window.getNativeSurfaceHandle()` 的返回类型就是 `*anyopaque`），旧签名逼着
-    /// 它 `@import` metal_bindings 再 `@ptrCast` 一把——这是 backend 抽象上
+    /// 它 `@import` metal_bindings 再 `@ptrCast` 一把，这是 backend 抽象上
     /// **唯一**会让第二个后端编译不过的硬泄漏（C1 评估记录在
     /// docs/internal/RHI_SECOND_BACKEND_ASSESSMENT.md）。
     ///
@@ -79,7 +79,7 @@ pub const Surface = struct {
         // 超时控制（关键！）：**禁用** nextDrawable 超时。
         //
         // ⚠️ 别"改进"成有界等待。2026-08-07 按 GPU 评审 §D3 的建议试过设为 1
-        // （允许超时 → acquireTexture 报 error.SurfaceTimeout → 跳帧计数），
+        // （允许超时 -> acquireTexture 报 error.SurfaceTimeout -> 跳帧计数），
         // storybook e2e 立刻从 87/87 掉到 78/87：glasslab 这类重 blur 场景
         // 反复吃 ~1s 超时，跳帧意味着**什么都没画出来**，表现为画面不刷新。
         //
@@ -116,7 +116,7 @@ pub const Surface = struct {
         // ABI 合同：metal_layer_next_drawable 用 __bridge_retained 返回 +1 owned
         // （metal_bridge.m:566），这里直接接管，**不再 retain**。
         // 之前多 retain 一次而 SurfaceTexture.deinit 只 release 一次，每帧净漏一个
-        // CAMetalDrawable —— drawable 池只有 2-3 个，几秒内就会把池耗尽，
+        // CAMetalDrawable, drawable 池只有 2-3 个，几秒内就会把池耗尽，
         // 表现为 nextDrawable 永久阻塞、画面冻死。
         const drawable = mtl.metal_layer_next_drawable(self.layer) orelse
             return error.SurfaceTimeout;

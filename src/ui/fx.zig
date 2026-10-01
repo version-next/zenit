@@ -1,4 +1,4 @@
-/// fx — zenit 动画 / 物理 / 过渡
+/// fx, zenit 动画 / 物理 / 过渡
 ///
 /// 把动画、弹性物理、视图过渡（VTAPI-style snapshot transition）、router 这类
 /// "运动 / 过渡领域" 的功能集中到一个子命名空间，与组件库（widgets）和核心

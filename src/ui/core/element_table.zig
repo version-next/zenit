@@ -1,19 +1,19 @@
-//! ElementTable — Phase 3 拆 Node 的逻辑树存储（SoA）
+//! ElementTable, Phase 3 拆 Node 的逻辑树存储（SoA）
 //!
 //! 当前 Node 是 107 字段 god-object，把"逻辑树 / 布局 / 渲染缓存 / 命中 / 焦点"
-//! 全混在一起。这里只存"逻辑树"——即 React Element / Flutter Widget 等价物：
+//! 全混在一起。这里只存"逻辑树"，即 React Element / Flutter Widget 等价物：
 //! tag、parent、children 链表、组件归属、key（用于 reconcile）。
 //!
 //! 设计要点：
 //! - **MultiArrayList**：字段拆分独立连续数组，cache-line 友好；脏帧只扫需要的字段
 //! - **ElementId 生成式 handle**：跨帧持有不挂（generation 防 ABA）
 //! - **链表式子树**：parent + first_child + next_sibling，不持 std.ArrayList(Children)
-//!   —— 增删 O(1)，遍历 O(n)；规避了 children 数组扩容的内存抖动
+//!   增删 O(1)，遍历 O(n)；规避了 children 数组扩容的内存抖动
 //! - **owner_component**：哪个组件实例创建了我（用于 reconcile / dispose）
 //!
 //! 历史债避免：
 //! - cc::Layer 教训：不在此表上塞布局 / 渲染 / 交互字段（那些去 LayoutTable / PaintTable / InteractionTable）
-//! - 不持有 *Node 类型指针 —— 一切用 ElementId 索引
+//! - 不持有 *Node 类型指针，一切用 ElementId 索引
 
 const std = @import("std");
 const testing = std.testing;
@@ -23,7 +23,7 @@ pub const ElementId = element_id.ElementId;
 // re-export SlotMap 让 bench 不必独立 import element_id 引发冲突
 pub const SlotMap = element_id.SlotMap;
 
-/// 元素的"标签"——用于 reconcile diff 时快速判断是否同类。
+/// 元素的"标签"，用于 reconcile diff 时快速判断是否同类。
 /// 暂时只覆盖几大类，后续可扩。
 pub const ElementTag = enum(u16) {
     /// 容器：div / box / vstack / hstack / scroll_area
@@ -42,7 +42,7 @@ pub const ElementTag = enum(u16) {
     debug,
 };
 
-/// 子树连接——单链表 first_child + next_sibling，避免 children 数组动态扩容。
+/// 子树连接，单链表 first_child + next_sibling，避免 children 数组动态扩容。
 pub const ElementLinks = struct {
     parent: ElementId = ElementId.NULL,
     first_child: ElementId = ElementId.NULL,
@@ -51,7 +51,7 @@ pub const ElementLinks = struct {
     prev_sibling: ElementId = ElementId.NULL,
 };
 
-/// SoA 字段集合——MultiArrayList 接受 struct 类型，每字段独立数组。
+/// SoA 字段集合，MultiArrayList 接受 struct 类型，每字段独立数组。
 pub const Element = struct {
     tag: ElementTag,
     /// 用于 reconcile：同 parent 下 (tag, key) 唯一标识；NULL key 走顺序匹配。
@@ -97,7 +97,7 @@ pub const ElementTable = struct {
     /// generation 一旦回卷，陈旧 id 会重新生效。对齐
     /// element_id.SlotMap 的策略：generation 推进到 MAX_GEN 的 slot 永久
     /// 退役（不再分配也不入 free_list）。create/destroy 两侧各推进一次，
-    /// 任一侧落到 MAX_GEN 都退役——否则 create 侧推到 255 后 destroy 的
+    /// 任一侧落到 MAX_GEN 都退役，否则 create 侧推到 255 后 destroy 的
     /// `+%=` 仍会回卷到 0。MAX_GEN 同时是 NULL 的 generation，正常 id
     /// 永不携带它。slot 预算：每 slot ~128 个生命周期，16M slot 总计
     /// ~10⁹ 次 destroy，耗尽落在 error.ElementTableFull 而非 UB。
@@ -156,7 +156,7 @@ pub const ElementTable = struct {
         return self.elements.get(id.index);
     }
 
-    /// 读取 tag（频繁调用 —— 直接走 SoA）
+    /// 读取 tag（频繁调用，直接走 SoA）
     pub fn tag(self: *const ElementTable, id: ElementId) ?ElementTag {
         if (!self.isValid(id)) return null;
         return self.elements.items(.tag)[id.index];
@@ -200,7 +200,7 @@ pub const ElementTable = struct {
     /// parent/prev/next 都必须经 isValid 校验：先销毁父再销毁子时，
     /// 子持有的 parent id 已失效（slot 可能被新元素复用），裸 linksMut
     /// 会把 first_child/last_child 写穿到复用后的新元素上（链表静默损坏）。
-    /// 对照 appendChild 的双侧校验——unlink 此前缺对称防护。
+    /// 对照 appendChild 的双侧校验，unlink 此前缺对称防护。
     pub fn unlink(self: *ElementTable, id: ElementId) void {
         if (!self.isValid(id)) return;
         const my_links = self.linksMut(id);
@@ -319,7 +319,7 @@ test "ElementTable: unlink middle child" {
     t.unlink(c2);
     try testing.expectEqual(@as(u32, 2), t.childCount(root));
 
-    // 顺序应是 c1 → c3
+    // 顺序应是 c1 -> c3
     var iter = t.children(root);
     try testing.expect(iter.next().?.eql(c1));
     try testing.expect(iter.next().?.eql(c3));
@@ -436,7 +436,7 @@ test "ElementTable: 世代回卷前 slot 永久退役（ABA 防线）" {
         t.destroy(id);
     }
     // 循环要么因 slot 退役换了 index 而 break（正确），要么跑满 200 周期
-    // ——200*2 > 255，旧实现必然已回卷，上面的 isValid 断言必然已抓到
+    // 200*2 > 255，旧实现必然已回卷，上面的 isValid 断言必然已抓到
     try testing.expect(cycles < 200);
     try testing.expect(!t.isValid(first));
 }
@@ -450,10 +450,10 @@ test "ElementTable: 先销毁父再销毁子不得写穿复用 slot" {
     t.appendChild(parent, child);
 
     // 违反常规顺序：先销毁父（destroy 会 unlink 自己但 child.links.parent 仍指旧 slot）
-    // 注意 destroy(parent) 只摘 parent 自己，不递归——child 的 parent 引用悬空
+    // 注意 destroy(parent) 只摘 parent 自己，不递归，child 的 parent 引用悬空
     t.destroy(parent);
 
-    // parent slot 被新元素复用，且新元素挂了自己的孩子——
+    // parent slot 被新元素复用，且新元素挂了自己的孩子,
     // 链表字段非 NULL，写穿才可观测（NULL 盖 NULL 测不出来）
     const reused = try t.create(.{ .tag = .container, .key = 2 });
     try testing.expectEqual(parent.index, reused.index);
@@ -462,7 +462,7 @@ test "ElementTable: 先销毁父再销毁子不得写穿复用 slot" {
     const reused_links_before = t.links(reused).?;
     try testing.expect(!reused_links_before.first_child.isNull());
 
-    // 销毁 child：unlink 拿着失效的 parent id（prev/next 均 NULL → 走
+    // 销毁 child：unlink 拿着失效的 parent id（prev/next 均 NULL -> 走
     // first_child/last_child 分支），不得把 reused 的链表字段清成 NULL
     t.destroy(child);
     const reused_links_after = t.links(reused).?;

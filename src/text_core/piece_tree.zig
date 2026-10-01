@@ -1,4 +1,4 @@
-/// PieceTree — 基于 SumTree 的高性能文本存储引擎
+/// PieceTree，基于 SumTree 的高性能文本存储引擎
 ///
 /// 替代 PieceTable 的链表结构，使用 SumTree(TreePiece, PieceSummary) 实现：
 /// - 插入/删除: O(log P)（P = piece 数量）
@@ -16,7 +16,7 @@ const piece_stats = @import("piece_stats.zig");
 /// Piece 来源
 pub const Source = enum { original, add };
 
-/// PieceSummary — 每个子树的聚合摘要
+/// PieceSummary，每个子树的聚合摘要
 ///
 /// 对齐 Zed TextSummary：嵌入 first/last/longest_row_chars，
 /// O(log N) 维护文档最长行，无需全文件扫描。
@@ -59,7 +59,7 @@ pub const PieceSummary = struct {
     }
 };
 
-/// TreePiece — SumTree 的叶节点 item
+/// TreePiece, SumTree 的叶节点 item
 pub const TreePiece = struct {
     source: Source,
     start: usize,
@@ -148,7 +148,7 @@ fn hasValidPieceBounds(piece: TreePiece, source_buf: []const u8) bool {
     return piece.length <= source_buf.len - piece.start;
 }
 
-/// 零拷贝 chunk 迭代器 — 逐 piece 返回 []const u8 直接切片
+/// 零拷贝 chunk 迭代器，逐 piece 返回 []const u8 直接切片
 ///
 /// 用法：
 ///   var it = piece_tree.chunksInRange(start, len);
@@ -188,7 +188,7 @@ pub fn ChunkIterator(comptime Container: type) type {
     };
 }
 
-/// PieceTreeSnapshot — 后台线程安全的只读文档视图
+/// PieceTreeSnapshot，后台线程安全的只读文档视图
 ///
 /// 通过 COW snapshot 共享 SumTree 节点（引用计数）和 append pages。
 /// 用于后台 tree-sitter 解析等场景。
@@ -388,7 +388,7 @@ pub const PieceTreeSnapshot = struct {
     }
 };
 
-/// PieceTree — 基于 B-tree 的文本存储
+/// PieceTree，基于 B-tree 的文本存储
 pub const PieceTree = struct {
     /// Bound the local scan performed by lineToOffset/offsetToLine inside a
     /// single piece. Large initial files used to be represented by one piece,
@@ -714,7 +714,7 @@ pub const PieceTree = struct {
     }
 
     /// 最长行的字符数 O(1)：从 SumTree 根节点 summary 直接读取。
-    /// 对齐 Zed DisplaySnapshot::longest_row() — 不需要扫描全文件。
+    /// 对齐 Zed DisplaySnapshot::longest_row()，不需要扫描全文件。
     pub fn longestRowChars(self: *const PieceTree) u32 {
         return self.tree.summary().longest_row_chars;
     }
@@ -798,7 +798,7 @@ pub const PieceTree = struct {
         return self.getText(start, end - start, buffer);
     }
 
-    /// 字节偏移 → 行号，真正 O(log P)：B-tree 下降同时追踪 line_count
+    /// 字节偏移 -> 行号，真正 O(log P)：B-tree 下降同时追踪 line_count
     pub fn offsetToLine(self: *const PieceTree, offset: usize) usize {
         const root = self.tree.root orelse return 0;
         const total = self.totalLength();
@@ -841,7 +841,7 @@ pub const PieceTree = struct {
         }
     }
 
-    /// 行号 → 行起始字节偏移，真正 O(log P)：B-tree 下降同时追踪 byte_offset 和 line_count
+    /// 行号 -> 行起始字节偏移，真正 O(log P)：B-tree 下降同时追踪 byte_offset 和 line_count
     pub fn lineToOffset(self: *const PieceTree, target_line: usize) usize {
         if (target_line == 0) return 0;
         const root = self.tree.root orelse return 0;
@@ -896,8 +896,8 @@ pub const PieceTree = struct {
     /// original_buffer 和 add_buffer 都是 append-only，所以 buffer_offset 是该字节的永久坐标。
     ///
     /// 特殊情况：
-    ///   - offset == 0 → 返回 `Anchor.START`（跨任何编辑都指向文档起点）
-    ///   - offset == totalLength() → 返回 `Anchor.END`（跨任何编辑都指向文档末尾）
+    ///   - offset == 0 -> 返回 `Anchor.START`（跨任何编辑都指向文档起点）
+    ///   - offset == totalLength() -> 返回 `Anchor.END`（跨任何编辑都指向文档末尾）
     ///
     /// 如果你需要"锚定当前字符"（而不是永远指向端点），用 `anchorAtStrict`。
     ///
@@ -909,7 +909,7 @@ pub const PieceTree = struct {
         return self.anchorAtStrict(offset, bias);
     }
 
-    /// 类似 `anchorAt`，但不走 START/END 特殊常量 —— 即使在 offset 0 或 totalLength 上
+    /// 类似 `anchorAt`，但不走 START/END 特殊常量，即使在 offset 0 或 totalLength 上
     /// 也返回 normal anchor（基于当前 piece 的 buffer_offset）。
     ///
     /// 用途：Find/Selection 等场景需要 anchor 在编辑后跟随对应字符位置移动，
@@ -928,7 +928,7 @@ pub const PieceTree = struct {
             };
         }
 
-        // 文档末尾（offset == total，且 total > 0）→ 退到最后一个 piece 的末尾
+        // 文档末尾（offset == total，且 total > 0）-> 退到最后一个 piece 的末尾
         if (clamped > 0 and self.tree.count() > 0) {
             const last = self.tree.get(self.tree.count() - 1) orelse return Anchor.END;
             return .{
@@ -939,11 +939,11 @@ pub const PieceTree = struct {
             };
         }
 
-        // 空文档 → fallback to START
+        // 空文档 -> fallback to START
         return Anchor.START;
     }
 
-    /// 解析 anchor → 当前文档 offset。
+    /// 解析 anchor -> 当前文档 offset。
     ///
     /// 算法（对齐 Zed bias 语义）：
     ///
@@ -954,10 +954,10 @@ pub const PieceTree = struct {
     ///      bias 决定返回当前 piece 的边界还是下/上一 piece 的边界
     ///      .left 倾向 preceding piece 的末尾；.right 倾向 following piece 的起点
     /// 3. 未命中（anchor 的 buffer 区间被删除）：
-    ///    - .left → 回退到 preceding 边界（删除区间的左端 doc offset）
-    ///    - .right → 回退到 succeeding 边界（删除区间的右端 doc offset）
+    ///    - .left -> 回退到 preceding 边界（删除区间的左端 doc offset）
+    ///    - .right -> 回退到 succeeding 边界（删除区间的右端 doc offset）
     ///
-    /// 复杂度：O(P)（v1 线性扫；v2 可加 source+offset → piece_index 缓存）
+    /// 复杂度：O(P)（v1 线性扫；v2 可加 source+offset -> piece_index 缓存）
     pub fn resolveAnchor(self: *const PieceTree, anchor: Anchor) usize {
         switch (anchor.kind) {
             .start_of_document => return 0,
@@ -1719,7 +1719,7 @@ test "ChunkIterator: sub-range" {
     defer pt.deinit();
     try pt.insert(5, "AB"); // "01234AB56789"
 
-    // 只迭代 offset 3..9 → "34AB56"
+    // 只迭代 offset 3..9 -> "34AB56"
     var it = pt.chunksInRange(3, 6);
     var result: [64]u8 = undefined;
     var pos: usize = 0;
@@ -1833,7 +1833,7 @@ test "PieceTree: longestRowChars after insert extends line" {
     var pt = try PieceTree.initFromBuffer(std.testing.allocator, "abc\ndef\n");
     defer pt.deinit();
     try std.testing.expectEqual(@as(u32, 3), pt.longestRowChars());
-    // Insert " extended" after "abc" → "abc extended\ndef\n"
+    // Insert " extended" after "abc" -> "abc extended\ndef\n"
     try pt.insert(3, " extended");
     try std.testing.expectEqual(@as(u32, 12), pt.longestRowChars());
 }
@@ -1845,17 +1845,17 @@ test "PieceTree: longestRowChars after delete shrinks" {
     try std.testing.expectEqual(@as(u32, 27), pt.longestRowChars());
     // Delete "very long line content here\n" (offset 6, length 28)
     try pt.delete(6, 28);
-    // Remaining: "short\nhi\n" → longest = 5
+    // Remaining: "short\nhi\n" -> longest = 5
     try std.testing.expectEqual(@as(u32, 5), pt.longestRowChars());
 }
 
 test "PieceTree: longestRowChars cross-piece join" {
-    // Two pieces that join: "abc" + "defghij\nxy" → first line "abcdefghij" = 10 chars
+    // Two pieces that join: "abc" + "defghij\nxy" -> first line "abcdefghij" = 10 chars
     var pt = try PieceTree.initFromBuffer(std.testing.allocator, "abc");
     defer pt.deinit();
     try std.testing.expectEqual(@as(u32, 3), pt.longestRowChars());
     try pt.insert(3, "defghij\nxy");
-    // "abcdefghij\nxy" → longest = 10
+    // "abcdefghij\nxy" -> longest = 10
     try std.testing.expectEqual(@as(u32, 10), pt.longestRowChars());
 }
 
@@ -1959,16 +1959,16 @@ test "PieceTree: longestRowChars matches brute-force scan on constructed content
 }
 
 test "PieceSummary: add merges longest_row_chars across join" {
-    // Piece A: "abc" (no newline) → first=3, last=3, longest=3
+    // Piece A: "abc" (no newline) -> first=3, last=3, longest=3
     const a = PieceSummary{ .bytes = 3, .lines = 0, .first_line_chars = 3, .last_line_chars = 3, .longest_row_chars = 3 };
-    // Piece B: "defgh\nij" → first=5, last=2, longest=5
+    // Piece B: "defgh\nij" -> first=5, last=2, longest=5
     const b = PieceSummary{ .bytes = 8, .lines = 1, .first_line_chars = 5, .last_line_chars = 2, .longest_row_chars = 5 };
     const merged = a.add(b);
-    // joined = 3 + 5 = 8 > both → longest = 8
+    // joined = 3 + 5 = 8 > both -> longest = 8
     try std.testing.expectEqual(@as(u32, 8), merged.longest_row_chars);
-    // first_line_chars: a has no newlines → extends: 3 + 5 = 8
+    // first_line_chars: a has no newlines -> extends: 3 + 5 = 8
     try std.testing.expectEqual(@as(u32, 8), merged.first_line_chars);
-    // last_line_chars: b has newlines → b.last = 2
+    // last_line_chars: b has newlines -> b.last = 2
     try std.testing.expectEqual(@as(u32, 2), merged.last_line_chars);
 }
 
@@ -2087,17 +2087,17 @@ test "Anchor: bias left vs right on insert AT anchor position" {
     try std.testing.expectEqual(@as(usize, 3), pt.resolveAnchor(a_left));
     try std.testing.expectEqual(@as(usize, 3), pt.resolveAnchor(a_right));
 
-    // 在 offset 3 插入 "XYZ" → 文档变为 "abcXYZdef"
+    // 在 offset 3 插入 "XYZ" -> 文档变为 "abcXYZdef"
     try pt.insert(3, "XYZ");
 
     // Bias 语义（对齐 Zed）：
-    //   .left  → anchor 粘在 insert 之前的字符后 → 位置不变（3）
-    //   .right → anchor 粘在 insert 之后的字符前 → 随 insert 移动到右边（6）
+    //   .left  -> anchor 粘在 insert 之前的字符后 -> 位置不变（3）
+    //   .right -> anchor 粘在 insert 之后的字符前 -> 随 insert 移动到右边（6）
     //
     // 实现细节：insert 把原 original piece split 成 "abc"(0..3) 和 "def"(3..6)，
     // 中间插入 add piece。target_offset=3 同时命中：
-    //   - "abc" piece 的 trailing edge (piece_end=3) → doc_offset=3
-    //   - "def" piece 的 leading edge (piece_start=3) → doc_offset=6
+    //   - "abc" piece 的 trailing edge (piece_end=3) -> doc_offset=3
+    //   - "def" piece 的 leading edge (piece_start=3) -> doc_offset=6
     // .left 选 trailing；.right 选 leading。
     try std.testing.expectEqual(@as(usize, 3), pt.resolveAnchor(a_left));
     try std.testing.expectEqual(@as(usize, 6), pt.resolveAnchor(a_right));
@@ -2111,10 +2111,10 @@ test "Anchor: falls back to left boundary when inside deleted range (.left bias)
     const a_left = pt.anchorAt(5, .left);
     try std.testing.expectEqual(@as(usize, 5), pt.resolveAnchor(a_left));
 
-    // 删除 [3, 8) → 删掉 "defgh"
+    // 删除 [3, 8) -> 删掉 "defgh"
     try pt.delete(3, 5);
     // anchor 所在 buffer 字节已不在任何 piece 中
-    // .left bias → 回退到 delete range 的左边界（doc offset 3）
+    // .left bias -> 回退到 delete range 的左边界（doc offset 3）
     try std.testing.expectEqual(@as(usize, 3), pt.resolveAnchor(a_left));
 }
 
@@ -2126,7 +2126,7 @@ test "Anchor: falls back to right boundary when inside deleted range (.right bia
     try std.testing.expectEqual(@as(usize, 5), pt.resolveAnchor(a_right));
 
     try pt.delete(3, 5);
-    // .right bias → 回退到 delete range 的右边界（doc offset 3，和 left 相同因为删除后右边直接接上）
+    // .right bias -> 回退到 delete range 的右边界（doc offset 3，和 left 相同因为删除后右边直接接上）
     try std.testing.expectEqual(@as(usize, 3), pt.resolveAnchor(a_right));
 }
 
@@ -2144,7 +2144,7 @@ test "Anchor: survives complex edit sequence" {
     try pt.insert(4, "very swift"); // "The very swift brown fox"
 
     // anchor 位置应正确反映新 doc 中对应字符
-    // 原 'q' 所在的 buffer 字节已被删除 → 回退到 delete 边界 (offset 4)
+    // 原 'q' 所在的 buffer 字节已被删除 -> 回退到 delete 边界 (offset 4)
     try std.testing.expectEqual(@as(usize, 4), pt.resolveAnchor(a_quick));
     // 'b' 和 'f' 的 buffer 字节未动，跟随新 offset（长度 +5）
     try std.testing.expectEqual(@as(usize, 15), pt.resolveAnchor(a_brown));
@@ -2287,7 +2287,7 @@ const Lcg = struct {
 };
 
 /// 树形状不变量校验。只断言本实现**必须**成立的性质：
-///   1. 所有叶子深度相同（高度只在根部分裂/坍缩时变化 —— splitInternalInsert
+///   1. 所有叶子深度相同（高度只在根部分裂/坍缩时变化，splitInternalInsert
 ///      造的新节点高度取自兄弟，merge 不改深度，所以深度必然均匀）；
 ///   2. 每个节点项数 ≤ BRANCHING_FACTOR（分裂总是 4/5，插入有容量守卫）；
 ///   3. Σ(piece.length) == tree.summary().bytes == totalLength()；
@@ -2453,7 +2453,7 @@ test "PieceTree: single very long line survives piece boundaries and cross-piece
     try std.testing.expectEqual(@as(u32, @intCast(line_len)), pt.longestRowChars());
     try PieceTreeShape.check(&pt, alloc);
 
-    // 在长行中间插入等长内容：split → prefix/add/suffix 三段
+    // 在长行中间插入等长内容：split -> prefix/add/suffix 三段
     const mid = line_len / 2;
     try pt.insert(mid, content);
     try std.testing.expectEqual(@as(usize, line_len * 2), pt.totalLength());
@@ -2538,11 +2538,11 @@ test "PieceTree: large file with no newlines keeps offset<->line trivial" {
         try std.testing.expectEqual(@as(usize, 0), pt.offsetToLine(probe));
     }
 
-    // 1MiB 无换行文件在文件中间插入一个换行：lineCount 1→2，坐标全部正确。
+    // 1MiB 无换行文件在文件中间插入一个换行：lineCount 1->2，坐标全部正确。
     // 语义对齐既有测试 "offsetToLine and lineToOffset"：lineToOffset(k) 返回
     // 第 k 个 '\n' 之后的字节（lineToOffsetInNode 的 `byte_offset + j + 1`），
     // 所以 '\n' 插在 mid 时 line 1 从 mid+1 开始；offsetToLine 则只数严格位于
-    // offset 之前的 '\n'。此前把 lineToOffset(1) 断言成 mid —— 差 1 是本测试
+    // offset 之前的 '\n'。此前把 lineToOffset(1) 断言成 mid，差 1 是本测试
     // 写错了预期，不是实现错。
     const mid = size / 2;
     try pt.insert(mid, "\n");
@@ -2554,7 +2554,7 @@ test "PieceTree: large file with no newlines keeps offset<->line trivial" {
     try std.testing.expectEqual(@as(usize, 0), pt.offsetToLine(mid - 1));
     // getLine(k) 的区间是 [lineToOffset(k), lineToOffset(k+1))，**含行尾的
     // '\n'**（见 getLine 实现：end = lineToOffset(line+1)）。所以 line 0 是
-    // content[0..mid] 再加那个插入的换行，长度 mid+1 —— 不是 mid。
+    // content[0..mid] 再加那个插入的换行，长度 mid+1，不是 mid。
     const line_buf = try alloc.alloc(u8, mid + 1);
     defer alloc.free(line_buf);
     const line0 = try pt.getLine(0, line_buf);
@@ -2722,7 +2722,7 @@ test "PieceTree: many small edits keep the tree a balanced B-tree" {
     // （相邻同源 piece 会被合并），是实现细节而非契约。这个循环的价值在于
     // 「每步之后全文与 model 逐字节一致 + PieceTreeShape.check 通过」，那才是
     // B-tree 不变量。此前这里写了 `count() > 20`，实测随机序列下会被合并到
-    // 20 以下而变红 —— 断言的是实现细节，不是行为。
+    // 20 以下而变红，断言的是实现细节，不是行为。
 }
 
 test "PieceTree: document entirely of newlines" {
@@ -2781,7 +2781,7 @@ test "PieceTree: ChunkIterator seekTo repositions for non-sequential readers" {
     // oracle：正序全量
     const oracle = try pt.getText(0, total, buf);
 
-    // tree-sitter 式非顺序读法：读一段 → seek 到中段 → 读到尾 → 再 seek 回头部
+    // tree-sitter 式非顺序读法：读一段 -> seek 到中段 -> 读到尾 -> 再 seek 回头部
     var got = std.ArrayList(u8){};
     defer got.deinit(std.testing.allocator);
 
@@ -2838,7 +2838,7 @@ test "PieceTree: many-piece insert then full read matches (no newline, 300 piece
     defer alloc.free(buf);
     try std.testing.expectEqualSlices(u8, expect.items, try pt.getText(0, pt.totalLength(), buf));
     try PieceTreeShape.check(&pt, alloc);
-    // 逐 offset 校验 offsetToLine（全程无换行 → 恒 0）
+    // 逐 offset 校验 offsetToLine（全程无换行 -> 恒 0）
     var off: usize = 0;
     while (off <= pt.totalLength()) : (off += 7) {
         try std.testing.expectEqual(@as(usize, 0), pt.offsetToLine(off));

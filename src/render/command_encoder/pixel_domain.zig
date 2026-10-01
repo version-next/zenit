@@ -1,8 +1,8 @@
-//! command_encoder/pixel_domain.zig — 逻辑像素 → 物理像素域的安全转换
+//! command_encoder/pixel_domain.zig，逻辑像素 -> 物理像素域的安全转换
 //!
 //! 2026-08-05 随 backdrop_capture.zig 同批析出。这三个原语此前直接住在
 //! command_encoder.zig，而 backdrop 采样区域解析（backdrop_capture.zig）也要
-//! 用同一份 2^24 钳制 —— 两个消费方（encoder 的 viewport/scissor 路径与
+//! 用同一份 2^24 钳制，两个消费方（encoder 的 viewport/scissor 路径与
 //! backdrop 采样）共享同一个语义，不能各留一份拷贝。于是搬进这个零依赖的
 //! 小模块，母文件和 backdrop_capture 都**从这里** import：析出模块不反向
 //! import 母文件，否则母文件里的同名 decl 会变成 ambiguous reference。
@@ -16,10 +16,10 @@ const std = @import("std");
 /// 物理像素坐标的安全上限（2^24 = 16_777_216）。
 pub const max_safe_pixel_coordinate: f32 = 16_777_216;
 
-/// 浮点坐标 → u32：负值/零折成 0；NaN/Inf/超过安全上限返回 null。
+/// 浮点坐标 -> u32：负值/零折成 0；NaN/Inf/超过安全上限返回 null。
 ///
 /// 用于 src/dst 像素矩形。调用方拿到 null 应放弃本次捕获/裁剪，绝不能把
-/// 越界值截断后继续用 —— 截断会把采样窗口整体挪到别处。
+/// 越界值截断后继续用，截断会把采样窗口整体挪到别处。
 pub fn finitePixelCoordinate(value: f32) ?u32 {
     if (!std.math.isFinite(value)) return null;
     if (value <= 0) return 0;
@@ -39,7 +39,7 @@ pub fn physicalPixelExtent(logical: f32, scale: f32) u32 {
 // ── 测试 ───────────────────────────────────────────────────────────────
 // 这两个原语在母文件内联期间没有直接覆盖（只被 backdrop region 的端到端
 // 测试间接经过）。钳制边界一旦松动：viewport 会拿到越界尺寸，
-// backdrop 采样窗口会整体挪位 —— 都在这里钉住。
+// backdrop 采样窗口会整体挪位，都在这里钉住。
 
 test "finitePixelCoordinate: 负值/零折成 0，超安全上限返回 null" {
     try std.testing.expectEqual(@as(?u32, 0), finitePixelCoordinate(-1.5));
@@ -61,6 +61,6 @@ test "physicalPixelExtent: ceil 取整且钳到安全上限，非法输入归零
     try std.testing.expectEqual(@as(u32, 0), physicalPixelExtent(-5, 2));
     try std.testing.expectEqual(@as(u32, 0), physicalPixelExtent(10, 0));
     try std.testing.expectEqual(@as(u32, 0), physicalPixelExtent(std.math.nan(f32), 1));
-    // 巨大逻辑尺寸 → ceil 后钳到 16_777_216 而不是溢出/崩溃。
+    // 巨大逻辑尺寸 -> ceil 后钳到 16_777_216 而不是溢出/崩溃。
     try std.testing.expectEqual(@as(u32, 16_777_216), physicalPixelExtent(1e9, 1e9));
 }

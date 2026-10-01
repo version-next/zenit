@@ -1,7 +1,7 @@
-/// text_input — 演示 ui.widgets.Input 和 ui.widgets.Textarea
+/// text_input，演示 ui.widgets.Input 和 ui.widgets.Textarea
 ///
 /// 关键点：这两个组件是 zenit 里**唯一**依赖 text_core 的组件
-/// （DocCursor / WrapMap / LineCol —— 见 src/ui/components/input/）。
+/// （DocCursor / WrapMap / LineCol，见 src/ui/components/input/）。
 ///
 /// 这个 demo 同时也是开源边界 text_core 子图的烟测：
 /// 如果哪天 Input/Textarea 意外引入框架边界外的依赖，

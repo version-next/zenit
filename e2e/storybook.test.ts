@@ -1,8 +1,8 @@
-/// storybook.test.ts — 全 41 组件 e2e：视觉（截图）+ log 数据值双重验证。
+/// storybook.test.ts，全 41 组件 e2e：视觉（截图）+ log 数据值双重验证。
 ///
-/// 每个组件：clickTestId("nav.<key>") 切换 → 收集 story 子树全部文本 →
+/// 每个组件：clickTestId("nav.<key>") 切换 -> 收集 story 子树全部文本 ->
 /// 断言**预期数据值**全部出现（log 数据值验证，证明内容真正渲染出而非空面板）
-/// → screenshot 落 session 目录（视觉验证，截图非空 + 供人工/后续基线核验）。
+/// -> screenshot 落 session 目录（视觉验证，截图非空 + 供人工/后续基线核验）。
 /// 部分交互类组件额外交互后再断言状态值 + 截图。
 import {
   stats,
@@ -26,6 +26,7 @@ import {
   imePreedit,
   imeCommit,
   scrollAt,
+  trackpadScroll,
   magnifyAt,
   dragAt,
   resizeWindow,
@@ -41,7 +42,7 @@ import { decodePng, countDarkPixels, countNonBackgroundPixels } from "./png";
 /// 浅色图形专用：断言区域不是一片纯背景。
 ///
 /// assertRegionHasInk 的 countDarkPixels 用近黑判据（lum < 100），对 spinner
-/// 的细线圈、skeleton 的浅灰占位块不成立 —— 实测正常渲染下 spinner 只有 24 个
+/// 的细线圈、skeleton 的浅灰占位块不成立，实测正常渲染下 spinner 只有 24 个
 /// 深色像素、skeleton 是 0，用深色判据会把「画对了」误判成「像素空白」。
 function assertRegionNotBlank(pngPath: string, rect: { x: number; y: number; w: number; h: number }, label: string, minPixels = 200): void {
   const png = decodePng(pngPath);
@@ -77,7 +78,7 @@ function centerPixel(pngPath: string, rect: { x: number; y: number; w: number; h
   return [Math.round(r / n), Math.round(g / n), Math.round(b / n)];
 }
 
-/// 扫 rect 找最深（R+G+B 最小）的像素。用于采样文字笔画本身 —— 文本节点的
+/// 扫 rect 找最深（R+G+B 最小）的像素。用于采样文字笔画本身，文本节点的
 /// 几何中心常常落在字母之间的背景上，取中心会测到背景而不是字形。
 function darkestPixel(pngPath: string, rect: { x: number; y: number; w: number; h: number }): [number, number, number] {
   const png = decodePng(pngPath);
@@ -101,7 +102,7 @@ function darkestPixel(pngPath: string, rect: { x: number; y: number; w: number; 
 
 /// 统计 rect 内"有墨"的列分布。用于 RTL 验收：字形反向重叠时，
 /// 墨迹会挤成很窄一段，而正确铺开时墨迹跨越节点宽度的大部分。
-/// 返回 { first, last, span, cols, width } —— 均为 rect 内的相对逻辑列。
+/// 返回 { first, last, span, cols, width }，均为 rect 内的相对逻辑列。
 function inkColumns(
   pngPath: string,
   rect: { x: number; y: number; w: number; h: number },
@@ -136,7 +137,7 @@ function inkColumns(
   // 墨量质心，归一化到墨迹跨度内的 0..1。1 = 墨集中在右端。
   // 这是**字形顺序**的指纹：同一串文字正序/逆序渲染，墨量分布左右镜像，
   // 质心随之翻转。跨度/密度类判据对"顺序反了但仍均匀铺开"完全无感，
-  // 质心才能抓住 —— 这正是 RTL 被逐码点切碎时的真实failure mode。
+  // 质心才能抓住，这正是 RTL 被逐码点切碎时的真实failure mode。
   let total = 0, acc = 0;
   for (let i = 0; i < mass.length; i++) { total += mass[i]; acc += mass[i] * i; }
   const centroid = total > 0 && last > first ? (acc / total - first) / (last - first) : 0.5;
@@ -234,6 +235,7 @@ const EXPECT: Record<string, string[]> = {
   secsvg: ["Malformed SVG corpus", "close operand — rejected safely", "non-finite arc — rejected safely", "valid control rendered"],
   secopacity: ["10 nested composited opacity groups", "DEPTH 10 VISIBLE", "AFTER STACK MUST BE VISIBLE"],
   sectext: ["65,536-space editable run", "bytes: 65546", "Select all and replace with x"],
+  interactionlifecycle: ["Settled focus destination", "Click removes this target", "Path hit area: left 80 px only"],
   teardownstress: ["Reactive teardown ordering", "grid mounted", "Run 10 cycles"],
 };
 
@@ -270,10 +272,10 @@ async function clickText(rootTestId: string, text: string): Promise<void> {
 }
 
 /// EXPECT 为空且**是动画**的组件：单帧墨量判据不适用（截图时机决定图形转到
-/// 哪个角度，墨量随之波动 —— spinner 实测 165~1032）。改验「它真的在动」：
+/// 哪个角度，墨量随之波动，spinner 实测 165~1032）。改验「它真的在动」：
 /// 隔一小段时间截两帧，区域像素必须有差异。
 ///
-/// 这同时比单帧墨量更贴近该组件的核心价值 —— spinner 的意义就是转。
+/// 这同时比单帧墨量更贴近该组件的核心价值，spinner 的意义就是转。
 const ANIMATED_INK = new Map<string, string>([["spinner", "story.spinner.row"]]);
 
 async function assertAnimates(key: string, targetId: string): Promise<void> {
@@ -370,18 +372,18 @@ for (const key of KEYS) {
     await shot(key);
 
     // ⚠ 这里**不能**只断截图字节数。截图是整窗（含 41 项侧栏），实测任何存活
-    // 状态下都是 22 万~36 万字节，而旧门槛写的是 3000 —— 低两个数量级，只有
+    // 状态下都是 22 万~36 万字节，而旧门槛写的是 3000，低两个数量级，只有
     // app 整个死掉才可能触发，而那会被下面的 health() 先抓到。
     //
     // 对 EXPECT 为空的纯图形组件（spinner / skeleton），数据值断言也是空的，
-    // 于是整条用例退化成「面板挂上了 + app 没死」—— 恰恰是最需要验像素的
+    // 于是整条用例退化成「面板挂上了 + app 没死」，恰恰是最需要验像素的
     // 组件反而零视觉验证。改用 story 区域的墨量断言。
-    // ⚠ 框选区域必须是图形**本身**，不能用 story.<key> —— 后者的 rect 还包含
+    // ⚠ 框选区域必须是图形**本身**，不能用 story.<key>，后者的 rect 还包含
     // 标题和描述文字，实测那些文字贡献 7600+ 深色像素，把「图形一个都没画出来」
     // 完全盖住（变异验证时 spinner 全部 size=0 仍然全绿）。
     // ⚠ spinner 刻意不在此列：它是旋转动画，截图时机决定圆弧转到哪个角度，
     //    与背景的对比像素量随之波动。实测孤立跑 634~1032，全量跑（已转两分钟）
-    //    低至 165 —— 任何固定阈值要么假红要么形同虚设。旋转动画的正确验法是
+    //    低至 165，任何固定阈值要么假红要么形同虚设。旋转动画的正确验法是
     //    跨帧比较（两帧之间图形应当变化），不是单帧墨量，另案。
     //    skeleton 是静态图形，墨量稳定（实测 12 万+），适用。
     const INK_TARGET: Record<string, string> = {
@@ -493,11 +495,11 @@ test("LayoutBox: padding-box / percent / stretch / Flex / Grid geometry", async 
 //
 // Tabs 的**唯一核心语义**就是点击切换。此前这个 story 只有 EXPECT 静态文本
 // 断言（"Overview" / "Details" 等标签文字出现），而标签文字在任何选中状态下
-// 都在画面上 —— 点击根本不切换、或切到错误的 tab，都全绿漏过。
+// 都在画面上，点击根本不切换、或切到错误的 tab，都全绿漏过。
 // ── 交互验证：Switch 拨动 ──
 //
 // Switch 的核心语义就是拨动开关。此前 EXPECT 只有 "Off"/"On"/"Disabled"
-// 三个**标签文字**，它们在任何状态下都在画面上 —— 拨不动也全绿。
+// 三个**标签文字**，它们在任何状态下都在画面上，拨不动也全绿。
 test("Steps: 连接线连贯（横向贯穿圆心 / 纵向末段贴圆圈）+ 圆圈序号居中", async () => {
   await switchTo("steps");
   await sleep(300);
@@ -525,7 +527,7 @@ test("Steps: 连接线连贯（横向贯穿圆心 / 纵向末段贴圆圈）+ �
   near(cy(track), cy(hCircles[0]), "h track 竖向居中于圆心");
   near(progress.x + progress.w, cx(hCircles[1]), "h progress 终点 = 当前(第 2 步)圆心");
 
-  // ── 纵向：row → [indicator → [circle, connector?], text]
+  // ── 纵向：row -> [indicator -> [circle, connector?], text]
   const rows = v.children;
   for (let i = 0; i + 1 < rows.length; i++) {
     const c = rows[i].children[0].children[0].rect;
@@ -599,7 +601,7 @@ test("Switch: 交互 — 拨动改状态，disabled 不响应", async () => {
     `拨动后应为 "toggled → on"（initial_checked=false），got "${await statusOf()}"`,
   );
 
-  // 再拨一次回到 off —— 验证是真开关而不是单向置位
+  // 再拨一次回到 off，验证是真开关而不是单向置位
   await clickAt(sw.x + sw.h / 2, sw.y + sw.h / 2);
   await waitFor(async () => ((await statusOf()) === "toggled → off" ? true : null)).catch(() => {});
   assert(
@@ -630,7 +632,7 @@ test("RadioGroup: 交互 — 选中切换且互斥", async () => {
     `点 Option Y 后应为 "selected → y"，got "${await statusOf()}"`,
   );
 
-  // 选 Option Z —— 验证能连续切换（互斥生效的必要条件）
+  // 选 Option Z，验证能连续切换（互斥生效的必要条件）
   await clickText("story.radio.group", "Option Z");
   await waitFor(async () => ((await statusOf()) === "selected → z" ? true : null)).catch(() => {});
   assert(
@@ -643,7 +645,7 @@ test("RadioGroup: 交互 — 选中切换且互斥", async () => {
 // ── 交互验证：Accordion 展开/折叠 ──
 //
 // 此前只有 EXPECT 静态文本断言（"Section One" 等标题文字），而标题在展开
-// 和折叠状态下都在画面上 —— 点击完全不生效也全绿。
+// 和折叠状态下都在画面上，点击完全不生效也全绿。
 //
 // ⚠ 判据不能用「body 文本出现次数」：折叠只是把容器设成 height:0 +
 //   overflow_hidden，**节点仍在树里**，文本收集照样拿到 3 份（实测）。
@@ -653,7 +655,7 @@ test("Accordion: 交互 — 折叠首节高度归零，展开第二节高度撑�
 
   /// 每一节 content 容器的高度：展开 > 0，折叠 == 0。
   ///
-  /// ⚠ 必须看 content 这一层，不能看 body 子节点 —— body 的 rect.h 是内容
+  /// ⚠ 必须看 content 这一层，不能看 body 子节点，body 的 rect.h 是内容
   /// 高度，折叠时不变（裁剪发生在渲染阶段，不改 layout rect，实测三节都是
   /// 34.2）。accordion.content 是组件内部给这层加的 test_id。
   const bodyHeights = async (): Promise<number[]> => {
@@ -669,7 +671,7 @@ test("Accordion: 交互 — 折叠首节高度归零，展开第二节高度撑�
     `accordion 初始应恰好 1 节展开（story 里只有首节 expanded），实际高度分布 ${JSON.stringify(await bodyHeights())}`,
   );
 
-  // 折叠首节 → 展开数归零
+  // 折叠首节 -> 展开数归零
   await clickText("story.accordion", "Section One");
   await waitFor(async () => ((await expandedCount()) === 0 ? true : null)).catch(() => {});
   assert(
@@ -678,7 +680,7 @@ test("Accordion: 交互 — 折叠首节高度归零，展开第二节高度撑�
   );
   await shot("accordion-collapsed");
 
-  // 展开第二节 → 回到 1（验证展开也真生效，不是只有折叠单向可用）
+  // 展开第二节 -> 回到 1（验证展开也真生效，不是只有折叠单向可用）
   await clickText("story.accordion", "Section Two");
   await waitFor(async () => ((await expandedCount()) === 1 ? true : null)).catch(() => {});
   assert(
@@ -706,7 +708,7 @@ test("Tabs: 交互 — 点击切换 active，且 disabled 不响应", async () =
   );
   await shot("tabs-active-t2");
 
-  // 点 Settings（t3）—— 验证能连续切换，而不是只有首次生效
+  // 点 Settings（t3），验证能连续切换，而不是只有首次生效
   await clickText("story.tabs.underline", "Settings");
   await waitFor(async () => ((await statusOf()) === "active → t3" ? true : null)).catch(() => {});
   assert(
@@ -725,7 +727,7 @@ test("Tabs: 交互 — 点击切换 active，且 disabled 不响应", async () =
 
   // ⚠ 只断 on_change 回调**不够**：setActive 里 `if (index == active_index) return`
   // 是去重守卫，active_index 坏掉（恒为 0）时每次点击的 index 都 != 0，守卫不拦、
-  // 回调照常触发 —— 回调全对但视觉选中态是坏的。实测变异（active_index 不更新）
+  // 回调照常触发，回调全对但视觉选中态是坏的。实测变异（active_index 不更新）
   // 在只有回调断言时完全绿。所以必须另外断言**用户看得见的**选中态。
   //
   // underline 变体的选中指示是一条 highlight box，靠 translate_x 定位到当前 tab。
@@ -757,7 +759,7 @@ test("Tabs: 交互 — 点击切换 active，且 disabled 不响应", async () =
 
 test("Checkbox: 交互 — 点击改 status 值", async () => {
   await switchTo("checkbox");
-  // switchTo 只等"面板出现任意文本"，status 节点的文本可能晚一拍 —— 显式等它就位
+  // switchTo 只等"面板出现任意文本"，status 节点的文本可能晚一拍，显式等它就位
   // （偶发 flake："初始 status 应含 (none), got ''"）。
   const before = await waitFor(async () => {
     const t = (await query("story.checkbox.status"))[0]?.text ?? "";
@@ -773,7 +775,7 @@ test("Checkbox: 交互 — 点击改 status 值", async () => {
   const after = (await query("story.checkbox.status"))[0]?.text ?? "";
   appendLog(`  checkbox status after: "${after}"`);
   await shot("checkbox-after-click");
-  // ⚠ 不能写 `after.includes("checked")` —— "unchecked".includes("checked")
+  // ⚠ 不能写 `after.includes("checked")`, "unchecked".includes("checked")
   // 为真，那样写分辨不出勾选和取消勾选，状态机反向的 bug 会全绿漏过。
   // story.checkbox.box 的 initial_checked = false，所以点一下必须是 checked。
   assert(
@@ -796,7 +798,7 @@ test("Slider: 交互 — 点 track 改值", async () => {
   assert((await health()).status === "ok", "app died after slider interaction");
 });
 
-// ── 交互验证：Drag primitive — 拖动改状态/几何、click 抑制、Escape 取消回滚 ──
+// ── 交互验证：Drag primitive，拖动改状态/几何、click 抑制、Escape 取消回滚 ──
 // 语义断言为主（docs/DRAG_INTERACTION_DESIGN.md §18.4），截图只作视觉辅助。
 test("Slider: stepped drag stays snapped and ends on release", async () => {
   await switchTo("button");
@@ -913,7 +915,7 @@ test("Drag: 交互 — 拖动方块 + click 抑制 + Escape 取消", async () =>
   const cx0 = box.x + box.w / 2;
   const cy0 = box.y + box.h / 2;
 
-  // 1) 拖 60px：status → end，click 被抑制（clicks 保持 0）
+  // 1) 拖 60px：status -> end，click 被抑制（clicks 保持 0）
   await mouseDown(cx0, cy0);
   await mouseMove(cx0 + 30, cy0 + 10);
   await mouseMove(cx0 + 60, cy0 + 20);
@@ -953,11 +955,11 @@ test("Drag: 交互 — 拖动方块 + click 抑制 + Escape 取消", async () =>
   assert((await health()).status === "ok", "app died after drag interaction");
 });
 
-// ── 交互验证：Modal 点按钮打开 → dialog 真正可见 + 居中 + body 文本出现 ──
-// blend_mode 端到端像素验收（2026-07-30 接线）。颜色全用 0/255 分量 ——
+// ── 交互验证：Modal 点按钮打开 -> dialog 真正可见 + 居中 + body 文本出现 ──
+// blend_mode 端到端像素验收（2026-07-30 接线）。颜色全用 0/255 分量,
 // sRGB 传递函数在 0/1 处不变，线性/sRGB 空间的混合结果一致，可按精确值断言。
 // 此前 blend_mode 两头都断（无 API 可设、encoder 不消费），multiply 等静默
-// 退化成 normal —— 那种情况下 multiply 位置会读到 cyan 而不是 green，此测必红。
+// 退化成 normal，那种情况下 multiply 位置会读到 cyan 而不是 green，此测必红。
 test("BlendModes: 像素 — multiply/screen/difference 精确色值 + normal 对照", async () => {
   await switchTo("blend");
   await sleep(400); // settle
@@ -977,7 +979,7 @@ test("BlendModes: 像素 — multiply/screen/difference 精确色值 + normal �
   }
 });
 
-// 回归：Modal 曾完全不可用 —— barrier 的 absolute grow/grow containing block 是它内联
+// 回归：Modal 曾完全不可用，barrier 的 absolute grow/grow containing block 是它内联
 // 所在的 844px content 面板（非窗口），打开后只有 844x32 错位条、dialog 不居中、body
 // h=0。修法：window-root portal + content 走内联 scale_fade（非 composited surface，
 // 后者把居中 dialog 的 GPU draw 画回 (0,0)）。此测点真实按钮、断言 dialog 居中可见。
@@ -1015,7 +1017,7 @@ test("Modal: 交互 — 打开后 dialog 居中可见 + body 文本", async () =
 
   // 反向像素门（2026-07-30 回归教训）：dialog **左侧的 backdrop 区域必须无墨**。
   // GPU retained 的 miss 路径曾漏掉开层前的 pipeline flush，把整块页面内容
-  // （含 Open Modal 按钮）冲进 overlay surface 纹理并缓存 —— 表现为 backdrop
+  // （含 Open Modal 按钮）冲进 overlay surface 纹理并缓存，表现为 backdrop
   // 里出现重复的深色按钮/文字。该 bug 逃过了全部 51 项断言（只有"有墨"门，
   // 没有"无墨"门）。区域取 dialog 左侧一块纯 dim 区。
   {
@@ -1028,8 +1030,8 @@ test("Modal: 交互 — 打开后 dialog 居中可见 + body 文本", async () =
   }
 
   // 关键回归（hit-test）：点 dialog **内部空白/正文**绝不能关闭 modal。
-  // 之前 barrier/content 无 pointer hit role → 点击穿透到背后 ScrollArea →
-  // outside-click 误判"点在 content 外" → 任意点击都误关。dialog 节点跨开关复用、
+  // 之前 barrier/content 无 pointer hit role -> 点击穿透到背后 ScrollArea ->
+  // outside-click 误判"点在 content 外" -> 任意点击都误关。dialog 节点跨开关复用、
   // 不销毁，故用 visible 字段判定开关（关闭后 query 仍返回该节点，但 visible=false）。
   const dcx = r.x + r.w / 2, dcy = r.y + r.h * 0.75; // dialog 下半部空白区
   await clickAt(dcx, dcy);
@@ -1038,7 +1040,7 @@ test("Modal: 交互 — 打开后 dialog 居中可见 + body 文本", async () =
   appendLog(`  after inside-dialog click, visible=${afterInside?.visible}`);
   assert(afterInside?.visible !== false, `点 dialog 内部竟关闭了 modal（hit-test 穿透）`);
 
-  // 点 × 关闭 —— 必须真正触发 × 的 handler（而非穿透触发 outside-dismiss）。
+  // 点 × 关闭，必须真正触发 × 的 handler（而非穿透触发 outside-dismiss）。
   await clickTestId("modal.close");
   await sleep(800);
   const closed = (await query("story.modal.dialog"))[0];
@@ -1047,8 +1049,8 @@ test("Modal: 交互 — 打开后 dialog 居中可见 + body 文本", async () =
   assert((await health()).status === "ok", "app died after closing modal");
 });
 
-// ── 交互验证：Sheet 点按钮打开 → panel 贴右边可见 + content 文本 ──
-/// 在截图的 y 行（逻辑坐标）从右往左找第一个非浅色像素 —— sheet 白面板
+// ── 交互验证：Sheet 点按钮打开 -> panel 贴右边可见 + content 文本 ──
+/// 在截图的 y 行（逻辑坐标）从右往左找第一个非浅色像素，sheet 白面板
 /// 左缘与灰 backdrop 的分界。返回逻辑 x；整行浅色返回 null。
 function sheetPanelEdgeX(pngPath: string, logicalY: number): number | null {
   const png = decodePng(pngPath);
@@ -1069,9 +1071,9 @@ test("Sheet: 交互 — 打开后 panel 贴边可见 + content 文本", async ()
 
   // ── 动画中段像素门（2026-07-30 Sheet 冻结回归）────────────────────
   // GPU retained 的指纹曾漏掉嵌套 begin_opacity_layer 的合成参数：子层
-  // transform 每帧在变而父层（window-root overlay group）指纹不变 → 父层
-  // 帧帧 stale hit → 滑入动画像素全程冻结、结束瞬间跳到终点。布局树照常
-  // 推进，所以 rect 断言全过 —— 只有**动画中段的像素**能逮住它。
+  // transform 每帧在变而父层（window-root overlay group）指纹不变 -> 父层
+  // 帧帧 stale hit -> 滑入动画像素全程冻结、结束瞬间跳到终点。布局树照常
+  // 推进，所以 rect 断言全过，只有**动画中段的像素**能逮住它。
   // settle 位置 x≈780；此处断言 t≈120ms 时面板左缘"已入场且未定格"。
   await sleep(120);
   await shot("sheet-mid-anim");
@@ -1102,7 +1104,7 @@ test("Sheet: 交互 — 打开后 panel 贴边可见 + content 文本", async ()
   assertRegionHasInk(`${DIR}/story-sheet-open.png`, r, "sheet panel pixels");
 
   // 关键回归（hit-test）：点 panel 内部不能关闭；点左侧 backdrop 空白才关闭。
-  // 顺带必须关掉 sheet —— sheet barrier 现在真的拦截点击（modal 语义），不关会挡住
+  // 顺带必须关掉 sheet, sheet barrier 现在真的拦截点击（modal 语义），不关会挡住
   // 后续测试的 nav 切换。
   await clickAt(r.x + r.w / 2, r.y + r.h / 2); // panel 内部
   await sleep(400);
@@ -1116,7 +1118,7 @@ test("Sheet: 交互 — 打开后 panel 贴边可见 + content 文本", async ()
   assert((await health()).status === "ok", "app died after closing sheet");
 });
 
-// ── 交互验证：Menu 点 trigger 打开 → 弹层出现 item 数据值 ──
+// ── 交互验证：Menu 点 trigger 打开 -> 弹层出现 item 数据值 ──
 function findRectByText(node: any, label: string): any {
   if (node?.text === label) return node.rect ?? null;
   for (const c of node?.children ?? []) {
@@ -1129,7 +1131,7 @@ function findRectByText(node: any, label: string): any {
 test("Notification: 九种类型、折叠 / 展开堆叠、悬停暂停、删除中间一条平滑补位、八个位置、原地转换", async () => {
   await switchTo("notification");
 
-  // 提醒挂在 window-root portal；只收集**提醒卡片与角标**里的文字——宿主的
+  // 提醒挂在 window-root portal；只收集**提醒卡片与角标**里的文字，宿主的
   // 历史行（面板关着时也在树上）会含同样的标题，查整棵树会把已退场的卡片误判为仍在。
   async function fullTreeTexts(): Promise<string> {
     const o: string[] = [];
@@ -1145,7 +1147,7 @@ test("Notification: 九种类型、折叠 / 展开堆叠、悬停暂停、删除
     return { w: full.rect.w, h: full.rect.h };
   }
   // 悬停判定按指针真实坐标逐帧命中测试（16.7）。窗口若正好弹在物理鼠标下，真实
-  // 移动事件会覆盖注入坐标（实测抓到过 (427,748) 这类非注入坐标）——等待期间持续重发。
+  // 移动事件会覆盖注入坐标（实测抓到过 (427,748) 这类非注入坐标），等待期间持续重发。
   async function holdPointer(x: number, y: number, ms: number): Promise<void> {
     const end = Date.now() + ms;
     while (Date.now() < end) {
@@ -1233,7 +1235,7 @@ test("Notification: 九种类型、折叠 / 展开堆叠、悬停暂停、删除
   // 点击把指针留在了被删那张的 ✕ 上；补位后那里可能已在堆叠外，退场结束会按真实
   // 坐标复核并折叠（16.7 规范行为）。模拟用户继续悬停：指针回到最前那张（位置不变）。
   // 补位是 300ms 的 cubicBezier(0.22,0.92,0.24,1)：起步斜率 ≈4.2，头 60ms 就能走完
-  // ~80% —— 用「单步 < 总距 70%」判跳变与曲线本身矛盾（首个采样点落在曲线哪里只
+  // ~80%，用「单步 < 总距 70%」判跳变与曲线本身矛盾（首个采样点落在曲线哪里只
   // 取决于 RPC 延迟），曾是偶发失败的根因。平滑补位的真实语义是：能观察到介于起点
   // 与终点之间的中间位置（瞬移则一个都没有）、单调、终点正确。
   // 点击后立即采样（先采样再按住指针），首个样本尽量早。
@@ -1277,7 +1279,7 @@ test("Notification: 九种类型、折叠 / 展开堆叠、悬停暂停、删除
   }
   await clickTestId("story.notify.pos.bc");
 
-  // 7. 原地转换：撤销 → 环换成 ✓；接受 → 按钮区移除、高度收缩。card 不重建（test id 保留）。
+  // 7. 原地转换：撤销 -> 环换成 ✓；接受 -> 按钮区移除、高度收缩。card 不重建（test id 保留）。
   await clickTestId("story.notify.btn.undo");
   await sleep(700);
   const undoBefore = await screenPos("story.notify.undo");
@@ -1364,7 +1366,7 @@ test("Notification: 拖拽关闭（84px 阈值 / 弹回 / 甩出）、不可拖�
   assert(Math.abs(e1.x - e0.x) < 1 && (await fullTreeTexts()).includes("上传失败"), `按钮区拖动触发了手势: ${e0.x} → ${e1.x}`);
   await clearAll();
 
-  // 4. 内联回复：输入 + Enter → 原地换成引用，卡片不重建，事件带回复内容。
+  // 4. 内联回复：输入 + Enter -> 原地换成引用，卡片不重建，事件带回复内容。
   await clickTestId("story.notify.btn.person");
   await sleep(700);
   const p0 = await screenPos("story.notify.person");
@@ -1387,6 +1389,80 @@ test("Notification: 拖拽关闭（84px 阈值 / 弹回 / 甩出）、不可拖�
   if (sq[0]) collectText(sq[0], st);
   assert(st.join(" ").includes("reply"), `回复事件未上报 — ${st.join(" ")}`);
   assert((await query("story.notify.person")).length === 1, "发送后卡片被重建（test id 丢失）");
+  await clearAll();
+});
+
+test("Notification: 文案提示胶囊（16.13）— 与卡片同一堆叠、宽度随内容、悬停展开、按钮原地转换、超长封顶 480", async () => {
+  await switchTo("notification");
+  async function cardTexts(): Promise<string> {
+    const o: string[] = [];
+    const walk = (n: any) => {
+      if (n.component === "Notification") collectText(n, o);
+      else for (const c of n.children ?? []) walk(c);
+    };
+    walk(await tree());
+    return o.join(" │ ");
+  }
+  async function clearAll(): Promise<void> {
+    await mouseMove(-10, -10);
+    await clickTestId("story.notify.btn.clear");
+    await sleep(600);
+  }
+  async function holdPointer(x: number, y: number, ms: number): Promise<void> {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      await mouseMove(x, y);
+      await sleep(Math.min(100, Math.max(0, end - Date.now())));
+    }
+  }
+  const full = await tree();
+  const win = { w: full.rect.w, h: full.rect.h };
+  await clearAll();
+
+  // 1. 单条：36 高胶囊，底部正中（卡片列同一锚点，边距 22）。
+  await clickTestId("story.notify.hint.btn.success");
+  await sleep(600);
+  await shot("notify-hint-success");
+  const one = await screenPos("story.notify.hint.success");
+  appendLog(`  hint rect: ${JSON.stringify(one)} window ${JSON.stringify(win)}`);
+  assert(Math.abs(one.h - 36) < 0.5, `胶囊高度应为 36: ${one.h}`);
+  assert(one.w > 60 && one.w < 200, `胶囊宽度应随内容: ${one.w}`);
+  assert(Math.abs(one.x + one.w / 2 - win.w / 2) < 1, `胶囊未水平居中: ${one.x}`);
+  assert(Math.abs(one.y + one.h - (win.h - 22)) < 1.5, `底部边距应为 22: bottom=${one.y + one.h}`);
+  assertRegionHasInk(`${DIR}/story-notify-hint-success.png`, one, "hint capsule pixels", 20);
+
+  // 2. 与卡片同一个堆叠：折叠时胶囊在最前，卡片露边在后；悬停展开后依次排开。
+  await clearAll();
+  await clickTestId("story.notify.btn.warning");
+  await sleep(150);
+  await clickTestId("story.notify.hint.btn.undo");
+  await sleep(700);
+  const hint = await screenPos("story.notify.hint.undo");
+  const warnCollapsed = await screenPos("story.notify.warning");
+  assert(warnCollapsed.y < hint.y && hint.y - warnCollapsed.y < 20, `折叠态卡片应在胶囊后方露边: card y=${warnCollapsed.y} hint y=${hint.y}`);
+  await holdPointer(hint.x + 40, hint.y + hint.h / 2, 900);
+  await shot("notify-hint-stack-expanded");
+  const hintExp = await screenPos("story.notify.hint.undo");
+  const warnExp = await screenPos("story.notify.warning");
+  assert(warnExp.y + warnExp.h <= hintExp.y - 8, `展开后卡片应排在胶囊上方: card bottom=${warnExp.y + warnExp.h} hint y=${hintExp.y}`);
+
+  // 3. 胶囊按钮：story 在回调里原地转换成「已撤销替换」（同一 id，不新增）。
+  const click = await clickTestId("story.notify.hint.undo.action.0");
+  assert(click.ok === true, `撤销按钮点击失败: ${JSON.stringify(click)}`);
+  await sleep(500);
+  await shot("notify-hint-undone");
+  const texts = await cardTexts();
+  assert(texts.includes("已撤销替换"), `撤销后未原地转换: ${texts}`);
+  assert(!texts.includes("已在当前文件替换"), `旧文案仍在: ${texts}`);
+  assert((await query("story.notify.hint.undo")).length === 1, "原地转换不应重建卡片（test id 丢失）");
+
+  // 4. 超长文案：宽度封顶 480（正文单行省略）。
+  await clearAll();
+  await clickTestId("story.notify.hint.btn.long");
+  await sleep(600);
+  await shot("notify-hint-long");
+  const long = await screenPos("story.notify.hint.long");
+  assert(Math.abs(long.w - 480) < 0.5, `超长胶囊应封顶 480: ${long.w}`);
   await clearAll();
 });
 
@@ -1451,7 +1527,7 @@ test("FileUpload: 交互 — Browse 回填文件行", async () => {
 
 test("FileUpload: 拖放 — Finder 拖入文件（程序化注入）", async () => {
   await switchTo("upload");
-  // 真 Finder 拖放没法自动化：走 /drag 注入 entered → updated → dropped，
+  // 真 Finder 拖放没法自动化：走 /drag 注入 entered -> updated -> dropped，
   // 与平台 NSDragging 回调进 Cx.handleDrag 的是同一条路径。
   const zone = (await query("story.upload.dropzone"))[0];
   assert(zone, "找不到 dropzone");
@@ -1485,7 +1561,7 @@ test("FileUpload: 拖放 — Finder 拖入文件（程序化注入）", async ()
 
 test("DataTable: 交互 — 翻页 + 筛选", async () => {
   await switchTo("datatable");
-  // 翻页：Next → Page 2，首行变 Dave（Next 按钮 rect 从数据树里找）
+  // 翻页：Next -> Page 2，首行变 Dave（Next 按钮 rect 从数据树里找）
   const tree0 = await query("story.datatable.table");
   const texts0: string[] = [];
   if (tree0[0]) collectText(tree0[0], texts0);
@@ -1511,7 +1587,7 @@ test("DataTable: 交互 — 翻页 + 筛选", async () => {
   assert(joined1.includes("Page 2 / 3"), `Next 后应在第 2 页 — ${joined1}`);
   assert(joined1.includes("Dave"), `第 2 页应含 Dave — ${joined1}`);
 
-  // 筛选：输入 "admin" → 只 Alice/Frank，Page 1 / 1
+  // 筛选：输入 "admin" -> 只 Alice/Frank，Page 1 / 1
   await clickTestId("story.datatable.filter");
   await type_("admin");
   await sleep(400);
@@ -1580,7 +1656,7 @@ test("Select: puQEf component family", async () => {
   near(withIconTrigger.rect.w, 352, "puQEf trigger width");
   assert(withIconTrigger.rect.h >= 38 && withIconTrigger.rect.h <= 41, `LG trigger height ${withIconTrigger.rect.h} 不在 puQEf 38..41`);
 
-  // 真实单选：打开 Popover → 选 Option 2 → trigger 写回。
+  // 真实单选：打开 Popover -> 选 Option 2 -> trigger 写回。
   await clickTestId("story.select.with-icon");
   await sleep(55);
   const openingChevron = (await query("story.select.with-icon.chevron"))[0];
@@ -1682,7 +1758,7 @@ test("Select: puQEf component family", async () => {
     `离开 selected trigger 后必须恢复 down chevron — clear=${opacityOf(clearButtonReclosedRest)} chevron=${opacityOf(clearChevronReclosedRest)}`);
 
   // 真实 icon-only Button 的 hover / pressed / click 都留截图：
-  // 初始 Option 1 → hover trigger 显示 x → hover x → press x → release/click → placeholder。
+  // 初始 Option 1 -> hover trigger 显示 x -> hover x -> press x -> release/click -> placeholder。
   await mouseMove(clearablePos.x + 48, clearablePos.y + clearablePos.h / 2);
   await sleep(80);
   const clearPos = await screenPos("story.select.clear");
@@ -1821,7 +1897,7 @@ test("Select: puQEf component family", async () => {
   await sleep(150);
   await shot("select-puqef-multiple-lg-closed");
 
-  // Searchable multiple LG: open → close → focus input → filter → select → close.
+  // Searchable multiple LG: open -> close -> focus input -> filter -> select -> close.
   await clickTestId("story.select.multiple-search-lg");
   await sleep(180);
   await shot("select-puqef-multiple-search-lg-open");
@@ -1936,7 +2012,7 @@ test("Menu: 交互 — 点开显示 items", async () => {
   await sleep(350);
   await shot("menu-open");
   // 打开后的菜单项在窗口 portal root（popover content 已 portal 化，不在
-  // content 面板子树里）—— 从整棵窗口树收文本
+  // content 面板子树里），从整棵窗口树收文本
   const root = await tree();
   const out: string[] = [];
   collectText(root, out);
@@ -1950,7 +2026,7 @@ test("Menu: 交互 — 点开显示 items", async () => {
 test("damage-rect: modal 内按钮悬停触发部分重绘（retained 层只重画脏区）", async () => {
   // 场景选择：retained 只覆盖 promoted overlay（普通内容面板不促升）。
   // Modal 弹层内容在层内平铺捕获（非单一嵌套 fold），悬停按钮只改一小块
-  // bg → per-item diff 出小脏区 → partial。
+  // bg -> per-item diff 出小脏区 -> partial。
   await switchTo("modal");
   const btn = await screenPos("story.modal.open");
   await clickAt(btn.x + btn.w / 2, btn.y + btn.h / 2);
@@ -1991,7 +2067,7 @@ test("zindex: 兄弟 z_index 覆盖 DOM 顺序（red z=3 最上）", async () =>
   await shot("zindex-static");
   const arena = (await query("story.zindex.siblings"))[0];
   assert(arena != null, "siblings arena 不存在");
-  // 三块 130x80 交叠区：x∈[60,130], y∈[20,80]（arena 局部）→ 采样其中心
+  // 三块 130x80 交叠区：x∈[60,130], y∈[20,80]（arena 局部）-> 采样其中心
   const px = centerPixel(`${DIR}/story-zindex-static.png`, { x: arena.rect.x + 60, y: arena.rect.y + 20, w: 70, h: 60 });
   assertColorNear(px, [220, 50, 47], "三兄弟交叠区必须是 red（z=3, DOM 最先）", 20);
 });
@@ -2010,7 +2086,7 @@ test("zindex: overflow 容器内 popover 溢出裁剪并盖住障碍物", async 
   appendLog(`  slab=${JSON.stringify(slab.rect)} obstacle=${JSON.stringify(obstacle.rect)}`);
   assert(rectsOverlap(slab.rect, obstacle.rect), "布局漂移：popover slab 未与 obstacle 交叠，断言失去意义");
   await shot("zindex-popover-open");
-  // 采样 slab 与 obstacle 交叠区中心 —— 必须是 indigo（popover 在上），
+  // 采样 slab 与 obstacle 交叠区中心，必须是 indigo（popover 在上），
   // 层级破坏时会读到 orange（障碍物）或 yellow（transform 菱形）。
   const ix = Math.max(slab.rect.x, obstacle.rect.x);
   const iy = Math.max(slab.rect.y, obstacle.rect.y);
@@ -2035,8 +2111,8 @@ test("zindex: tooltip tier 溢出裁剪并盖住障碍物", async () => {
   appendLog(`  tip=${JSON.stringify(tip.rect)} obstacle=${JSON.stringify(obstacle.rect)}`);
   assert(rectsOverlap(tip.rect, obstacle.rect), "布局漂移：tooltip 未与 obstacle 交叠，断言失去意义");
   await shot("zindex-tooltip-open");
-  // 采样 tooltip 与障碍物交叠区的最深像素：tooltip 深色气泡在上 → 近黑；
-  // 被障碍物盖住 → 最深也只有纯橙 (255,150,40) → 断言红。
+  // 采样 tooltip 与障碍物交叠区的最深像素：tooltip 深色气泡在上 -> 近黑；
+  // 被障碍物盖住 -> 最深也只有纯橙 (255,150,40) -> 断言红。
   const ix = Math.max(tip.rect.x, obstacle.rect.x);
   const iy = Math.max(tip.rect.y, obstacle.rect.y);
   const iw = Math.min(tip.rect.x + tip.rect.w, obstacle.rect.x + obstacle.rect.w) - ix;
@@ -2155,7 +2231,7 @@ test("GlassMotion: morph 几何过渡 + scroll-edge + backdrop 亮度实测", as
 
   // scroll-edge：程序化滚动后玻璃条出现边缘渐变。
   // 回归：Scroll +80 曾直接写 ScrollState.scroll_y（绕过 setScrollY），state 变了
-  // 但 content 的 translate 没同步，内容纹丝不动 —— 只截图的旧用例看不出来。
+  // 但 content 的 translate 没同步，内容纹丝不动，只截图的旧用例看不出来。
   const rowBefore = findByText(await tree(), "Content row 2");
   assert(rowBefore, "Content row 2 应可见");
   await clickTestId("story.glassmotion.scrollbtn");
@@ -2165,7 +2241,7 @@ test("GlassMotion: morph 几何过渡 + scroll-edge + backdrop 亮度实测", as
   assert(rowAfter && Math.abs(rowBefore.y - rowAfter.y - 80) < 1, `Scroll +80 应让内容上移 80px (${rowBefore.y} -> ${rowAfter?.y})`);
   await shot("glassmotion-scrolled");
 
-  // backdrop 亮度自适应：玻璃在屏 → GPU luminance 回读应产出实测值
+  // backdrop 亮度自适应：玻璃在屏 -> GPU luminance 回读应产出实测值
   const st = await stats();
   appendLog(`  backdrop_luminance_milli: ${st.backdrop_luminance_milli}`);
   // 逐区域亮度池化后（2026-08-02），全局值 = 页面全部 glass 区域的均值：
@@ -2176,7 +2252,7 @@ test("GlassMotion: morph 几何过渡 + scroll-edge + backdrop 亮度实测", as
 });
 
 /// 灰度梯度能量：rect 内相邻像素亮度差的绝对值均值。锐利文字笔画贡献
-/// 大量高频边缘，磨砂玻璃后的同一段文字被 blur 抹平 → 能量显著下降。
+/// 大量高频边缘，磨砂玻璃后的同一段文字被 blur 抹平 -> 能量显著下降。
 function gradientEnergy(pngPath: string, rect: { x: number; y: number; w: number; h: number }): number {
   const png = decodePng(pngPath);
   const s = png.width / 1100;
@@ -2298,7 +2374,7 @@ test("GlassEdge: 贴窗口边缘的 glass 无黑边", async () => {
 test("GlassIslands: 同帧两个 blur+rounded_clip 岛都必须显示内容", async () => {
   // 回归（下游回归）：blur + overflow_hidden + corner_radius 同节点时，
   // rounded_clip surface 期望 owner-local 内容帧，而 lowering 早先只对
-  // opacity layer 投影 → 内容以 world 坐标画出纹理外 → 岛内容全丢只剩玻璃壳。
+  // opacity layer 投影 -> 内容以 world 坐标画出纹理外 -> 岛内容全丢只剩玻璃壳。
   await switchTo("glassislands");
   await sleep(500); // 等 glass 合成稳定
   const png = `${DIR}/story-glassislands.png`;
@@ -2311,12 +2387,12 @@ test("GlassIslands: 同帧两个 blur+rounded_clip 岛都必须显示内容", as
     assertRegionHasInk(png, inner, `${name} 岛内容块像素`, 5000);
   }
   // gi=0 "仅 blur" 合同：first 岛左缘 8px 带压在近黑竖条上（story 里的 rim_probe），
-  // rim_sharp 若漏 gi 门控，黑条会在边缘带清晰透出 → darkest 接近纯黑。
+  // rim_sharp 若漏 gi 门控，黑条会在边缘带清晰透出 -> darkest 接近纯黑。
   // 正常 blur-only 下黑条与亮色渐变糊成中灰。
   const first = (await query("story.glassislands.first"))[0]?.rect;
   assert(first, "first 岛 rect 应存在");
   // 差分断言：绝对阈值受主题/背景漂移影响（alpha 96 时代 sharp/blur 只差 30
-  // 灰阶，抓不住变异）。参照带取岛内侧 inset 11..15px——同在黑条上但已出
+  // 灰阶，抓不住变异）。参照带取岛内侧 inset 11..15px，同在黑条上但已出
   // rim_sharp 8px 带、恒为 blur。rim 带明显暗于参照带 = sharp 回退漏出。
   const rimBand = { x: first.x + 1, y: first.y + 40, w: 5, h: first.h - 80 };
   const refBand = { x: first.x + 11, y: first.y + 40, w: 4, h: first.h - 80 };
@@ -2352,7 +2428,7 @@ test("CanvasEvents: scroll 修饰键 + magnify + drag + 剪贴板 PNG 回环", a
   const cxp = canvas.x + 100;
   const cyp = canvas.y + 60;
 
-  // scroll 带 Cmd 修饰键 → on_scroll 收到 modifiers
+  // scroll 带 Cmd 修饰键 -> on_scroll 收到 modifiers
   await scrollAt(cxp, cyp, 0, -12, { cmd: true });
   await sleep(200);
   let texts: string[] = [];
@@ -2360,7 +2436,7 @@ test("CanvasEvents: scroll 修饰键 + magnify + drag + 剪贴板 PNG 回环", a
   appendLog(`  scroll label: ${texts.join(" ")}`);
   assert(texts.join(" ").includes("cmd=true"), `on_scroll 应收到 cmd 修饰键 (got: ${texts.join(" ")})`);
 
-  // magnify began→changed→ended
+  // magnify began->changed->ended
   await magnifyAt(cxp, cyp, 0, 0);
   await magnifyAt(cxp, cyp, 0.25, 1);
   await magnifyAt(cxp, cyp, 0.25, 1);
@@ -2372,7 +2448,7 @@ test("CanvasEvents: scroll 修饰键 + magnify + drag + 剪贴板 PNG 回环", a
   assert(texts.join(" ").includes("accum=0.50"), `magnify 应累计 0.50 (got: ${texts.join(" ")})`);
   assert(texts.join(" ").includes("phase=ended"), `magnify 最后 phase 应为 ended (got: ${texts.join(" ")})`);
 
-  // drag entered → dropped 带路径
+  // drag entered -> dropped 带路径
   await dragAt(cxp, cyp, 0);
   await dragAt(cxp, cyp, 3, "/tmp/fake-image.png");
   await sleep(200);
@@ -2382,7 +2458,7 @@ test("CanvasEvents: scroll 修饰键 + magnify + drag + 剪贴板 PNG 回环", a
   assert(texts.join(" ").includes("dropped"), `drag 应收到 dropped (got: ${texts.join(" ")})`);
   assert(texts.join(" ").includes("/tmp/fake-image.png"), `dropped 应携带路径 (got: ${texts.join(" ")})`);
 
-  // 剪贴板 PNG 回环：写 2x2 红 PNG → probe/count/read 全链路
+  // 剪贴板 PNG 回环：写 2x2 红 PNG -> probe/count/read 全链路
   await clickTestId("story.canvasevents.clipbtn");
   await sleep(400);
   texts = [];
@@ -2400,7 +2476,7 @@ test("CanvasEvents: scroll 修饰键 + magnify + drag + 剪贴板 PNG 回环", a
 //
 // 这是整条彩色字形管线唯一有力的验证：灰度管线也能把 emoji 画出**形状**
 // （覆盖率掩码 × 文字色），只是丢了颜色。所以不能断言"画出来了"，必须断言
-// **三通道不相等** —— 灰度输出的 R/G/B 必然相等（同一个 alpha 乘同一个
+// **三通道不相等**，灰度输出的 R/G/B 必然相等（同一个 alpha 乘同一个
 // 中性灰文字色），三通道分离只可能来自真正的 BGRA 采样。
 //
 // 靶子是纯色方块 emoji：中心整块同色，不受字号/抗锯齿/中心点取样偏移影响。
@@ -2416,7 +2492,7 @@ test("Emoji: 像素 — 中心像素三通道不相等（证明是彩色而非�
   await shot("emoji-color");
   const png = `${DIR}/story-emoji-color.png`;
 
-  // [test_id, 主导通道] —— 除了三通道不等，还断言主导通道正确，
+  // [test_id, 主导通道]，除了三通道不等，还断言主导通道正确，
   // 排除"通道顺序搞反了（BGRA 当成 RGBA）"这种恰好也三通道不等的错误。
   const cases: Array<[string, 0 | 1 | 2, string]> = [
     ["story.emoji.red", 0, "red"],
@@ -2451,7 +2527,7 @@ test("Emoji: 像素 — 中心像素三通道不相等（证明是彩色而非�
   // 对照组：普通文本在同样的中性灰文字色下必须**仍是灰度**（三通道近似相等）。
   // 若这里也三通道分离，说明彩色分支误伤了灰度路径。
   //
-  // 不能取中心像素 —— "AAAA" 的几何中心落在字母之间的背景上，那样测的是
+  // 不能取中心像素，"AAAA" 的几何中心落在字母之间的背景上，那样测的是
   // 背景不是字形。这里扫整个 rect 找最深的像素（必然是笔画内部），断言它是灰的。
   const ctrl = await query("story.emoji.control");
   assert(ctrl.length > 0 && ctrl[0].rect.w > 10, "story.emoji.control 节点没布局出来");
@@ -2474,7 +2550,7 @@ test("Emoji: 像素 — 中心像素三通道不相等（证明是彩色而非�
 // ── RTL 双向文本像素验收 ──
 //
 // 文本节点即使把字形**反向重叠**堆在一起，query 出来的字符串和 rect 也
-// 完全正常 —— 只有像素能区分对错。判据是**墨迹的水平分布**：
+// 完全正常，只有像素能区分对错。判据是**墨迹的水平分布**：
 //
 //   正确：N 个字形沿 pen 依次铺开，墨迹跨度接近节点宽度。
 //   错误：RTL 被切碎/反向定位，字形挤成一坨，墨迹跨度大幅塌缩。
@@ -2545,7 +2621,7 @@ test("RTL: 像素 — 墨迹水平铺开（证明未反向重叠/未逐码点切
   //
   // 上面的跨度/密度判据抓不住本仓库真正的 failure mode：RTL 被逐码点
   // 切碎时，字形**依然均匀铺开**（每段各自推进 cursor），只是顺序反了、
-  // 且每个字母退化成孤立形。跨度反而变**大**，密度也还行 —— 全测不出来。
+  // 且每个字母退化成孤立形。跨度反而变**大**，密度也还行，全测不出来。
   //
   // 真正的指纹是**连写**：阿拉伯语 "مرحبا" 的字母在正确 shaping 下彼此
   // 笔画相连，墨迹是**一条不断的横向连续区**（density = 1.000，零空隙）。
@@ -2679,9 +2755,9 @@ test("RTL: 窄宽换行的 caret、selection rect 与 hit-testing 共用视觉�
 // /ime_commit）都早已存在，但**零测试用例使用**。这一组补上覆盖。
 //
 // 双重验证：
-//   - log 数据值 —— inputState() 读组件内部 state（buffer / cursor_pos /
+//   - log 数据值，inputState() 读组件内部 state（buffer / cursor_pos /
 //     ime_preedit_len / ime_phase），确认状态机对；
-//   - 视觉 —— query() 收集渲染树文本，确认 marked text 真的**上屏**
+//   - 视觉，query() 收集渲染树文本，确认 marked text 真的**上屏**
 //     （buildDisplayText 会把 preedit 插进 cursor 处），外加 screenshot。
 //
 // 已知缺口（ROADMAP「已知不支持」，撞到不修，只记录）：
@@ -2712,7 +2788,7 @@ async function caretXOf(testId: string): Promise<number> {
   return c ? c.rect.x : -1;
 }
 
-/// 清空 Input：聚焦 → 全选 → 删除，并断言真的空了。
+/// 清空 Input：聚焦 -> 全选 -> 删除，并断言真的空了。
 async function clearInput(testId: string): Promise<void> {
   await clickTestId(testId);
   await sleep(150);
@@ -2737,7 +2813,7 @@ test("IME: Input preedit 显示 —— marked text 未上屏但可见，buffer �
   appendLog(`  [preedit] base: buffer="${base.buffer}" len=${base.buffer_len} cursor=${base.cursor_pos} phase=${base.ime_phase}`);
   assert(base.buffer_len === 6, `基线 buffer_len 应为 6（2 CJK×3B），got ${base.buffer_len}`);
 
-  // 拼音输入过程：逐步 preedit（模拟 "shi" → "世界" 候选）
+  // 拼音输入过程：逐步 preedit（模拟 "shi" -> "世界" 候选）
   await imePreedit("shi", 3);
   await sleep(120);
   const p1 = await inputState("story.input.name");
@@ -2752,7 +2828,7 @@ test("IME: Input preedit 显示 —— marked text 未上屏但可见，buffer �
   appendLog(`  [preedit] visible text: "${vis1}"`);
   assert(vis1.includes("你好shi"), `渲染文本未含 marked text "shi"（应插在 cursor 处）— 实际: "${vis1}"`);
 
-  // 候选切换：preedit 内容替换（"shi" → "世界"），不应叠加
+  // 候选切换：preedit 内容替换（"shi" -> "世界"），不应叠加
   await imePreedit("世界", 6);
   await sleep(120);
   const p2 = await inputState("story.input.name");
@@ -2810,7 +2886,7 @@ test("IME: Input preedit 期间光标位置 —— caret 落在 preedit 内的 c
   appendLog(`  [caret] base "ab": caret_x=${caretBase.toFixed(2)}`);
   assert(caretBase > 0, `基线 caret 未找到 (x=${caretBase})`);
 
-  // preedit "cde"，光标在 preedit 内部偏移 0 —— caret 不应右移
+  // preedit "cde"，光标在 preedit 内部偏移 0, caret 不应右移
   await imePreedit("cde", 0);
   await sleep(150);
   const caret0 = await caretXOf("story.input.name");
@@ -2820,7 +2896,7 @@ test("IME: Input preedit 期间光标位置 —— caret 落在 preedit 内的 c
     `preedit cursor_offset=0 时 caret 应停在 preedit 起点 ${caretBase.toFixed(2)}，实际 ${caret0.toFixed(2)}`,
   );
 
-  // 光标推到 preedit 末尾（offset=3）—— caret 应右移约 3 个字符宽
+  // 光标推到 preedit 末尾（offset=3），caret 应右移约 3 个字符宽
   await imePreedit("cde", 3);
   await sleep(150);
   const caret3 = await caretXOf("story.input.name");
@@ -2828,7 +2904,7 @@ test("IME: Input preedit 期间光标位置 —— caret 落在 preedit 内的 c
   appendLog(`  [caret] preedit "cde" offset=3: caret_x=${caret3.toFixed(2)} Δ=${dx.toFixed(2)}px`);
   assert(dx > 8, `preedit cursor_offset=3 时 caret 应右移过 3 个字符（Δ>8px），实际 Δ=${dx.toFixed(2)}px`);
 
-  // 中间位置（offset=1）应严格落在两者之间 —— 钉住"caret 随 offset 单调推进"
+  // 中间位置（offset=1）应严格落在两者之间，钉住"caret 随 offset 单调推进"
   await imePreedit("cde", 1);
   await sleep(150);
   const caret1 = await caretXOf("story.input.name");
@@ -2863,7 +2939,7 @@ test("IME: Input preedit 取消 —— 空 preedit / 切走焦点都不留脏文
   const vis1 = await visibleText("story.input.name");
   assert(!vis1.includes("pinyin"), `取消后 marked text "pinyin" 仍在渲染文本里 — 实际: "${vis1}"`);
 
-  // ② 切走焦点（on_blur → cancelImeComposition + discardIme）
+  // ② 切走焦点（on_blur -> cancelImeComposition + discardIme）
   await imePreedit("canceled", 8);
   await sleep(120);
   assert((await inputState("story.input.name")).ime_preedit_len === 8, "第二段 preedit 未建立");
@@ -2891,7 +2967,7 @@ test("IME: Textarea 多行 —— 换行边界处 preedit/commit 正确", async 
   for (let i = 0; i < 24; i++) await key("backspace");
   await sleep(150);
 
-  // 建两行："第一行\n" 然后在第二行上合成 —— 换行符是易错边界
+  // 建两行："第一行\n" 然后在第二行上合成，换行符是易错边界
   await imeCommit("第一行");
   await sleep(150);
   await key("enter");
@@ -2971,7 +3047,7 @@ async function labelText(id: string): Promise<string> {
 }
 
 test("WordNav: Alt+←/→ 词跳 + 双击选词（希腊/西里尔/家庭 emoji 簇字节偏移）", async () => {
-  // Batch A2 回归：修复前 2 字节 lead 落进 ASCII 路径 → Alt+词跳原地卡死、
+  // Batch A2 回归：修复前 2 字节 lead 落进 ASCII 路径 -> Alt+词跳原地卡死、
   // 双击选出空范围。字节账本见 stories.zig WORDNAV_TEXT 注释。
   await switchTo("wordnav");
   const TA = "story.wordnav.ta";
@@ -2980,13 +3056,13 @@ test("WordNav: Alt+←/→ 词跳 + 双击选词（希腊/西里尔/家庭 emoji
   await clickAt(pos.x + pos.w / 2, pos.y + pos.h - 30);
   // 回到 offset 0：Cmd+Left 是 display-line 语义（wrap 段起点），不可靠；
   // 连按 12 次 Alt+Left 从任意落点必达 0（全文只有 8 个词）。旧代码 Alt+Left
-  // 卡死时到不了 0，后续断言照样红 —— 回归性不受影响。
+  // 卡死时到不了 0，后续断言照样红，回归性不受影响。
   for (let i = 0; i < 12; i++) await key("left", { alt: true });
   let st = await inputState(TA);
   assert(st.buffer_len === 75, `预置文本字节数不是 75: ${st.buffer_len}（story 文本被改动？）`);
   assert(st.cursor_pos === 0, `12×Alt+Left 后 cursor 应为 0，实际 ${st.cursor_pos}（Alt 词跳可能原地卡死）`);
 
-  // Alt+Right：0 → 7 → 14 → 27 → 34 → 40 → 46 → 72 → 75（修复前第一步就停在 0）
+  // Alt+Right：0 -> 7 -> 14 -> 27 -> 34 -> 40 -> 46 -> 72 -> 75（修复前第一步就停在 0）
   const rightStops = [7, 14, 27, 34, 40, 46, 72, 75];
   for (const expect of rightStops) {
     await key("right", { alt: true });
@@ -2995,7 +3071,7 @@ test("WordNav: Alt+←/→ 词跳 + 双击选词（希腊/西里尔/家庭 emoji
   }
   appendLog(`  [wordnav] Alt+Right stops OK: ${rightStops.join(" ")}`);
 
-  // Alt+Left：75 → 72 → 46 → 40 → 34 → 27 → 14 → 7 → 0
+  // Alt+Left：75 -> 72 -> 46 -> 40 -> 34 -> 27 -> 14 -> 7 -> 0
   const leftStops = [72, 46, 40, 34, 27, 14, 7, 0];
   for (const expect of leftStops) {
     await key("left", { alt: true });
@@ -3005,7 +3081,7 @@ test("WordNav: Alt+←/→ 词跳 + 双击选词（希腊/西里尔/家庭 emoji
   appendLog(`  [wordnav] Alt+Left stops OK: ${leftStops.join(" ")}`);
 
   // 双击选词：把 cursor 摆进 "привет"（14..26）内（byte 20），取 cursor_rect
-  // 的屏幕坐标做双击 —— 不做像素估位，坐标由数据读回。
+  // 的屏幕坐标做双击，不做像素估位，坐标由数据读回。
   // （上面 Alt+Left 序列已停在 0）
   await key("right", { alt: true }); // 7
   await key("right", { alt: true }); // 14
@@ -3030,7 +3106,7 @@ test("WordNav: Alt+←/→ 词跳 + 双击选词（希腊/西里尔/家庭 emoji
 });
 
 test("MultiClick: 双击计数可达 + long_press 按住触发（gesture arena 回归）", async () => {
-  // Batch C4：修复前 reset() 每次 down 清零 click_count → double 计数结构性
+  // Batch C4：修复前 reset() 每次 down 清零 click_count -> double 计数结构性
   // 不可达（此断言在旧代码必红）。Batch A3：story 首帧能加载（switchTo 成功）
   // 本身就是 epoch 首帧 panic 的回归锚。间隔过期（>450ms 计数作废）与
   // pointer-cancel 不可注入，不在本用例断言范围。
@@ -3057,7 +3133,7 @@ test("MultiClick: 双击计数可达 + long_press 按住触发（gesture arena �
   assert(singles1 === singles0 + 2, `tap 计数应 +2（每击各一），实际 ${singles0} → ${singles1}`);
   appendLog(`  [multiclick] double ${doubles0} → ${doubles0 + 1}, single ${singles0} → ${singles1}`);
 
-  // long_press：按下保持 —— story 的 before_render 在按住期间持续出帧，
+  // long_press：按下保持，story 的 before_render 在按住期间持续出帧，
   // gesture_arena.tick 每帧推进时间判定；500ms 后必须 began，抬手后 ended。
   await mouseDown(px, py);
   await waitFor(async () => (await labelText("story.multiclick.long")).includes("began") ? true : null, getE2eTimeoutMs(5000), 100);
@@ -3085,7 +3161,7 @@ test("AnimCtl: yoyo 重放起点 / timeline reverse 终止 / keyframes 批量补
   assert(tlDone.includes("t=0.00"), `reverse 后应停在 t=0.00（旧代码永转不停），实际: ${tlDone}`);
   appendLog(`  [animctl] timeline reverse → ${tlDone}`);
 
-  // ── C1 yoyo：first play → completed 停回 from；裸 play() 重放首 tick 必须从 from 起步 ──
+  // ── C1 yoyo：first play -> completed 停回 from；裸 play() 重放首 tick 必须从 from 起步 ──
   await clickTestId("story.animctl.yoyo_play");
   const yoyoDone = await waitFor(async () => {
     const t = await labelText("story.animctl.yoyo");
@@ -3093,7 +3169,7 @@ test("AnimCtl: yoyo 重放起点 / timeline reverse 终止 / keyframes 批量补
   }, getE2eTimeoutMs(8000), 100);
   const endVal = Number(yoyoDone.match(/value=([-\d.]+)/)?.[1]);
   assert(Number.isFinite(endVal) && endVal < 40, `yoyo 完成应停回 from(20) 附近，实际: ${yoyoDone}`);
-  // 重放（裸 play()，不是 restart()）：旧代码 direction 停在 -1 → 从 to=120 倒播
+  // 重放（裸 play()，不是 restart()）：旧代码 direction 停在 -1 -> 从 to=120 倒播
   await clickTestId("story.animctl.yoyo_play");
   const replay = await waitFor(async () => {
     const t = await labelText("story.animctl.yoyo");
@@ -3105,8 +3181,8 @@ test("AnimCtl: yoyo 重放起点 / timeline reverse 终止 / keyframes 批量补
   assert(replay < 70, `yoyo 重放首 tick 应从 from(20) 侧起步（<70），实际 ${replay}（≈120 = 旧代码从 to 倒播）`);
   appendLog(`  [animctl] yoyo end=${endVal} replay_first=${replay}`);
 
-  // ── C6 keyframes：显式推进 1000ms（周期 400ms×4 循环）——一次 update 必须
-  //    批量补齐 2 个周期并停在周期内 50%（旧代码 if 单周期 → loops=1, value=100）──
+  // ── C6 keyframes：显式推进 1000ms（周期 400ms×4 循环），一次 update 必须
+  //    批量补齐 2 个周期并停在周期内 50%（旧代码 if 单周期 -> loops=1, value=100）──
   await clickTestId("story.animctl.kf_reset");
   await clickTestId("story.animctl.kf_step");
   const kf1 = await waitFor(async () => {
@@ -3134,7 +3210,7 @@ test("AnimCtl: yoyo 重放起点 / timeline reverse 终止 / keyframes 批量补
     `退化 spring 产出了非有限值: ${springTxt}`);
   const springVal = Number(springTxt.match(/value=([-\d.]+)/)?.[1]);
   assert(Number.isFinite(springVal), `spring value 不可解析: ${springTxt}`);
-  // 元素仍可见（translate 有限 → rect 正常返回）
+  // 元素仍可见（translate 有限 -> rect 正常返回）
   const box = (await query("story.animctl.springbox"))[0];
   assert(box != null && box.rect.w > 0, "spring 驱动的元素消失（rect 异常）");
   assert(Number.isFinite(box.translate_x ?? 0), `springbox translate_x 非有限: ${box.translate_x}`);
@@ -3142,7 +3218,7 @@ test("AnimCtl: yoyo 重放起点 / timeline reverse 终止 / keyframes 批量补
 });
 
 test("CleanupHooks: 卸载带 cleanup 的子树计数恰好 +1（双触发回归）", async () => {
-  // Batch A4：修复前 fireCleanupCallbacks + freeNode 链双触发 → 一次卸载计数 +2。
+  // Batch A4：修复前 fireCleanupCallbacks + freeNode 链双触发 -> 一次卸载计数 +2。
   await switchTo("cleanup");
   assert((await labelText("story.cleanup.count")) === "cleanups: 0", "初始计数应为 0");
   assert((await query("story.cleanup.child")).length === 1, "child 初始应挂载");
@@ -3257,7 +3333,7 @@ test("Storybook: DevTools header theme toggle rebuilds panel in the other scheme
   await waitFor(async () => (await query("devtools.theme.toggle"))[0] ?? null, 3000, 40);
   await shot("storybook-devtools-theme-initial");
 
-  // 点击只置位，下一帧 root hook 切主题并整棵重建——旧 toggle 节点被替换。
+  // 点击只置位，下一帧 root hook 切主题并整棵重建，旧 toggle 节点被替换。
   const before = (await query("devtools.theme.toggle"))[0];
   const click = await clickTestId("devtools.theme.toggle");
   assert(click.ok === true, `theme toggle click failed: ${JSON.stringify(click)}`);
@@ -3285,23 +3361,23 @@ test("Storybook: DevTools header theme toggle rebuilds panel in the other scheme
 
 // ── GPU 性能回归门禁 ──
 //
-// 目的：让 GPU 侧性能回退能被 CI 抓到（此前是**零门禁** —— renderer 一直采集
+// 目的：让 GPU 侧性能回退能被 CI 抓到（此前是**零门禁**, renderer 一直采集
 // 真 GPU 时间，但从没投影到 harness，数据到不了测试侧）。
 //
 // 为什么只卡 gpu_p95_us，不卡 cpu/total：
 //   实测（本机 6 轮 × 2 场景）gpu_p95 稳定在 1220~1811us；
-//   而同批次 cpu_p95 在 6309~95847us 之间摆动（同样负载 15× 抖动）——
+//   而同批次 cpu_p95 在 6309~95847us 之间摆动（同样负载 15× 抖动）,
 //   因为 e2e 用 file-RPC 驱动，轮询/调度停顿全算进 CPU 帧墙钟。
 //   拿 cpu_p95 当门禁必然周期性假红（ROADMAP 记着 e2e 本来就 flaky，
 //   门禁不能再加剧）。GPU 执行时间来自 MTLCommandBuffer 时间戳，
 //   不受 RPC 停顿影响，是这里唯一可靠的量。
 //
-// 阈值依据：实测 max 1811us → 取 8000us（~4.4x 余量）。
-//   刻意设得很松：宁可漏报小回退，也不要误报 —— 一条会随机变红的门禁
+// 阈值依据：实测 max 1811us -> 取 8000us（~4.4x 余量）。
+//   刻意设得很松：宁可漏报小回退，也不要误报，一条会随机变红的门禁
 //   等于没有门禁（历史教训：假红门禁会被直接无视）。
 //   真正的大回退（掉一个数量级的缓存、每帧重编 PSO）远超这个量级。
 const GPU_P95_BUDGET_US = 8000;
-// 样本下限：P95 在样本太少时无意义；且空环会返回 0 ——
+// 样本下限：P95 在样本太少时无意义；且空环会返回 0,
 // 不检查样本数就等于写了一条"永远绿"的假门禁。
 const MIN_TIMING_SAMPLES = 30;
 
@@ -3310,9 +3386,10 @@ for (const key of ["datatable", "virtuallist"]) {
     await switchTo(key);
     await sleep(700); // 等入场/布局 settle，避免首帧 PSO 编译污染样本
     await resetTiming(); // 清环 → P95 只统计本场景自己的帧
-    // 制造真实滚动负载（retained 层重画 + path/text 管线持续出货）
-    for (let i = 0; i < 25; i++) {
-      await scrollAt(700, 400, 0, -60);
+    // 制造真实滚动负载（retained 层重画 + path/text 管线持续出货）。
+    // 先下后上，内容始终在动：滚轮到边界即停，不会产生帧，样本数就不够了。
+    for (let i = 0; i < 40; i++) {
+      await scrollAt(700, 400, 0, i < 20 ? -60 : 60);
       await sleep(25);
     }
     const s = await stats();
@@ -3372,7 +3449,7 @@ test("Surface: resize 后 screenshot readback 仍有效（usage 单一出口回�
 });
 
 // ── Popover autosize：超高内容不得盖住 trigger ──
-// floating-ui `size` 的 availableHeight → max-height 对齐。修前 caller 未设 max_height
+// floating-ui `size` 的 availableHeight -> max-height 对齐。修前 caller 未设 max_height
 // 的 popover 在两侧都放不下时保持完整高度，best-fit 只挪 translate，面板下缘
 // 越过 trigger 把 reference element 盖住。
 test("popover: tall content shrinks to viewport and never covers its trigger", async () => {
@@ -3402,16 +3479,22 @@ test("popover: tall content shrinks to viewport and never covers its trigger", a
   assert(below.y + below.h <= vpH, `面板下缘距 viewport 太近，采样点越界: ${JSON.stringify(below)}`);
   const px = centerPixel(`${DIR}/story-popover-tall-autosize.png`, below);
   appendLog(`  pixel below panel=${JSON.stringify(px)}`);
-  // 内容是高饱和渐变块；面板外是灰白背景/描边——出现高饱和色即内容溢出
+  // 内容是高饱和渐变块；面板外是灰白背景/描边，出现高饱和色即内容溢出
   const saturation = Math.max(...px) - Math.min(...px);
   assert(saturation < 60, `面板下缘外仍是内容色块（未裁切）: ${JSON.stringify(px)}`);
   // fit_or_scroll：超出 cap 的内容在面板内纵向滚动（滚动内容上移、面板外壳不动）
   const scrollBefore = (await query("story.popover.tall.scroll_content"))[0];
   assert(scrollBefore != null && scrollBefore.rect.h > settled.rect.h, `滚动内容应高于面板: ${JSON.stringify(scrollBefore?.rect)}`);
-  for (let i = 0; i < 10; i++) {
-    await scrollAt(settled.rect.x + settled.rect.w / 2, settled.rect.y + settled.rect.h / 2, 0, -30);
-    await sleep(16);
-  }
+  // 触控板手势在主内容区开始后丢了 ended（真机切窗口时会发生），下一个手势
+  // 的 began 必须重新按命中锁定 popover，而不是继续发给主内容区。
+  const mainX = trigger.rect.x + trigger.rect.w / 2, mainY = trigger.rect.y + trigger.rect.h / 2;
+  await scrollAt(mainX, mainY, 0, 0, { phase: "began" });
+  await scrollAt(mainX, mainY, 0, -2, { phase: "changed" });
+  await trackpadScroll(
+    settled.rect.x + settled.rect.w / 2,
+    settled.rect.y + settled.rect.h / 2,
+    Array.from({ length: 10 }, (): [number, number] => [0, -30]),
+  );
   const scrollAfter = await waitFor(async () => {
     const node = (await query("story.popover.tall.scroll_content"))[0];
     return node != null && node.rect.y < scrollBefore.rect.y - 100 ? node : null;

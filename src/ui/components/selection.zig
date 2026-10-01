@@ -1,4 +1,4 @@
-//! 共享选择模型 —— 供 DataTable / Table / VirtualList / Tree 复用。
+//! 共享选择模型，供 DataTable / Table / VirtualList / Tree 复用。
 //!
 //! 此前全框架没有多选：DataTable / Table / VirtualList 连 selection 字段都
 //! 没有，Tree 是单选。列表类组件的多选交互（Cmd/Ctrl 点选切换、Shift 点选
@@ -11,7 +11,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-/// 选择模式。新组件 props 里以 `.none` 为默认值 —— 既有调用方行为不变
+/// 选择模式。新组件 props 里以 `.none` 为默认值，既有调用方行为不变
 /// （props 结构体新增带默认值字段不算破坏性变更，见 docs/API_STABILITY.md）。
 pub const SelectionMode = enum(u8) {
     /// 不可选（默认，与加入多选之前的行为一致）
@@ -24,9 +24,9 @@ pub const SelectionMode = enum(u8) {
 
 /// 一次点击带的修饰键意图
 pub const ClickIntent = struct {
-    /// Cmd(macOS) / Ctrl —— 切换单行，保留其余选中
+    /// Cmd(macOS) / Ctrl，切换单行，保留其余选中
     toggle: bool = false,
-    /// Shift —— 从锚点到本行的连续区间
+    /// Shift，从锚点到本行的连续区间
     range: bool = false,
 };
 
@@ -208,7 +208,7 @@ test "SelectionModel: multi + Cmd 切换，其余保留" {
     try testing.expectEqual(@as(usize, 3), m.selected_count);
     try testing.expect(m.isSelected(1) and m.isSelected(3) and m.isSelected(5));
 
-    // 再点一次 3 → 取消，其余不动
+    // 再点一次 3 -> 取消，其余不动
     m.applyClick(3, .{ .toggle = true });
     try testing.expect(!m.isSelected(3));
     try testing.expect(m.isSelected(1) and m.isSelected(5));

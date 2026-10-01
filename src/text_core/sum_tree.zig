@@ -1,4 +1,4 @@
-/// SumTree — 泛型 B-tree，支持 O(log N) 的随机位置 insert/remove/seek
+/// SumTree，泛型 B-tree，支持 O(log N) 的随机位置 insert/remove/seek
 ///
 /// 设计参考 Zed 编辑器的 SumTree：
 /// - B-Tree 结构保持平衡

@@ -1,4 +1,4 @@
-//! Rate 样式层 — 星标取色 / 星格几何（zenit-styling-revamp）。
+//! Rate 样式层，星标取色 / 星格几何（zenit-styling-revamp）。
 //! mount 与运行时更新（applyDisplayValue 的 tint 改写）共用 starColor 单一取色源。
 const core = @import("../../core.zig");
 const theme = core.theme;

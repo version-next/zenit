@@ -1,4 +1,4 @@
-//! Divider 样式层 — 具名样式函数（颜色/粗细/间距来自 props 运行时值，参数化）
+//! Divider 样式层，具名样式函数（颜色/粗细/间距来自 props 运行时值，参数化）
 //! 业务逻辑在 mod.zig；DividerOrientation 是公共 API，循环 import 取用。
 const core = @import("../../core.zig");
 const theme = core.theme;
@@ -9,7 +9,7 @@ const mod = @import("mod.zig");
 const DividerOrientation = mod.DividerOrientation;
 
 // ============================================================================
-// 具名样式函数 — Divider 的样式决策集中在这里，mount 逻辑只消费
+// 具名样式函数，Divider 的样式决策集中在这里，mount 逻辑只消费
 // （颜色/粗细/间距来自 props 运行时值，作为参数传入）
 // ============================================================================
 

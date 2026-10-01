@@ -1,4 +1,4 @@
-//! Phase 0 — LocalClock / Global / EditTimestamp
+//! Phase 0, LocalClock / Global / EditTimestamp
 //!
 //! 对齐 Zed `crates/clock/src/clock.rs` 的 `Lamport` + `Global` 概念。
 //! 非 CRDT 场景下我们只需要一个严格单调递增的 tick 作为版本键。

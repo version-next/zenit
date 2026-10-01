@@ -126,7 +126,7 @@ pub const AttachError = error{
 };
 
 // ---------------------------------------------------------------------------
-// Machine — 纯状态机
+// Machine，纯状态机
 // ---------------------------------------------------------------------------
 
 /// 纯状态机：输入 down/move/up/cancel（时间为调用方计算的 elapsed_ns），
@@ -301,7 +301,7 @@ pub const Machine = struct {
 };
 
 // ---------------------------------------------------------------------------
-// Manager — 每 Cx 一个的中心仲裁
+// Manager，每 Cx 一个的中心仲裁
 // ---------------------------------------------------------------------------
 
 pub const Manager = struct {
@@ -388,7 +388,7 @@ fn isNodeInSubtree(root: *Node, node_id: u32) bool {
 }
 
 // ---------------------------------------------------------------------------
-// Binding — Scope 管理的 raw-event adapter
+// Binding, Scope 管理的 raw-event adapter
 // ---------------------------------------------------------------------------
 
 pub const Binding = struct {
@@ -484,7 +484,7 @@ pub const Binding = struct {
             if (s.binding == binding) cx.drag_manager.cancel(cx, .scope_disposed);
         }
         // 摘除 event slot：只在 source 仍以同一身份存活时动它。节点可能已经
-        // 先于 scope 销毁（或从未注册），此时跳过 —— 与既有组件的
+        // 先于 scope 销毁（或从未注册），此时跳过，与既有组件的
         // scope-owned event_context 同一暴露面。
         const live_source = cx.node_registry.resolve(binding.source_handle, null) orelse
             if (cx.node_registry.isCurrentIdentity(binding.source_handle, binding.source_node)) binding.source_node else null;
@@ -573,7 +573,7 @@ pub const Binding = struct {
         cb(event, ctx);
     }
 
-    /// 激活序列（§8.2）：标 active → 抑制 click → capture → cursor → start 回调。
+    /// 激活序列（§8.2）：标 active -> 抑制 click -> capture -> cursor -> start 回调。
     /// 返回 false 表示激活中止（source 失效或 callback 重入清了 session）。
     fn activate(self: *Binding, t: Machine.Transition, generation: u32) bool {
         const cx = self.cx;
@@ -621,7 +621,7 @@ pub const Binding = struct {
             // 进行（cursor_token 保持 null，finishSession/cancel 都处理 null）。
             //
             // 不能 panic：acquireCursor 的 error.NoPointerCapture 是可恢复的
-            // 协议状态，而且能被**合法的 app 回调**触发 —— setPointerCapture
+            // 协议状态，而且能被**合法的 app 回调**触发，setPointerCapture
             // 会先 release 旧 capture 并触发 on_capture_lost，若 app 在那个
             // 回调里把 capture 转给别的节点（对失去 capture 做出响应，完全
             // 合理），外层 setPointerCapture 会因 epoch 变化提前返回，这里就
@@ -704,8 +704,8 @@ pub const Binding = struct {
 
                 const out = binding.machine.feedDown(.{ .x = e.x, .y = e.y });
 
-                // 顺序固定：提交 pending ownership → on_pending_down → 按
-                // generation 重新校验 → (activation_distance==0) 激活序列。
+                // 顺序固定：提交 pending ownership -> on_pending_down -> 按
+                // generation 重新校验 -> (activation_distance==0) 激活序列。
                 if (binding.config.on_pending_down) |pending_cb| {
                     const pending_event = PendingDownEvent{
                         .source = handle,

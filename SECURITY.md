@@ -23,8 +23,8 @@ Please include:
   file the app opens? attacker-controlled text?)
 - A minimal reproduction if you have one
 
-You should get an initial response within about a week. This is a small project
-— if you hear nothing, a ping on the same thread is welcome rather than assumed
+You should get an initial response within about a week. This is a small project,
+so if you hear nothing, a ping on the same thread is welcome rather than assumed
 to be unwelcome.
 
 ## What is in scope
@@ -33,7 +33,7 @@ zenit is a GUI framework linked into applications; it has no network stack, no
 sandbox, and no privilege boundary of its own. The interesting attack surface is
 **memory safety when handling untrusted input**:
 
-- Text handling — shaping, bidi, grapheme segmentation, and the `text_core`
+- Text handling: shaping, bidi, grapheme segmentation, and the `text_core`
   data structures, when fed attacker-controlled strings
 - SVG / icon parsing (`src/icon_ir.zig`, the SVG pipeline)
 - Clipboard, drag-and-drop, and file-dialog payloads crossing the
@@ -42,7 +42,7 @@ sandbox, and no privilege boundary of its own. The interesting attack surface is
   reads or writes
 
 Crashes reachable from untrusted input are in scope even without a demonstrated
-exploit — in a Zig codebase, a reproducible out-of-bounds or use-after-free is a
+exploit. In a Zig codebase, a reproducible out-of-bounds or use-after-free is a
 real finding, and we would rather hear about it.
 
 ## What is out of scope
@@ -53,7 +53,7 @@ real finding, and we would rather hear about it.
   exhausting memory)
 - Findings in an application that merely *uses* zenit, unless the root cause is
   in this repo
-- The stubbed Linux/Windows backends — they do not run applications yet
+- The stubbed Linux/Windows backends: they do not run applications yet
 
 ## Disclosure
 

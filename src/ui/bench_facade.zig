@@ -1,10 +1,10 @@
-//! v0.2 bench facade —— 把 bench 需要的所有 zenit 内部类型从一个 module 导出。
+//! v0.2 bench facade，把 bench 需要的所有 zenit 内部类型从一个 module 导出。
 //!
 //! 必须放在 src/ui/ 内部（zig 0.15 module strict path：facade module 不能
 //! 跨上级目录 import）。bench main 通过此 facade module 访问 element_table /
-//! paint_table 等——避免 element_id.zig 被多个 module 重复 import 冲突。
+//! paint_table 等，避免 element_id.zig 被多个 module 重复 import 冲突。
 //!
-//! 加 frame-level scenario bench 支持 — re-export Cx + ui builders。
+//! 加 frame-level scenario bench 支持，re-export Cx + ui builders。
 //! 要求 build.zig 给 zenit_facade_bench_module 注入 system_sdk/icon_ir/
 //! text_core/trace/platform 等 sub-import（与 ui_module 同构）。
 
@@ -36,7 +36,7 @@ pub const LayoutTable = layout_table_mod.LayoutTable;
 pub const LayoutData = layout_table_mod.LayoutData;
 pub const Size2D = layout_constraint.Size2D;
 
-// PropertyTree（Scroll 部分）—— 注意 property_tree.zig 链 types.zig 链
+// PropertyTree（Scroll 部分），注意 property_tree.zig 链 types.zig 链
 // animation/easing 跨目录 import，bench facade 无法访问完整版；只暴露 ScrollNode
 // 类型本身（无依赖的 enum/struct）。bench 测 nodes 是逻辑表达式不需要真 PropertyTree。
 pub const PropertyScrollNode = struct {
@@ -52,7 +52,7 @@ pub const PropertyScrollNode = struct {
     is_scrolling: bool = false,
 };
 
-// v0.2-P4 注：layer_tree.zig 链 property_tree → types → animation/easing 等
+// v0.2-P4 注：layer_tree.zig 链 property_tree -> types -> animation/easing 等
 // 跨目录 import，bench module strict path 不可达。layer_tree 真 bench 等 v0.3
 // 主路径切换时通过 ui module 测。当前 bench 只能测**纯 enum/packed struct** 部分。
 
@@ -94,7 +94,7 @@ pub const select_headless_mount = @import("components/select_headless/mod.zig");
 pub const Scope = @import("reactive.zig").Scope;
 
 // re-export Cx + ui builders so bench
-// main 可以构 real frame (build → layout → render → encode)。
+// main 可以构 real frame (build -> layout -> render -> encode)。
 // 需要 build.zig 给 zenit_facade_bench_module 注入 system_sdk/icon_ir/
 // text_core/trace/platform sub-imports（参见 ui_module 的依赖列表）。
 pub const ui_core = @import("core.zig");

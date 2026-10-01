@@ -1,4 +1,4 @@
-//! Phase 0 — Unclipped(T)
+//! Phase 0, Unclipped(T)
 //!
 //! 对齐 Zed `crates/text/src/text.rs` 的 `Unclipped<T>` wrapper。
 //! 用于表示"可以暂时越界的坐标"，供 Anchor 等结构使用。

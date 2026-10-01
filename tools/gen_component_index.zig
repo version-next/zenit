@@ -1,6 +1,6 @@
 //! Offline generator: AST-scan Zig source trees for component_name assignments
 //! and emit a sorted `component_name -> source location` table for DevTools'
-//! "goto source" button (Elements tree row hover → open the component's
+//! "goto source" button (Elements tree row hover -> open the component's
 //! definition in an editor).
 //!
 //! Why an AST scan instead of `@src()` instrumentation: Zig has no call-site
@@ -11,7 +11,7 @@
 //! maintaining that forever. Scanning the source is zero-touch and covers every
 //! string-literal assignment. Names built at runtime (e.g.
 //! `component_name = pickName(kind)`) are inherently unresolvable statically and
-//! are skipped — DevTools just shows no button for those.
+//! are skipped, DevTools just shows no button for those.
 //!
 //! The matched pattern is structural, not textual: an `.assign` node whose LHS
 //! is a `.field_access` named `component_name` and whose RHS is a
@@ -22,9 +22,9 @@
 //!   zig build gen-component-index      (see build.zig `gen-component-index` step)
 //!
 //! Args: <output_file> <root>[:<label>] [<root>[:<label>] ...]
-//!   output_file — path to write generated Zig
-//!   root        — directory to scan recursively for *.zig
-//!   label       — optional prefix recorded with each hit, so a consumer app can
+//!   output_file, path to write generated Zig
+//!   root, directory to scan recursively for *.zig
+//!   label, optional prefix recorded with each hit, so a consumer app can
 //!                 tell "this component is defined in the framework" from "this
 //!                 one is mine". Defaults to the root's basename.
 const std = @import("std");
@@ -108,7 +108,7 @@ fn scanFile(
     defer ast.deinit(alloc);
 
     // A file that does not parse cleanly may still be walkable, but its node
-    // data is unreliable — treat it as a hard skip so we never emit bad lines.
+    // data is unreliable, treat it as a hard skip so we never emit bad lines.
     if (ast.errors.len > 0) {
         stats.parse_errors += 1;
         return;
@@ -130,7 +130,7 @@ fn scanFile(
 
         const rhs = @intFromEnum(pair[1]);
         if (tags[rhs] != .string_literal) {
-            // Runtime-computed name — nothing to point an editor at.
+            // Runtime-computed name, nothing to point an editor at.
             stats.dynamic += 1;
             continue;
         }
@@ -244,7 +244,7 @@ pub fn main() !void {
     );
 
     // A consumer app's index must use the *framework's* Entry type, not a
-    // structurally identical copy — Zig types are nominal, so a local redeclare
+    // structurally identical copy, Zig types are nominal, so a local redeclare
     // would not coerce when handed to source_link.configure().
     if (entry_from) |mod| {
         try w.print(

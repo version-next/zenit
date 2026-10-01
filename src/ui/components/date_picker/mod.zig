@@ -58,13 +58,13 @@ pub const DatePickerState = struct {
     on_change: ?core.HandlerRef,
     placeholder: []const u8,
     cx: *Cx,
-    /// a11y: trigger value_text（"Mar 22, 2026"）的持久存储 —— a11y 投影每帧
+    /// a11y: trigger value_text（"Mar 22, 2026"）的持久存储，a11y 投影每帧
     /// 读这个 slice，栈上 buf 会悬垂。
     a11y_value_buf: [24]u8 = undefined,
 
     /// 程序化设置选中日期（null = 清空，显示 placeholder）。
     ///
-    /// 此前 DatePickerState 公开但 `updateDisplayLabel` 是私有自由函数 ——
+    /// 此前 DatePickerState 公开但 `updateDisplayLabel` 是私有自由函数,
     /// 直接写 `state.selected_date` **不会刷新显示文本**，属于
     /// "暴露了 state 却没有生效的写入口"。
     ///
@@ -134,7 +134,7 @@ pub const DatePickerBuilder = struct {
         // sweep：Popover 返回的 wrapper 由本组件持有，守到 return；下面的子树建好即 adopt
         errdefer cx.freeNode(pop_result.wrapper);
         // 失败时 hooks（useAnimatedBackground 等）登记在 my_scope 上、destroy 会解引用节点：
-        // 必须先 dispose my_scope（连带 Popover 子 scope 解绑）再 freeNode —— errdefer 逆序，后声明的先跑。
+        // 必须先 dispose my_scope（连带 Popover 子 scope 解绑）再 freeNode, errdefer 逆序，后声明的先跑。
         errdefer my_scope.dispose();
         pop_result.wrapper.meta.ownership.meta.component_name = "DatePicker";
         pop_result.wrapper.behavior.interaction.a11y = .{ .role = .textbox, .disabled = p.disabled };
@@ -251,7 +251,7 @@ pub const DatePickerBuilder = struct {
             .context = @ptrCast(select_ctx),
         };
 
-        // panelStyle 内含 shadow（BoxStyle.shadow → ensureExt.setShadow，等价旧的手动 ext 写入）
+        // panelStyle 内含 shadow（BoxStyle.shadow -> ensureExt.setShadow，等价旧的手动 ext 写入）
         // panel 先建并挂进 popover content，日历 / Today 建好即 adopt
         const panel = try core.adoptChild(cx, allocator, pop_result.content, try box(cx, styles.panelStyle(t), .{}));
         panel.meta.ownership.meta.component_name = "DatePickerPanel";
@@ -338,7 +338,6 @@ pub const DatePickerBuilder = struct {
 
         // 初始选中日期也要进 a11y value（AT 打开界面第一次读就要有值）
         syncTriggerA11y(state, false);
-
 
         const open_ctx = try allocator.create(OpenEffectCtx);
         open_ctx.* = .{ .state = state, .cx = cx };
@@ -539,7 +538,7 @@ test "DatePicker: open render emits full calendar day texts after prewarm settle
     // History: 此测试原名 "first open render already emits..."，期望 set(is_open=true)
     // 后单帧就能看到 calendar texts。实测 popover prewarm 路径需要多帧才让 panel
     // 内容进入 render command stream（可能 prewarm + animation initial 各占一帧）。
-    // 改成跑多帧直到 settle。这反映真实行为 — 用户视觉上"open"也是经过 transition。
+    // 改成跑多帧直到 settle。这反映真实行为，用户视觉上"open"也是经过 transition。
     var ctx = try Cx.init(std.testing.allocator);
     defer ctx.deinit();
     ctx.setViewport(640, 480);
@@ -765,13 +764,13 @@ test "a11y: DatePicker expanded/value 跟随开合与选择且可撤回" {
         try testing.expectEqual(@as(u64, 0), n.text_hash); // 未选择 → 无 value
     }
 
-    // 打开 → expanded=true
+    // 打开 -> expanded=true
     result.state.is_open.set(true);
     ctx.layout();
     _ = ctx.render();
     try testing.expect(ctx.accessibility_tree.get(eid).?.state.expanded);
 
-    // 选中日期 → 面板关闭（expanded 撤回）+ value 播报可读日期
+    // 选中日期 -> 面板关闭（expanded 撤回）+ value 播报可读日期
     result.state.calendar_state.selectDate(.{ .year = 2026, .month = 3, .day = 22 });
     ctx.layout();
     _ = ctx.render();
@@ -781,7 +780,7 @@ test "a11y: DatePicker expanded/value 跟随开合与选择且可撤回" {
         try testing.expectEqual(std.hash.Wyhash.hash(0, "Mar 22, 2026"), n.text_hash);
     }
 
-    // 清空选择 → value 必须撤回（不能一直播报旧日期）
+    // 清空选择 -> value 必须撤回（不能一直播报旧日期）
     result.state.clearSelection();
     ctx.layout();
     _ = ctx.render();
@@ -792,7 +791,7 @@ test "DatePicker: trigger 主体槽吃满剩余宽度，chevron 贴右（与 Sel
     // 回归：旧版主体槽 fit 宽度只包住「图标 + 文本」，与 chevron 之间留一段
     // 不属于任何元素的空白（220 宽 trigger 空 ~88px）；长文本还会把 chevron 顶出 trigger。
     const testing = std.testing;
-    // 第二组：窄 trigger 放不下内容 → 主体槽收缩裁剪，chevron 仍在 trigger 内贴右。
+    // 第二组：窄 trigger 放不下内容 -> 主体槽收缩裁剪，chevron 仍在 trigger 内贴右。
     inline for (.{ .{ "Pick a date", 220 }, .{ "A very long placeholder that cannot possibly fit inside", 120 } }) |case| {
         const placeholder = case[0];
         const w: f32 = case[1];
@@ -827,12 +826,12 @@ test "DatePicker: trigger 主体槽吃满剩余宽度，chevron 贴右（与 Sel
     }
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "date_picker: mount 在任意分配点失败时不泄漏（sweep）" {
     try @import("../oom_sweep.zig").sweepMount("date_picker", struct {
         fn m(scope: *Scope, cx: *Cx) anyerror!?*Node {

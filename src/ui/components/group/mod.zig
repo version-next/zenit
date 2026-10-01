@@ -1,4 +1,4 @@
-/// Group Component — 组合容器 HOC
+/// Group Component，组合容器 HOC
 ///
 /// 将多个子组件组合成一个视觉整体：
 /// - gap = -1 让子项边框重叠（避免双边框）
@@ -252,7 +252,7 @@ test "Group: attached seam keeps leading border on later items" {
     try std.testing.expect(c2.style.border_side_colors().?.top == null);
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "group: mount 在任意分配点失败时不泄漏（sweep）" {
     const sw = @import("../oom_sweep.zig");
     try sw.sweepMount("group", struct {

@@ -38,15 +38,15 @@ const info_plist_mod = @import("info_plist.zig");
 
 pub const FileType = info_plist_mod.FileType;
 
-/// 资源拷贝项 — src 是源文件，dst 是 Resources/ 内的相对路径
+/// 资源拷贝项，src 是源文件，dst 是 Resources/ 内的相对路径
 pub const ResourceCopy = struct {
     src: std.Build.LazyPath,
     /// 相对于 bundle 的 Contents/Resources/ 目录。
-    /// 例如 dst = "fonts/Inter.ttf" → Contents/Resources/fonts/Inter.ttf
+    /// 例如 dst = "fonts/Inter.ttf" -> Contents/Resources/fonts/Inter.ttf
     dst: []const u8,
 };
 
-/// Developer ID 签名配置 — 用于分发到外部用户。
+/// Developer ID 签名配置，用于分发到外部用户。
 /// 签名后的 .app 还需要走 notarizeBundle() 经过 Apple 公证才能默认免警告打开。
 pub const DeveloperIdSigning = struct {
     /// `codesign --sign` 接受的标识。可以是：
@@ -59,9 +59,9 @@ pub const DeveloperIdSigning = struct {
     /// 通常需要至少声明 com.apple.security.cs.* 系列 entitlements。
     /// null = 不传 --entitlements 参数（仅适合极简场景）。
     entitlements: ?std.Build.LazyPath = null,
-    /// 启用 hardened runtime — Apple 公证强制要求。默认 true。
+    /// 启用 hardened runtime, Apple 公证强制要求。默认 true。
     hardened_runtime: bool = true,
-    /// 加 secure timestamp — Apple 公证强制要求。默认 true。
+    /// 加 secure timestamp, Apple 公证强制要求。默认 true。
     /// 需要 codesign 进程能联网。CI 离线时关掉这个，但产物就过不了 notarize。
     timestamp: bool = true,
     /// 是否在 codesign 时加 --deep（递归签 Frameworks/ Plugins/ 等）。默认 true。
@@ -71,18 +71,18 @@ pub const DeveloperIdSigning = struct {
 };
 
 pub const Signing = union(enum) {
-    /// 不签名 — 产物会被 macOS Gatekeeper 拦。
+    /// 不签名，产物会被 macOS Gatekeeper 拦。
     none,
-    /// Ad-hoc 签名 — 开发期常用。本机能跑；分发到别人电脑上仍会被 Gatekeeper 拦
+    /// Ad-hoc 签名，开发期常用。本机能跑；分发到别人电脑上仍会被 Gatekeeper 拦
     /// 除非用户右键 Open。`codesign --sign -`
     ad_hoc,
-    /// Developer ID 签名 — 用于分发到外部用户。需要 Apple Developer 账号 + keychain 里有证书。
+    /// Developer ID 签名，用于分发到外部用户。需要 Apple Developer 账号 + keychain 里有证书。
     /// 仍需走 notarizeBundle() 公证才能默认免警告打开。
     developer_id: DeveloperIdSigning,
 };
 
 pub const BundleSpec = struct {
-    /// 已构建好的可执行文件 — bundleApp 会把它装到 Contents/MacOS/<executable>
+    /// 已构建好的可执行文件，bundleApp 会把它装到 Contents/MacOS/<executable>
     exe: *std.Build.Step.Compile,
     /// 应用显示名（会决定 .app 目录名 + Info.plist 的 CFBundle{Display,}Name）
     display_name: []const u8,
@@ -92,10 +92,10 @@ pub const BundleSpec = struct {
     executable: ?[]const u8 = null,
     version: []const u8 = "0.1.0",
     /// 4 字符 OSType。决定 PkgInfo 内容 "APPL<signature>" 和 CFBundleSignature。
-    /// 默认 "????" — 无 signature 是合法的。
+    /// 默认 "????"，无 signature 是合法的。
     signature: []const u8 = "????",
     min_macos: []const u8 = "12.0",
-    /// 图标文件（.icns）。可选 — 不传则不带图标（使用系统默认）。
+    /// 图标文件（.icns）。可选，不传则不带图标（使用系统默认）。
     icon: ?std.Build.LazyPath = null,
     category: []const u8 = "public.app-category.utilities",
     copyright: ?[]const u8 = null,
@@ -103,7 +103,7 @@ pub const BundleSpec = struct {
     file_types: []const FileType = &.{},
     /// 额外资源（字体、图片等），都装到 Contents/Resources/<dst>
     resources: []const ResourceCopy = &.{},
-    /// NSAppTransportSecurity.NSAllowsArbitraryLoads — 默认 false
+    /// NSAppTransportSecurity.NSAllowsArbitraryLoads，默认 false
     allow_arbitrary_loads: bool = false,
     disable_min_frame_duration: bool = true,
     auto_graphics_switching: bool = true,
@@ -121,7 +121,7 @@ pub const BundleResult = struct {
     bundle_path: []const u8,
 };
 
-/// 主入口 — 构建一个 macOS .app bundle，返回最终 step。
+/// 主入口，构建一个 macOS .app bundle，返回最终 step。
 pub fn bundleApp(b: *std.Build, spec: BundleSpec) BundleResult {
     const exe_name = spec.executable orelse spec.exe.name;
     const bundle_dirname = b.fmt("{s}.app", .{spec.display_name});
@@ -244,14 +244,14 @@ pub fn bundleApp(b: *std.Build, spec: BundleSpec) BundleResult {
 // Notarization
 // ============================================================================
 
-/// 公证认证方式 — 必须二选一。
+/// 公证认证方式，必须二选一。
 pub const NotaryAuth = union(enum) {
-    /// 推荐 — 用 `xcrun notarytool store-credentials <profile> --apple-id ... --team-id ...
+    /// 推荐，用 `xcrun notarytool store-credentials <profile> --apple-id ... --team-id ...
     ///                                                       --password <app_specific_pwd>`
     /// 把凭据存进 keychain 后，这里只引用 profile name。
     keychain_profile: []const u8,
     /// 直接传 Apple ID + team ID + app-specific password。
-    /// **不推荐** — 密码在命令行里裸奔，会被 ps / shell history 抓到。CI 时考虑把
+    /// **不推荐**，密码在命令行里裸奔，会被 ps / shell history 抓到。CI 时考虑把
     /// password 放环境变量然后从那里读。
     inline_credentials: struct {
         apple_id: []const u8,
@@ -263,12 +263,12 @@ pub const NotaryAuth = union(enum) {
 pub const NotarizeSpec = struct {
     /// 来自 bundleApp 返回的 BundleResult.bundle_path
     bundle_path: []const u8,
-    /// 产出「已签名、可提交」的那个 step —— 通常是 bundleApp 的 final_step，
+    /// 产出「已签名、可提交」的那个 step，通常是 bundleApp 的 final_step，
     /// 或调用方在其之后自己接的重签 step。
     ///
     /// **必须传**，否则 zip 与签名之间没有依赖边：Zig 可以在签名完成前就打包，
     /// 也可以在 staple 之后重新跑一次签名，把票据连同签名一起覆盖掉。
-    /// 症状是 staple 报 `Record not found` —— 公证明明 Accepted，
+    /// 症状是 staple 报 `Record not found`，公证明明 Accepted，
     /// 但磁盘上那份 app 的 cdhash 已经和上传时不是同一个了。
     /// （只把 notarizeBundle 的返回 step dependOn 签名步骤是不够的：
     /// 那只约束了链尾，管不住链首的 zip。）
@@ -288,12 +288,12 @@ pub const NotarizeSpec = struct {
 ///   step.dependOn(notarizeBundle(b, ...));
 ///   notarize_inner_step.dependOn(bundle_result.final_step);  // 先 bundle 再 notarize
 pub fn notarizeBundle(b: *std.Build, spec: NotarizeSpec) *std.Build.Step {
-    // 1) 把 .app 打成 .zip — Apple notarytool 接 zip 或 dmg/pkg，对裸 .app 不收。
+    // 1) 把 .app 打成 .zip, Apple notarytool 接 zip 或 dmg/pkg，对裸 .app 不收。
     const zip_path = b.fmt("{s}.zip", .{spec.bundle_path});
     const zip_cmd = b.addSystemCommand(&.{ "ditto", "-c", "-k", "--keepParent" });
     zip_cmd.addArg(spec.bundle_path);
     zip_cmd.addArg(zip_path);
-    // 打包必须排在签名之后 —— 见 NotarizeSpec.depends_on。
+    // 打包必须排在签名之后，见 NotarizeSpec.depends_on。
     if (spec.depends_on) |dep| zip_cmd.step.dependOn(dep);
 
     // 2) 提交公证

@@ -1,5 +1,5 @@
 const ImeText = @import("ime_text.zig").ImeText;
-/// Input Events — 事件派发 + fireOnChange
+/// Input Events，事件派发 + fireOnChange
 const core_ui = @import("../../core.zig");
 const events = @import("../../events.zig");
 const Event = events.Event;

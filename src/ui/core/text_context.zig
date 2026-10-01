@@ -1,4 +1,4 @@
-//! 文本上下文 —— 从 `Cx` 析出的字体/塑形/测量子系统。
+//! 文本上下文，从 `Cx` 析出的字体/塑形/测量子系统。
 //!
 //! 聚了五个原本平铺在 `Cx` 上的字段：
 //!   - `font_system`    宿主注入的字体后端（null 时塑形走 fallback）
@@ -15,11 +15,11 @@
 //! 与测量钩子都是可选的），测量降级链路因此第一次有了真正的单测。
 //!
 //! **测量优先级**（`measureTextWidth`）：
-//!   1. GlyphRun pipeline（有 `font_system` 时）—— 与渲染、光标/选区同一套
+//!   1. GlyphRun pipeline（有 `font_system` 时），与渲染、光标/选区同一套
 //!      字体与塑形，是唯一不会产生排版漂移的那条
-//!   2. `measure_ctx_fn` + `measure_ctx` —— 多窗口安全的宿主钩子
-//!   3. `measure_fn` —— legacy 进程级钩子
-//!   4. `text_layout.measureTextWidthByFontKind` —— 最后的估算兜底
+//!   2. `measure_ctx_fn` + `measure_ctx`，多窗口安全的宿主钩子
+//!   3. `measure_fn`, legacy 进程级钩子
+//!   4. `text_layout.measureTextWidthByFontKind`，最后的估算兜底
 
 const std = @import("std");
 const text_module = @import("text");
@@ -55,7 +55,7 @@ pub const TextContext = struct {
 
     /// 外部注入的字体测量函数（统一测量与渲染字体）
     measure_fn: ?text_layout.MeasureFn = null,
-    /// 带 context 的测量回调（多窗口所需 —— 无 context 版本只能读进程级全局，
+    /// 带 context 的测量回调（多窗口所需，无 context 版本只能读进程级全局，
     /// 两个 App 并存时会串台）。设了它就优先于 measure_fn。
     measure_ctx_fn: ?text_layout.MeasureCtxFn = null,
     measure_ctx: ?*anyopaque = null,
@@ -96,7 +96,7 @@ pub const TextContext = struct {
         self.font_system = null;
     }
 
-    /// GlyphRun pipeline 入口 — 取代 text_layout 旧 measure API。
+    /// GlyphRun pipeline 入口，取代 text_layout 旧 measure API。
     ///
     /// 内部：1) build ShapingKey；2) ShapingCache lookup；3) miss 时 TextShaper
     /// .shape() 出 []ShapedGlyph，经 text_shaper_adapter.fromShapedGlyphs 翻成
@@ -127,7 +127,7 @@ pub const TextContext = struct {
         const key = text_shaping.shapingKey(opts);
         if (self.shaping_cache.lookup(key)) |run| return run;
 
-        // miss: 找 Font → shape → adapt → cache.insert
+        // miss: 找 Font -> shape -> adapt -> cache.insert
         const desc = FontDescriptor{
             .family = opts.font_family,
             .size = opts.font_size,
@@ -307,14 +307,14 @@ pub const TextContext = struct {
         // UTF-8 让 CoreText NSString 构造失败：shape 层报 TextShapingFailed、
         // FontSelector 桥（coretext_measure_text_width_with_font）静默返 0.0f，
         // 最终宽度 0.00 直接塌掉 bbox（下游应用实测：emoji 后切在 CJK 首字节
-        // 的"前缀"全部量出 0.00）。先裁到最长合法前缀——与渲染端实际能显示
+        // 的"前缀"全部量出 0.00）。先裁到最长合法前缀，与渲染端实际能显示
         // 的内容一致；合法输入零开销原样通过。
         const safe = text_shaping.validUtf8Prefix(content);
         if (safe.len == 0) return 0;
         // GlyphRun pipeline 优先：与渲染（text_item_render 的 visualLine）和输入
         // 光标/选区（input/text_utils 的 shapeText）同一字体与塑形。旧 FontSelector
         // 桥用的是 fallback_families 首选字体（Helvetica Neue），拉丁字宽比 "system"
-        // 宽 ~1.5% —— WrapMap 换行点与显示排版漂移、编辑提交 bbox 偏宽皆源于此。
+        // 宽 ~1.5%, WrapMap 换行点与显示排版漂移、编辑提交 bbox 偏宽皆源于此。
         // pipeline 不可用（无 font_system / shape 失败）时保留旧路径兜底。
         if (self.font_system != null) {
             if (self.shapeText(.{
@@ -345,7 +345,7 @@ pub const TextContext = struct {
     // 与 input/editable_text.zig），所以适配器留在 `Cx` 上、强转 `*Cx`。
     //
     // 若这里再放一个强转 `*TextContext` 的同名函数，它和 `Cx` 版签名完全
-    // 相同、编译期无从区分，配错不会报错 —— `text` 字段在 Cx 里不在偏移 0，
+    // 相同、编译期无从区分，配错不会报错，`text` 字段在 Cx 里不在偏移 0，
     // 拿 `*Cx` 当 `*TextContext` 解引用读到的是别的字段，静默算出垃圾宽度。
     // 与其留个陷阱，不如不提供。
     /// 外部（非 layout pass 内）做塑形测量时的守卫，保证用的是本上下文的
@@ -435,7 +435,7 @@ test "TextContext: 非法 UTF-8 前缀先裁再测（不把半个字符喂给钩
     defer tc.deinit();
     tc.measure_fn = TestHooks.plain;
 
-    // "a" + 半个 "中" → 只应量 "a" 这 1 字节
+    // "a" + 半个 "中" -> 只应量 "a" 这 1 字节
     try std.testing.expectEqual(@as(f32, 3), tc.measureTextWidth("a\xE4\xB8", 14, 400, false));
 }
 

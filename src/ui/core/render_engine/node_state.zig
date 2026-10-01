@@ -176,7 +176,7 @@ pub const NodeExecutionPlan = struct {
 
 /// Per-pass list of child node ids that contributed to the parent's paint.
 /// finalizeNodeCaches 用这个 + 每个 child 的 runtime.subtree_display_item_*
-/// 范围去拼 cache band，**不依赖** cx.display_list 的 idx —— 因为 child 走
+/// 范围去拼 cache band，**不依赖** cx.display_list 的 idx，因为 child 走
 /// subtree-replay / own-replay 短路时不写 display_list 末尾，但 runtime range
 /// 仍指向 prebuilt 位置。从 runtime 拼能正确捕获两种路径。
 pub const NodeContentSlices = struct {

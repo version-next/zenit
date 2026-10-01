@@ -144,7 +144,7 @@ pub const DividerBuilder = struct {
         // mountSimple / mountWithLabel / bindScopeToNode 任一失败都会漏
         // （下游编辑器 git_diff sweep index 123 实测）。
         // bindScopeToNode 成功后 node 归 my_scope，my_scope 归父 scope，
-        // 此时不再需要这条 errdefer —— 用 committed flag 精确划界。
+        // 此时不再需要这条 errdefer，用 committed flag 精确划界。
         var scope_bound = false;
         errdefer if (!scope_bound) my_scope.dispose();
         const t = cx.tokens;
@@ -372,7 +372,7 @@ test "Divider: custom color" {
     try std.testing.expectEqual(@as(u8, 0), divider_node.getBackground().g);
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }

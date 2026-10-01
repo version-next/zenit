@@ -80,7 +80,7 @@ test "frame clock stays wall-clock accurate when frames exceed the dt clamp" {
     const real_elapsed_ms: f64 = @floatFromInt(frames * slow_frame_ns / std.time.ns_per_ms);
     try testing.expect(cx.frame_time_ms > real_elapsed_ms * 0.95);
 
-    // 增量 dt 仍必须被钳住——Spring 积分器依赖有界步长。
+    // 增量 dt 仍必须被钳住，Spring 积分器依赖有界步长。
     try testing.expect(cx.frame_dt_seconds <= 0.1);
 }
 
@@ -117,7 +117,7 @@ test "frame clock freezes across idle frames and resumes without a time jump" {
 
     // 用 backdate 伪造"这一帧距上一帧过了 1s"，但同时把 epoch 也往前推同样的量，
     // 模拟真实世界里 idle 期间墙钟确实在走。若 idle 分支不累计 clock_paused_ns，
-    // 恢复后的 frame_time_ms 会把整段 idle 一次性算进去 → 下面的 resume 断言炸。
+    // 恢复后的 frame_time_ms 会把整段 idle 一次性算进去 -> 下面的 resume 断言炸。
     const idle_span_ns: u64 = 1 * std.time.ns_per_s;
     var i: usize = 0;
     while (i < 5) : (i += 1) {
@@ -502,7 +502,7 @@ test "theme Signal 化: themeSignal 惰性创建 + setTheme 驱动 set" {
 
 // 续接记录「待继续的工作」第 4 条点名的风险，做出故障复现：
 // **Cx.theme_signal 缓存了一个归属于「第一个调用者的 Scope」的 Signal，
-// 而 Scope 销毁时没有任何解绑** —— 于是缓存指向已释放内存。
+// 而 Scope 销毁时没有任何解绑**，于是缓存指向已释放内存。
 //
 // 真实触发路径：主题信号是全局的，但第一个订阅它的往往是某个**组件/面板**
 // 的 scope（比如一个弹层）。那个面板一关（scope.dispose），Cx 上的缓存就悬垂；
@@ -534,9 +534,9 @@ test "themeSignal 的缓存必须随创建它的 Scope 一起失效（故障复�
 }
 
 // 交叉审查（glm-5.3）指出的**瞬态窗口**，实测确认存在并已修：
-// disposeNow 的顺序是 1 子 scope → 2 cleanups → 3 effects → 4 销毁 signals
-// → 5 resources。解绑若登记成 **resource**（第 5 步），就发生在 Signal
-// 已被释放**之后** —— 而第 3/4 步跑的是用户回调，任何一个再调 themeSignal
+// disposeNow 的顺序是 1 子 scope -> 2 cleanups -> 3 effects -> 4 销毁 signals
+// -> 5 resources。解绑若登记成 **resource**（第 5 步），就发生在 Signal
+// 已被释放**之后**，而第 3/4 步跑的是用户回调，任何一个再调 themeSignal
 // 都会命中还没清的缓存拿到野指针。所以解绑必须登记成 **cleanup**（第 2 步）。
 //
 // 本测试在 cleanup 里回调 themeSignal 来钉住这个顺序：拿到的必须是一个
@@ -552,7 +552,7 @@ test "dispose 期间回调里再取 themeSignal 不得拿到野指针" {
 
     // 探针登记成 **resource**：resources 在第 5 步跑，也就是 signals 已经
     // 在第 4 步被销毁**之后**。逆序执行 ⇒ 后登记的先跑，所以这个探针一定
-    // 排在 themeSignal 自己登记的解绑之前 —— 正是最坏情况。
+    // 排在 themeSignal 自己登记的解绑之前，正是最坏情况。
     // 解绑若也登记成 resource（错误写法），此刻缓存还指着已释放的 Signal，
     // 探针的 get() 就是 UAF；解绑登记成 cleanup（正确写法，第 2 步）则缓存
     // 早已清空，探针会在 root_scope 上重建一个活的。
@@ -691,7 +691,7 @@ test "textFmt long content falls back to heap without truncation" {
 
 test "Cx.handleDrag: source-completion kind(4) 与未知 kind 不 panic" {
     // 回归锁：kind=4 是 beginDrag 的完成回执（system_sdk 层文档），此前
-    // 直接 @enumFromInt 进 DragEvent.Kind(0..3) —— 任何拖出会话松手即
+    // 直接 @enumFromInt 进 DragEvent.Kind(0..3)，任何拖出会话松手即
     // "invalid enum value" panic。真机脚本 verify_interop_probe.sh 逮到。
     var cx = try Cx.init(std.testing.allocator);
     defer cx.deinit();
@@ -703,7 +703,7 @@ test "Cx.handleDrag: source-completion kind(4) 与未知 kind 不 panic" {
 
 test "Cx.handleCommand: 无焦点时全树回退找 action context（wrapper root 不再吞菜单命令）" {
     // 回归锁：cx.root 是 App 的内部 wrapper，dispatchAction 从焦点向上走，
-    // 用户 mount root 上绑的 context 永远走不到 —— 真菜单点击静默丢失
+    // 用户 mount root 上绑的 context 永远走不到，真菜单点击静默丢失
     // （verify_menu.sh 逮到）。修复 = ignored 时全树找第一个匹配节点。
     var cx = try Cx.init(std.testing.allocator);
     defer cx.deinit();
@@ -774,8 +774,8 @@ test "光标测量：shape 钩子装与不装必须同宽（ASCII / ASCII+emoji 
     // measureTextWidthWithSpans **不是参数的纯函数**：measureProportional
     // 先试 GlyphRun shape 钩子，NaN 才回落到 measure_ctx_fn / measure_fn。
     // 于是同一段文本、同一组参数，会因为「当前有没有装钩子」得到两个答案：
-    //   - 布局与绘制：不装钩子 → measure_ctx_fn 那条（App 的 FontSelector）
-    //   - 光标/选区/命中：computeCursorPos 装钩子 → shape 管线解析的字体
+    //   - 布局与绘制：不装钩子 -> measure_ctx_fn 那条（App 的 FontSelector）
+    //   - 光标/选区/命中：computeCursorPos 装钩子 -> shape 管线解析的字体
     // 两条路只要选出不同的 Font，光标就系统性地偏离字形边缘。实测
     // 下游编辑器上 "ssdf x😊" 差 1.442px（57.906 vs 59.348），行尾光标短在
     // 字形右缘里侧；**纯英文行同样错**，emoji 只是让缺口更显眼。
@@ -783,7 +783,7 @@ test "光标测量：shape 钩子装与不装必须同宽（ASCII / ASCII+emoji 
     // 修复方式是给 shape 管线装 setShapeFontResolver，让它与测量端拿到
     // 同一个 *Font。本测试模拟那个装配，并断言两条路等宽。
     // 判据故意**不写死像素值**（随系统字体版本漂移会变脆），而是断言
-    // 「两条路必须相等」—— 这正是 bug 的形状，也是修复要维持的不变式。
+    // 「两条路必须相等」，这正是 bug 的形状，也是修复要维持的不变式。
     var cx = try Cx.init(std.testing.allocator);
     defer cx.deinit();
     var fonts = try FontSystem.init(std.testing.allocator);
@@ -791,7 +791,7 @@ test "光标测量：shape 钩子装与不装必须同宽（ASCII / ASCII+emoji 
     cx.text.setFontSystem(&fonts);
     defer cx.text.clearFontSystem();
 
-    // 一个具体字体同时供给两条路 —— 相当于 App.setFontSelector 的最小模型。
+    // 一个具体字体同时供给两条路，相当于 App.setFontSelector 的最小模型。
     const base = try fonts.findFont(.{ .family = "Helvetica Neue", .size = 14 });
     defer base.deinit();
 
@@ -845,7 +845,7 @@ test "光标测量：shape 钩子装与不装必须同宽（ASCII / ASCII+emoji 
 test "光标测量：前缀宽度沿整行单调且末项等于整串" {
     // 配套锚点：上一个保证「两条路同宽」，这个保证「前缀累加 == 整串」。
     // computeCursorPos 按 [0, col) 前缀定位光标，所以前缀序列必须单调不减、
-    // 且最后一项等于整串宽度 —— 行尾光标正是靠这条等式落在文本右缘。
+    // 且最后一项等于整串宽度，行尾光标正是靠这条等式落在文本右缘。
     var cx = try Cx.init(std.testing.allocator);
     defer cx.deinit();
     var fonts = try FontSystem.init(std.testing.allocator);
@@ -940,7 +940,7 @@ test "shapeVisualLine paragraph base direction follows UAX 9 outside isolates" {
 
 // 下游回归合同锁：measureTextWidth 必须与 GlyphRun 管线（渲染/光标/选区
 // 用的 shapeText "system"）同源。两条度量路径并存却无交叉一致性测试，
-// 是拉丁 ~1.5% 漂移能存活到下游的结构性原因——此测试红 = 管线再度分裂。
+// 是拉丁 ~1.5% 漂移能存活到下游的结构性原因，此测试红 = 管线再度分裂。
 test "measureTextWidth 与 shapeText 跨管线一致（下游回归）" {
     var cx = try Cx.init(std.testing.allocator);
     defer cx.deinit();
@@ -969,7 +969,7 @@ test "measureTextWidth 与 shapeText 跨管线一致（下游回归）" {
 }
 
 // #36 审查回归锁：emoji 强制字体必须按 ZWJ 序列整体覆盖。逐码点覆盖会把
-// BMP 的 ZWJ 留在基字体 run 里、CTLine 不跨 run 结扎——👨‍👩‍👧 曾从单字形
+// BMP 的 ZWJ 留在基字体 run 里、CTLine 不跨 run 结扎，👨‍👩‍👧 曾从单字形
 // 21px 碎成三个人形 63px（度量/渲染/caret 三路同坏，全套测试当时全绿）。
 test "ZWJ emoji 序列塑形不碎裂（#36 审查回归）" {
     var cx = try Cx.init(std.testing.allocator);
@@ -996,7 +996,7 @@ test "ZWJ emoji 序列塑形不碎裂（#36 审查回归）" {
     try std.testing.expectApproxEqAbs(one_person, try adv(cx, "\u{1F1FA}\u{1F1F8}"), 0.5);
 }
 
-// #36 根因 4 锁：CoreText cascade 是 run 上下文相关的——🈶 (U+1F236) 孤立
+// #36 根因 4 锁：CoreText cascade 是 run 上下文相关的，🈶 (U+1F236) 孤立
 // 塑形走 Apple Color Emoji (~1.33em)，跟在 CJK run 后曾被 PingFang 接走
 // (1em)。强制 emoji 字体后 advance 必须与上下文无关（CJK 无跨字距，
 // 整串宽度 = 各段之和才成立；渲染端 per-codepoint 分段与度量端整串
@@ -1077,7 +1077,7 @@ test "caret x 与选区宽度 = 真实 shaping 度量（emoji/CJK/组合/ZWJ）"
 }
 
 // 点击命中回归：点到字形正中，光标必须落到该字形的某个边界（不得落进簇内部），
-// 且点到字形右半边应吸附到右边界——emoji 光标停左边的对称面。
+// 且点到字形右半边应吸附到右边界，emoji 光标停左边的对称面。
 test "点击命中在宽字形上吸附到字形边界（emoji/CJK/ZWJ）" {
     var cx = try Cx.init(std.testing.allocator);
     defer cx.deinit();
@@ -1101,12 +1101,12 @@ test "点击命中在宽字形上吸附到字形边界（emoji/CJK/ZWJ）" {
         const x0 = cx.text.measureTextWidth(s[0..glyph_start], font_size, 400, false);
         const x1 = cx.text.measureTextWidth(s[0..glyph_end], font_size, 400, false);
 
-        // 点右侧 75% 处 → 吸附到字形右边界
+        // 点右侧 75% 处 -> 吸附到字形右边界
         const right = line.xToPosition(.{ .value = x0 + (x1 - x0) * 0.75 });
         try std.testing.expect(text_core_module.text_coordinates.isGraphemeBoundary(s, right.byte.value));
         try std.testing.expectEqual(glyph_end, right.byte.value);
 
-        // 点左侧 25% 处 → 吸附到字形左边界
+        // 点左侧 25% 处 -> 吸附到字形左边界
         const left = line.xToPosition(.{ .value = x0 + (x1 - x0) * 0.25 });
         try std.testing.expect(text_core_module.text_coordinates.isGraphemeBoundary(s, left.byte.value));
         try std.testing.expectEqual(glyph_start, left.byte.value);
@@ -1114,7 +1114,7 @@ test "点击命中在宽字形上吸附到字形边界（emoji/CJK/ZWJ）" {
 }
 
 // 下游应用实测回归：按字节切的前缀落在 3 字节 CJK 中间（"asfd🎩"+半截一 =
-// 9B 非法 UTF-8）时，CoreText NSString 构造失败——shape 层报
+// 9B 非法 UTF-8）时，CoreText NSString 构造失败，shape 层报
 // TextShapingFailed、FontSelector 桥静默返 0.0f，measureTextWidth 最终
 // 吐出精确 0.00 塌掉提交 bbox。修复：入口先裁到最长合法 UTF-8 前缀。
 test "measureTextWidth 对截断 UTF-8（半个 CJK）不塌成 0" {
@@ -1126,7 +1126,7 @@ test "measureTextWidth 对截断 UTF-8（半个 CJK）不塌成 0" {
     defer cx.text.clearFontSystem();
 
     // 模拟 app 侧 FontSelector 桥：对非法 UTF-8 返 0（nil NSString 路径）。
-    // 修复前截断串走到这条腿 → 精确 0.00；修复后 shapeText 先成功，不会到这。
+    // 修复前截断串走到这条腿 -> 精确 0.00；修复后 shapeText 先成功，不会到这。
     const Bridge = struct {
         fn zeroOnInvalid(_: *anyopaque, ptr: [*]const u8, len: usize, _: f32, _: u16, _: bool) f32 {
             return if (std.unicode.utf8ValidateSlice(ptr[0..len])) 999 else 0;
@@ -1161,7 +1161,7 @@ test "shapeText 的缓存必须按 font_family 分桶（字体选择器预览的
     // （比如都画 "Aa"），这个 bug 会让第 2 行起全部退化成第 1 行的字体。
     //
     // 判据不写死像素（随系统字体版本漂移会脆），而是断言
-    // 「两个差异极大的字体不能量出同一个宽度」—— 这正是 bug 的形状。
+    // 「两个差异极大的字体不能量出同一个宽度」，这正是 bug 的形状。
     var cx = try Cx.init(std.testing.allocator);
     defer cx.deinit();
     var fonts = try FontSystem.init(std.testing.allocator);
@@ -1196,10 +1196,10 @@ test "shapeText 的缓存必须按 font_family 分桶（字体选择器预览的
 }
 
 test "生存哨兵：新建节点是 ALIVE" {
-    // 哨兵的负向验证不能在测试里做「释放后再读」——那本身就是 UAF，GPA 会先报。
+    // 哨兵的负向验证不能在测试里做「释放后再读」，那本身就是 UAF，GPA 会先报。
     // 真正的负向复现方式记录在这里：把 freeNodeNow 入口的哨兵检查注释掉，
     // 再对同一节点调用两次 freeNode，Debug 下第二次会走进已被 0xaa 覆写的
-    // `freeing`（读出 true）从而静默 early-return —— 那正是这个哨兵要消灭的
+    // `freeing`（读出 true）从而静默 early-return，那正是这个哨兵要消灭的
     // 「无声 no-op」。有哨兵时第二次会当场 panic。
     const ctx = try Cx.init(std.testing.allocator);
     defer ctx.deinit();

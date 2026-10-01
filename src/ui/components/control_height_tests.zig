@@ -1,6 +1,6 @@
 //! 控件高度合同（跨组件）：同一 ControlSize 下 Button / Input / Select /
 //! DatePicker / DateRangePicker 的外框高度完全一致，且等于
-//! padding_y × 2 + font_size × line_height —— 由内容撑出，没有任何控件写死 height。
+//! padding_y × 2 + font_size × line_height，由内容撑出，没有任何控件写死 height。
 const std = @import("std");
 const testing = std.testing;
 const core = @import("../core.zig");

@@ -6,7 +6,7 @@
 //! the package, and links the system frameworks.
 //!
 //! Prefer the helper. If you want to see (or customize) exactly what gets
-//! linked, read `attach` / `addNativeLibs` in zenit's build.zig — it is the
+//! linked, read `attach` / `addNativeLibs` in zenit's build.zig, it is the
 //! same ~20 lines this template used to hand-roll.
 const std = @import("std");
 const zenit = @import("zenit");

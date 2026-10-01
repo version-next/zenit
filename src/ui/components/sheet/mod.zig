@@ -124,7 +124,7 @@ pub const SheetBuilder = struct {
 
         const barrier = ol.barrier.?;
         // overlay() 把 focus_scope 配在 ol.content 上，但本组件不用 ol.content，
-        // 真正 pushScope 的是 barrier —— 不在 barrier 上配，trap/auto_focus 全是空操作。
+        // 真正 pushScope 的是 barrier，不在 barrier 上配，trap/auto_focus 全是空操作。
         barrier.setFocusScope(.{ .trap = true, .auto_focus = true });
         barrier.meta.ownership.meta.component_name = "Sheet";
         try core.bindScopeToNode(my_scope, barrier);
@@ -189,7 +189,7 @@ pub const SheetBuilder = struct {
             const fm = &cx.focus_manager;
             const scope_pushed = try my_scope.createSignal(bool, false);
             // 打开状态下直接卸载（Show 切走 / 父 scope dispose）不会再跑 visible
-            // effect 的 pop 分支 → focus scope 栈残留指向已释放 barrier 的条目。
+            // effect 的 pop 分支 -> focus scope 栈残留指向已释放 barrier 的条目。
             const scope_guard = try my_scope.allocator.create(FocusScopeGuard);
             scope_guard.* = .{ .fm = fm, .pushed = scope_pushed, .barrier = barrier, .barrier_id = barrier.id };
             try my_scope.adoptResource(@ptrCast(scope_guard), FocusScopeGuard.destroy);
@@ -447,7 +447,7 @@ test "Sheet: four sides" {
     defer scope.dispose();
 
     // 有 root 时 overlay_stack.overlay() 总是把 barrier portal 化（与 Popover 同一个
-    // window portal），caller 不再 inline append —— 按 `portaled` 契约行事。
+    // window portal），caller 不再 inline append，按 `portaled` 契约行事。
     inline for (.{ SheetSide.left, SheetSide.right, SheetSide.top, SheetSide.bottom }) |s| {
         const result = try Sheet(.{ .side = s }).mount(scope, ctx);
         try std.testing.expect(result.portaled);
@@ -459,12 +459,12 @@ test "Sheet: four sides" {
     try std.testing.expect(root.children.items[0] == ctx.popover_portal_root.?);
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "sheet: mount 在任意分配点失败时不泄漏（sweep）" {
     try @import("../oom_sweep.zig").sweepMount("sheet", struct {
         fn m(scope: *Scope, cx: *Cx) anyerror!?*Node {

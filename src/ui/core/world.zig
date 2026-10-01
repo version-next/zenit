@@ -1,10 +1,10 @@
-//! World — Phase 3 拆 Node 后的统一根容器
+//! World, Phase 3 拆 Node 后的统一根容器
 //!
 //! 取代当前 Cx 内嵌的多个 owned 字段（lowering_buffer、display_list、scene_runtime、
 //! property_tree、compositor_plan 等都散落在 Cx）。新的 World 把所有跨帧保留的
 //! 数据结构聚拢，并按 ElementId 索引。
 //!
-//! 当前 Phase 3 阶段：World 是**新的 source of truth 的容器壳子**——结构就位，
+//! 当前 Phase 3 阶段：World 是**新的 source of truth 的容器壳子**，结构就位，
 //! 但 Cx 仍保留旧 Node 路径（4 examples 不挂）。Phase 4 起渐进迁移：
 //!   - paint pass 改写 PaintTable
 //!   - layout pass 改写 LayoutTable
@@ -13,7 +13,7 @@
 //! 4 个表 + property tree + reactive graph + dirty set，构成完整保留态。
 //!
 //! 历史债避免：
-//! - 不让任何成员持有"父级 World 指针"——传 *World 给操作；避免 retain cycle
+//! - 不让任何成员持有"父级 World 指针"，传 *World 给操作；避免 retain cycle
 //! - dirty set 在此层做"全局 dirty queue"，子系统只 push 到集合，不递归 push
 //!   （吸取 Chromium cc 历史："single layer hierarchy" 18 布尔状态混乱教训）
 
@@ -140,17 +140,17 @@ pub const World = struct {
         try self.layout_output.ensureSlot(id);
         // element slot 可能是从 free_list 复用的旧 slot（generation++）。content
         // 镜像表按 index 存、不校验 generation，ensureSlot 对已存在的 slot 直接
-        // return 不清，于是复用 slot 会残留上一个 owner 的 text → 新节点 getText
+        // return 不清，于是复用 slot 会残留上一个 owner 的 text -> 新节点 getText
         // 读到旧内容（典型：Menu 弹层项 "Cut/Copy/Delete" 漏进新挂载的 DatePicker
-        // trigger → content 串台/空白）。destroyElement 已在销毁侧 clear，但裸
+        // trigger -> content 串台/空白）。destroyElement 已在销毁侧 clear，但裸
         // elements.destroy / Node.destroy 路径绕过它，故在分配侧也清 content 双保险。
-        // 注：不清 layout_output —— 那是布局 source of truth，清了会让 mount 后首个
+        // 注：不清 layout_output，那是布局 source of truth，清了会让 mount 后首个
         // 未经 layout 的 query 读到 0 rect。content 由节点紧接着 setText 覆盖，安全。
         self.content.clear(id);
         return id;
     }
 
-    /// 销毁 element 并清理所有 dirty 标记（不递归子树——caller 决定）。
+    /// 销毁 element 并清理所有 dirty 标记（不递归子树，caller 决定）。
     pub fn destroyElement(self: *World, id: ElementId) void {
         if (!self.elements.isValid(id)) return;
         self.clearStyleOrigins(id.raw());
@@ -327,7 +327,7 @@ test "World: destroyElement 清 paint chunk —— slot 复用 + hash 撞车不�
     try testing.expectEqual(id.index, id2.index); // 前提：slot 真的被复用
     try testing.expect(try w.paint.beginRecord(id2, 42));
     try testing.expectEqual(@as(usize, 0), w.paint.get(id2).?.display_items.items.len);
-    // property_state 也必须归零——全表扫描按 idx 消费它
+    // property_state 也必须归零，全表扫描按 idx 消费它
     try testing.expectEqual(paint_table_mod.PropertyStateRef.NONE, w.paint.get(id2).?.property_state);
 }
 

@@ -44,7 +44,7 @@ pub const MacOSWindow = struct {
     extern fn macos_set_ime_cursor_rect(window_ptr: *anyopaque, x: f32, y: f32, width: f32, height: f32) void;
     extern fn macos_ime_discard(window_ptr: *anyopaque) void;
     extern fn macos_set_cursor_shape(window_ptr: *anyopaque, shape: c_int) void;
-    extern fn macos_get_scroll_event(window_ptr: *anyopaque, x: *f32, y: *f32, dx: *f32, dy: *f32, is_momentum: *c_int, phase_ended: *c_int, is_trackpad: *c_int, modifiers: *u32, sequence: *u64) c_int;
+    extern fn macos_get_scroll_event(window_ptr: *anyopaque, x: *f32, y: *f32, dx: *f32, dy: *f32, phase: *u8, momentum: *u8, modifiers: *u32, sequence: *u64) c_int;
     extern fn macos_get_magnify_event(window_ptr: *anyopaque, x: *f32, y: *f32, magnification: *f32, phase: *u8, sequence: *u64) c_int;
     extern fn macos_peek_drag_event(window_ptr: *anyopaque, x: *f32, y: *f32, kind: *u8, bytes: *?[*]const u8, length: *usize, token: *?*const anyopaque, payload_kind: *u8, source_token: *u64, operation: *u8) c_int;
     extern fn macos_consume_drag_event(window_ptr: *anyopaque, token: *const anyopaque) c_int;
@@ -82,7 +82,7 @@ pub const MacOSWindow = struct {
     extern fn macos_update_window_mouse(window_ptr: *anyopaque) void;
     extern fn macos_is_window_focused(window_ptr: *anyopaque) c_int;
 
-    // CVDisplayLink (C6) — vsync 驱动帧调度
+    // CVDisplayLink (C6), vsync 驱动帧调度
     extern fn macos_start_display_link(window_ptr: *anyopaque) void;
     extern fn macos_stop_display_link(window_ptr: *anyopaque) void;
     extern fn macos_get_display_refresh_rate(window_ptr: *anyopaque) f32;
@@ -180,7 +180,7 @@ pub const MacOSWindow = struct {
     }
 
     /// 启动 CVDisplayLink：每个 vsync 在 CV 线程 post 空事件唤醒主线程 pump。
-    /// 幂等——已在跑时是 no-op。
+    /// 幂等，已在跑时是 no-op。
     pub fn startDisplayLink(self: *MacOSWindow) void {
         macos_start_display_link(self.window_ptr);
     }
@@ -322,7 +322,7 @@ pub const MacOSWindow = struct {
 
     /// 鼠标按钮枚举。
     /// .other 兜底：桥当前用 buttonNumber == 2 过滤 otherMouse 事件，但该
-    /// 不变式只靠 ObjC 侧两处 switch 的自律维持——任何一处将来放宽（back/
+    /// 不变式只靠 ObjC 侧两处 switch 的自律维持，任何一处将来放宽（back/
     /// forward 侧键是很自然的需求），未校验的 @enumFromInt 就是 Debug panic /
     /// ReleaseFast UB。events.zig 早已定义 .other、runtime 映射为 null。
     pub const MouseButton = enum(c_int) {
@@ -587,12 +587,10 @@ pub const MacOSWindow = struct {
         y: f32,
         dx: f32,
         dy: f32,
-        /// true = 松手后惯性滚动（momentum），false = 手指触摸中
-        is_momentum: bool,
-        /// true = 触摸板手指抬起 (NSEventPhaseEnded)
-        phase_ended: bool,
-        /// true = 触摸板事件（有 phase 信息），false = 鼠标滚轮
-        is_trackpad: bool,
+        /// NSEvent.phase 编码：0 none, 1 may_begin, 2 began, 3 changed, 4 ended, 5 cancelled
+        phase: u8,
+        /// NSEvent.momentumPhase 编码：0 none, 1 began, 2 changed, 3 ended
+        momentum: u8,
         /// 事件发生时的修饰键状态（Cmd+滚轮缩放等场景需要）
         modifiers: Modifiers = .{},
     };
@@ -603,21 +601,19 @@ pub const MacOSWindow = struct {
         var y: f32 = -1;
         var dx: f32 = 0;
         var dy: f32 = 0;
-        var is_momentum: c_int = 0;
-        var phase_ended: c_int = 0;
-        var is_trackpad: c_int = 0;
+        var phase: u8 = 0;
+        var momentum: u8 = 0;
         var modifiers: u32 = 0;
         var sequence: u64 = 0;
-        if (macos_get_scroll_event(self.window_ptr, &x, &y, &dx, &dy, &is_momentum, &phase_ended, &is_trackpad, &modifiers, &sequence) != 0) {
+        if (macos_get_scroll_event(self.window_ptr, &x, &y, &dx, &dy, &phase, &momentum, &modifiers, &sequence) != 0) {
             return .{
                 .sequence = sequence,
                 .x = x,
                 .y = y,
                 .dx = dx,
                 .dy = dy,
-                .is_momentum = is_momentum != 0,
-                .phase_ended = phase_ended != 0,
-                .is_trackpad = is_trackpad != 0,
+                .phase = phase,
+                .momentum = momentum,
                 .modifiers = Modifiers.fromRaw(modifiers),
             };
         }
@@ -794,7 +790,7 @@ pub const MacOSWindow = struct {
     /// 返回的 slice 指向 caller 提供的 buffer；null = 队列为空。
     /// buffer 放不下完整路径时返回 error.BufferTooSmall 且**不出队**（路径留在
     /// 队首，换更大的 buffer 重试即可）；所需大小见 `pendingOpenFileRequiredSize`。
-    /// 此前会先出队再按 buffer 截断路径 —— 文件被静默丢弃或打开错误路径。
+    /// 此前会先出队再按 buffer 截断路径，文件被静默丢弃或打开错误路径。
     pub fn getPendingOpenFile(self: *MacOSWindow, buf: []u8) error{BufferTooSmall}!?[]const u8 {
         _ = self; // polling 不需要 window 参数，但保持 API 一致
         const size: c_int = @intCast(@min(buf.len, std.math.maxInt(c_int)));

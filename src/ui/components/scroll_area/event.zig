@@ -1,6 +1,6 @@
 /// ScrollArea 滚动事件处理
 ///
-/// scrollEventHandler + 嵌套滚动链委托 + momentum 过滤 + 辅助判断函数
+/// scrollEventHandler + 嵌套滚动链委托 + 惯性归属 + 辅助判断函数
 const std = @import("std");
 const core = @import("../../core.zig");
 const Node = core.Node;
@@ -13,8 +13,8 @@ const ScrollDirection = state_mod.ScrollDirection;
 const ScrollEventCtx = state_mod.ScrollEventCtx;
 
 const scroll_physics = @import("physics.zig");
-const render_engine = @import("../../core/render_engine/mod.zig");
 const applyVerticalScroll = scroll_physics.applyVerticalScroll;
+const InputKind = scroll_physics.InputKind;
 const applyHorizontalScroll = scroll_physics.applyHorizontalScroll;
 
 const debug = @import("debug.zig");
@@ -30,15 +30,14 @@ pub fn scrollEventHandler(event: Event, context: ?*anyopaque) EventResult {
     switch (event) {
         .scroll => |scroll| {
             logScroll(
-                "event in id={d} dir={s} dy={d:.2} dx={d:.2} momentum={} phase_end={} trackpad={} scroll_y={d:.2} bonus_y={d:.2} scroll_x={d:.2} bonus_x={d:.2}",
+                "event in id={d} dir={s} dy={d:.2} dx={d:.2} phase={s} momentum={s} scroll_y={d:.2} bonus_y={d:.2} scroll_x={d:.2} bonus_x={d:.2}",
                 .{
                     container.id,
                     @tagName(ctx.direction),
                     scroll.dy,
                     scroll.dx,
-                    scroll.is_momentum,
-                    scroll.phase_ended,
-                    scroll.is_trackpad,
+                    @tagName(scroll.phase),
+                    @tagName(scroll.momentum),
                     state.scroll_y,
                     state.bonus_y,
                     state.scroll_x,
@@ -58,131 +57,52 @@ pub fn scrollEventHandler(event: Event, context: ?*anyopaque) EventResult {
             if (state.viewport_height <= 0 and state.viewport_width <= 0) {
                 return .ignored;
             }
-            // 用户主动输入（非 momentum）到达时，清除所有残余抑制状态，
-            // 确保新手势不被 guard/suppress 误拦截。
-            if (!scroll.phase_ended and !scroll.is_momentum) {
-                state.phase_end_guard_frames = 0;
-                state.bounce_active_y = false;
-                state.bounce_active_x = false;
-                state.bounce_done_time_y = 0;
-                state.bounce_done_time_x = 0;
-                state.awaiting_trackpad_reengage = false;
-            }
-            if (!scroll.phase_ended and !scroll.is_momentum and shouldSuppressIdleResidualTail(state, ctx.direction, scroll.dx, scroll.dy, ctx.scroll_speed)) {
-                logScroll("tail_filter suppress: dy={d:.2} dx={d:.2} tail_idle_frames={d}", .{
-                    scroll.dy,
-                    scroll.dx,
-                    state.tail_idle_frames,
-                });
-                return .stop;
-            }
-            const outward = isOutwardAtBoundary(state, ctx.direction, scroll.dx, scroll.dy, ctx.scroll_speed);
-            // phase-end 护栏仅在"当前无 active bonus"时生效，避免边界动量被硬切断。
-            if (outward and state.phase_end_guard_frames > 0 and !hasActiveBonusForDirection(state, ctx.direction)) {
-                logScroll("momentum_guard phase-end: dy={d:.2} dx={d:.2} guard={d}", .{
-                    scroll.dy,
-                    scroll.dx,
-                    state.phase_end_guard_frames,
-                });
-                return .stop;
-            }
-            const primary = primaryAbsDelta(ctx.direction, scroll.dx, scroll.dy, ctx.scroll_speed);
-            // 回弹动画进行中 → 拒绝 outward momentum
-            const bounce_active = hasBounceActive(state, ctx.direction);
-            if (outward and bounce_active) {
-                logScroll("momentum_guard bounce-active: dy={d:.2} dx={d:.2} primary={d:.2}", .{
-                    scroll.dy,
-                    scroll.dx,
-                    primary,
-                });
-                return .stop;
-            }
-            // 回弹完成后短窗口内拦截 outward momentum（绝对时间护栏，防止 momentum 尾巴重新越界）
-            if (outward and scroll.is_momentum) {
-                const now_ms = render_engine.current_frame_time_ms;
-                const guard_ms: f64 = 500; // 护栏持续 500ms
-                const y_guard = state.bounce_done_time_y > 0 and (now_ms - state.bounce_done_time_y) < guard_ms;
-                const x_guard = state.bounce_done_time_x > 0 and (now_ms - state.bounce_done_time_x) < guard_ms;
-                const in_guard = switch (ctx.direction) {
-                    .vertical => y_guard,
-                    .horizontal => x_guard,
-                    .both => y_guard or x_guard,
-                };
-                if (in_guard) {
-                    logScroll("momentum_guard post-bounce: dy={d:.2} dx={d:.2}", .{ scroll.dy, scroll.dx });
-                    return .stop;
-                }
-            }
-            // phase ended 后，过滤尾部残余小输入（尤其是边界向外抖动）
-            if (!scroll.phase_ended and state.awaiting_trackpad_reengage) {
-                const threshold = ScrollState.scroll_tuning.trackpad_reengage_delta_threshold;
-                if (outward and primary <= threshold) {
-                    logScroll("momentum_guard awaiting-reengage: dy={d:.2} dx={d:.2} primary={d:.2}", .{
-                        scroll.dy,
-                        scroll.dx,
-                        primary,
-                    });
-                    return .stop;
-                }
-                state.awaiting_trackpad_reengage = false;
-            }
-            // phase_ended 优先处理：必须在 delegate 检查之前，
-            // 因为 phase_ended 通常 dy=0，shouldDelegate 会返回 false，
-            // 但如果本层没有活跃滚动，phase_ended 需要继续冒泡到真正在滚动的外层。
-            if (scroll.phase_ended) {
-                const was_active = state.user_scrolling or state.bonus_y != 0 or state.bonus_x != 0;
-                state.user_scrolling = false;
-                state.is_trackpad_session = false;
-                // 触控板 phase_ended 是精确的"手势结束"信号，
-                // 立即跳过 idle 保护窗口，避免子级 ScrollArea 被误判为
-                // "外层活跃"而延迟接收新手势。
-                state.scroll_event_idle_frames = ScrollState.scroll_tuning.wheel_release_frames + 1;
 
-                if (!was_active) {
-                    // 本层没有活跃滚动 → 不消费 phase_ended，让它冒泡到外层
-                    logScroll("phase ended passthrough (inactive) id={d}: bonus_y={d:.2} bonus_x={d:.2}", .{ container.id, state.bonus_y, state.bonus_x });
-                    return .ignored;
-                }
+            const kind: InputKind = if (scroll.isMomentum())
+                .momentum
+            else if (scroll.phase == .none)
+                .wheel
+            else
+                .gesture;
 
-                state.awaiting_trackpad_reengage = true;
-                state.phase_end_guard_frames = ScrollState.scroll_tuning.phase_end_guard_frames;
-                if (state.bonus_y != 0 or isAtVerticalBoundary(state)) {
-                    state.suppress_outward_momentum_y = true;
-                }
-                if (state.bonus_x != 0 or isAtHorizontalBoundary(state)) {
-                    state.suppress_outward_momentum_x = true;
-                }
-                logScroll("phase ended ACTIVE id={d}: bonus_y={d:.2} bonus_x={d:.2} user_scrolling_was={}", .{ container.id, state.bonus_y, state.bonus_x, was_active });
-                // 如果同时也是 momentum 且已越界，不再处理 delta，直接让弹簧回弹
-                if (state.bonus_y != 0 or state.bonus_x != 0) {
-                    return .stop;
-                }
-                // phase ended 事件即使携带残余 delta，也不应重启拖拽/越界
-                if (!scroll.is_momentum) {
-                    return .stop;
-                }
-            }
-
-            if (scrollDebugEnabled()) {
-                if (container.meta.ownership.meta.component_name) |cn| {
-                    if (std.mem.eql(u8, cn, "VirtualList") and ctx.direction == .both) {
-                        const max_y = state.maxScrollY();
-                        const max_x = state.maxScrollX();
-                        logScroll("[ft-scroll] id={d} dy={d:.2} dx={d:.2} vh={d:.0} ch={d:.0} vw={d:.0} cw={d:.0} maxY={d:.0} maxX={d:.0} scroll_y={d:.1} ext_h={} ext_w={}", .{
-                            container.id,
-                            scroll.dy,
-                            scroll.dx,
-                            state.viewport_height,
-                            state.content_height,
-                            state.viewport_width,
-                            state.content_width,
-                            max_y,
-                            max_x,
-                            state.scroll_y,
-                            state.external_content_height,
-                            state.external_content_width,
-                        });
+            // 开始信号只由手指下的这一层处理（owner），不冒泡：外层若在回弹，
+            // 冒泡会让它"接住回弹"而被当成持有手势，把内层的手势抢走。外层上的
+            // 旧惯性由调度器补发的惯性 ended 结束；手势委托给外层时，外层在第一次
+            // 实际滚动时 beginTouch。
+            // 结束信号则继续冒泡：手势可能中途委托给了外层，必须到达真正持有它的那层。
+            switch (scroll.phase) {
+                .may_begin, .began => {
+                    state.momentum_active = false;
+                    state.momentum_spent_y = false;
+                    state.momentum_spent_x = false;
+                    state.latched = false;
+                    // 手指放下接住本层进行中的回弹
+                    if (state.bonus_y != 0 or state.bonus_x != 0 or state.bounce_active_y or state.bounce_active_x) {
+                        state.beginTouch();
                     }
+                    if (scroll.dx == 0 and scroll.dy == 0) return .stop;
+                },
+                .ended, .cancelled => {
+                    if (state.touching) {
+                        state.touching = false;
+                        // 松手时已越界：这一轴随后朝外的惯性交给弹簧
+                        if (state.bonus_y != 0) state.momentum_spent_y = true;
+                        if (state.bonus_x != 0) state.momentum_spent_x = true;
+                        logScroll("touch end id={d} phase={s} bonus_y={d:.2} bonus_x={d:.2}", .{ container.id, @tagName(scroll.phase), state.bonus_y, state.bonus_x });
+                    }
+                    // cancelled 之后没有惯性，手势归属到此为止
+                    if (scroll.phase == .cancelled) state.latched = false;
+                    return .ignored;
+                },
+                .none, .changed => {},
+            }
+            if (kind == .momentum) {
+                // 有惯性说明手指已经离开
+                state.touching = false;
+                if (scroll.momentum == .ended) {
+                    state.momentum_active = false;
+                    state.latched = false;
+                    return .ignored;
                 }
             }
 
@@ -197,6 +117,7 @@ pub fn scrollEventHandler(event: Event, context: ?*anyopaque) EventResult {
             const epsilon = ScrollState.scroll_tuning.jitter_snap_epsilon;
             const v_delta_abs = @abs(-scroll.dy * ctx.scroll_speed);
             const h_delta_abs = @abs(-scroll.dx * ctx.scroll_speed);
+            const is_momentum = kind == .momentum;
 
             if (ctx.direction == .both) {
                 if (wants_v and !can_v) {
@@ -216,15 +137,15 @@ pub fn scrollEventHandler(event: Event, context: ?*anyopaque) EventResult {
                     });
                 }
                 if (can_v) {
-                    skip_y = skip_y or shouldDelegateVerticalToAncestor(state, ctx, scroll.dy, scroll.is_momentum);
+                    skip_y = skip_y or shouldDelegateVerticalToAncestor(state, ctx, scroll.dy, is_momentum);
                 }
                 if (can_h) {
-                    skip_x = skip_x or shouldDelegateHorizontalToAncestor(state, ctx, scroll.dx, scroll.is_momentum);
+                    skip_x = skip_x or shouldDelegateHorizontalToAncestor(state, ctx, scroll.dx, is_momentum);
                 }
             } else {
                 const single_axis_passthrough = switch (ctx.direction) {
-                    .vertical => h_delta_abs > epsilon and h_delta_abs > v_delta_abs and !state.user_scrolling and !hasActiveBonusForDirection(state, .vertical),
-                    .horizontal => v_delta_abs > epsilon and v_delta_abs > h_delta_abs and !state.user_scrolling and !hasActiveBonusForDirection(state, .horizontal),
+                    .vertical => h_delta_abs > epsilon and h_delta_abs > v_delta_abs and !state.touching and !hasActiveBonusForDirection(state, .vertical),
+                    .horizontal => v_delta_abs > epsilon and v_delta_abs > h_delta_abs and !state.touching and !hasActiveBonusForDirection(state, .horizontal),
                     .both => false,
                 };
                 if (single_axis_passthrough) {
@@ -234,18 +155,12 @@ pub fn scrollEventHandler(event: Event, context: ?*anyopaque) EventResult {
                         scroll.dy,
                         scroll.dx,
                     });
-                    state.user_scrolling = false;
-                    content.style.translate_y = state.contentTranslateY();
-                    content.style.translate_x = state.contentTranslateX();
-                    // 滚动逐帧平移（内容未变）：anim-frame 组合（interaction+composite）。
-                    content.markCompositeAnimFrameDirty();
                     return .ignored;
                 }
 
-                // 单轴模式保持原逻辑
                 const delegate_to_ancestor = switch (ctx.direction) {
-                    .vertical => shouldDelegateVerticalToAncestor(state, ctx, scroll.dy, scroll.is_momentum),
-                    .horizontal => shouldDelegateHorizontalToAncestor(state, ctx, scroll.dx, scroll.is_momentum),
+                    .vertical => shouldDelegateVerticalToAncestor(state, ctx, scroll.dy, is_momentum),
+                    .horizontal => shouldDelegateHorizontalToAncestor(state, ctx, scroll.dx, is_momentum),
                     .both => unreachable,
                 };
                 if (delegate_to_ancestor) {
@@ -255,188 +170,73 @@ pub fn scrollEventHandler(event: Event, context: ?*anyopaque) EventResult {
                         scroll.dy,
                         scroll.dx,
                     });
-                    // 手势归属上抛 → 本层放弃 latch
-                    if (!scroll.is_momentum) state.latched = false;
-                    state.user_scrolling = false;
-                    content.style.translate_y = state.contentTranslateY();
-                    content.style.translate_x = state.contentTranslateX();
-                    // 滚动逐帧平移（内容未变）：anim-frame 组合（interaction+composite）。
-                    content.markCompositeAnimFrameDirty();
+                    // 手势归属上抛 -> 本层放弃 latch
+                    if (kind == .gesture) {
+                        state.latched = false;
+                        state.touching = false;
+                    }
+                    syncContentTranslate(state, content);
                     return .ignored;
                 }
             }
 
-            // momentum 事件不重置 scroll_event_idle_frames，
-            // 因为 idle_frames 是给 hasActiveAncestorScrollAreaForAxis 判断"用户主动输入"的，
-            // momentum 不是主动输入。如果 momentum 重置了 idle_frames，
-            // 会导致 inner ScrollArea 误以为 outer 还在"活跃接收输入"，
-            // 从而 delegate 新手势给 outer，inner 无法接管。
-            // 注意：非 momentum 活动要在确认本层真的处理了某个轴后再记账，
-            // 避免 .both 下"不可滚轴输入被忽略"也污染 activity/history。
-            const pending_user_activity = !scroll.is_momentum;
-            if (scroll.is_momentum) {
-                // momentum 仍需要更新 scrollbar fade（视觉反馈）
-                state.scrollbar_fade.onActivity();
-            }
-
-            // 新手势"接住"回弹（native hold 语义）：
-            // 仅停掉弹簧动画并清速度，**保留当前 bonus**——内容停在手指按住的位置，
-            // 后续输入经 consume-bonus / rubber-band 路径从当前位置继续（清零会导致内容跳变）。
-            if (!scroll.is_momentum and !state.user_scrolling) {
-                if (state.bounce_active_y or state.bonus_velocity != 0) {
-                    logScroll("hold: catch bounce y bonus={d:.2} vel={d:.2}", .{ state.bonus_y, state.bonus_velocity });
-                }
-                state.bounce_active_y = false;
-                state.bounce_active_x = false;
-                state.bonus_velocity = 0;
-                state.bonus_velocity_x = 0;
-                state.suppress_outward_momentum_y = false;
-                state.suppress_outward_momentum_x = false;
-            }
-
-            // 记录触摸板会话
-            if (scroll.is_trackpad) state.is_trackpad_session = true;
-
-            if (scroll.is_momentum) {
-                var suppress = false;
+            // 惯性：越界部分归弹簧；本段惯性已撞过边界的轴不再朝外推。
+            if (kind == .momentum) {
+                state.momentum_active = true;
+                const block_y = momentumBlockedY(state, scroll.dy, ctx.scroll_speed);
+                const block_x = momentumBlockedX(state, scroll.dx, ctx.scroll_speed);
                 switch (ctx.direction) {
-                    .vertical => {
-                        const active_bonus_y = state.bonus_y != 0;
-                        suppress = shouldSuppressOutwardMomentumY(state, scroll.dy, ctx.scroll_speed);
-                        if (!suppress and state.suppress_outward_momentum_y and !active_bonus_y) {
-                            state.suppress_outward_momentum_y = false;
-                        }
+                    .vertical => if (block_y) {
+                        logScroll("momentum blocked y: dy={d:.2} bonus_y={d:.2} spent={}", .{ scroll.dy, state.bonus_y, state.momentum_spent_y });
+                        return .stop;
                     },
-                    .horizontal => {
-                        const active_bonus_x = state.bonus_x != 0;
-                        suppress = shouldSuppressOutwardMomentumX(state, scroll.dx, ctx.scroll_speed);
-                        if (!suppress and state.suppress_outward_momentum_x and !active_bonus_x) {
-                            state.suppress_outward_momentum_x = false;
-                        }
+                    .horizontal => if (block_x) {
+                        logScroll("momentum blocked x: dx={d:.2} bonus_x={d:.2} spent={}", .{ scroll.dx, state.bonus_x, state.momentum_spent_x });
+                        return .stop;
                     },
                     .both => {
-                        // .both 模式：按轴独立 suppress，被 suppress 的轴标记 skip，另一轴继续
-                        const active_bonus_y = state.bonus_y != 0;
-                        const active_bonus_x = state.bonus_x != 0;
-                        const suppress_y = can_v and shouldSuppressOutwardMomentumY(state, scroll.dy, ctx.scroll_speed);
-                        const suppress_x = can_h and shouldSuppressOutwardMomentumX(state, scroll.dx, ctx.scroll_speed);
-                        if (suppress_y) skip_y = true;
-                        if (suppress_x) skip_x = true;
-                        suppress = suppress_y and suppress_x;
-                        if (!suppress_y and state.suppress_outward_momentum_y and !active_bonus_y) {
-                            state.suppress_outward_momentum_y = false;
-                        }
-                        if (!suppress_x and state.suppress_outward_momentum_x and !active_bonus_x) {
-                            state.suppress_outward_momentum_x = false;
-                        }
-                    },
-                }
-                if (suppress) {
-                    logScroll("momentum_guard outward-suppress: dy={d:.2} dx={d:.2} dir={s}", .{
-                        scroll.dy,
-                        scroll.dx,
-                        @tagName(ctx.direction),
-                    });
-                    return .stop;
-                }
-            }
-
-            // 已越界且仍有惯性事件：弹簧独占回弹。
-            // 但允许足够大的 outward momentum 继续压缩越界（Apple 风格手感）。
-            if (scroll.is_momentum) {
-                const cutoff = ScrollState.scroll_tuning.momentum_bonus_tail_cutoff;
-                switch (ctx.direction) {
-                    .vertical => {
-                        if (state.bonus_y != 0) {
-                            const raw_dy = -scroll.dy * ctx.scroll_speed;
-                            const outward_y = (state.bonus_y > 0 and raw_dy > 0) or (state.bonus_y < 0 and raw_dy < 0);
-                            if (!outward_y or @abs(raw_dy) < cutoff) {
-                                logScroll("momentum_guard bounce-owns y: dy={d:.2} bonus_y={d:.2}", .{ scroll.dy, state.bonus_y });
-                                return .stop;
-                            }
-                        }
-                    },
-                    .horizontal => {
-                        if (state.bonus_x != 0) {
-                            const raw_dx = -scroll.dx * ctx.scroll_speed;
-                            const outward_x = (state.bonus_x > 0 and raw_dx > 0) or (state.bonus_x < 0 and raw_dx < 0);
-                            if (!outward_x or @abs(raw_dx) < cutoff) {
-                                logScroll("momentum_guard bounce-owns x: dx={d:.2} bonus_x={d:.2}", .{ scroll.dx, state.bonus_x });
-                                return .stop;
-                            }
-                        }
-                    },
-                    .both => {
-                        const block_y = if (state.bonus_y != 0) blk: {
-                            const raw_dy = -scroll.dy * ctx.scroll_speed;
-                            const outward_y = (state.bonus_y > 0 and raw_dy > 0) or (state.bonus_y < 0 and raw_dy < 0);
-                            break :blk !outward_y or @abs(raw_dy) < cutoff;
-                        } else false;
-                        const block_x = if (state.bonus_x != 0) blk: {
-                            const raw_dx = -scroll.dx * ctx.scroll_speed;
-                            const outward_x = (state.bonus_x > 0 and raw_dx > 0) or (state.bonus_x < 0 and raw_dx < 0);
-                            break :blk !outward_x or @abs(raw_dx) < cutoff;
-                        } else false;
-                        if (block_y or block_x) {
-                            if (block_y) skip_y = true;
-                            if (block_x) skip_x = true;
-                            logScroll("momentum_guard bounce-owns both: dy={d:.2} dx={d:.2} bonus_y={d:.2} bonus_x={d:.2} block_y={} block_x={}", .{
-                                scroll.dy,
-                                scroll.dx,
-                                state.bonus_y,
-                                state.bonus_x,
-                                block_y,
-                                block_x,
-                            });
-                            if ((block_y or !wants_v or !can_v) and (block_x or !wants_h or !can_h)) {
-                                return .stop;
-                            }
+                        if (block_y) skip_y = true;
+                        if (block_x) skip_x = true;
+                        if ((block_y or !wants_v or !can_v) and (block_x or !wants_h or !can_h) and (block_y or block_x)) {
+                            logScroll("momentum blocked both: dy={d:.2} dx={d:.2} block_y={} block_x={}", .{ scroll.dy, scroll.dx, block_y, block_x });
+                            return .stop;
                         }
                     },
                 }
             }
 
-            // 惯性滚动开始 → 释放 user_scrolling，让弹簧可以回弹
-            if (scroll.is_momentum and state.user_scrolling) {
-                state.user_scrolling = false;
-                state.is_trackpad_session = false;
-                logScroll("momentum start: dy={d:.2} dx={d:.2} speed={d:.2}", .{
-                    scroll.dy,
-                    scroll.dx,
-                    ctx.scroll_speed,
-                });
-            }
+            if (kind == .gesture) state.beginTouch();
 
             var handled_axis = false;
-            // 分轴跟踪 —— scrollbar fade 必须知道哪个轴被实际滚动，
+            // 分轴跟踪，scrollbar fade 必须知道哪个轴被实际滚动，
             // 否则纯 Y 滚动也会让 X scrollbar 闪现（VSCode/Zed 行为：只显示活跃轴）。
             var applied_y = false;
             var applied_x = false;
             switch (ctx.direction) {
                 .vertical => {
-                    applyVerticalScroll(state, scroll.dy, ctx.scroll_speed, scroll.is_momentum);
+                    applyVerticalScroll(state, scroll.dy, ctx.scroll_speed, kind);
                     handled_axis = true;
                     applied_y = true;
                 },
                 .horizontal => {
-                    applyHorizontalScroll(state, scroll.dx, ctx.scroll_speed, scroll.is_momentum);
+                    applyHorizontalScroll(state, scroll.dx, ctx.scroll_speed, kind);
                     handled_axis = true;
                     applied_x = true;
                 },
                 .both => {
                     if (!skip_y and can_v and wants_v) {
-                        applyVerticalScroll(state, scroll.dy, ctx.scroll_speed, scroll.is_momentum);
+                        applyVerticalScroll(state, scroll.dy, ctx.scroll_speed, kind);
                         handled_axis = true;
                         applied_y = true;
                     }
                     if (!skip_x and can_h and wants_h) {
-                        applyHorizontalScroll(state, scroll.dx, ctx.scroll_speed, scroll.is_momentum);
+                        applyHorizontalScroll(state, scroll.dx, ctx.scroll_speed, kind);
                         handled_axis = true;
                         applied_x = true;
                     }
                 },
             }
-            if (ctx.direction == .both and !scroll.phase_ended and !handled_axis and (wants_v or wants_h)) {
+            if (ctx.direction == .both and !handled_axis and (wants_v or wants_h)) {
                 logScroll("axis_delegate: id={d} dir=both dy={d:.2} dx={d:.2} skip_y={} skip_x={} can_v={} can_h={}", .{
                     container.id,
                     scroll.dy,
@@ -446,33 +246,31 @@ pub fn scrollEventHandler(event: Event, context: ?*anyopaque) EventResult {
                     can_v,
                     can_h,
                 });
-                if (!scroll.is_momentum) state.latched = false;
-                state.user_scrolling = false;
-                content.style.translate_y = state.contentTranslateY();
-                content.style.translate_x = state.contentTranslateX();
-                content.markCompositeAnimFrameDirty();
+                if (kind == .gesture) {
+                    state.latched = false;
+                    state.touching = false;
+                }
+                syncContentTranslate(state, content);
                 return .ignored;
             }
-            if (pending_user_activity) {
+            if (handled_axis) {
+                state.input_serial +%= 1;
                 state.onScrollActivityAxes(applied_y, applied_x);
-                state.has_scroll_history = true;
-                // 本层实际处理了这轮手势 → 持有 latch，momentum 跟随本层
-                if (handled_axis) state.latched = true;
-            } else if (handled_axis) {
-                state.onMomentumActivityAxes(applied_y, applied_x);
+                switch (kind) {
+                    // 本层实际处理了这轮手势 -> 持有 latch，momentum 跟随本层
+                    .gesture => state.latched = true,
+                    .momentum => {
+                        if (applied_y and state.bonus_y != 0) state.momentum_spent_y = true;
+                        if (applied_x and state.bonus_x != 0) state.momentum_spent_x = true;
+                    },
+                    .wheel => {},
+                }
             }
             logScroll(
                 "event out id={d} scroll_y={d:.2} bonus_y={d:.2} scroll_x={d:.2} bonus_x={d:.2}",
                 .{ container.id, state.scroll_y, state.bonus_y, state.scroll_x, state.bonus_x },
             );
-
-            const new_ty = state.contentTranslateY();
-            const new_tx = state.contentTranslateX();
-            if (new_ty != content.style.translate_y or new_tx != content.style.translate_x) {
-                content.style.translate_y = new_ty;
-                content.style.translate_x = new_tx;
-                content.markCompositeAnimFrameDirty();
-            }
+            syncContentTranslate(state, content);
             return .stop;
         },
         .mouse_move => |move| {
@@ -541,16 +339,6 @@ fn isOutwardAtBoundaryX(state: *const ScrollState, delta: f32) bool {
     return (at_left and delta < 0) or (at_right and delta > 0);
 }
 
-fn primaryAbsDelta(direction: ScrollDirection, dx: f32, dy: f32, speed: f32) f32 {
-    const v = @abs(-dy * speed);
-    const h = @abs(-dx * speed);
-    return switch (direction) {
-        .vertical => v,
-        .horizontal => h,
-        .both => @max(v, h),
-    };
-}
-
 /// 回弹动画是否活跃（duration 内 outward momentum 被拒绝）
 pub fn hasBounceActive(state: *const ScrollState, direction: ScrollDirection) bool {
     return switch (direction) {
@@ -591,15 +379,6 @@ pub fn isOutwardAtBoundary(state: *const ScrollState, direction: ScrollDirection
     };
 }
 
-fn shouldSuppressIdleResidualTail(state: *const ScrollState, direction: ScrollDirection, dx: f32, dy: f32, speed: f32) bool {
-    if (!state.has_scroll_history) return false;
-    if (state.user_scrolling) return false;
-    if (state.tail_idle_frames <= ScrollState.scroll_tuning.wheel_release_frames) return false;
-    const primary = primaryAbsDelta(direction, dx, dy, speed);
-    if (primary > ScrollState.scroll_tuning.idle_residual_delta_threshold) return false;
-    return isOutwardAtBoundary(state, direction, dx, dy, speed);
-}
-
 const ScrollAxis = enum {
     vertical,
     horizontal,
@@ -633,13 +412,8 @@ fn checkAncestorScrollArea(container: *Node, axis: ScrollAxis) AncestorCheckResu
                     result.exists = true;
                     const s = ancestor_ctx.state;
                     if (s.latched) result.has_latch = true;
-                    // 判定祖先是否"正在接收输入"：
-                    // - user_scrolling: 手指/滚轮正在输入（精确信号）
-                    // - scroll_event_idle_frames: 鼠标滚轮的猜测性保护窗口
-                    //   （鼠标滚轮无 phase 信号，用短超时代替）
-                    const active = s.user_scrolling or
-                        s.scroll_event_idle_frames <= ScrollState.scroll_tuning.wheel_release_frames;
-                    if (active) {
+                    // 祖先正持有当前触控板手势（手指在板上）
+                    if (s.touching) {
                         result.is_active = true;
                         break; // 找到活跃祖先，无需继续
                     }
@@ -668,7 +442,7 @@ fn shouldDelegateVerticalToAncestor(state: *ScrollState, ctx: *const ScrollEvent
     if (ancestor.is_active) return true;
     // 手势中段不换手（NSScrollView 10.9+ latch 语义）：
     // 本层已开始处理这轮手势后，即使滚到边界也留在本层 rubber-band，不上抛。
-    if (state.user_scrolling) return false;
+    if (state.touching) return false;
 
     const max = state.maxScrollY();
     if (max <= epsilon) return true;
@@ -704,7 +478,7 @@ fn shouldDelegateHorizontalToAncestor(state: *ScrollState, ctx: *const ScrollEve
     }
     if (ancestor.is_active) return true;
     // 手势中段不换手（latch 语义），到边界后本层 rubber-band
-    if (state.user_scrolling) return false;
+    if (state.touching) return false;
 
     const max = state.maxScrollX();
     if (max <= epsilon) return true;
@@ -732,40 +506,26 @@ pub fn isAtHorizontalBoundary(state: *const ScrollState) bool {
     return state.scroll_x <= epsilon or state.scroll_x >= max - epsilon;
 }
 
-fn shouldSuppressOutwardMomentumY(state: *const ScrollState, dy: f32, speed: f32) bool {
-    if (!state.suppress_outward_momentum_y) return false;
-    // 保留"越界时 outward momentum 继续压缩 bonus"的手感：
-    // 仅在 bonus 已回零后才启用 outward suppress。
-    if (state.bonus_y != 0) return false;
-    const max = state.maxScrollY();
-    if (max <= 0) return true;
-
-    const delta = -dy * speed;
-    const epsilon = ScrollState.scroll_tuning.jitter_snap_epsilon;
-    if (@abs(delta) <= epsilon) return true;
-
-    const at_top = state.scroll_y <= epsilon;
-    const at_bottom = state.scroll_y >= max - epsilon;
-    const outw = (at_top and delta < 0) or (at_bottom and delta > 0);
-    if (!outw) return false;
-    // suppress 只拦截小尾巴，避免大动量被硬切断造成"闸刀感"。
-    return @abs(delta) <= state.tuning().idle_residual_delta_threshold;
+fn syncContentTranslate(state: *const ScrollState, content: *Node) void {
+    const new_ty = state.contentTranslateY();
+    const new_tx = state.contentTranslateX();
+    if (new_ty != content.style.translate_y or new_tx != content.style.translate_x) {
+        content.style.translate_y = new_ty;
+        content.style.translate_x = new_tx;
+        // 滚动逐帧平移（内容未变）：anim-frame 组合（interaction+composite）。
+        content.markCompositeAnimFrameDirty();
+    }
 }
 
-fn shouldSuppressOutwardMomentumX(state: *const ScrollState, dx: f32, speed: f32) bool {
-    if (!state.suppress_outward_momentum_x) return false;
-    // 同 Y 轴：active bonus 阶段允许 outward momentum 继续塑形。
-    if (state.bonus_x != 0) return false;
-    const max = state.maxScrollX();
-    if (max <= 0) return true;
+/// 惯性在 Y 轴是否不再作用于内容：越界量由弹簧独占；或本段惯性已撞过边界且仍朝外。
+fn momentumBlockedY(state: *const ScrollState, dy: f32, speed: f32) bool {
+    if (dy == 0) return false;
+    if (state.bonus_y != 0) return true;
+    return state.momentum_spent_y and isOutwardAtBoundaryY(state, -dy * speed);
+}
 
-    const delta = -dx * speed;
-    const epsilon = ScrollState.scroll_tuning.jitter_snap_epsilon;
-    if (@abs(delta) <= epsilon) return true;
-
-    const at_left = state.scroll_x <= epsilon;
-    const at_right = state.scroll_x >= max - epsilon;
-    const outw = (at_left and delta < 0) or (at_right and delta > 0);
-    if (!outw) return false;
-    return @abs(delta) <= state.tuning().idle_residual_delta_threshold;
+fn momentumBlockedX(state: *const ScrollState, dx: f32, speed: f32) bool {
+    if (dx == 0) return false;
+    if (state.bonus_x != 0) return true;
+    return state.momentum_spent_x and isOutwardAtBoundaryX(state, -dx * speed);
 }

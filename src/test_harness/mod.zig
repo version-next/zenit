@@ -1,4 +1,4 @@
-/// test_harness — E2E 测试骨架
+/// test_harness, E2E 测试骨架
 ///
 /// 提供 file-based RPC API 让 e2e 测试自动化 UI 交互。
 /// 通过 `zig build -Dtest-mode=true` 启用，否则编译期消除。
@@ -95,7 +95,7 @@ test {
     _ = @import("http_server.zig");
     _ = @import("command_queue.zig");
     // command_executor.zig 的 2 个测试（console 序列化 / recording 状态序列化）
-    // 曾是孤儿：挂进来会让 test-harness 链接失败（经 ui→text 拉进 CoreText 的
+    // 曾是孤儿：挂进来会让 test-harness 链接失败（经 ui->text 拉进 CoreText 的
     // extern 符号）。已在 build.zig 给 harness_tests 补 addCoreTextBridge。
     _ = @import("command_executor.zig");
     _ = @import("tree_serializer.zig");

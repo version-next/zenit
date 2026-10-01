@@ -1,4 +1,4 @@
-//! PaintStateTable — v0.9-§b paint state SoA, dense by ElementId
+//! PaintStateTable, v0.9-§b paint state SoA, dense by ElementId
 //!
 //! 持有 Node.style 内的 paint-state 字段 (background, opacity, border 等)。
 //! Stage 1: 基建 + Node accessor + Cx.init 注册 read/write callback。

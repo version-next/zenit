@@ -1,9 +1,9 @@
-//! 自定义位图光标存储 —— 从 `Cx` 析出。
+//! 自定义位图光标存储，从 `Cx` 析出。
 //!
 //! 原本是 `Cx` 上的四个字段（custom_cursors / active_custom_cursor /
 //! current_custom_key / custom_cursor_fallback）加两个方法，依赖只有
 //! `allocator` 与 SVG 光栅化。下发到系统那一步需要 `system_sdk` / `window_id`，
-//! 那是 `Cx.updateCursorShape` 的职责 —— 接口因此切在：
+//! 那是 `Cx.updateCursorShape` 的职责，接口因此切在：
 //!
 //!   **store 负责「把 desc 光栅化成位图并按内容寻址缓存」，下发留在 Cx。**
 //!
@@ -59,7 +59,7 @@ pub const CustomCursorStore = struct {
     entries: std.AutoHashMapUnmanaged(u64, CustomCursorEntry) = .{},
     /// 当前被选中的自定义光标（还没必然下发到系统）。
     active: ?u64 = null,
-    /// 已下发到系统的 key。幂等判据是「shape 相同**且** key 相同」——
+    /// 已下发到系统的 key。幂等判据是「shape 相同**且** key 相同」,
     /// shape 停在 `.custom` 期间换位图内容也必须重新下发。
     submitted: ?u64 = null,
     /// 后端不支持位图光标（或未注册位图）时 `.custom` 的降级形状。
@@ -129,7 +129,7 @@ pub const CustomCursorStore = struct {
 const tiny_svg = "<svg viewBox=\"0 0 8 8\"><path d=\"M0 0 L8 0 L8 8 Z\" fill=\"#ff0000\"/></svg>";
 
 /// 假光栅化器：产出全不透明的 w×w RGBA。注入它之后，这组测试完全不依赖
-/// 真实 SVG 管线 —— 这正是把 rasterize 做成参数的收益。
+/// 真实 SVG 管线，这正是把 rasterize 做成参数的收益。
 fn fakeRasterize(allocator: std.mem.Allocator, svg_data: []const u8, target_width: u32) anyerror!CustomCursorStore.Raster {
     if (std.mem.eql(u8, svg_data, "FAIL")) return error.RasterizeFailed;
     const w = @max(target_width, 1);

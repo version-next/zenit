@@ -24,13 +24,13 @@ pub var layout_depth_limit_hits: u64 = 0;
 /// 布局过程中 frame_allocator 分配失败的次数。
 ///
 /// 两个 >512 子节点的慢路径（flex_shrink 的 shrink_deltas、grid 的 placements）
-/// 在分配失败时都选择降级而不是崩 —— 这和 `layout_depth_limit_hits` 是同一套
+/// 在分配失败时都选择降级而不是崩，这和 `layout_depth_limit_hits` 是同一套
 /// 姿态。但降级的后果是**静默的错误布局**（收缩不生效 ⇒ 溢出；grid 直接不排
 /// 版），从画面上看不出是 OOM 还是布局写错了。计数器让它可诊断。
 pub var layout_alloc_failure_hits: u64 = 0;
 var g_layout_recursion_depth: usize = 0;
 
-/// display:none —— 节点连同子树不参与布局（不占空间、不计 gap、不撑父容器）。
+/// display:none，节点连同子树不参与布局（不占空间、不计 gap、不撑父容器）。
 pub inline fn isDisplayNone(n: *const Node) bool {
     return n.style.display == .none;
 }
@@ -42,7 +42,7 @@ pub inline fn isOutOfFlow(n: *const Node) bool {
 }
 
 /// display:none 子树的布局收尾：自身尺寸归零（位置保留，computeChildrenBBox /
-/// 命中剪枝因 w/h = 0 自然排除），整棵子树清 layout 脏位 —— 不清的话被隐藏子树
+/// 命中剪枝因 w/h = 0 自然排除），整棵子树清 layout 脏位，不清的话被隐藏子树
 /// 的脏位每帧都在，idle 停帧门控永远判"还有布局要做"。onMount 照常触发：节点
 /// 仍在树上（与卸载不同），只是不显示。
 fn collapseDisplayNone(node: *Node) void {
@@ -51,7 +51,7 @@ fn collapseDisplayNone(node: *Node) void {
     settleHiddenSubtree(node, 0);
 }
 
-/// 递归（按深度而非宽度设上限 —— 宽子树不会漏清脏位）。
+/// 递归（按深度而非宽度设上限，宽子树不会漏清脏位）。
 fn settleHiddenSubtree(n: *Node, depth: usize) void {
     n.frame_state.state_bits.dirty.core.layout = false;
     n.frame_state.state_bits.dirty.core.subtree_layout = false;
@@ -82,9 +82,9 @@ fn releaseShapedFallbackFontRefs(glyphs: []const text_module.ShapedGlyph) void {
     }
 }
 
-// IntrinsicCache —— 同一节点同一 (axis, content_version) 的 intrinsic
+// IntrinsicCache，同一节点同一 (axis, content_version) 的 intrinsic
 // 测量结果跨 calcIntrinsicSize 调用复用。
-// 当前 Node god-object 不便扩字段；用 (node.id, axis) → 值的 hashmap，按
+// 当前 Node god-object 不便扩字段；用 (node.id, axis) -> 值的 hashmap，按
 // node.caches.versions.content 失效。
 //
 // 单线程模型（owner.assertThread 保证）下用静态变量；v0.2-P3 拆 Node 时迁到
@@ -101,7 +101,7 @@ var g_intrinsic_cache_allocator: Allocator = undefined;
 
 fn intrinsicCacheKey(world_id: u16, node_id: u32, is_main_row: bool) u64 {
     // key 必须含 world_id（2026-07-30 审查发现）：本表是进程级共享，而 node.id
-    // 是 per-Cx 计数器、两个窗口的 id 完全重叠 —— 不混 world_id 的话，窗口 B
+    // 是 per-Cx 计数器、两个窗口的 id 完全重叠，不混 world_id 的话，窗口 B
     // 的节点会命中窗口 A 同 id 节点的 intrinsic 尺寸（content_version 也是
     // per-node 小计数器，极易相等），布局直接串台。
     return (@as(u64, world_id) << 33) | (@as(u64, node_id) << 1) |
@@ -134,8 +134,8 @@ fn intrinsicCacheStore(node: *const Node, is_main_row: bool, value: f32) void {
 /// 第一个 Cx.init 时 alloc + setup；后续 Cx.init 只 refcount++。
 ///
 /// ⚠️ 已知边界（2026-07-30 审查）：allocator 绑定**第一个** Cx 的。若两个 Cx
-/// 用不同 allocator 且先 init 的先 deinit（refcount 1→不释放表），后续 put 仍
-/// 用第一个的 allocator —— 那个 allocator 若已销毁即 UAF。App 场景两者都是
+/// 用不同 allocator 且先 init 的先 deinit（refcount 1->不释放表），后续 put 仍
+/// 用第一个的 allocator，那个 allocator 若已销毁即 UAF。App 场景两者都是
 /// 同一个 GPA 不触发；多 App 各持 allocator 时需把本表迁 per-Cx 才安全。
 pub fn enableIntrinsicCache(allocator: Allocator) void {
     if (g_intrinsic_cache_refcount == 0) {
@@ -155,7 +155,7 @@ pub fn disableIntrinsicCache() void {
     }
 }
 
-/// 布局上下文 — 传递帧级 allocator 给所有布局函数
+/// 布局上下文，传递帧级 allocator 给所有布局函数
 /// frame_allocator 在帧末自动清空，用于替代栈上固定大小数组
 pub const LayoutContext = struct {
     frame_allocator: Allocator,
@@ -201,7 +201,7 @@ fn countUtf8Chars(bytes: []const u8) usize {
 ///   effective_min = max(sizing_mm.min, ext.min)
 ///   effective_max = min(sizing_mm.max, ext.max)
 ///
-/// 默认值（fit{}/grow{} 的 min=0,max=inf；ext 同款默认）下融合不变 → 向后兼容。
+/// 默认值（fit{}/grow{} 的 min=0,max=inf；ext 同款默认）下融合不变 -> 向后兼容。
 pub fn effectiveMinMax(sizing: Sizing, node: *const Node, comptime is_width: bool) struct { min: f32, max: f32 } {
     const ext_min: f32 = if (is_width) node.style.min_width() else node.style.min_height();
     const ext_max: f32 = if (is_width) node.style.max_width() else node.style.max_height();
@@ -213,8 +213,8 @@ pub fn effectiveMinMax(sizing: Sizing, node: *const Node, comptime is_width: boo
     };
 }
 
-/// resolveSize 用于已知 child sizing + 容器可用空间 → child 实际尺寸。
-/// **不**走 effectiveMinMax —— 调用方持有 child node 时直接用上面的 helper。
+/// resolveSize 用于已知 child sizing + 容器可用空间 -> child 实际尺寸。
+/// **不**走 effectiveMinMax，调用方持有 child node 时直接用上面的 helper。
 fn resolveSize(sizing: Sizing, available: f32, intrinsic: f32) f32 {
     return switch (sizing) {
         .px => |v| v,
@@ -239,7 +239,7 @@ var g_active_font_system: ?*text_module.FontSystem = null;
 /// == 为什么不能只靠 FontSystem.findFont(family="system") ==
 /// findFont 是**按名字**查系统已安装字体。App 用 `loadFont(path)` 从文件
 /// 装进来的字体（Inter / Lora / JetBrains Mono 这类随仓库发布的）根本不在
-/// 系统字体库里，按名字查必然 miss 并静默回退到别的族 —— 于是 shape 管线
+/// 系统字体库里，按名字查必然 miss 并静默回退到别的族，于是 shape 管线
 /// 与 renderer 用两套字体，同一段文本两个宽度。
 /// `setDefaultFamily("Inter")` 治不了这个：它只是把 "system" 换成 "Inter"
 /// 再去查系统库，Inter 没装照样 miss（实测把 1.442px 的偏差放大到 3.783px）。
@@ -259,7 +259,7 @@ pub const ShapeFontResolveFn = *const fn (
     use_monospace: bool,
     /// 字体族 id(render.FontRegistry)。0 = 默认族。
     /// ⚠ 这个参数是「量的和画的是同一个字体」的一部分:渲染端 resolveFonts
-    ///   会按 family 选 face,测量端不传就会退回默认族 —— 于是自定义字体的
+    ///   会按 family 选 face,测量端不传就会退回默认族，于是自定义字体的
     ///   文本光标/选区系统性偏移(与历史上那次 2.758px 同款)。
     font_family: u16,
 ) ?*text_module.Font;
@@ -316,7 +316,7 @@ pub fn setDrawnTextMeasure(f: ?DrawnTextMeasureFn, ctx: ?*anyopaque) void {
 /// 钩子平时只在 `layoutNode` 期间装着(见下方 setShapeMeasureFn 处的注释)。
 /// 于是同一段文字:布局期按 **shaping 宽度**算,而 overlay 期
 /// `measureProportional` 找不到钩子、降级到**平台 measure**。两条路径的
-/// 宽度不一致 —— 表现就是选区高亮/光标与字形逐渐错位,越往行尾偏得越多。
+/// 宽度不一致，表现就是选区高亮/光标与字形逐渐错位,越往行尾偏得越多。
 ///
 /// 调用方式(RAII 风格):
 /// ```zig
@@ -354,7 +354,7 @@ fn shapeMeasureBridge(text: []const u8, font_size: f32, font_weight: u16, use_it
     return shapeViaPipeline(g_active_shaping_cache, g_active_font_system, text, font_size, font_weight, use_italic, use_monospace, 0, false, 0) orelse std.math.nan(f32);
 }
 
-/// cx-aware variant — spans 空时走 GlyphRun pipeline (cache 命中
+/// cx-aware variant, spans 空时走 GlyphRun pipeline (cache 命中
 /// 直接返回 total_advance)，否则降级到 measureTextWidthWithSpans 走旧 span
 /// 处理路径。完全切换需要 GlyphRun 支持 sub-range shape，是 phase D+ 工作。
 fn measureIntrinsicTextWidthCtx(
@@ -378,7 +378,7 @@ fn measureIntrinsicTextWidthCtx(
         );
         return layout.max_line_width;
     }
-    // 单行 measure 且无 spans → GlyphRun pipeline fast path
+    // 单行 measure 且无 spans -> GlyphRun pipeline fast path
     if (layout_spans.len == 0) {
         if (shapeViaPipeline(cache, fs, t.content, t.font_size, t.font_weight, t.use_italic_font, t.use_monospace_font, t.font_family, t.use_symbols_font, t.monospace_char_width)) |w| {
             return w;
@@ -485,7 +485,7 @@ pub fn shapeViaPipeline(
     defer cache.allocator.free(run.clusters);
     // shaper 按 font 自己的 pixelSize 出 advance。resolver 可能给回一个
     // 邻近字号的预载字体（FontSelector 只在差值超 epsilon 时才 derive），
-    // 此时必须按请求字号缩放 —— 与 FontSelector.measureTextWidth 的
+    // 此时必须按请求字号缩放，与 FontSelector.measureTextWidth 的
     // `font_size / font.pixelSize()` 完全同式，两条路才对得上。
     const font_px = font.pixelSize();
     const text_scale: f32 = if (font_px > 0) font_size / font_px else 1.0;
@@ -542,8 +542,8 @@ test "shapeViaPipeline prefers the authoritative drawn-width callback" {
 /// 计算节点的 intrinsic 尺寸 (fit 模式用)
 /// 文本节点返回文本估算尺寸，容器节点递归累加子节点
 fn calcIntrinsicSize(node: *Node, comptime is_main_row: bool) f32 {
-    // 子树布局脏 → 后代尺寸可能已变，但本节点 content_version 不随后代变化，
-    // 缓存条目无法察觉 —— 必须绕过缓存重算（修 stale intrinsic 布局 bug）。
+    // 子树布局脏 -> 后代尺寸可能已变，但本节点 content_version 不随后代变化，
+    // 缓存条目无法察觉，必须绕过缓存重算（修 stale intrinsic 布局 bug）。
     const subtree_dirty = node.frame_state.state_bits.dirty.core.layout or
         node.frame_state.state_bits.dirty.core.subtree_layout;
     // cache 查询（按 node.id + content_version）
@@ -652,7 +652,7 @@ const ResolvedAxisMargins = struct {
 };
 
 /// 主轴尺寸：flex_basis / px / grow / fit / percent，统一减去 flex_shrink 的
-/// 收缩量。`is_row` 决定读 width 还是 height —— 这是 row/column 唯一的区别。
+/// 收缩量。`is_row` 决定读 width 还是 height，这是 row/column 唯一的区别。
 fn resolveMainAxisSize(
     child: *Node,
     comptime is_row: bool,
@@ -726,8 +726,8 @@ fn resolveAxisMargins(
 /// - measureNode 在已知宽度时执行文本折行（解决"宽度决定高度"问题）
 /// - 结果更精确，用于 fit 容器消除回填
 ///
-/// constraints.definite_width != null → 文本可以折行，返回精确高度
-/// constraints.definite_width == null → 返回最小 intrinsic 尺寸
+/// constraints.definite_width != null -> 文本可以折行，返回精确高度
+/// constraints.definite_width == null -> 返回最小 intrinsic 尺寸
 pub fn measureNode(node: *Node, constraints: types.LayoutConstraints) Size {
     if (!enterLayoutRecursion()) {
         return Size.init(
@@ -867,7 +867,7 @@ pub fn layoutNode(node: *Node, available: Size, ctx: LayoutContext) void {
     if (!enterLayoutRecursion()) return;
     defer leaveLayoutRecursion();
 
-    // GlyphRun pipeline globals — measureIntrinsicTextWidth 这条
+    // GlyphRun pipeline globals, measureIntrinsicTextWidth 这条
     // calc-chain 没 ctx 参数，layout pass 入口 set/restore globals 让
     // measureIntrinsicTextWidth 能走 cache。嵌套 layoutNode (递归 child)
     // 时保存外层值，确保 unwind 时还原。
@@ -910,7 +910,7 @@ pub fn layoutNode(node: *Node, available: Size, ctx: LayoutContext) void {
 
     if (node.children.items.len > 0) {
         if (node.frame_state.state_bits.dirty.core.layout) {
-            // 当前节点脏 → 全量布局子节点（flex 计算依赖兄弟关系）
+            // 当前节点脏 -> 全量布局子节点（flex 计算依赖兄弟关系）
             const content_w = w - node.style.padding.horizontal();
             const content_h = h - node.style.padding.vertical();
             if (node.style.grid() != null) {
@@ -965,7 +965,7 @@ pub fn layoutNode(node: *Node, available: Size, ctx: LayoutContext) void {
                 }
             } else {
                 const is_row = node.style.direction.isRow();
-                // 仅子树有脏节点 → 检查是否有 flex 兄弟依赖
+                // 仅子树有脏节点 -> 检查是否有 flex 兄弟依赖
                 // 如果存在 grow 子节点，一个子节点的尺寸变化会影响其他 flex 兄弟的分配，
                 // 此时必须回退到全量重布局
                 var has_flex_children = false;
@@ -1007,7 +1007,7 @@ pub fn layoutNode(node: *Node, available: Size, ctx: LayoutContext) void {
                                 // 上面的 must_full_layout 判定有意跳过 absolute
                                 //（不影响 flow 兄弟），但 fallback 若只递归
                                 // layoutNode(child, 旧rect)，**首帧布局之后才
-                                // append 的 absolute 子节点 rect 恒为 0**——
+                                // append 的 absolute 子节点 rect 恒为 0**,
                                 // 画布对象后挂的文字 label 因此永远不渲染
                                 //（下游应用 sticky 文本消失的根因）。
                                 if (isDisplayNone(child)) {
@@ -1050,7 +1050,7 @@ pub fn layoutNode(node: *Node, available: Size, ctx: LayoutContext) void {
                                 // 上面的 must_full_layout 判定有意跳过 absolute
                                 //（不影响 flow 兄弟），但 fallback 若只递归
                                 // layoutNode(child, 旧rect)，**首帧布局之后才
-                                // append 的 absolute 子节点 rect 恒为 0**——
+                                // append 的 absolute 子节点 rect 恒为 0**,
                                 // 画布对象后挂的文字 label 因此永远不渲染
                                 //（下游应用 sticky 文本消失的根因）。
                                 if (isDisplayNone(child)) {
@@ -1066,15 +1066,15 @@ pub fn layoutNode(node: *Node, available: Size, ctx: LayoutContext) void {
                 }
             }
         }
-        // 两者都 false → 跳过整个子树（增量布局核心优化）
+        // 两者都 false -> 跳过整个子树（增量布局核心优化）
     }
 
     // layout 完成后：overflow_hidden 节点如果本次 layout_dirty（尺寸/位置可能变了），
     // 必须 invalidate 渲染缓存 + 标脏渲染。
     // 不做这一步会导致：
-    // 1. 旧缓存的 push_clip rect 和子节点坐标已过期 → 复用错误缓存
-    // 2. 新 mount 首帧子节点未完全 layout → 渲染+缓存了不完整内容 →
-    //    后续帧 subtree_render_dirty 已清零 → 复用不完整缓存 → 部分内容永久丢失
+    // 1. 旧缓存的 push_clip rect 和子节点坐标已过期 -> 复用错误缓存
+    // 2. 新 mount 首帧子节点未完全 layout -> 渲染+缓存了不完整内容 ->
+    //    后续帧 subtree_render_dirty 已清零 -> 复用不完整缓存 -> 部分内容永久丢失
     // markRenderDirty 向上冒泡 subtree_render_dirty，确保祖先 overflow_hidden 容器
     //（如 scroll_area）的缓存也被正确 invalidate。
     if (node.frame_state.state_bits.dirty.core.layout and node.style.overflow_hidden) {
@@ -1140,7 +1140,7 @@ fn computeChildrenBBox(node: *Node) void {
     }
 }
 
-/// 批量 reverse — 镜像翻转直接子节点在主轴上的位置
+/// 批量 reverse，镜像翻转直接子节点在主轴上的位置
 /// 相对坐标系下只需修改直接子节点的 rect，无需递归偏移后代 O(N)
 fn batchReverseChildren(
     children: []*Node,
@@ -1221,7 +1221,7 @@ fn layoutChildrenWrapImpl(parent: *Node, available: Size, comptime is_row: bool,
     const gap = style.gap;
     const main_available = if (is_row) available.width else available.height;
 
-    // Pass 1: 分行——当累计主轴尺寸超过可用空间时换行
+    // Pass 1: 分行，当累计主轴尺寸超过可用空间时换行
     // 用固定大小的行结构（从 64 扩到 256 支持大量 tag/badge wrap 布局）
     const max_lines = 256;
     var line_starts: [max_lines]usize = undefined;
@@ -1390,13 +1390,13 @@ fn layoutChildrenWrapImpl(parent: *Node, available: Size, comptime is_row: bool,
 /// Absolute 子节点布局（支持 CSS inset 定位模型）
 ///
 /// 定位优先级：inset > static-position-origin（margin 只参与外边距修正，不单独充当定位 API）
-/// - left + right 同时设定 → width=grow 时拉伸填满两侧 inset 之间（CSS width:auto 的等价物）；
+/// - left + right 同时设定 -> width=grow 时拉伸填满两侧 inset 之间（CSS width:auto 的等价物）；
 ///   px/percent/fit 仍按自身解析（fit = 内容固有尺寸，空 box 为 0），剩余空间交给 margin 分配
-/// - top + bottom 同时设定 → 同理，height=grow 才拉伸
-/// - 只设一侧 → 从该侧偏移，尺寸由 width/height 决定
-/// - 全 auto → 退回到 containing block 起点作为 static position origin，再叠加 margin
+/// - top + bottom 同时设定 -> 同理，height=grow 才拉伸
+/// - 只设一侧 -> 从该侧偏移，尺寸由 width/height 决定
+/// - 全 auto -> 退回到 containing block 起点作为 static position origin，再叠加 margin
 /// 增量布局里 absolute 子节点什么时候要重新 resolve 尺寸（而不是按旧 rect 只递归子树）：
-/// 自身 layout 脏；或者宽 / 高是 fit 且子树有布局变化——fit 尺寸取决于后代，按旧 rect
+/// 自身 layout 脏；或者宽 / 高是 fit 且子树有布局变化，fit 尺寸取决于后代，按旧 rect
 /// 当可用空间排子节点时，可收缩的后代会被挤回旧尺寸，容器只缩不涨
 /// （Popover 下拉面板：列表行变多后高度不恢复，实测复现）。
 fn absoluteChildNeedsResolve(child: *const Node) bool {
@@ -1407,7 +1407,7 @@ fn absoluteChildNeedsResolve(child: *const Node) bool {
 }
 
 /// 确定宽度后为 wrap 文本节点计算/缓存折行（flex 与 absolute 两条布局路径
-/// 共用——absolute 定位的文本节点曾走不到折行计算，wrap 永远按单行渲染）。
+/// 共用，absolute 定位的文本节点曾走不到折行计算，wrap 永远按单行渲染）。
 /// 返回折行总高（含垂直 padding），供 fit 高度使用；不适用时返回 null。
 fn computeWrapTextLayoutForWidth(child: *Node, child_width: f32) ?f32 {
     const t = child.getText() orelse return null;
@@ -1490,7 +1490,7 @@ fn layoutAbsoluteChild(parent: *Node, child: *Node, ctx: LayoutContext) void {
             new_x = left_val.? + resolved.start;
         }
     } else if (left_val) |lv| {
-        // 只有 left → 从左侧偏移
+        // 只有 left -> 从左侧偏移
         child_width = switch (child.style.width) {
             .px => |v| v,
             .grow => |mm| std.math.clamp(cb_w - lv - margin.horizontal(), mm.min, mm.max),
@@ -1499,7 +1499,7 @@ fn layoutAbsoluteChild(parent: *Node, child: *Node, ctx: LayoutContext) void {
         };
         new_x = lv + (if (child.style.marginLeftIsAuto()) 0 else margin.left);
     } else if (right_val) |rv| {
-        // 只有 right → 从右侧偏移
+        // 只有 right -> 从右侧偏移
         child_width = switch (child.style.width) {
             .px => |v| v,
             .grow => |mm| std.math.clamp(cb_w - rv - margin.horizontal(), mm.min, mm.max),
@@ -1508,7 +1508,7 @@ fn layoutAbsoluteChild(parent: *Node, child: *Node, ctx: LayoutContext) void {
         };
         new_x = cb_w - rv - (if (child.style.marginRightIsAuto()) 0 else margin.right) - child_width;
     } else {
-        // 无 inset → 以 containing block 起点作为 static position origin，再应用 margin
+        // 无 inset -> 以 containing block 起点作为 static position origin，再应用 margin
         child_width = switch (child.style.width) {
             .px => |v| v,
             .grow => |mm| std.math.clamp(@max(0, cb_w - margin.horizontal()), mm.min, mm.max),
@@ -1564,7 +1564,7 @@ fn layoutAbsoluteChild(parent: *Node, child: *Node, ctx: LayoutContext) void {
         };
         new_y = cb_h - bv - (if (child.style.marginBottomIsAuto()) 0 else margin.bottom) - child_height;
     } else {
-        // 无 inset → 以 containing block 起点作为 static position origin，再应用 margin
+        // 无 inset -> 以 containing block 起点作为 static position origin，再应用 margin
         child_height = switch (child.style.height) {
             .px => |v| v,
             .grow => |mm| std.math.clamp(@max(0, cb_h - margin.vertical()), mm.min, mm.max),
@@ -1703,16 +1703,16 @@ fn layoutChildren(parent: *Node, available: Size, ctx: LayoutContext) void {
     // 对于最常见的 "所有子节点都是 fit/px，无 flex 无 justify" 场景，
     // 完全跳过 calcIntrinsicSize，避免对 3000+ 子节点的冗余递归。
     // - has_shrinkable_fit: flex_shrink 也要精确的 used_space。存在「可收缩的 fit 子节点」
-    //   时不补算，溢出量只剩 px 子节点之和，收缩整段不触发 —— fit + max 被夹住的容器
+    //   时不补算，溢出量只剩 px 子节点之和，收缩整段不触发，fit + max 被夹住的容器
     //  （popover chrome 被 autosize 限高）里 ScrollArea 容器仍按内容高度排，后面的
     //   footer 被推出容器外，列表也滚不动（下游编辑器插入菜单，2026-09-28）。
     //   「可收缩」按 CSS flex item 自动最小尺寸：overflow ≠ visible（这里是
     //   overflow_hidden）的项最小尺寸为 0；普通 fit 项最小尺寸就是内容本身，
-    //   不因它补算 —— 否则 ScrollArea 容器 → content（普通 fit）这一层也会被当成
+    //   不因它补算，否则 ScrollArea 容器 -> content（普通 fit）这一层也会被当成
     //   溢出去压，内容等于视口就再也滚不动了。收缩量的分配算法不变。
     //   只在父节点主轴自己是 fit 时启用（fit 只可能因 max 上限而溢出）：px / grow 容器
-    //   —— 尤其是「px 0 + overflow_hidden」这个到处在用的隐藏惯用法（Modal 关着的
-    //   barrier、showNode）—— 依赖子节点在隐藏期保持内容尺寸，压成 0 会让 Quick Open
+    //   尤其是「px 0 + overflow_hidden」这个到处在用的隐藏惯用法（Modal 关着的
+    //   barrier、showNode），依赖子节点在隐藏期保持内容尺寸，压成 0 会让 Quick Open
     //   这类 Modal 重开后面板停在 0 高（native gate panel_infra 实测）。
     var has_shrinkable_fit = false;
     if (main_is_fit) for (parent.children.items) |child| {
@@ -1796,7 +1796,7 @@ fn layoutChildren(parent: *Node, available: Size, ctx: LayoutContext) void {
     // main-fit 容器的主轴最终尺寸由下方 fit 回填决定（= clamp(内容 + padding)），
     // 与 main_available 可能不同（被祖先交叉轴 stretch 拉宽时）。justify / auto-margin
     // 的剩余空间按预测的回填尺寸算，首轮就把子节点放在终态位置，避免每次全量布局
-    // 「先按拉伸宽摆 → 回填后再挪回」来回翻转把子节点反复标脏。预测值只依赖
+    // 「先按拉伸宽摆 -> 回填后再挪回」来回翻转把子节点反复标脏。预测值只依赖
     // intrinsic 估算；折行等导致的偏差由回填后的 repositionMainAxis 兜底。
     const justify_main_available = if (main_is_fit and flex_total == 0 and needs_precise_remaining) blk: {
         const pad_main = if (is_row) style.padding.horizontal() else style.padding.vertical();
@@ -1883,7 +1883,7 @@ fn layoutChildren(parent: *Node, available: Size, ctx: LayoutContext) void {
         shrink_idx += 1;
 
         // 主轴/交叉轴各算一次。此前这里是一段逐字镜像的 if (is_row) / else
-        // —— 两边逻辑完全相同，只是 width↔height 互换，改一边忘另一边就是
+        // 两边逻辑完全相同，只是 width↔height 互换，改一边忘另一边就是
         // 一个只在 column 布局下复现的 bug。抽成按轴取参数的两个辅助函数后，
         // 规则只有一份。
         if (is_row) {
@@ -1896,7 +1896,7 @@ fn layoutChildren(parent: *Node, available: Size, ctx: LayoutContext) void {
 
         // 独立 min/max 约束 clamp (CSS min-width/max-width/min-height/max-height)
         // fit 还要带上 sizing 自带的 fit{.min,.max}（effectiveMinMax 的统一口径）：只看 ext
-        // 时 fit{.max=N} 要到子节点排完后的回填才生效，子节点是按未夹住的尺寸排的 ——
+        // 时 fit{.max=N} 要到子节点排完后的回填才生效，子节点是按未夹住的尺寸排的,
         // 溢出算不出来、flex_shrink 不触发，px 兄弟被推出容器。grow 的 mm 另有语义，不动。
         // （effectiveMinMax 对 px/percent 就是 ext；grow 用 px 占位退回 ext 口径）
         const mm_w = effectiveMinMax(if (child.style.width == .grow) Sizing{ .px = 0 } else child.style.width, child, true);

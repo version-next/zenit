@@ -41,7 +41,7 @@ pub const AnimatedValue = struct {
     current_value: f32,
     target_value: f32,
 
-    /// 内部动画状态 — tagged union，只存储活跃的动画类型
+    /// 内部动画状态，tagged union，只存储活跃的动画类型
     animator: Animator,
 
     const Animator = union(AnimationType) {
@@ -119,7 +119,7 @@ pub const AnimatedValue = struct {
             .tween => |*tw| {
                 // Tween.update 吃绝对 ms 时间戳（与 spring/transition 同轨）。
                 // 曾误传 dt_s（~0.016）：elapsed = 0.016 − 绝对ms 恒为巨大负数，
-                // 被 delay 判断挡住 → tween 永远冻在 from。
+                // 被 delay 判断挡住 -> tween 永远冻在 from。
                 tw.update(now_ms);
                 self.current_value = tw.getValue();
             },
@@ -307,14 +307,14 @@ test "springValue convenience function" {
 
 test "AnimatedValue: tween mode 真的会动（now_ms 轨道回归）" {
     // 回归：update 曾把 dt_s（帧间隔秒）当绝对 ms 传给 Tween，
-    // elapsed 恒为巨大负数被 delay 挡住 —— tween 永远冻在 from。
+    // elapsed 恒为巨大负数被 delay 挡住，tween 永远冻在 from。
     // 该模式当前无 builder 入口（零消费者），直接 init 构造。
     var value = AnimatedValue.init(0.0, .{
         .animation_type = .tween,
         .tween_config = .{ .from = 0, .to = 100, .duration = 0.5, .easing = .linear },
     });
 
-    // Tween.start 锚定全局帧时钟——显式设定，消除测试顺序依赖
+    // Tween.start 锚定全局帧时钟，显式设定，消除测试顺序依赖
     const t0: f64 = 1000.0;
     @import("../core/render_engine/mod.zig").current_frame_time_ms = t0;
     value.setTo(100.0, t0);

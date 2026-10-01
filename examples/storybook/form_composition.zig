@@ -1,4 +1,4 @@
-//! Form Composition — 同档 Input / Select / Button 混排的业务示意。
+//! Form Composition，同档 Input / Select / Button 混排的业务示意。
 //!
 //! 三者共用 `ControlSize`（外框高度 = padding_y × 2 + 行高：XS 20 / SM 24 /
 //! MD 32 / LG 40）。这个 story 不演示单个组件，而是把它们按真实业务场景

@@ -240,6 +240,15 @@ if (( RUN_SMOKE_BUILD == 1 )); then
       --prefix "$WORK_DIR/smoke-out" \
       --summary none
   )
+  # zig still creates .zig-cache in each package root despite --cache-dir, and
+  # those caches record local absolute paths. The source export was checked to
+  # contain none above, so every one found now came from the smoke build.
+  find "$STAGING_DIR" -type d \( -name .zig-cache -o -name zig-cache \) -prune -exec rm -rf {} +
+  LEFTOVER_CACHE="$(find "$STAGING_DIR" -type d \( -name .zig-cache -o -name zig-cache \) -print -quit)"
+  if [[ -n "$LEFTOVER_CACHE" ]]; then
+    echo "smoke build cache left in public source: ${LEFTOVER_CACHE#"$STAGING_DIR/"}" >&2
+    exit 1
+  fi
 else
   echo "==> Skipping compile smoke test (--skip-build)"
 fi

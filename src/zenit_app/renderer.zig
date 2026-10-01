@@ -1,11 +1,11 @@
 /// AppRenderer - 顶层渲染协调器
 ///
-/// 封装完整的 UI → 屏幕管线:
-///   1. cx.layout()  — 计算布局
-///   2. cx.render()  — paint pass，填 cx.display_list
-///   3. encoder.encodeDisplay(cx) — 编码到 sdf/text/image renderer
-///   4. flush(render_pass)  — 提交 GPU
-///   5. surface.present()   — 显示帧
+/// 封装完整的 UI -> 屏幕管线:
+///   1. cx.layout()，计算布局
+///   2. cx.render(), paint pass，填 cx.display_list
+///   3. encoder.encodeDisplay(cx)，编码到 sdf/text/image renderer
+///   4. flush(render_pass)，提交 GPU
+///   5. surface.present()，显示帧
 ///
 /// 用法:
 /// ```
@@ -63,7 +63,7 @@ fn measureWidthAsDrawn(ctx: *anyopaque, text: []const u8, font: *render.Font, pr
 /// instance storage. Dropping this below 3 made frame pacing depend too much
 /// on CAMetalLayer drawable availability and pushed jitter into acquireTexture.
 const FRAME_BUFFER_COUNT = render_pacing.frames_in_flight;
-/// 帧性能统计 — 每帧自动收集，通过 getLastFrameStats() 暴露给 DevTools
+/// 帧性能统计，每帧自动收集，通过 getLastFrameStats() 暴露给 DevTools
 pub const FrameStats = struct {
     /// 布局计算耗时（微秒）
     layout_us: u64 = 0,
@@ -81,7 +81,7 @@ pub const FrameStats = struct {
     /// interval。区别于 gpu_encode_us（那是 CPU 侧编码+提交
     /// 的墙钟，混入 wait/acquire）。
     /// 时序说明：GPU 时间戳只有在 command buffer **完成之后**才有效，
-    /// 而本帧的 buffer 刚提交，故这里报告的是**上一帧**的 GPU 时间 ——
+    /// 而本帧的 buffer 刚提交，故这里报告的是**上一帧**的 GPU 时间,
     /// 稳态下这正是想要的量级信息；0 表示尚未有已完成的帧。
     gpu_execute_us: u64 = 0,
     /// 编码耗时（encodeDisplay，微秒）
@@ -100,7 +100,7 @@ pub const FrameStats = struct {
     image_draw_calls: u32 = 0,
     /// image 管线本帧实例数
     image_instances: u32 = 0,
-    /// image 管线本帧纹理绑定切换次数——图片密集画布的真实瓶颈指标
+    /// image 管线本帧纹理绑定切换次数，图片密集画布的真实瓶颈指标
     texture_binds: u32 = 0,
     /// SDF 管线本帧 GPU draw 数
     sdf_draw_calls: u32 = 0,
@@ -118,7 +118,7 @@ pub const FrameStats = struct {
     total_frame_us: u64 = 0,
 };
 
-/// 跨帧计时采样环（P95 门禁用）。实现与单测在 timing_ring.zig ——
+/// 跨帧计时采样环（P95 门禁用）。实现与单测在 timing_ring.zig,
 /// 那里不依赖 Metal/ObjC 桥，才能被 `zig build test` 真正覆盖。
 pub const TimingRing = @import("timing_ring.zig").TimingRing;
 
@@ -162,7 +162,7 @@ pub const AppRenderer = struct {
 
     // 帧统计
     frame_count: u64 = 0,
-    /// 累计 retained 计数（跨帧单调递增；/stats 用 —— per-frame 值会被后续
+    /// 累计 retained 计数（跨帧单调递增；/stats 用，per-frame 值会被后续
     /// settle/idle 帧覆盖，e2e 断言需要累计量）
     total_retained_hits: u64 = 0,
     total_retained_misses: u64 = 0,
@@ -172,23 +172,23 @@ pub const AppRenderer = struct {
     /// 上一帧性能统计
     last_frame_stats: FrameStats = .{},
     /// 跨帧计时采样环（P95 门禁用）。`last_frame_stats` 只是单帧快照，
-    /// 而单帧计时噪声极大 —— e2e 想要的是"最近 N 帧的 P95"这种抗噪统计量。
+    /// 而单帧计时噪声极大，e2e 想要的是"最近 N 帧的 P95"这种抗噪统计量。
     timing_ring: TimingRing = .{},
-    /// 上一**渲染**帧的起始时刻（idle 跳帧不更新）——DevTools FPS 的帧间隔
+    /// 上一**渲染**帧的起始时刻（idle 跳帧不更新），DevTools FPS 的帧间隔
     /// 采样基准。用 renderer 自己的墙钟而非 cx.frame_dt_seconds：后者被钳到
     /// 0.1s，区分不出「100ms 卡帧」和「idle 停帧 5s 后恢复」。
     prev_frame_start: ?std.time.Instant = null,
 
-    // GPU 帧同步 — 防止 CPU 覆盖 GPU 正在读取的 triple buffer
+    // GPU 帧同步，防止 CPU 覆盖 GPU 正在读取的 triple buffer
     // 平台抽象：Metal 用 dispatch_semaphore，未来 Vulkan 用 VkFence
     frame_sync: gpu.Backend.FrameSync,
 
-    // 离屏纹理池 + 帧计数 — 必须活在 AppRenderer（跨帧持久）。encoder 是逐帧
+    // 离屏纹理池 + 帧计数，必须活在 AppRenderer（跨帧持久）。encoder 是逐帧
     // 局部值：池若内嵌其中，每帧 deinit 整池释放，跨帧纹理复用从未发生；
     // frame_index 每帧从 0 重来，池的 REUSE_LAG_FRAMES in-flight 保护同样失效。
     offscreen_pool: render.OffscreenTexturePool = .{},
     /// 跨帧持久的 path/blur/glass GPU 资源（PSO、buffer、sampler、tessellator）。
-    /// 与 offscreen_pool 同理必须活在 AppRenderer —— 内嵌进逐帧 encoder 会每帧
+    /// 与 offscreen_pool 同理必须活在 AppRenderer，内嵌进逐帧 encoder 会每帧
     /// 重新 runtime 编译 MSL，连续 path/blur 动画每帧抖动（审查报告 P1）。
     persistent_gpu: render.PersistentGpuCache = .{},
     frame_counter: u64 = 0,
@@ -200,13 +200,13 @@ pub const AppRenderer = struct {
     prev_image_instances_total: u64 = 0,
     prev_texture_binds_total: u64 = 0,
 
-    /// 上一帧已提交的 command buffer（仅用于**下一帧**读取其 GPU 时间戳 ——
+    /// 上一帧已提交的 command buffer（仅用于**下一帧**读取其 GPU 时间戳,
     /// GPUStartTime/GPUEndTime 必须在 buffer 完成后才有效）。
     /// 包装器持有额外引用，随下一帧读完即释放；上层不观察 native handle。
     prev_frame_cmd_buffer: ?gpu.Backend.CommandBuffer = null,
 
     // ── e2e:上一次**真实呈现**帧的保留拷贝 ──────────────────────────
-    // /screenshot 曾经"驱动一帧新渲染再 readback"——新帧会把 pending 的
+    // /screenshot 曾经"驱动一帧新渲染再 readback"，新帧会把 pending 的
     // 布局/标脏顺带跑完,截到的画面比屏幕上的新。呈现层 bug(Layers 残影)
     // 期间:屏幕满是残影、截图完全干净,e2e 全绿,误判持续了三天。
     // 修法:每帧 present 前把 drawable blit 到保留纹理;截图直接读它,
@@ -217,7 +217,7 @@ pub const AppRenderer = struct {
     retained_h: u32 = 0,
     retained_valid: bool = false,
 
-    // E2E 截图请求 — 由 test harness 的 screenshot callback 设置（test-mode）。
+    // E2E 截图请求，由 test harness 的 screenshot callback 设置（test-mode）。
     // 实际像素读取在 frame() 内 present 前做（drawable 仍有效 + GPU 已完成）。
     // 单帧只服务一次请求；读完即清空。容量 512 与 RPC payload 路径上限一致。
     pending_screenshot_path: ?[512]u8 = null,
@@ -317,7 +317,7 @@ pub const AppRenderer = struct {
         return true;
     }
 
-    /// 从 surface 纹理读 BGRA8 → 转 RGBA8 → 写 PNG。present 前调用。
+    /// 从 surface 纹理读 BGRA8 -> 转 RGBA8 -> 写 PNG。present 前调用。
     /// cmd_buffer 必须已 waitUntilCompleted，保证渲染结果已落到纹理。
     fn captureSurfaceToPng(self: *AppRenderer, texture: *const gpu.Backend.Texture, width: u32, height: u32) bool {
         if (width == 0 or height == 0) return false;
@@ -331,7 +331,7 @@ pub const AppRenderer = struct {
 
         texture.readBgra8(width, height, bgra, bytes_per_row) catch return false;
 
-        // BGRA → RGBA 字节交换
+        // BGRA -> RGBA 字节交换
         var i: usize = 0;
         while (i < px * 4) : (i += 4) {
             rgba[i] = bgra[i + 2]; // R ← B 位置
@@ -348,7 +348,7 @@ pub const AppRenderer = struct {
         return gpu.Backend.writePngRgba(&path_z, rgba, width, height, bytes_per_row);
     }
 
-    /// 读任意 BGRA8 纹理 → RGBA8 → 写 PNG(与 captureSurfaceToPng 同管线,
+    /// 读任意 BGRA8 纹理 -> RGBA8 -> 写 PNG(与 captureSurfaceToPng 同管线,
     /// 但 path 显式传入,不依赖 pending_screenshot_* 状态)。
     fn textureToPng(self: *AppRenderer, texture: *const gpu.Backend.Texture, width: u32, height: u32, path: []const u8) bool {
         if (width == 0 or height == 0 or path.len == 0 or path.len >= 512) return false;
@@ -421,12 +421,12 @@ pub const AppRenderer = struct {
         }
     }
 
-    /// 渲染一帧 — 使用 UI Cx 上下文
+    /// 渲染一帧，使用 UI Cx 上下文
     ///
     /// 完整流程:
     ///   1. cx.layout()
-    ///   2. cx.render() — paint pass 填 cx.display_list
-    ///   3. encode → rect/text renderer
+    ///   2. cx.render(), paint pass 填 cx.display_list
+    ///   3. encode -> rect/text renderer
     ///   4. 创建 GPU encoder + render pass
     ///   5. flush + present
     pub fn frame(self: *AppRenderer, cx: anytype, viewport_width: f32, viewport_height: f32, scale: f32) !void {
@@ -434,11 +434,11 @@ pub const AppRenderer = struct {
         var wait_start: ?std.time.Instant = null;
         var wait_end: ?std.time.Instant = null;
 
-        // 0. 推进帧时钟（必须在 layout/render 之前 —— before_render hooks / overlay
+        // 0. 推进帧时钟（必须在 layout/render 之前，before_render hooks / overlay
         // enter-exit / spinner 等动画都读 frame_time_ms）。advanceFrameClock 内部对
         // idle 帧（整树 clean + 无浮层动画 + 无 needs_redraw）跳过推进，保持零脏帧
         // 快速路径成立；任一活跃信号（含 spinner 的 markRenderDirty 让树非 clean）会
-        // 让时钟前进，驱动连续动画。没有这一步，frame_time_ms 永远冻结 → spinner/
+        // 让时钟前进，驱动连续动画。没有这一步，frame_time_ms 永远冻结 -> spinner/
         // overlay 动画全静止。
         cx.advanceFrameClock();
 
@@ -477,7 +477,7 @@ pub const AppRenderer = struct {
         var gpu_encoder = try gpu.Backend.CommandEncoder.init(self.queue);
         // 错误路径兜底：下面的 encodeDisplay / flush 都可能抛错提前返回，此时
         // finish() 从未被调用（state != .finished），command buffer 无人 release。
-        // CommandEncoder.deinit 正是为这种"未 finish"的情况准备的 —— 成功路径上
+        // CommandEncoder.deinit 正是为这种"未 finish"的情况准备的，成功路径上
         // finish() 会把 state 置为 .finished，deinit 变成 no-op，所有权移交
         // cmd_buffer，不会重复释放。
         errdefer gpu_encoder.deinit();
@@ -501,9 +501,9 @@ pub const AppRenderer = struct {
         const encode_start = std.time.Instant.now() catch null;
         // **关键（2026-06-07 CA-surface revamp 发现的根因）**：必须把 gpu_command_encoder +
         // main_render_target 绑给 encoder，否则 opacity_layer.beginOpacityLayer /
-        // backdrop_blur 在 `gpu_command_encoder == null` 处直接 early-return → 所有 offscreen
+        // backdrop_blur 在 `gpu_command_encoder == null` 处直接 early-return -> 所有 offscreen
         // surface（modal/sheet opacity group fade、GlassBox backdrop blur）静默不工作，content
-        // 退化成内联渲染、错位。缺了这两行绑定时 surface 路径"从未真正跑过"——
+        // 退化成内联渲染、错位。缺了这两行绑定时 surface 路径"从未真正跑过",
         // 这正是 overlay fade 一直坏的真根因。
         enc.gpu_command_encoder = &gpu_encoder;
         enc.main_render_target = surface_texture.texture.binding();
@@ -516,7 +516,7 @@ pub const AppRenderer = struct {
         // 5. 刷新到 GPU
         // 离屏合成（opacity surface / backdrop blur）会 end 原 render_pass 并新建一个
         // restored_pass，写回 enc.render_pass。故必须 flush/end **encoder 当前持有的 pass**
-        // （可能已被替换），而不是本地 `render_pass`——否则会对已 end 的本地 pass 再 end 一次，
+        // （可能已被替换），而不是本地 `render_pass`，否则会对已 end 的本地 pass 再 end 一次，
         // 触发 Metal `endEncoding has already been called` 断言崩溃。
         const flush_start = std.time.Instant.now() catch null;
         if (enc.render_pass) |rp| {
@@ -541,7 +541,7 @@ pub const AppRenderer = struct {
                     // e2e 截图的首选路径，标了 valid 它就直接返回这张纹理，
                     // 内容却是上一帧（或全新纹理的未定义内容）。e2e 的像素
                     // 断言全建立在"截图 == 刚呈现的那帧"上，静默读旧帧会让
-                    // 断言假绿 —— 比截图失败更糟。
+                    // 断言假绿，比截图失败更糟。
                     // 失败时清掉 valid，captureRetainedToPng 返回 false，
                     // 调用方回退到"重新渲染一帧"的旧路径。
                     if (bp.copyTextureRegion(src, 0, 0, src.width, src.height, self.retained_tex.?.binding(), 0, 0)) {
@@ -557,7 +557,7 @@ pub const AppRenderer = struct {
         }
 
         // 排障（ZENIT_DEBUG_GLASS_RT="x,y" 设备像素）：帧末 RT 指定区 64×64
-        // blit 进 debug slot 2，renderer 下一帧回读 RGB 均值 —— 与 capture/
+        // blit 进 debug slot 2，renderer 下一帧回读 RGB 均值，与 capture/
         // composite 两级恒定值对照，三明治定位分叉阶段。
         if (std.posix.getenv("ZENIT_DEBUG_GLASS_RT")) |spec| blk: {
             var it = std.mem.splitScalar(u8, spec, ',');
@@ -595,7 +595,7 @@ pub const AppRenderer = struct {
         var cmd_buffer = try gpu_encoder.finish();
         defer cmd_buffer.deinit();
 
-        // 注册 GPU 完成回调 — 释放 buffer slot
+        // 注册 GPU 完成回调，释放 buffer slot
         self.frame_sync.signalOnCompletion(&cmd_buffer);
 
         // 读取**上一帧**的真 GPU 执行时间（GPUStartTime/GPUEndTime 只有在
@@ -605,12 +605,12 @@ pub const AppRenderer = struct {
         if (self.prev_frame_cmd_buffer) |*prev| {
             gpu_execute_us = prev.gpuElapsedMicros() orelse 0;
             // backdrop 亮度自适应：逐槽读 staging 求各区域平均 luminance。
-            // 本帧 encode 刚排的 blit 还没执行 —— 用 prev_* 拍存的维度。
+            // 本帧 encode 刚排的 blit 还没执行，用 prev_* 拍存的维度。
             //
             // 机会式读回：只有上一帧**已经**完成才读 staging。
             //
             // 这里以前是无条件 waitUntilCompleted。注释假设"稳态下上一帧早已
-            // 完成，所以是零等待"——GPU 跟得上时确实如此，但一旦一帧的 GPU
+            // 完成，所以是零等待", GPU 跟得上时确实如此，但一旦一帧的 GPU
             // 工作超过一帧预算（两万对象的画布实测 260–360ms），它就变成硬性
             // CPU↔GPU 串行点：主线程每帧都钉在这里等 GPU，UI 完全无法交互，
             // 而且流水线再也无法重叠，情况只会继续恶化。
@@ -745,7 +745,7 @@ pub const AppRenderer = struct {
         self.last_frame_stats = .{
             .layout_us = layout_us,
             .render_gen_us = render_gen_us,
-            // 注意：这仍是"CPU 侧编码+提交"墙钟，**不是 GPU 执行时间** ——
+            // 注意：这仍是"CPU 侧编码+提交"墙钟，**不是 GPU 执行时间**,
             // 真正的 GPU 时间需要 command buffer timestamp / counter sample，
             // 尚未接入（审查报告 §4 待办）。
             .gpu_encode_us = timerDelta(render_end, frame_end),
@@ -773,7 +773,7 @@ pub const AppRenderer = struct {
             .total_frame_us = total_us,
         };
 
-        // 只有走到这里的帧才是"真渲染过"的帧 —— idle 跳帧不会到达此处，
+        // 只有走到这里的帧才是"真渲染过"的帧，idle 跳帧不会到达此处，
         // 因此环里不会混入近零样本（否则 P95 会被稀释成假绿）。
         self.timing_ring.push(.{
             .gpu_execute_us = self.last_frame_stats.gpu_execute_us,
@@ -782,7 +782,7 @@ pub const AppRenderer = struct {
         });
 
         // DevTools（Cx 侧）帧性能回填。devtools panel 的 Performance 页读的是
-        // target Cx 上的 frame_*_history / perf.layout_us / perf.render_us ——
+        // target Cx 上的 frame_*_history / perf.layout_us / perf.render_us,
         // 这条链在从下游编辑器抽出时断了（下游原本由自己的窗口渲染代码喂），
         // 缺了它面板 FPS 恒 0、Timing 恒 0。写点必须在 cx.render() 之后：
         // perf.resetFrame() 发生在 render() 开头，这里写的值可存活到下一帧，
@@ -831,7 +831,7 @@ pub const AppRenderer = struct {
         return @floatCast(sum / @as(f64, @floatFromInt(n)));
     }
 
-    /// 排障：staging 的原始 sRGB 字节均值（BGRA → 返回 [r,g,b]，0..255），
+    /// 排障：staging 的原始 sRGB 字节均值（BGRA -> 返回 [r,g,b]，0..255），
     /// 与截图 PNG 均值同一量纲，直接对比。
     fn readAverageRgb(staging: *const gpu.Backend.Texture, w: u32, h: u32) ?[3]f64 {
         if (w == 0 or h == 0 or w > 64 or h > 64) return null;
@@ -862,7 +862,7 @@ pub const AppRenderer = struct {
         return self.last_frame_stats;
     }
 
-    /// 渲染一帧 — 手动控制模式
+    /// 渲染一帧，手动控制模式
     ///
     /// 不使用 Cx，允许手动积累渲染命令后提交。
     /// 返回 encoder 供外部使用。

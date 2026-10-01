@@ -1,4 +1,4 @@
-/// TextareaDocument — 轻量文档类型
+/// TextareaDocument，轻量文档类型
 ///
 /// 满足 DocCursor(Doc) + WrapMap(Doc) 的 comptime duck typing 接口。
 /// 使用连续 u8 数组 + line_starts 索引，适合 Textarea 的中等规模文本。

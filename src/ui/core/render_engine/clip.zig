@@ -1,4 +1,4 @@
-/// Clip 路径处理：Bezier 曲线细分、SVG path → polygon 转换、clip spec 解析
+/// Clip 路径处理：Bezier 曲线细分、SVG path -> polygon 转换、clip spec 解析
 const std = @import("std");
 
 const types = @import("../types.zig");
@@ -236,7 +236,7 @@ pub fn buildClipPolygonFromPathGeometry(geometry: PathGeometry, clip_rect: Compu
 /// owner 是否有画在「children overflow clip」之外的自身内容：阴影、outline、
 /// 可见描边（clip 收在描边内沿，描边本身在 clip 外）。
 ///
-/// 这类节点的 overflow clip 不能用「节点级」机制实现——rounded_clip effect 的
+/// 这类节点的 overflow clip 不能用「节点级」机制实现，rounded_clip effect 的
 /// mask、compositor 的 apply_clip 都在 owner 自身内容之前生效，会把阴影裁成
 /// border-box 矩形（Popover 圆角外的灰块）、把描边压到贴边内容下面。它们改走
 /// children 包围的 node-local push_clip（render_engine emitScrollClipBegin）。
@@ -258,11 +258,11 @@ pub fn ownerPaintsOutsideChildClip(node: *const Node) bool {
 ///
 /// zenit 的 border 画在 layout rect 内侧、不占布局空间，子节点可以铺到 border
 /// 底下；此前 clip 取 border-box，于是贴边/溢出的子内容（Popover 里的色块、表格
-/// 首末行）直接盖住描边——描边在内容处断开，圆角外沿露出内容的直角。收进内沿后
+/// 首末行）直接盖住描边，描边在内容处断开，圆角外沿露出内容的直角。收进内沿后
 /// 描边始终完整可见，边框下方透出的是节点自己的背景。
 ///
 /// 只对**可见** border 生效：透明/零宽 border 不产生任何像素，收缩 clip 只会
-/// 凭空吃掉内容。backdrop_blur（玻璃）节点除外——它的 clip 同时是 rounded_clip
+/// 凭空吃掉内容。backdrop_blur（玻璃）节点除外，它的 clip 同时是 rounded_clip
 /// effect 的 surface 范围，自身 border 也画在该 effect 内，收进去会把自己的描边
 /// 裁掉。
 fn clipBorderInsets(node: *const Node) [4]f32 {
@@ -311,7 +311,7 @@ pub fn resolveNodeRenderClipSpec(cx: *@import("render_context.zig").RenderContex
     if (clip_shape == .custom) {
         // 刻意吞错：custom_clip 由用户注入的 provider 生成，失败原因不限于
         // OOM。下面 `.custom => lo_vec.fill.custom_clip orelse lo_vec.fill.path`
-        // 是显式声明的降级路径 —— 退回节点自身 path 裁剪，仍是有效裁剪形状，
+        // 是显式声明的降级路径，退回节点自身 path 裁剪，仍是有效裁剪形状，
         // 不会漏画到 clip 外。
         node.ensureCustomClipGeometry(allocator) catch {};
     }

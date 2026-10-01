@@ -1,4 +1,4 @@
-//! Anchor — 在文档编辑中保持稳定的位置标记。
+//! Anchor，在文档编辑中保持稳定的位置标记。
 //!
 //! 参考 Zed `text::Anchor`。我们的实现基于 PieceTree 的 `(source, buffer_offset)` 对：
 //!   - `original_buffer` 和 `add_buffer` 都是 **append-only**（insert 只追加、delete 不实际释放）
@@ -9,8 +9,8 @@
 //! ## Bias 语义
 //!
 //! 当 anchor 位置正好位于某次 insert 的起点或 delete 边界时，Bias 决定 anchor 偏向哪边：
-//!   - `.left`：anchor "粘"在左侧字符后 → insert 在 anchor 位置时，anchor 不移动
-//!   - `.right`：anchor "粘"在右侧字符前 → insert 在 anchor 位置时，anchor 跟着往右移
+//!   - `.left`：anchor "粘"在左侧字符后 -> insert 在 anchor 位置时，anchor 不移动
+//!   - `.right`：anchor "粘"在右侧字符前 -> insert 在 anchor 位置时，anchor 跟着往右移
 //!
 //! 典型用法：
 //!   - `Selection.start` 用 `.right`（选区起点跟着后面的字符走）
@@ -31,7 +31,7 @@
 
 const std = @import("std");
 
-/// Bias — 决定 anchor 在编辑边界上的"粘性"方向。
+/// Bias，决定 anchor 在编辑边界上的"粘性"方向。
 pub const Bias = enum(u8) {
     /// 粘左（anchor 在字符之间时偏向左边的字符）
     left,
@@ -56,7 +56,7 @@ pub const Kind = enum(u8) {
     end_of_document,
 };
 
-/// Anchor — 稳定位置标记。
+/// Anchor，稳定位置标记。
 ///
 /// 两个特殊常量：
 ///   - `START`：永远指向文档 offset 0

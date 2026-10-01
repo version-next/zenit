@@ -1,15 +1,15 @@
-/// devtools_probe — DevTools Performance 面板的真窗口验收探针
+/// devtools_probe, DevTools Performance 面板的真窗口验收探针
 ///
 /// 两个原生窗口：target（可被强制驱动/停帧）+ DevTools panel（mountPanel，
 /// 切到 Performance 页）。`ZENIT_SMOKE_FRAMES=N` 下按阶段断言：
 ///
-///   Phase A（active）：每 tick 强制 target 重绘 ——
+///   Phase A（active）：每 tick 强制 target 重绘,
 ///     a) target 帧间隔历史被回填（frame_perf.interval 非空）；
 ///     b) DevTools FPS 文本离开 mount 初值（"FPS: {n}" 滚动均值且非 0）；
-///     c) DevTools 窗口自身持续渲染（保活链没断——历史 bug：target 活跃时
+///     c) DevTools 窗口自身持续渲染（保活链没断，历史 bug：target 活跃时
 ///        DevTools 不调度下一次 poll，面板只有鼠标划过才动）。
 ///
-///   Phase B（idle）：停止驱动 target ≥1.3s ——
+///   Phase B（idle）：停止驱动 target ≥1.3s,
 ///     d) target 真停帧（renderer.frame_count 基本不动）；
 ///     e) DevTools 仍在自轮询渲染（frame_count 继续推进）；
 ///     f) FPS 文本出现 idle 标注（区分「没在渲染」与「稳定高帧率」）。

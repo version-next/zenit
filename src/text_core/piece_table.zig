@@ -356,7 +356,7 @@ pub const PieceTable = struct {
             const piece_end = current_pos + piece.length;
 
             if (pos == piece_end) {
-                // 刚好在当前 piece 和下一个 piece 之间 → 在此处插入新节点
+                // 刚好在当前 piece 和下一个 piece 之间 -> 在此处插入新节点
                 const new_node = try self.allocator.create(PieceNode);
                 new_node.* = PieceNode{
                     .data = new_piece,
@@ -443,7 +443,7 @@ pub const PieceTable = struct {
     }
 
     /// 增量更新行索引（插入）
-    /// 直接 rebuild — 简单可靠，避免增量偏移的潜在边界 bug
+    /// 直接 rebuild，简单可靠，避免增量偏移的潜在边界 bug
     fn updateLineIndexAfterInsert(self: *PieceTable, pos: usize, text: []const u8) !void {
         _ = pos;
         _ = text;
@@ -483,7 +483,7 @@ test "PieceTable: initFromBuffer 拷贝内容,调用方释放原 buffer 后仍�
     var table = try PieceTable.initFromBuffer(std.testing.allocator, content);
     defer table.deinit();
 
-    // 调用方立即释放自己的 buffer —— 若 initFromBuffer 借用该指针,
+    // 调用方立即释放自己的 buffer，若 initFromBuffer 借用该指针,
     // 之后的读取全是 use-after-free（testing.allocator 会把释放内存涂成 0xAA）。
     std.testing.allocator.free(content);
 
@@ -734,7 +734,7 @@ test "PieceTable: consecutive newline inserts (simulating Enter key)" {
     try std.testing.expectEqual(@as(usize, 2), table.lineCount());
 
     // 光标在 "Press hello\n" 的 \n 位置 (offset 11)，按回车
-    // 插入 \n 在 offset 11 → "Press hello\n\n"
+    // 插入 \n 在 offset 11 -> "Press hello\n\n"
     try table.insert(11, "\n");
     try std.testing.expectEqual(@as(usize, 3), table.lineCount());
     const l0 = try table.getLine(0, &buffer);
@@ -768,7 +768,7 @@ test "PieceTable: insert newline at line start" {
 
     var buffer: [256]u8 = undefined;
 
-    // 在 offset 0 插入 \n → "\nABC"
+    // 在 offset 0 插入 \n -> "\nABC"
     try table.insert(0, "\n");
     try std.testing.expectEqual(@as(usize, 2), table.lineCount());
     const l0 = try table.getLine(0, &buffer);
@@ -776,7 +776,7 @@ test "PieceTable: insert newline at line start" {
     const l1 = try table.getLine(1, &buffer);
     try std.testing.expectEqualStrings("ABC", l1);
 
-    // 光标在 offset 1 (第二行开头)，再插入 \n → "\n\nABC"
+    // 光标在 offset 1 (第二行开头)，再插入 \n -> "\n\nABC"
     try table.insert(1, "\n");
     try std.testing.expectEqual(@as(usize, 3), table.lineCount());
     const l1b = try table.getLine(1, &buffer);

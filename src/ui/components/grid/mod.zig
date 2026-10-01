@@ -1,4 +1,4 @@
-/// Grid — 业务组件：基于 ScrollArea + cell pool 的 2D 虚拟化表格
+/// Grid，业务组件：基于 ScrollArea + cell pool 的 2D 虚拟化表格
 ///
 /// 设计参考：Google Sheets canvas / ag-grid / LinkedIn Rooster
 /// - Double Viewport：外层 ScrollArea(.both) + 内层 content translate_x/y
@@ -89,7 +89,7 @@ pub fn mountGrid(props: GridProps, scope: *Scope, cx: *Cx) !GridResult {
         const root = try box(cx, root_style, .{});
         // root 是返回给调用方的整棵 Grid 子树的根，返回成功前无人持有。
         // 它下面还有 ScrollArea、四组 pool 节点（各上千个 cell）、
-        // registerResource、onCleanup —— 任何一处失败都会漏掉整棵。
+        // registerResource、onCleanup，任何一处失败都会漏掉整棵。
         // 下游编辑器表格渲染期 sweep 实测：99 处泄漏里的绝大多数都源于这里，
         // appendPoolNodes 那 1207 条只是可见的表象（那些 cell 已挂在 root 下）。
         errdefer cx.freeNode(root);
@@ -99,9 +99,9 @@ pub fn mountGrid(props: GridProps, scope: *Scope, cx: *Cx) !GridResult {
         // 没有这行的实测后果（2026-08-22 用户线上 crash，反汇编定位到
         // detachGridBindings）：caller 用 freeNode/clearChildren 清掉 Grid 子树
         // 时，my_scope 不会被 dispose，留在父 scope 的 children 里；它的
-        // onCleanup(detachGridBindings) 持有 state.content 节点指针——节点已
+        // onCleanup(detachGridBindings) 持有 state.content 节点指针，节点已
         // 随子树释放。之后父 scope dispose（如虚拟列表 recycleSlot）才跑到这
-        // 条 cleanup → 解引用已释放节点 → EXC_BAD_ACCESS。
+        // 条 cleanup -> 解引用已释放节点 -> EXC_BAD_ACCESS。
         // 绑定后 freeNode(root) 会先 dispose my_scope（此刻节点仍有效，
         // detach 正常执行），父 scope 再 dispose 时按 disposed 标记跳过。
         try core.bindScopeToNode(my_scope, root);
@@ -172,7 +172,7 @@ pub fn mountGrid(props: GridProps, scope: *Scope, cx: *Cx) !GridResult {
         //
         // 实测（下游编辑器，25 个 2×2 markdown 表格的文档）：每个 Grid 按视口估算
         // 建了 50 个 cell，全文档 **900 个** Grid.Cell 池节点，把 synced_nodes
-        // 从 ~1200 抬到 4451，phase_sync 1.1ms → 6.5ms。按行列数收紧后，
+        // 从 ~1200 抬到 4451，phase_sync 1.1ms -> 6.5ms。按行列数收紧后，
         // 2×2 的表只建 4 个。
         const pool_rows = @min(p.row_count, visible_rows_est + 2 * p.overscan_rows);
         const pool_cols = @min(p.col_count, visible_cols_est + 2 * p.overscan_cols);
@@ -281,7 +281,7 @@ pub fn mountGrid(props: GridProps, scope: *Scope, cx: *Cx) !GridResult {
         // 它们与这里登记的 destroy 是同一批 slice 的两个回收责任方。
         // 注册之后还有 5 处可失败调用（appendPoolNodes ×4 + onCleanup），
         // 任何一处失败都会让 errdefer 先释放一遍、稍后 scope dispose 再释放一遍
-        // —— 实测 Segmentation fault in Grid destroy 的 a.free(col_offsets)
+        // 实测 Segmentation fault in Grid destroy 的 a.free(col_offsets)
         //（下游编辑器的表格**渲染期** OOM sweep 首次照到，
         //  mount 期 sweep 走不到这条路）。
         // 用 registered 标志把两段责任切开。
@@ -305,14 +305,14 @@ pub fn mountGrid(props: GridProps, scope: *Scope, cx: *Cx) !GridResult {
         }.destroy);
         registered = true;
 
-        // 依 paint order append：scrollable → frozen_col → frozen_row → corner
+        // 依 paint order append：scrollable -> frozen_col -> frozen_row -> corner
         // 后 append 的在 children 数组里靠后，先 paint 后者覆盖前者
         try appendPoolNodes(cx, sa.content, pool_nodes, "Grid.Cell");
         try appendPoolNodes(cx, sa.content, fc_nodes, "Grid.Cell.FrozenCol");
         try appendPoolNodes(cx, sa.content, fr_nodes, "Grid.Cell.FrozenRow");
         try appendPoolNodes(cx, sa.content, cn_nodes, "Grid.Cell.Corner");
 
-        // 挂 on_before_render → 每帧算 visible range，diff pool
+        // 挂 on_before_render -> 每帧算 visible range，diff pool
         sa.content.meta.per_frame.hooks.slots.anim_state = @ptrCast(state);
         sa.content.meta.per_frame.hooks.before_render.main = contentBeforeRender;
         try my_scope.onCleanup(GridState, state, detachGridBindings);
@@ -365,7 +365,7 @@ fn updateVisibleCells(state: *GridState) void {
 
     // --- Scrollable body pool (最底层) ---
     if (range_changed) {
-        // 需求量超过池容量时先扩容——静默跳过绑定 = 视口内 cell 整帧空白且
+        // 需求量超过池容量时先扩容，静默跳过绑定 = 视口内 cell 整帧空白且
         // 永不自愈（同 md VL 的 pool 钳制教训）。
         var pinned_rows_extra: usize = 0;
         for (state.pinned_rows) |p| {
@@ -481,7 +481,7 @@ fn updateVisibleCells(state: *GridState) void {
     }
 
     // Phase: 每帧 **只当 content translate 变化时** 更新 frozen cells 的 translate。
-    // idle 状态 translate 不变 → 无 op → 零 markDirty 开销。
+    // idle 状态 translate 不变 -> 无 op -> 零 markDirty 开销。
     const content_tx = state.content.style.translate_x;
     const content_ty = state.content.style.translate_y;
     const translate_changed =
@@ -517,7 +517,7 @@ fn growScrollablePool(state: *GridState, needed: usize) !void {
         state.corner_pool_size > 0)
     {
         // 有 frozen pool 时无法安全扩容（paint order 会错），但这意味着安全网
-        // 失效——超估的 frozen grid 会静默空白，必须留下诊断痕迹。
+        // 失效，超估的 frozen grid 会静默空白，必须留下诊断痕迹。
         std.log.warn("[Grid] pool grow refused (frozen pools present): need={d} have={d}", .{ needed, state.pool_size });
         return;
     }
@@ -633,7 +633,7 @@ fn poolNodes(state: *const GridState, kind: PoolKind) []const *Node {
 }
 
 /// 将 cell 节点配置为 (row, col) 的可视 cell。
-/// 不设 z_index —— render order 由 node 在 content.children 里的位置决定（memory:
+/// 不设 z_index, render order 由 node 在 content.children 里的位置决定（memory:
 /// `feedback_listening_and_diff_paths.md` 说过 z_index > 0 会跳出祖先 clip）。
 fn configureCell(state: *GridState, node: *Node, row: usize, col: usize) void {
     // 越界防御：几何变化（行列数缩小）与 pin/窗口失效之间存在一帧窗口期，
@@ -697,7 +697,7 @@ fn applyGeometryToActivePools(state: *GridState) void {
 // =========================================================================
 // Post-mount geometry API
 // 框架自己的布局数据（col_widths/row_heights/offsets/pool bindings）必须由
-// 框架 mutator 维护——此前这些实现散落在应用层（下游编辑器 ui_compat）直接翻
+// 框架 mutator 维护，此前这些实现散落在应用层（下游编辑器 ui_compat）直接翻
 // GridState 内部字段，computeVisibleRange / 外部行窗口 / pin 无法信任自己的
 // 不变量。所有 mutator 末尾统一走 clampAfterGeometryChange 使 pin/窗口失效。
 // =========================================================================

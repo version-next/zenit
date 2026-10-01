@@ -8,7 +8,7 @@ const std = @import("std");
 /// sRGB byte (0..255) to linear float, precomputed at comptime.
 ///
 /// Every renderer call site feeds `u8 / 255.0`, so the whole domain is 256
-/// points and the table is *exact* for them — not an approximation. This
+/// points and the table is *exact* for them, not an approximation. This
 /// matters because the transfer function is a `pow`, and encoding a
 /// 20k-object frame used to call it three times per instance; `pow` showed up
 /// as a visible share of frame time in profiles.

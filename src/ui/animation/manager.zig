@@ -1,8 +1,8 @@
-/// AnimationManager — 全局动画管理器
+/// AnimationManager，全局动画管理器
 ///
 /// 管理全局活跃的 Timeline，提供全局 pause/timeScale 控制。
 ///
-/// 现状：**尚未接入 Cx**——不存在 `cx.animation_manager` 字段，框架渲染
+/// 现状：**尚未接入 Cx**，不存在 `cx.animation_manager` 字段，框架渲染
 /// 循环不会自动 tick，仓内也没有生产代码注册 Timeline。使用者需要自行
 /// 持有 manager 实例并每帧调用 tick(dt)。
 ///

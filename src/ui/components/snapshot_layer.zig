@@ -112,7 +112,7 @@ pub const SnapshotLayerBuilder = struct {
             .height = .{ .grow = .{} },
         }, .{});
         // 所有权交接：registerResource 成功之前，layer / state 由这里的 errdefer 回收；
-        // 成功之后二者（连同 overlay 层、snapshot）归 my_scope 的 cleanup —— 若仍保留
+        // 成功之后二者（连同 overlay 层、snapshot）归 my_scope 的 cleanup，若仍保留
         // `errdefer destroy(state)`，后续失败会先释放 state、scope dispose 再跑 cleanup
         // 释放一次（double free / UAF）。
         var owned_here = true;

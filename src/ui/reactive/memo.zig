@@ -48,7 +48,7 @@ pub fn Memo(comptime T: type) type {
             self.owner.graph.updateIfNecessary(gid);
             // 让调用者也成为 memo 的 observer
             // 不可降级：丢边 = 下游不再被这个 memo 唤醒（该更新的静默不更新）。
-            // Memo.get 是 Stable 签名（返回 T），无法传播错误 → panic。
+            // Memo.get 是 Stable 签名（返回 T），无法传播错误 -> panic。
             self.owner.graph.trackRead(gid) catch @panic("OOM: Memo.get trackRead (dependency edge lost)");
             return self.cache;
         }
@@ -86,7 +86,7 @@ pub fn createMemo(
             const c: *@This() = @ptrCast(@alignCast(opaque_ctx));
             const new_value = computeFn(c.ctx);
             const eq = @import("eq.zig").eqlValue;
-            // 首次：cache 是 undefined，绝不能读取来比较——一律视作变化。
+            // 首次：cache 是 undefined，绝不能读取来比较，一律视作变化。
             const changed = !c.memo.initialized or !eq(T, c.memo.cache, new_value);
             c.memo.cache = new_value;
             c.memo.initialized = true;
@@ -101,7 +101,7 @@ pub fn createMemo(
 
     const memo = try owner.allocator().create(MemoT);
     // arena 分配帧内可回收，但半注册态（memo 已建、graph node 没建）会让
-    // 后续按注册表遍历的代码读到未初始化结构——失败路径必须整体回退
+    // 后续按注册表遍历的代码读到未初始化结构，失败路径必须整体回退
     errdefer owner.allocator().destroy(memo);
     const closure = try owner.allocator().create(Closure);
     errdefer owner.allocator().destroy(closure);
@@ -131,7 +131,7 @@ pub fn createMemoInScope(
     context: anytype,
     comptime computeFn: anytype,
 ) !*Memo(T) {
-    // scope 路径同 owner 路径——lazy pull on read，不再创建内部 Signal+Effect。
+    // scope 路径同 owner 路径，lazy pull on read，不再创建内部 Signal+Effect。
     const Context = @TypeOf(context);
     const MemoT = Memo(T);
 
@@ -144,7 +144,7 @@ pub fn createMemoInScope(
             const c: *@This() = @ptrCast(@alignCast(opaque_ctx));
             const new_value = computeFn(c.ctx);
             const eq = @import("eq.zig").eqlValue;
-            // 首次：cache 是 undefined，绝不能读取来比较——此时一律视作变化。
+            // 首次：cache 是 undefined，绝不能读取来比较，此时一律视作变化。
             const changed = !c.memo.initialized or !eq(T, c.memo.cache, new_value);
             c.memo.cache = new_value;
             c.memo.initialized = true;
@@ -266,7 +266,7 @@ test "Memo: downstream effect reacts to memo change" {
     // Effect 首次运行
     try std.testing.expectEqual(@as(i32, 4), effect_result);
 
-    // 修改源 Signal → Memo 更新 → 下游 Effect 更新
+    // 修改源 Signal -> Memo 更新 -> 下游 Effect 更新
     count.set(5);
     try std.testing.expectEqual(@as(i32, 10), effect_result);
 }
@@ -278,7 +278,7 @@ test "Memo: skips when value unchanged" {
     const x = try Signal(i32).create(owner, 5);
     const y = try Signal(i32).create(owner, -5);
 
-    // abs(x + y) — 当 x=5, y=-5 时结果始终为 0
+    // abs(x + y)，当 x=5, y=-5 时结果始终为 0
     const abs_sum = try createMemo(owner, i32, .{ .x = x, .y = y }, struct {
         fn compute(ctx: anytype) i32 {
             const s = ctx.x.get() + ctx.y.get();
@@ -301,7 +301,7 @@ test "Memo: skips when value unchanged" {
     try std.testing.expectEqual(@as(i32, 0), abs_sum.get());
     try std.testing.expectEqual(@as(i32, 1), effect_count);
 
-    // 改变 x 和 y 使总和不变 → Memo 值不变 → 下游 Effect 不应再运行
+    // 改变 x 和 y 使总和不变 -> Memo 值不变 -> 下游 Effect 不应再运行
     // 注意: x.set 会触发 memo 的 effect 重新计算, 但 abs(6 + (-5)) = 1 ≠ 0
     // 所以要确保真正不变的情况
     x.set(10);

@@ -1,4 +1,4 @@
-/// Popover — 样式层
+/// Popover，样式层
 ///
 /// 浮层面板的外观声明；overlay 生命周期/portal/定位逻辑在 mod.zig。
 const core = @import("../../core.zig");
@@ -7,7 +7,7 @@ const Color = core.Color;
 const Border = core.Border;
 const Shadow = core.Shadow;
 
-/// 面板圆角 — border.radius 与 hit/clip shape 共用同一标量
+/// 面板圆角，border.radius 与 hit/clip shape 共用同一标量
 pub fn popoverRadius(t: *const theme.ThemeTokens) f32 {
     return t.radius.md;
 }
@@ -24,7 +24,7 @@ pub fn popoverContentBorder(t: *const theme.ThemeTokens) Border {
     };
 }
 
-/// 主投影层 — token shadow.md
+/// 主投影层，token shadow.md
 pub fn popoverKeyShadow(t: *const theme.ThemeTokens) Shadow {
     return t.shadow.md;
 }

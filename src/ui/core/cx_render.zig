@@ -1,5 +1,5 @@
-//! Cx 帧管线：render()（before-render tick → layout → after-layout hooks →
-//! 运行时索引 → layerize → display list）、编码器 paint table 降级、
+//! Cx 帧管线：render()（before-render tick -> layout -> after-layout hooks ->
+//! 运行时索引 -> layerize -> display list）、编码器 paint table 降级、
 //! redraw 调度，以及命中测试前的场景保鲜（ensureHitTestSceneFresh）。
 
 const std = @import("std");
@@ -38,7 +38,7 @@ pub fn render(self: *Cx) []const display_list_mod.DisplayItem {
     // 放在后面会被 early-return 跳过，焦点永远恢复不了。
     cx_node_lifetime.drainOverlayFocusRestore(self);
 
-    // 零脏帧快速路径——根 fully-clean 且上一帧 cache 有效时直接返回缓存。
+    // 零脏帧快速路径，根 fully-clean 且上一帧 cache 有效时直接返回缓存。
     // 矩阵 #1：10k 节点零脏帧 < 0.5ms 的关键 skip。
     // 安全条件：根节点 layout/render/composite/subtree_* 全 clean + overlay_stack 无动画
     // + inspector 关闭。markDirty 路径会冒泡到根，所以 root 全 clean 蕴含整树 clean。
@@ -49,7 +49,7 @@ pub fn render(self: *Cx) []const display_list_mod.DisplayItem {
             // 批量矩形层每帧由宿主重新提交，zenit 不做跨帧 diff，
             // 无从判断内容是否变化 ⇒ 默认保守重画（见 setBulkQuads）。
             // 但宿主可以用 setBulkQuadsVersioned 自证"这批和上一帧一样"，
-            // 那样静止画面就能回到零脏帧 —— 两万 quad 的画布上这条决定了
+            // 那样静止画面就能回到零脏帧，两万 quad 的画布上这条决定了
             // 每帧是 21.6ms 还是 ~0。
             (self.bulk_quads.items.len == 0 or self.bulk_quads_unchanged) and
             isTreeFullyClean(r) and
@@ -57,7 +57,7 @@ pub fn render(self: *Cx) []const display_list_mod.DisplayItem {
             // 自动化虚拟指针是**画在真实呈现目标里**的（截图/录屏要看得见），
             // 但它不进 Node 树 ⇒ 移动指针时整棵树仍然 fully-clean。少了这
             // 一条，纯 mouse_move（不改任何节点）会走零脏帧 early-return，
-            // overlay 那段代码根本执行不到 —— 表现为"harness 里虚拟鼠标
+            // overlay 那段代码根本执行不到，表现为"harness 里虚拟鼠标
             // 永远画不出来"。可见即参与判据；不可见时该路径零成本。
             !self.virtual_cursor.visible and
             !self.inspector.enabled and
@@ -67,10 +67,10 @@ pub fn render(self: *Cx) []const display_list_mod.DisplayItem {
             return self.display_list.items.items;
         }
     }
-    // 重置帧 arena — 释放上一帧的所有临时分配
+    // 重置帧 arena，释放上一帧的所有临时分配
     _ = self.frame_arena.reset(.retain_capacity);
     self.perf.resetFrame();
-    // gesture_arena tick — long_press 等时间相关识别器靠这个推进。
+    // gesture_arena tick, long_press 等时间相关识别器靠这个推进。
     // 必须在 render pass 前调；否则 long_press began 在本帧 emit 后才 dispatch
     // 渲染（多 1 帧延迟，用户感觉滞后）。
     self.gesture_arena.tick(std.time.nanoTimestamp());
@@ -165,14 +165,14 @@ pub fn render(self: *Cx) []const display_list_mod.DisplayItem {
 
         // Stage B R3f: derive + inspector overlay 仍在 cx.render() 末尾跑 (兼容
         // 测试期望 cx.lowering.main 在 cx.render() 后立即可读)。lowerForEncoder
-        // 提供给 encoder 调，**幂等** — 已填好就直接 return，不重复 derive。
+        // 提供给 encoder 调，**幂等**，已填好就直接 return，不重复 derive。
         self.lowering._dead_main.clearRetainingCapacity();
         self.lowering.main_paint.clearRetainingCapacity();
         const lowering_mod = @import("render_engine/display_list_lowering.zig");
         // 正确性路径：main_paint 刚被 clearRetainingCapacity，这里是把整帧的
         // display item 重新 lower 进去。中途 OOM 会留下**截断的** paint 列表
         // （begin/end 层不配对、后半棵树整个不画），而 render() 返回的就是它
-        // —— 画面静默错乱而非干净失败。
+        // 画面静默错乱而非干净失败。
         if (std.posix.getenv("ZENIT_DEBUG_DLIST") != null) {
             std.debug.print("[dlist] ── frame {d} items={d} ──\n", .{ self.scene_runtime.frame_epoch, self.display_list.items.items.len });
             for (self.display_list.items.items, 0..) |it, di| {
@@ -221,7 +221,7 @@ pub fn render(self: *Cx) []const display_list_mod.DisplayItem {
             }
         }
         // v0.5-P3 Stage 4-1+: render 末尾再做一次 layout sync，捕获 before_render 钩子
-        // 内（如 ScrollArea scrollbar）直接改写 node.rect 的散装路径。这是补丁式修复——
+        // 内（如 ScrollArea scrollbar）直接改写 node.rect 的散装路径。这是补丁式修复,
         // 真正解法是给 scrollbar/modal 等改 rect 的位置直接调 cx.syncNodeRect(node)。
         // Timed together as `phase_sync_us`: these four shadow-sync passes
         // each walk the node tree at the end of every frame. They were
@@ -241,7 +241,7 @@ pub fn render(self: *Cx) []const display_list_mod.DisplayItem {
         // 整树 invariant 在 debug build 校验。
         // 降频为每 64 帧一次采样：这是纯诊断走树（自身注释即承认是 debug
         // 膨胀源），每帧跑把 Debug 帧税抬高 ~5ms 而 shadow-sync 类回归
-        // 是持续性的——采样 64 帧内必然命中。ZENIT_LAYOUT_INTEGRITY=1
+        // 是持续性的，采样 64 帧内必然命中。ZENIT_LAYOUT_INTEGRITY=1
         // 恢复逐帧校验（排查 sync 时序类问题时用）。
         const integrity_start = inner_timer.read();
         if (std.debug.runtime_safety) {
@@ -254,7 +254,7 @@ pub fn render(self: *Cx) []const display_list_mod.DisplayItem {
         }
         // `phase_retained_us` reports the debug-only integrity walk. It is
         // a full-tree traversal that exists only under runtime_safety, so
-        // it inflates render() in debug builds and vanishes in release —
+        // it inflates render() in debug builds and vanishes in release,
         // worth seeing separately rather than blaming the paint pass.
         self.perf.phase_retained_us = (inner_timer.read() - integrity_start) / 1000;
     }
@@ -406,7 +406,7 @@ pub fn removeAfterLayoutHook(self: *Cx, ctx: *anyopaque) void {
     }
 }
 
-/// 回调 → （脏则）布局，循环到没有回调请求再布局或达到轮数上限。
+/// 回调 -> （脏则）布局，循环到没有回调请求再布局或达到轮数上限。
 fn runAfterLayoutHooks(self: *Cx, partial: *PartialInteractionRoots) AfterLayoutOutcome {
     var out = AfterLayoutOutcome{};
     if (self.after_layout_hooks.items.len == 0) return out;

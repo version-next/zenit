@@ -1,9 +1,9 @@
-//! Gesture Recognizer — Phase 6 手势仲裁层
+//! Gesture Recognizer, Phase 6 手势仲裁层
 //!
 //! 通用的"识别器状态机"：tap / drag / long_press / triple_click / pinch / pan
 //! 都用同一套生命周期管理。
 //!
-//! v0.6 §2.3 接入状态: GestureArena 已实装但 **dispatcher 0 caller** —
+//! v0.6 §2.3 接入状态: GestureArena 已实装但 **dispatcher 0 caller**,
 //! event_dispatcher.mouse_{down,move,up} 暂未 feed 到这里；input/state.zig
 //! 仍跑自己的 click_count / drag_anchor 实现。完整接入 (Node.on_gesture slot +
 //! input 组件迁移) 留 v0.6 §2.3 dedicated session 推。
@@ -19,9 +19,9 @@
 //! - **不**给识别器持 *Node（用 ElementId 跨帧安全）
 //!
 //! 状态机（UIKit 风格）：
-//!     possible ──┬─→ began ─→ changed* ─→ ended
+//!     possible ──┬─-> began ─-> changed* ─-> ended
 //!                │                        ↓
-//!                └──→ failed              cancelled
+//!                └──-> failed              cancelled
 //!
 //! - possible：等待识别条件满足（touchDown 时进入）
 //! - began：识别条件已满足（如 long_press 持续 500ms 后）
@@ -157,7 +157,7 @@ pub const GestureArena = struct {
     /// 重置所有 recognizer 到 possible（新 touch 序列开始）。
     /// click_count / last_tap_ns 刻意保留：double/triple_tap 的计数必须跨
     /// touch 序列存活（宿主每次 mouse-down 都会 reset），过期由 onTouchUp
-    /// 按 multi_tap_interval_ms 判定——此前 reset 清零计数使多击从不可达。
+    /// 按 multi_tap_interval_ms 判定，此前 reset 清零计数使多击从不可达。
     pub fn reset(self: *GestureArena) void {
         for (self.recognizers.items) |*r| {
             r.state = .possible;
@@ -193,7 +193,7 @@ pub const GestureArena = struct {
             const dy = y - r.origin_y;
             const dist_sq = dx * dx + dy * dy;
 
-            // 速度估算（last point → current）
+            // 速度估算（last point -> current）
             const dt_s = @as(f32, @floatFromInt(now_ns - r.last_t_ns)) / @as(f32, std.time.ns_per_s);
             if (dt_s > 0) {
                 r.velocity_x = (x - r.last_x) / dt_s;
@@ -207,7 +207,7 @@ pub const GestureArena = struct {
 
             switch (r.kind) {
                 .tap, .double_tap, .triple_tap => {
-                    // 移动超阈值 → 失败
+                    // 移动超阈值 -> 失败
                     const max_d = r.config.tap_max_movement_px;
                     if (dist_sq > max_d * max_d) {
                         r.state = .failed;
@@ -234,7 +234,7 @@ pub const GestureArena = struct {
                     }
                 },
                 .long_press => {
-                    // 移动超阈值 → 失败
+                    // 移动超阈值 -> 失败
                     const max_d = r.config.tap_max_movement_px;
                     if (dist_sq > max_d * max_d) {
                         r.state = .failed;
@@ -304,7 +304,7 @@ pub const GestureArena = struct {
     }
 
     /// 系统级中断（窗口失焦 / 会话取消）：进行中的手势一律转 cancelled。
-    /// 此前 .cancelled 只被读从未被写——中断后识别器卡在 began/changed。
+    /// 此前 .cancelled 只被读从未被写，中断后识别器卡在 began/changed。
     pub fn onTouchCancel(self: *GestureArena, now_ns: i128) void {
         _ = now_ns;
         for (self.recognizers.items) |*r| {
@@ -327,7 +327,7 @@ pub const GestureArena = struct {
         for (self.recognizers.items) |*r| {
             if (r.state != .possible) continue;
             if (r.kind == .long_press) {
-                // started_ns == 0 是"本序列尚未 touchDown"的哨兵（默认值/reset 值）——
+                // started_ns == 0 是"本序列尚未 touchDown"的哨兵（默认值/reset 值）,
                 // caller 用 epoch 时戳每帧 tick，此时 elapsed 会是 ~5.7e13 ms，
                 // 远超 u32；负 elapsed 则来自时钟回拨/乱序。两者都不构成"按住"。
                 if (r.started_ns == 0) continue;
@@ -595,7 +595,7 @@ test "GestureArena: double_tap 超过 multi_tap_interval_ms 不得触发" {
     // 第一击
     arena.onTouchDown(50, 50, 1_000 * std.time.ns_per_ms);
     arena.onTouchUp(50, 50, 1_050 * std.time.ns_per_ms);
-    // 第二击在 10 秒后 —— 远超 450ms 间隔，必须视为新的第一击
+    // 第二击在 10 秒后，远超 450ms 间隔，必须视为新的第一击
     arena.reset();
     arena.onTouchDown(50, 50, 11_000 * std.time.ns_per_ms);
     arena.onTouchUp(50, 50, 11_050 * std.time.ns_per_ms);
@@ -622,7 +622,7 @@ test "GestureArena: double_tap 间隔内两击触发" {
 
     arena.onTouchDown(50, 50, 1_000 * std.time.ns_per_ms);
     arena.onTouchUp(50, 50, 1_050 * std.time.ns_per_ms);
-    // 新序列（宿主每次 down 都 reset），但在间隔内 —— 计数必须跨 reset 存活
+    // 新序列（宿主每次 down 都 reset），但在间隔内，计数必须跨 reset 存活
     arena.reset();
     arena.onTouchDown(50, 50, 1_200 * std.time.ns_per_ms);
     arena.onTouchUp(50, 50, 1_250 * std.time.ns_per_ms);

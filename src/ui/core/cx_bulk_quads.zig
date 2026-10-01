@@ -12,7 +12,7 @@ const bulk_quad_layer_mod = @import("bulk_quad_layer.zig");
 ///
 /// 析出到 core/bulk_quad_layer.zig 之后，那一层对 Cx 的全部依赖就是
 /// 这六个（display_list / property_tree / scene_runtime / root /
-/// frame_arena / allocator）—— 不 import core.zig，也就没有反向依赖。
+/// frame_arena / allocator），不 import core.zig，也就没有反向依赖。
 fn bulkQuadHost(self: *Cx) bulk_quad_layer_mod.Host {
     return .{
         .display_list = &self.display_list,

@@ -41,8 +41,6 @@ pub fn dashColor(has_any_value: bool, t: *const theme.ThemeTokens) Color {
     return if (has_any_value) t.color.fg_secondary else t.color.fg_tertiary;
 }
 
-
-
 pub fn rangeTextStyle(t: *const theme.ThemeTokens, cm: theme.ControlMetrics) core.TextProps {
     return .{ .content = "", .color = t.color.fg_tertiary, .font_size = cm.font_size, .line_height = cm.line_height };
 }

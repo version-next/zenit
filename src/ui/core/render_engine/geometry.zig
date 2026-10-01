@@ -65,7 +65,7 @@ pub fn computeOpacityLayerBounds(
         }
     }
 
-    // 必须遍历**全部**阴影层（最多 max_shadows 层）——只算 shadows[0] 会让后面大 blur
+    // 必须遍历**全部**阴影层（最多 max_shadows 层），只算 shadows[0] 会让后面大 blur
     // 阴影超出 surface 纹理边界被矩形截断（Modal 双阴影 blur=80/offset_y=32 曾露馅）。
     // 正 spread 同样外扩阴影形状（负 spread 只会收缩，不增大外溢）。
     for (node.style.shadowSlice()) |shadow| {
@@ -207,7 +207,7 @@ pub fn solveSticky(in: StickyInput) StickyResult {
     };
 }
 
-/// tick 侧的 sticky 写回：由节点构造 StickyInput → solveSticky → 写回偏移与状态，变化时标脏。
+/// tick 侧的 sticky 写回：由节点构造 StickyInput -> solveSticky -> 写回偏移与状态，变化时标脏。
 /// clip: sticky 的吸附区域（祖先裁剪交集）；null = 交集为空，没有可吸附的区域，偏移与状态清零
 /// （不能保留上一帧的值：globalRect / 命中 / 锚定 popover 都会读到它）。
 /// offset_x/y: 父节点的屏幕原点（tick 递归累加的全部祖先 rect + translate + sticky）。
@@ -233,7 +233,7 @@ pub fn computeStickyOffset(node: *Node, offset_x: f32, offset_y: f32, clip: ?Com
     sticky.y = result.offset.y;
     sticky.state = result.state;
 
-    // 变化 → 标脏渲染 + 清除祖先渲染缓存
+    // 变化 -> 标脏渲染 + 清除祖先渲染缓存
     if (changed) {
         node.markInteractionDirty();
         node.frame_state.state_bits.dirty.core.render = true;

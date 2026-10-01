@@ -1,16 +1,16 @@
-//! node_dirty — v0.12 §N1 god-object split: 从 node.zig 抽出 dirty
+//! node_dirty, v0.12 §N1 god-object split: 从 node.zig 抽出 dirty
 //! 传播子域（15 方法：12 pub + 3 private helper）。
 //!
 //! 与 v0.9 paint_content_accessor.zig（pca）范式的本质差异：pca 是
 //! SoA accessor，free function 收 element_id_raw + POD，Node-agnostic。
 //! dirty 传播深度操作 self.parent 链 / frame_state.state_bits / meta，
-//! 必须 *Node 类型 → 本模块用 **Node-typed free function**，
+//! 必须 *Node 类型 -> 本模块用 **Node-typed free function**，
 //! @import("node.zig") 取 Node 类型（与 node.zig 循环 import；Zig
 //! 惰性求值，多个 sibling 早已这样做，成立）。
 //!
 //! node.zig 保留全部 15 个 dirty 方法的 thin delegate（按原 pub/private
 //! 可见性），方法体一行转发到本模块。node.zig 内 self.markX() caller
-//! 极多且散落别的子域，保留本地 delegate → 零改 caller。
+//! 极多且散落别的子域，保留本地 delegate -> 零改 caller。
 //!
 //! dirty-notify callback 单元（DirtyKind / DirtyNotifyFn / g_dirty_notify
 //! / setDirtyNotifyCallback）一并搬入（markRenderDirty 用 g_dirty_notify
@@ -47,7 +47,7 @@ fn markWorldDirty(node: anytype, kind: DirtyKind) void {
         .interaction => .{ .input = .{ .interaction_changed = true } },
     };
     if (node.world_ref) |w| {
-        // OOM 容错 —— dirty 丢一次，本帧仍走旧路径重建。
+        // OOM 容错，dirty 丢一次，本帧仍走旧路径重建。
         w.markDirty(world_mod.ElementId.fromRaw(node.element_id_raw), flags) catch {};
         return;
     }
@@ -64,8 +64,8 @@ pub fn setDirtyNotifyCallback(notify: ?DirtyNotifyFn) void {
 
 /// loose interaction 位（pipeline.interaction / hit.geometry / hit.semantics）
 /// 的翻转代数。这三个位不冒泡，历史上只能靠全树递归扫描
-/// （subtreeHasLooseInteractionDirty——曾是帧结构采样最大单项）。所有
-/// 置位/清位点都 bump 本代数,扫描按 (root, gen) 记忆,任何翻转自动失效——
+/// （subtreeHasLooseInteractionDirty，曾是帧结构采样最大单项）。所有
+/// 置位/清位点都 bump 本代数,扫描按 (root, gen) 记忆,任何翻转自动失效,
 /// 语义与逐次扫描精确等价。新增这三个位的写点时必须一并 bump（core.zig
 /// 的 memo 注释同此约定）。
 pub var g_loose_interaction_gen: u64 = 1;
@@ -268,7 +268,7 @@ pub fn markCompositeDirty(self: *Node) void {
     redraw.requested = true;
 
     // subtree_render 逐跳冒泡：带外跳（child 对 parent 是带外单元）不标 parent，但**继续
-    // 往上走** —— 更上层的缓存祖先里仍含 child 的旧命令（方案 §5.4 C3）。旧实现在第一个
+    // 往上走**，更上层的缓存祖先里仍含 child 的旧命令（方案 §5.4 C3）。旧实现在第一个
     // 带外跳处整体停止冒泡，promoted / legacy 祖先因此永久替放旧画面（V2）。
     var child: *Node = self;
     var p = self.parent;
@@ -294,7 +294,7 @@ pub fn markCompositeDirty(self: *Node) void {
 /// composite 类属性（opacity/translate/scale/rotate）动画写入后的**唯一权威**失效组合：
 /// interaction（hit-test 几何）+ composite（layer 属性/重合成）+ invalidateRenderCache
 /// （content 版本，防 promoted/payload 缓存 stale）。所有动画驱动器（transition tick、
-/// node_animator、hooks before_render）与 Node setter 必须统一走这里——历史上四条写入
+/// node_animator、hooks before_render）与 Node setter 必须统一走这里，历史上四条写入
 /// 路径各标各的 dirty（有的漏 composite、有的漏 cache 失效）是动画期偶发视觉 bug 的
 /// 结构性来源。
 pub fn markCompositePropDirty(self: *Node) void {
@@ -304,7 +304,7 @@ pub fn markCompositePropDirty(self: *Node) void {
 }
 
 /// composite 属性**逐帧动画驱动**专用组合：interaction + composite，**不** bump
-/// content 版本。动画帧内容未变、只有 layer 属性变——bump content 版本会让
+/// content 版本。动画帧内容未变、只有 layer 属性变，bump content 版本会让
 /// canReusePromotedSurface 每帧失效、打死动画期 surface 复用（文本 shimmer +
 /// 全量重建）。一次性写入（定位、setter、状态切换）用 markCompositePropDirty；
 /// 每帧插值写入用本函数。除这两个具名组合外，禁止手写 dirty 组合。
@@ -314,18 +314,18 @@ pub fn markCompositeAnimFrameDirty(self: *Node) void {
 }
 
 /// 带外渲染单元（原名 escapesAncestorRenderPass；方案 §5.4 C3）：`self` 对它的**直接父节点**
-/// 而言，是不是"父节点的缓存替放时会被剔除、再 fresh 补渲染"的单元。是 → self 的 render
+/// 而言，是不是"父节点的缓存替放时会被剔除、再 fresh 补渲染"的单元。是 -> self 的 render
 /// dirty 不必让父节点失效（防止 overlay 闪烁拖着父节点的 legacy overflow 快照每帧重建）。
 ///
 /// 判据必须与渲染侧逐条对上：
 ///   - legacy overflow 替放（tryReplayLegacyOverflowCacheHit）剔除父节点的全部 z>0 直接
 ///     子节点子树（appendLegacyCachedCommandsWithoutEscapedOverlays），再由
 ///     renderOverlayChildrenAfterCacheHit 按 `!use_opacity_layer` fresh 补渲染；legacy
-///     缓存只在父节点没有 effect（→ 不开 opacity layer）时才会写/读，两者恒一致。
+///     缓存只在父节点没有 effect（-> 不开 opacity layer）时才会写/读，两者恒一致。
 ///   - promoted 替放（tryReplayPromotedCacheHit）整段替放、**不**剔除也不补渲染 z>0 子节点
-///     （promoted 节点开 surface → use_opacity_layer）。所以父节点持有 promoted 缓存时，
+///     （promoted 节点开 surface -> use_opacity_layer）。所以父节点持有 promoted 缓存时，
 ///     self 不是带外单元，必须让父节点失效。这里读的是父节点**实际持有**的缓存，而不是
-///     "父节点会不会开 layer"的近似判据 —— 旧判据只看 opacity，composited_group /
+///     "父节点会不会开 layer"的近似判据，旧判据只看 opacity，composited_group /
 ///     will_change 等 opacity=1 的 promoted 父节点被误判为带外（V2 第一种形态）。
 ///   - opacity < 0.999 的父节点保持旧行为（照常冒泡）：它开 opacity layer，本来就没有
 ///     legacy 缓存，冒泡只是保守。
@@ -342,7 +342,7 @@ pub fn isOutOfBandRenderUnit(self: *const Node) bool {
 }
 
 /// 带外单元自身 render dirty 时的 subtree_render 冒泡：逐跳判定，带外跳不标 parent 但
-/// 继续向上；非带外跳照常标记，遇到已脏的祖先停（它之上已按同一规则冒泡过——逐跳判定
+/// 继续向上；非带外跳照常标记，遇到已脏的祖先停（它之上已按同一规则冒泡过，逐跳判定
 /// 只取决于 (child, parent) 这一对，与从哪条路径来无关）；layout_isolation 为边界。
 /// 代价 O(祖先深度)，与 subtree_composite 冒泡同阶；空闲帧不走这里。
 fn bubbleSubtreeRenderAcrossOutOfBandHops(self: *Node) void {

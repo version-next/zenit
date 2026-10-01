@@ -1,4 +1,4 @@
-//! font_registry.zig —— 进程级「字体族 id ↔ 族名」注册表 + 按需 face 缓存。
+//! font_registry.zig，进程级「字体族 id ↔ 族名」注册表 + 按需 face 缓存。
 //!
 //! == 为什么需要它 ==
 //!
@@ -11,7 +11,7 @@
 //!   B. 塞一个 u16 id,族名集中在本表
 //!
 //! 选 B。`text_run` 是**每帧重建**的高频结构,里面存 slice 意味着那块字节
-//! 必须活过整帧 —— 这正是本项目 setText 悬垂、on_cleanup UAF 的同一个形状。
+//! 必须活过整帧，这正是本项目 setText 悬垂、on_cleanup UAF 的同一个形状。
 //! u16 是自足的值,不指向任何地方,顺带还小 14 字节。
 //!
 //! == 与下游应用文档级 FontStore 的关系 ==
@@ -19,7 +19,7 @@
 //! 两张表,**故意不共用 id**:
 //!   · 下游应用 `doc/font_store.zig` 是**文档级**的,随文档存盘,id 在文档内稳定;
 //!   · 本表是**进程级**的,随进程生灭,给渲染管线用。
-//! 宿主在投影时做一次 `文档 id → 族名 → 进程 id` 的翻译。
+//! 宿主在投影时做一次 `文档 id -> 族名 -> 进程 id` 的翻译。
 //! 这样文档不会被进程内的枚举顺序污染(换机器/装新字体就错位的那类坑)。
 //!
 //! == face 缓存 ==
@@ -27,7 +27,7 @@
 //! 每个 (family, size, weight, italic) 组合对应一个 `*Font`。
 //! 实测冷启一个 face 0.28~4.87ms、warm 0.03ms(macOS 全局缓存 face),
 //! 所以这里只做一层薄缓存避免重复 `findFont`,不做预热也不做淘汰
-//! —— 字体族数量级是几十,不是几万。
+//! 字体族数量级是几十,不是几万。
 
 const std = @import("std");
 const text_module = @import("text");
@@ -40,7 +40,7 @@ pub const NAME_CAP = 64;
 
 const FaceKey = struct {
     family: u16,
-    /// 字号量化到 0.25px —— 与 FontSelector 的 derived cache 同粒度,
+    /// 字号量化到 0.25px，与 FontSelector 的 derived cache 同粒度,
     /// 避免浮点噪声把缓存打穿。
     size_q: u32,
     weight: u16,
@@ -76,7 +76,7 @@ pub const FontRegistry = struct {
     faces: std.HashMapUnmanaged(FaceKey, *Font, FaceCtx, 80) = .{},
     font_system: ?*text_module.FontSystem = null,
     /// 当前 HiDPI 缩放。**新建的 face 必须立刻套上它**,否则 2x 屏上
-    /// 这些字体按 1x 光栅化 —— 表现就是"别的文字清楚,字体选择器里糊"。
+    /// 这些字体按 1x 光栅化，表现就是"别的文字清楚,字体选择器里糊"。
     /// FontSelector 的槽位由 App 统一 setScaleFactor,但本表的 face 是
     /// 独立创建的,不在那条链上,必须自己管。
     scale_factor: f32 = 1.0,
@@ -97,7 +97,7 @@ pub const FontRegistry = struct {
         self.font_system = fs;
     }
 
-    /// 族名 → 进程内 id。已存在则复用。空名字 = `.default`。
+    /// 族名 -> 进程内 id。已存在则复用。空名字 = `.default`。
     pub fn intern(self: *FontRegistry, name: []const u8) !FamilyId {
         if (name.len == 0) return .default;
         for (self.entries.items, 0..) |*e, i| {
@@ -157,7 +157,7 @@ pub const FontRegistry = struct {
         return font;
     }
 
-    /// 屏幕 DPI 变了(拖到另一块屏)。就地改所有 face 的 scale ——
+    /// 屏幕 DPI 变了(拖到另一块屏)。就地改所有 face 的 scale,
     /// 不清缓存:派生键与 scale 无关,真正按 scale 分桶的是下游
     /// glyph atlas 的 GlyphKey.scale_q(同 FontSelector.setScaleFactor)。
     pub fn setScaleFactor(self: *FontRegistry, scale: f32) void {

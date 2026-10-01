@@ -1,7 +1,7 @@
-//! Accessibility Tree — Phase 6 真 a11y 投影
+//! Accessibility Tree, Phase 6 真 a11y 投影
 //!
 //! 当前 zenit a11y 仅是单点 "notify focus/property change" 的桥；本模块建立
-//! 完整的 AccessibilityTree —— 从 ElementTable + InteractionTable 投影出
+//! 完整的 AccessibilityTree，从 ElementTable + InteractionTable 投影出
 //! 平台无关的 a11y node 树，供 NSAccessibility / IAccessible / AT-SPI 消费。
 //!
 //! 设计参照：
@@ -247,7 +247,7 @@ pub const A11yNode = struct {
     live_text_hash: u64 = 0,
     /// 在父中的索引（用于 NSAccessibility children 顺序）
     sibling_index: u32 = 0,
-    /// aria-activedescendant — 给 combobox/listbox 这种容器
+    /// aria-activedescendant，给 combobox/listbox 这种容器
     /// 自身保持 focus，但通过 active_descendant 告诉 AT 当前哪个 child 是活动项。
     /// ElementId.NULL = 无 active descendant (default)
     active_descendant: ElementId = ElementId.NULL,
@@ -278,12 +278,12 @@ pub const A11yDirtyFlag = packed struct(u16) {
     state_changed: bool = false,
     label_changed: bool = false,
     value_changed: bool = false,
-    /// live region 内容变 → 需要 announce
+    /// live region 内容变 -> 需要 announce
     live_announce: bool = false,
-    /// 焦点变化 → 需要平台通知
+    /// 焦点变化 -> 需要平台通知
     focus_changed: bool = false,
     structure_changed: bool = false,
-    /// active_descendant 变化 → 需要 NSAccessibility
+    /// active_descendant 变化 -> 需要 NSAccessibility
     /// AXSelectedChildren 重投
     active_descendant_changed: bool = false,
     /// Geometry is a first-class AX attribute and must invalidate cached
@@ -317,7 +317,7 @@ pub const AccessibilityTree = struct {
     seen_epochs: std.ArrayListUnmanaged(u64),
     projection_epoch: u64 = 0,
     projection_active: bool = false,
-    /// 待平台通知的 dirty 队列（element id → flags）
+    /// 待平台通知的 dirty 队列（element id -> flags）
     dirty: std.AutoHashMapUnmanaged(u32, A11yDirtyFlag),
     /// Parent snapshots for structural changes, keyed by the generational raw
     /// handle just like `dirty`.
@@ -639,13 +639,13 @@ test "AccessibilityTree: upsert detects changes and marks dirty" {
     const id: ElementId = .{ .index = 1, .generation = 0 };
     try tree.upsert(.{ .element = id, .role = .button });
 
-    // 第一次插入 → structure_changed
+    // 第一次插入 -> structure_changed
     try testing.expect(tree.dirty.get(id.raw()).?.structure_changed);
 
     // 清队列
     tree.dirty.clearRetainingCapacity();
 
-    // 修改 role → role_changed dirty
+    // 修改 role -> role_changed dirty
     try tree.upsert(.{ .element = id, .role = .checkbox });
     try testing.expect(tree.dirty.get(id.raw()).?.role_changed);
 }
@@ -729,11 +729,11 @@ test "AccessibilityTree: active_descendant diff sets flag" {
     }
     tree.dirty.clearRetainingCapacity();
 
-    // 写入相同值 → 不应再 dirty
+    // 写入相同值 -> 不应再 dirty
     try tree.upsert(.{ .element = container, .role = .combobox, .active_descendant = opt_a });
     try testing.expect(tree.dirty.get(container.index) == null);
 
-    // 切到 B → 重新 dirty
+    // 切到 B -> 重新 dirty
     try tree.upsert(.{ .element = container, .role = .combobox, .active_descendant = opt_b });
     {
         const flag = tree.dirty.get(container.index).?;

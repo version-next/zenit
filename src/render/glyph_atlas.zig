@@ -12,7 +12,7 @@ const text_trace = @import("trace").text_flicker;
 
 /// 页的像素格式。灰度页与彩色页共用同一个 pages 数组、同一套 page_index
 /// 编号（因此不存在"串号"问题：一个 page_index 唯一确定一页及其格式），
-/// 但各自独立打包 —— allocateInPages 只会把彩色字形放进彩色页。
+/// 但各自独立打包，allocateInPages 只会把彩色字形放进彩色页。
 pub const PageFormat = enum(u8) {
     /// R8Unorm，1 字节/像素，覆盖率掩码。
     gray,
@@ -29,7 +29,7 @@ pub const PageFormat = enum(u8) {
 
 /// 已驱逐但延迟释放的纹理。
 ///
-/// 修一个既存 bug：evictPage 此前是**同步**释放 —— GC 发生在
+/// 修一个既存 bug：evictPage 此前是**同步**释放，GC 发生在
 /// beginFrame，而本帧之前提交的 command buffer 可能仍在 GPU 上执行并引用
 /// 该纹理，同步释放等于在飞行中抽掉资源。这里改成 epoch 延迟回收：
 /// 摘除时只记录 retire 帧号，等 MAX_FRAMES_IN_FLIGHT 帧后再真正 release。
@@ -100,7 +100,7 @@ pub const GlyphAtlas = struct {
 
     /// 初始化 GlyphAtlas
     pub fn init(allocator: std.mem.Allocator, device: *gpu.Backend.Device) !GlyphAtlas {
-        // 创建采样器 — Linear 在缩放时更平滑，减少笔画粗细抖动
+        // 创建采样器，Linear 在缩放时更平滑，减少笔画粗细抖动
         var sampler_linear = device.createSampler(allocator, .{
             .label = "Zenit.Text.GlyphAtlas.Linear",
             .min_filter = .linear,
@@ -109,7 +109,7 @@ pub const GlyphAtlas = struct {
             .address_mode_v = .clamp_to_border,
         }) catch return error.SamplerCreationFailed;
 
-        // 创建采样器 — Nearest 保持 1:1 时的锐利度
+        // 创建采样器，Nearest 保持 1:1 时的锐利度
         const sampler_nearest = device.createSampler(allocator, .{
             .label = "Zenit.Text.GlyphAtlas.Nearest",
             .min_filter = .nearest,
@@ -133,7 +133,7 @@ pub const GlyphAtlas = struct {
             .cache = std.AutoHashMap(GlyphKey, AtlasRegion).init(allocator),
         };
 
-        // 创建第一页（灰度 —— 绝大多数文本走这条路；彩色页按需惰性创建）
+        // 创建第一页（灰度，绝大多数文本走这条路；彩色页按需惰性创建）
         try self.addNewPage(.gray);
 
         if (ATLAS_LOG_ENABLED) {
@@ -167,7 +167,7 @@ pub const GlyphAtlas = struct {
     /// 新增一页 Atlas
     /// 不做全量清零（避免 16MB memset 开销），靠 RectPacker 的 padding 保证安全
     fn addNewPage(self: *GlyphAtlas, format: PageFormat) !void {
-        // 已达上限 → 回收最老页腾出空间（子像素降维后此分支极少触发）。
+        // 已达上限 -> 回收最老页腾出空间（子像素降维后此分支极少触发）。
         // 驱逐失败（所有页本帧都在用）必须报错：继续写 pages[page_count]
         // 会越界，且驱逐 in-flight 页在 retire 队列满时是 use-after-free。
         if (self.page_count >= MAX_PAGES) {
@@ -183,9 +183,9 @@ pub const GlyphAtlas = struct {
             .format = switch (format) {
                 .gray => .r8_unorm,
                 // _sRGB：CoreGraphics 写进来的 emoji 像素是 sRGB 编码值，而
-                // layer 是 BGRA8Unorm_sRGB（输出时再做 linear→sRGB 编码）。
+                // layer 是 BGRA8Unorm_sRGB（输出时再做 linear->sRGB 编码）。
                 // 用无 _sRGB 的格式采样 = 不解码就当 linear 用，等于编码两次，
-                // 中间调被抬亮 —— 表现为 emoji 掉色/发白（纯色块几乎看不出，
+                // 中间调被抬亮，表现为 emoji 掉色/发白（纯色块几乎看不出，
                 // 中间调最明显）。灰度页是覆盖率不是颜色，必须保持 R8Unorm。
                 .color => .bgra8_unorm_srgb,
             },
@@ -212,7 +212,7 @@ pub const GlyphAtlas = struct {
     }
 
     /// 当前占用字节数（诊断 / 预算判定）。
-    /// 彩色页是 BGRA8，每像素 4 字节 —— 必须按页格式加权，否则 GC 预算
+    /// 彩色页是 BGRA8，每像素 4 字节，必须按页格式加权，否则 GC 预算
     /// 会把 64 MiB 的彩色页当成 16 MiB 记账，形成 4× 的隐形超支。
     pub fn bytesUsed(self: *const GlyphAtlas) u64 {
         var total: u64 = 0;
@@ -223,7 +223,7 @@ pub const GlyphAtlas = struct {
         return total;
     }
 
-    /// 周期性 age-based GC —— 由 beginFrame 驱动。
+    /// 周期性 age-based GC，由 beginFrame 驱动。
     ///
     /// 触发条件：距上次检查满 GC_INTERVAL_FRAMES **且**已超字节预算。
     /// 回收对象：`last_used_frame` 距今超过 EVICT_THRESHOLD 的页。
@@ -232,7 +232,7 @@ pub const GlyphAtlas = struct {
     /// 这补上了此前完全缺失的一环：EVICT_THRESHOLD 声明了但没有任何调用者，
     /// 实际只有 page_count 撞到 MAX_PAGES(=512 MiB) 才会驱逐。
     pub fn maybeCollect(self: *GlyphAtlas) void {
-        // 先排空已过安全期的 retire 纹理 —— 必须在下面的 early return 之前，
+        // 先排空已过安全期的 retire 纹理，必须在下面的 early return 之前，
         // 否则不触发 GC 的帧永远不会真正释放上一轮驱逐的纹理（那就是泄漏）。
         self.drainRetired();
 
@@ -255,7 +255,7 @@ pub const GlyphAtlas = struct {
     /// 强制回收最老的页（page_count 达上限时调用）。
     /// 只考虑**本帧未使用**的页：last_used_frame == current_frame 的页可能
     /// 正被本帧已编码的 draw 引用，retire 队列有 in-flight 安全期兜底，但
-    /// 队列满退化为同步释放时就是 use-after-free。全部页都在本帧用过 →
+    /// 队列满退化为同步释放时就是 use-after-free。全部页都在本帧用过 ->
     /// 返回 false，caller 放弃加页（跳过 glyph，比崩溃/花屏安全）。
     fn forceEvictOldestPage(self: *GlyphAtlas) bool {
         var oldest_idx: ?u32 = null;
@@ -300,7 +300,7 @@ pub const GlyphAtlas = struct {
         return true;
     }
 
-    /// 把纹理推入延迟释放队列。队列满时（极端情况）退化为同步释放 ——
+    /// 把纹理推入延迟释放队列。队列满时（极端情况）退化为同步释放,
     /// 那仍然不比修复前更糟，且有日志可查。
     fn retireTexture(self: *GlyphAtlas, texture: gpu.Backend.Texture) void {
         var oldest_idx: usize = 0;
@@ -315,7 +315,7 @@ pub const GlyphAtlas = struct {
                 oldest_idx = i;
             }
         }
-        // 队列满：同步释放**最老**的 retire 条目给新纹理腾位 —— 它离安全期
+        // 队列满：同步释放**最老**的 retire 条目给新纹理腾位，它离安全期
         // 最近；同步释放刚驱逐的新纹理（几乎必然仍 in-flight）风险最大。
         std.log.warn("[GlyphAtlas] retire queue full, releasing oldest retired texture synchronously", .{});
         var victim = self.retired[oldest_idx].?;
@@ -350,7 +350,7 @@ pub const GlyphAtlas = struct {
             _ = self.cache.remove(key);
         }
 
-        // 延迟释放纹理（不能同步 release —— 在飞的 command buffer 可能仍引用它）
+        // 延迟释放纹理（不能同步 release，在飞的 command buffer 可能仍引用它）
         self.retireTexture(page.texture);
 
         // 将最后一页 swap 到此位置（compact 数组）
@@ -386,21 +386,21 @@ pub const GlyphAtlas = struct {
                     page.last_used_frame = self.current_frame;
                     return .{ .rect = rect, .page_idx = @intCast(probe) };
                 } else |_| {
-                    // 这页满了 —— 同格式只保留最热一页作为分配目标，
+                    // 这页满了，同格式只保留最热一页作为分配目标，
                     // 满了就直接新建，不再回溯更老的页（与原行为一致）。
                     break;
                 }
             }
         }
 
-        // 无可用同格式页 → 新增一页
+        // 无可用同格式页 -> 新增一页
         self.addNewPage(format) catch {
-            // 纹理创建失败（典型：显存/内存压力）→ 返回 null，调用方跳过此 glyph。
+            // 纹理创建失败（典型：显存/内存压力）-> 返回 null，调用方跳过此 glyph。
             //
             // ⚠️ 这条路径的用户可见后果是**逐字丢字**：未缓存的字形（CJK 长尾）
-            // 该帧直接不画、位置留白，压力缓解后自愈 → 表现为闪烁。ASCII 因为
+            // 该帧直接不画、位置留白，压力缓解后自愈 -> 表现为闪烁。ASCII 因为
             // 早已驻留第 0 页而不受影响。此前这里完全静默，线上发生过疑似此症状
-            // 却无从取证 —— 必须留下日志（限频，压力期可能每帧成百上千次）。
+            // 却无从取证，必须留下日志（限频，压力期可能每帧成百上千次）。
             glyphs_dropped_total += 1;
             if (glyphs_dropped_total == 1 or glyphs_dropped_total % 256 == 0) {
                 std.log.warn("[GlyphAtlas] atlas page alloc failed; dropping glyphs (total dropped: {d}, pages: {d})", .{ glyphs_dropped_total, self.page_count });
@@ -465,7 +465,7 @@ pub const GlyphAtlas = struct {
 
         const page_format: PageFormat = if (bitmap.is_color) .color else .gray;
 
-        // 分配空间（多页），null 表示无法分配（极端情况）→ 返回空 region
+        // 分配空间（多页），null 表示无法分配（极端情况）-> 返回空 region
         const alloc_result = self.allocateInPages(bitmap.width, bitmap.height, page_format) orelse {
             text_trace.log(
                 self.current_frame,
@@ -527,7 +527,7 @@ pub const GlyphAtlas = struct {
         // **先查缓存，再问 hasColorGlyphs。**
         //
         // hasColorGlyphs 每次调用都进 CoreText（CTFontGetSymbolicTraits +
-        // 最多 3 次 CTFontCopyTable —— 非彩色字体必然 fall through 把三张表
+        // 最多 3 次 CTFontCopyTable，非彩色字体必然 fall through 把三张表
         // 都查一遍），而这个函数在滚动时每 glyph 每帧都会被 emit 路径调用。
         // 放在缓存查找之前，等于给全部命中帧白付一次 CoreText 查表；采样里
         // CTFontCopyTable 直接出现在 emitGlyphInstance 的热路径上。
@@ -586,7 +586,7 @@ pub const GlyphAtlas = struct {
 
         const page_format: PageFormat = if (bitmap.is_color) .color else .gray;
 
-        // 分配空间（多页），null → 返回空 region
+        // 分配空间（多页），null -> 返回空 region
         const alloc_result = self.allocateInPages(bitmap.width, bitmap.height, page_format) orelse {
             text_trace.log(
                 self.current_frame,
@@ -640,13 +640,13 @@ pub const GlyphAtlas = struct {
     /// 的注释「新纹理内容是未定义的」），而调用方在上传之后会把 region 连同
     /// 真实 UV 写进 cache（键含 font_ptr/glyph/scale，命中即短路，永不重传）。
     /// 一旦上传失败还照常缓存，那个字形就会**每帧采样未定义的 GPU 内存**，
-    /// 表现为永久花字，且没有任何日志 —— 是典型的「吞掉真错误导致 UI 静默
+    /// 表现为永久花字，且没有任何日志，是典型的「吞掉真错误导致 UI 静默
     /// 损坏」。writeRegion 的失败是真实可达的：bitmap 尺寸字段与像素缓冲长度
     /// 不一致时返回 error.InvalidTextureData（gpu/metal/resources.zig）。
     fn uploadToTexture(self: *GlyphAtlas, page_idx: u8, bitmap: GlyphBitmap, rect: RectPacker.Rect) !void {
         if (page_idx < self.page_count) {
             if (self.pages[page_idx]) |*page| {
-                // BGRA 页每像素 4 字节 —— bytes_per_row 用 width 会让 Metal
+                // BGRA 页每像素 4 字节，bytes_per_row 用 width 会让 Metal
                 // 按 1/4 行宽读取，画面变成斜切的乱码。
                 try page.texture.writeRegion(
                     0,
@@ -665,7 +665,7 @@ pub const GlyphAtlas = struct {
     /// 摘除某个 Font 指针名下的全部缓存条目。
     ///
     /// GlyphKey 以 `font_ptr`（Font 的堆地址）为身份。Font 被销毁后，
-    /// c_allocator / smp_allocator 会立刻把同一地址分给下一个 Font —— 若旧
+    /// c_allocator / smp_allocator 会立刻把同一地址分给下一个 Font，若旧
     /// 条目还在，新字体会以相同键命中旧字体的位图，画出**别的字体的字形**。
     /// 所以任何在 atlas 仍存活时销毁 Font 的路径（典型：fallback wrapper 驱逐）
     /// 都必须先调这里。只删 cache 条目，不动页：页内空间由 age-based GC 回收，
@@ -741,11 +741,11 @@ const GlyphKey = struct {
     /// HiDPI：量化后的 `Font.scale_factor`（见 quantizeScale）。
     ///
     /// 必须入键。`Font.scale_factor` 是**就地可变**字段，`setScaleFactor`
-    /// 不改变 Font 指针 —— 所以若键里没有 scale，把窗口从 Retina 拖到非
+    /// 不改变 Font 指针，所以若键里没有 scale，把窗口从 Retina 拖到非
     /// Retina（或反之）后，同一 font_ptr 的已缓存字形会以完全相同的 key
     /// 命中，永远不会按新 scale 重新光栅化：
-    ///   1x → 2x：复用半分辨率位图 = 糊；
-    ///   2x → 1x：复用双倍分辨率位图 = 尺寸/bearing 错位（bearing 在
+    ///   1x -> 2x：复用半分辨率位图 = 糊；
+    ///   2x -> 1x：复用双倍分辨率位图 = 尺寸/bearing 错位（bearing 在
     ///            text_renderer 里按**当前** scale_factor 回除）。
     scale_q: u32 = quantizeScale(1.0),
 };
@@ -754,7 +754,7 @@ const GlyphKey = struct {
 ///
 /// 为什么量化而不是直接放 f32：AutoHashMap 对键做逐位（bitwise）哈希与
 /// 相等比较，浮点的 -0.0/+0.0、NaN、以及同一逻辑 scale 经不同浮点运算
-/// 路径得到的最后一位差异，都会产生"逻辑相同但键不等"的幽灵条目 ——
+/// 路径得到的最后一位差异，都会产生"逻辑相同但键不等"的幽灵条目,
 /// 那是缓存永久 miss + 图集无限增长，比原 bug 更糟。
 ///
 /// 为什么是 1/100 精度而不是固定档位（如只认 1x/2x）：macOS
@@ -847,7 +847,7 @@ test "color glyph detection: emoji font yes, text fonts no" {
     var fs = try text.FontSystem.init(testing.allocator);
     defer fs.deinit();
 
-    // Apple Color Emoji 有 sbix 表 → 必须判为彩色，否则 emoji 会被光栅化成
+    // Apple Color Emoji 有 sbix 表 -> 必须判为彩色，否则 emoji 会被光栅化成
     // 单通道覆盖率掩码（灰块），颜色在光栅化那一刻就丢了。
     const emoji = try fs.findFont(.{ .family = "Apple Color Emoji", .size = 32 });
     defer emoji.deinit();
@@ -885,7 +885,7 @@ test "glyph atlas: GC policy constants are self-consistent" {
     const testing = @import("std").testing;
     const A = GlyphAtlas;
 
-    // 预算必须小于硬上限，否则 GC 永远不触发 —— 那正是修复前的状态：
+    // 预算必须小于硬上限，否则 GC 永远不触发，那正是修复前的状态：
     // 只有 page_count 撞到 MAX_PAGES（32 × 16 MiB = 512 MiB）才驱逐，
     // EVICT_THRESHOLD 声明了却无人调用。
     const hard_cap_bytes: u64 = @as(u64, A.MAX_PAGES) * A.PAGE_BYTES;
@@ -903,7 +903,7 @@ test "glyph atlas: GC policy constants are self-consistent" {
 }
 
 // ══════════════════════════════════════════════════════════════════════
-// HiDPI (Retina) 审计回归测试 —— 2026-07-31
+// HiDPI (Retina) 审计回归测试，2026-07-31
 //
 // 背景：此前全仓 **零** HiDPI 测试覆盖（grep scale/dpi/retina 只命中
 // transform scale 与 theme spacing scale，都与设备像素比无关）。
@@ -946,7 +946,7 @@ test "HiDPI: 字形在 2x 下按物理像素光栅化（非逻辑尺寸再由 GP
     const ratio_h = h2 / h1;
 
     // 1.7 下界：若 2x 与 1x 尺寸相同（ratio≈1.0），说明 scale_factor 根本
-    // 没传进 CoreText 光栅化 —— 那就是 Retina 糊字的经典 bug。
+    // 没传进 CoreText 光栅化，那就是 Retina 糊字的经典 bug。
     // 实测（2026-07-31，Helvetica 'M' @32pt）：1x=24×25px，2x=46×48px，
     // ratio=1.917/1.920（差的那点正是常数 +2px padding）。
     try testing.expect(ratio_w > 1.7);
@@ -957,7 +957,7 @@ test "HiDPI: 字形在 2x 下按物理像素光栅化（非逻辑尺寸再由 GP
 }
 
 // 上面那条「GlyphKey 不含 scale（已知缺陷）」的锁定测试已按其自身注释的
-// 指示删除 —— 缺陷已修（GlyphKey.scale_q）。下面三条是替代的正向测试。
+// 指示删除，缺陷已修（GlyphKey.scale_q）。下面三条是替代的正向测试。
 
 test "HiDPI: 不同 scale 必须产生不同 GlyphKey（动态 scale 变化不再命中过期位图）" {
     const testing = @import("std").testing;
@@ -976,7 +976,7 @@ test "HiDPI: 不同 scale 必须产生不同 GlyphKey（动态 scale 变化不�
         .subpixel_bin = 0,
         .scale_q = quantizeScale(2.0),
     };
-    // 除 scale 外完全相同的两个键必须不等 —— 这正是修复的核心。
+    // 除 scale 外完全相同的两个键必须不等，这正是修复的核心。
     try testing.expect(!std.meta.eql(k1x, k2x));
 
     // 同一 scale 仍须命中同一条目（否则等于缓存全 miss）。
@@ -1035,7 +1035,7 @@ test "HiDPI: 同一 Font 指针改 scale 后 getOrInsert 的键随之改变" {
     };
 
     f.setScaleFactor(2.0);
-    // 前提复核：指针确实没变 —— 这正是 scale 必须入键的原因。
+    // 前提复核：指针确实没变，这正是 scale 必须入键的原因。
     try testing.expectEqual(ptr_before, @intFromPtr(f));
     const key_2x = GlyphKey{
         .font_ptr = @intFromPtr(f),

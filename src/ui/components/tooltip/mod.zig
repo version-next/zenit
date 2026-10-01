@@ -77,7 +77,7 @@ pub const TooltipBuilder = struct {
             .tier = .tooltip,
         }).mount(scope, cx);
         // Popover.mount 返回后，wrapper 子树（含 trigger/content/overlay 层）只被
-        // my_scope 绑定 —— bindScopeToNode 的 destroy 只解绑不释放，所以调用方
+        // my_scope 绑定，bindScopeToNode 的 destroy 只解绑不释放，所以调用方
         // scope.dispose() 不会回收它。下面还有 box / appendChild 会失败，中途失败
         // 必须由这里释放。与 Popover.mount 内部同型（freeNode 会顺带 dispose 绑定的
         // 子 scope）。md mount OOM 注入 index 2226 实测：整棵 popover 子树泄漏。
@@ -252,7 +252,7 @@ test "Tooltip: first 10 open frames progress from enter state instead of flashin
     }
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }

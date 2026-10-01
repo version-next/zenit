@@ -1,4 +1,4 @@
-/// ComboBox / Autocomplete — typeahead-in-input（B3）
+/// ComboBox / Autocomplete, typeahead-in-input（B3）
 ///
 /// 组合已有基建：Input（文本输入 + on_change）+ Popover（bottom_start 锚定面板，
 /// manual 触发）。retained 模式下 option 行只建一次，过滤 = 行高 0/item_h 切换
@@ -6,7 +6,7 @@
 ///
 /// 行为：
 ///   - 输入即过滤（label 大小写不敏感子串匹配）并打开面板
-///   - 点选 option → 输入框填入 label、面板关闭、触发 on_change（caller 读
+///   - 点选 option -> 输入框填入 label、面板关闭、触发 on_change（caller 读
 ///     state.selectedOption() 取值）
 ///   - 无匹配时显示 "No results found" 空态行
 const std = @import("std");
@@ -69,7 +69,7 @@ pub const ComboBoxState = struct {
     options: []const ComboOption,
     item_nodes: []*Node,
     empty_node: *Node,
-    /// combobox 角色所在节点（pop.trigger）——expanded / active_descendant /
+    /// combobox 角色所在节点（pop.trigger），expanded / active_descendant /
     /// value_text 三个 a11y 状态全部写回这里（AT 的虚拟焦点停在输入框上）。
     trigger: *Node,
     input_state: *TextInputState,
@@ -140,7 +140,7 @@ fn applyFilter(state: *ComboBoxState, filter: []const u8) usize {
         item.setDisplay(if (show) .flex else .none);
         if (show) {
             matched += 1;
-            // 只有可见行进入导航表 —— 箭头键不会停在被过滤掉的行上
+            // 只有可见行进入导航表，箭头键不会停在被过滤掉的行上
             if (state.nav_options_len < state.nav_options_buf.len) {
                 state.nav_options_buf[state.nav_options_len] = .{
                     .value = @intCast(i),
@@ -201,7 +201,7 @@ fn commitIndex(state: *ComboBoxState, index: usize) void {
     if (opt.disabled) return;
     state.selected_index = index;
     // 输入框写回 label（selectAll + insertText = 整体替换）；写回会触发
-    // Input on_change → suppress 一次，避免按 label 重过滤 + 重开面板。
+    // Input on_change -> suppress 一次，避免按 label 重过滤 + 重开面板。
     state.suppress_change = true;
     state.input_state.selectAll();
     state.input_state.insertText(opt.label);
@@ -210,8 +210,8 @@ fn commitIndex(state: *ComboBoxState, index: usize) void {
     if (state.on_change) |h| h.invoke();
 }
 
-/// ComboBox 键盘处理 —— 导航逻辑整体委托给 select_headless 状态机，
-/// 本函数只做 KeyCode → Action 映射与「可见序号 → options 下标」的翻译。
+/// ComboBox 键盘处理，导航逻辑整体委托给 select_headless 状态机，
+/// 本函数只做 KeyCode -> Action 映射与「可见序号 -> options 下标」的翻译。
 fn comboKeyDown(key: KeyCode, _: Modifiers, context: ?*anyopaque) EventResult {
     const state: *ComboBoxState = @ptrCast(@alignCast(context orelse return .ignored));
 
@@ -353,7 +353,7 @@ pub fn mountComboBox(props: ComboBoxProps, scope: *Scope, cx: *Cx) !ComboBoxMoun
     };
 
     // ── 面板 + option 行 ──
-    // a11y: 面板是 listbox，行是 option（combobox → listbox → option 三级角色链）
+    // a11y: 面板是 listbox，行是 option（combobox -> listbox -> option 三级角色链）
     pop.content.behavior.interaction.a11y = .{ .role = .listbox };
     const panel_style = comboPanelStyle(t);
     panel_style.applyTo(&pop.content.style, allocator);
@@ -506,7 +506,7 @@ test "mountComboBox: 过滤切换行高 + 点选写回输入框" {
         try testing.expectEqual(core.Position.relative, item.style.position);
     }
 
-    // 过滤 "an" → 只 Banana 命中
+    // 过滤 "an" -> 只 Banana 命中
     const matched = applyFilter(cb.state, "an");
     try testing.expectEqual(@as(usize, 1), matched);
     try testing.expectEqual(core.Display.none, cb.state.item_nodes[0].style.display);
@@ -515,12 +515,12 @@ test "mountComboBox: 过滤切换行高 + 点选写回输入框" {
     try testing.expectEqual(core.Display.none, cb.state.empty_node.style.display);
     // 行高不再被改写（隐藏靠 display，不靠 0 高）
 
-    // 无匹配 → 空态行展开
+    // 无匹配 -> 空态行展开
     _ = applyFilter(cb.state, "zzz");
     try testing.expectEqual(core.Display.flex, cb.state.empty_node.style.display);
     for (cb.state.item_nodes) |item| try testing.expectEqual(core.Display.none, item.style.display);
 
-    // 点选 Banana → 输入框写回 label、选中提交、面板关闭
+    // 点选 Banana -> 输入框写回 label、选中提交、面板关闭
     cb.is_open.set(true);
     var click_ctx = ItemClickCtx{ .state = cb.state, .index = 1 };
     onItemClick(@ptrCast(&click_ctx));
@@ -558,18 +558,18 @@ test "ComboBox 键盘：arrow-then-Enter 选中（此前完全没有键盘导航
     // key handler 真的接上了（回归护栏：此前 on_key_down 是 null）
     try testing.expect(cb.input.behavior.events.on_key_down != null);
 
-    // 关闭态按 ↓ → 打开面板并落到首项
+    // 关闭态按 ↓ -> 打开面板并落到首项
     try testing.expect(!cb.is_open.get());
     try testing.expectEqual(EventResult.stop, comboKeyDown(.down, .{}, @ptrCast(st)));
     try testing.expect(cb.is_open.get());
     try testing.expectEqual(@as(?usize, 0), st.highlightedIndex());
 
-    // 再按两次 ↓ → Cherry
+    // 再按两次 ↓ -> Cherry
     _ = comboKeyDown(.down, .{}, @ptrCast(st));
     _ = comboKeyDown(.down, .{}, @ptrCast(st));
     try testing.expectEqual(@as(?usize, 2), st.highlightedIndex());
 
-    // Enter 提交 → 写回输入框、关闭面板
+    // Enter 提交 -> 写回输入框、关闭面板
     _ = comboKeyDown(.@"return", .{}, @ptrCast(st));
     try testing.expectEqual(@as(?usize, 2), st.selected_index);
     try testing.expectEqualStrings("Cherry", st.selectedOption().?.label);
@@ -593,7 +593,7 @@ test "ComboBox 键盘：箭头只走过滤后可见的行" {
     const cb = try mountKbdFixture(cx, scope, &opts);
     const st = cb.state;
 
-    // 过滤 "ap" → Apple(0) 与 Grape(3) 命中；Banana/Cherry 隐藏
+    // 过滤 "ap" -> Apple(0) 与 Grape(3) 命中；Banana/Cherry 隐藏
     try testing.expectEqual(@as(usize, 2), applyFilter(st, "ap"));
     try testing.expectEqual(@as(usize, 2), st.nav_options_len);
 
@@ -698,7 +698,7 @@ test "a11y: ComboBox expanded/active_descendant/value 跟随交互且可撤回" 
         try testing.expectEqual(@as(u64, 0), n.text_hash); // 无选中值
     }
 
-    // ↓ 打开面板并落到首项 → expanded=true + active_descendant 指向 Apple 行
+    // ↓ 打开面板并落到首项 -> expanded=true + active_descendant 指向 Apple 行
     _ = comboKeyDown(.down, .{}, @ptrCast(cb.state));
     cx.layout();
     _ = cx.render();
@@ -708,7 +708,7 @@ test "a11y: ComboBox expanded/active_descendant/value 跟随交互且可撤回" 
         try testing.expectEqual(cb.state.item_nodes[0].element_id_raw, n.active_descendant.raw());
     }
 
-    // Enter 提交 Apple → 收起、value_text 播报选中项、option.selected 置位
+    // Enter 提交 Apple -> 收起、value_text 播报选中项、option.selected 置位
     _ = comboKeyDown(.@"return", .{}, @ptrCast(cb.state));
     cx.layout();
     _ = cx.render();
@@ -720,9 +720,9 @@ test "a11y: ComboBox expanded/active_descendant/value 跟随交互且可撤回" 
     try testing.expect(cb.state.item_nodes[0].behavior.interaction.a11y.?.selected);
     try testing.expect(!cb.state.item_nodes[1].behavior.interaction.a11y.?.selected);
 
-    // 手动编辑使选择失效 → value 撤回、selected 位撤回。
+    // 手动编辑使选择失效 -> value 撤回、selected 位撤回。
     // （测试直接调 onInputChanged，先消掉 commitIndex 写回 Input 用的
-    // suppress 标记——真实流程里它被 insertText 触发的 on_change 消费。）
+    // suppress 标记，真实流程里它被 insertText 触发的 on_change 消费。）
     cb.state.suppress_change = false;
     onInputChanged(cb.state, "ban");
     cx.layout();
@@ -731,12 +731,12 @@ test "a11y: ComboBox expanded/active_descendant/value 跟随交互且可撤回" 
     try testing.expect(!cb.state.item_nodes[0].behavior.interaction.a11y.?.selected);
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 const sweep_opts = [_]ComboOption{ .{ .value = "a", .label = "Apple" }, .{ .value = "b", .label = "Banana" } };
 test "combo_box: mount 在任意分配点失败时不泄漏（sweep）" {
     const sw = @import("../oom_sweep.zig");

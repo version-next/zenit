@@ -1,4 +1,4 @@
-//! LayerTree — 保留式合成层（retained plan，2026-07-21 落地）
+//! LayerTree，保留式合成层（retained plan，2026-07-21 落地）
 //!
 //! plan layer 按 (root_node_id, effect_kind) 键控跨帧持久（plan_by_node）：
 //! planAppendLayer 命中时原地更新 per-frame descriptor 并保留 surface_valid，
@@ -17,11 +17,11 @@
 //!
 //! 历史债避免：
 //! - **不**让 Layer 同时承载几何 + 内容 + 合成语义（cc::Layer 早期 18 布尔状态教训）
-//!   → Layer 只持 (gpu_texture_handle, transform_id, clip_id, effect_id, scroll_id, paint_chunks)
+//!   -> Layer 只持 (gpu_texture_handle, transform_id, clip_id, effect_id, scroll_id, paint_chunks)
 //! - **不**用线性扫描查 layer by id（zenit 现有 CompositorPlan O(N·M) 教训）
-//!   → AutoHashMap by layer_id；遍历用 layers ArrayList
+//!   -> AutoHashMap by layer_id；遍历用 layers ArrayList
 //! - **不**为每个 paint chunk 创一 layer（内存爆炸）
-//!   → 阈值化：min_area / max_layer_count 配置；不达标则合并到父 layer
+//!   -> 阈值化：min_area / max_layer_count 配置；不达标则合并到父 layer
 //!
 //! Layer 提升（promoted，即缓存资格）实际判定见 shouldPromoteLayer：backdrop_blur /
 //! composited_group / text+transform 动画 / will_change / overlay 候选动画中 /
@@ -47,7 +47,7 @@ pub const ComputedRect = types.ComputedRect;
 pub const EffectKind = property_tree_mod.EffectKind;
 pub const INVALID_ID = property_tree_mod.INVALID_ID;
 
-/// Layer 提升原因 —— 用于调试/devtools 显示
+/// Layer 提升原因，用于调试/devtools 显示
 pub const PromotionReason = enum(u8) {
     root,
     transform_animating,
@@ -113,9 +113,9 @@ pub const Layer = struct {
     /// ⚠️ **当前未被生产 renderer 消费**（2026-07-30 核实）。
     ///
     /// 审查报告 P1 指出 LayerTree 已备好 gpu_texture_handle / damage_rect /
-    /// needs_repaint，但"生产 renderer 尚未消费它们"——属实。
+    /// needs_repaint，但"生产 renderer 尚未消费它们"，属实。
     /// 需要说明的是：**这并不等于没有 GPU 端复用**。当前的复用走的是另一条
-    /// 独立通路 —— `SceneRuntime.promoted_surface_flags`（rebuilt/reused/
+    /// 独立通路，`SceneRuntime.promoted_surface_flags`（rebuilt/reused/
     /// surface_valid）配合 offscreen texture pool，promoted surface 在内容
     /// 未变时确实跨帧复用（有回归测试：popover.zig 的
     /// "scale_fade open animation reuses promoted surface" 逐帧断言
@@ -125,38 +125,38 @@ pub const Layer = struct {
     ///
     /// 已省（CPU 侧）：promoted surface 命中缓存时，
     /// `render_engine/mod.zig:1668` 起的路径**直接 splice 上一帧的命令区段**，
-    /// 不再重走子树 —— 这就是 "CPU retained" 已经生效的部分。
+    /// 不再重走子树，这就是 "CPU retained" 已经生效的部分。
     /// 离屏纹理也已按尺寸跨帧复用（offscreen_texture.zig 的
     /// REUSE_LAG_FRAMES + LRU），不会每帧 create/destroy。
     ///
     /// **GPU 侧（2026-07-30 已落地）**：曾经即便命令来自缓存、纹理来自池，
-    /// `beginOpacityLayer` 仍会把命令**重新光栅化**进那张复用纹理 —— 内容没变
+    /// `beginOpacityLayer` 仍会把命令**重新光栅化**进那张复用纹理，内容没变
     /// 也照画。现在按 **layer 身份**（`CompositedLayer.stable_id`）持有专属
     /// 纹理，内容未变时整段内容命令跳过，只留一次带 transform/opacity 的合成
     /// draw。实现在 `render/offscreen_texture.zig`（retained 所有权）+
     /// `render/opacity_layer.zig`（`tryBeginRetainedOpacityLayer`）。
     ///
     /// 三项子工作的现状：
-    ///   1. 按 layer 身份持有专属纹理 —— ✅ 已做；
-    ///   2. `damage_rect` 裁剪重绘到脏区 —— ✅ **已做（2026-07-30）**：encoder
+    ///   1. 按 layer 身份持有专属纹理，✅ 已做；
+    ///   2. `damage_rect` 裁剪重绘到脏区，✅ **已做（2026-07-30）**：encoder
     ///      侧 per-item 指纹 diff 出脏区，load+scissor+clear draw 部分重绘
     ///      （含非平坦层：path/clip/嵌套 opacity 子树折叠捕获 + scissor 栈）。
     ///      damage 通路已合流：addDamage 申报会并入脏区（captureLayerTreeDamage），
     ///      encoder 决策经 noteEncoderOutcome 写回本结构的
-    ///      damage_rect/needs_repaint —— 字段已被生产 renderer 消费。
-    ///   3. composite 侧跳过内容 pass —— ✅ 已做。
+    ///      damage_rect/needs_repaint，字段已被生产 renderer 消费。
+    ///   3. composite 侧跳过内容 pass, ✅ 已做。
     ///
     /// ⚠️ 缓存键**不是** `content_version`（它只是 layer 根节点自己的版本，
     /// descendant 内容变化不会让它变），而是 encoder 侧对该层实际要编码的命令
-    /// 取的内容指纹 —— 见 `command_encoder.computeRetainedContentHashes`。
+    /// 取的内容指纹，见 `command_encoder.computeRetainedContentHashes`。
     ///
     /// 本字段 `gpu_texture_handle` 与 `damage_rect` / `needs_repaint` 仍未被
     /// 生产 renderer 消费：上述实现走的是 encoder 侧的独立通路（按 stable_id
     /// 查 offscreen pool），没有反向写回 LayerTree。保留字段是为了不丢失
-    /// 设计意图 —— 真做第 2 项（damage 裁剪）时它们才会被接上。
+    /// 设计意图，真做第 2 项（damage 裁剪）时它们才会被接上。
     gpu_texture_handle: u64 = 0,
     /// 包含哪些 PaintChunk（按 ElementId 索引；同 element 的 chunk）
-    /// 简单 ArrayList——chunk 数有限（实际 layer 平均 < 100 chunk）
+    /// 简单 ArrayList, chunk 数有限（实际 layer 平均 < 100 chunk）
     chunk_elements: std.ArrayListUnmanaged(ElementId),
     /// world-space 包络 bounds
     world_bounds: Bounds = .ZERO,
@@ -169,7 +169,7 @@ pub const Layer = struct {
     plan_seen_epoch: u64 = 0,
     /// 是否本帧需要重画（false = 完全 cache hit，仅 compose）
     needs_repaint: bool = false,
-    /// GPU encoder 写回（观测用，与 damage_rect 生产通路分离 —— 写进
+    /// GPU encoder 写回（观测用，与 damage_rect 生产通路分离，写进
     /// damage_rect 会在无人调 beginFrame 的生产环境里被下一帧的
     /// captureLayerTreeDamage 误当生产端申报，形成全层脏区反馈环）：
     /// 0=本帧无 retained 决策 1=cache hit 2=整层重画 3=部分重绘
@@ -203,7 +203,7 @@ pub const LayerTree = struct {
     layers: std.ArrayListUnmanaged(Layer),
     generations: std.ArrayListUnmanaged(u8),
     free_list: std.ArrayListUnmanaged(u24),
-    /// element → layer 反查（element 属于哪个 layer）
+    /// element -> layer 反查（element 属于哪个 layer）
     element_to_layer: std.AutoHashMapUnmanaged(u32, LayerId),
     /// 根 layer
     root: LayerId = LayerId.NULL,
@@ -211,10 +211,10 @@ pub const LayerTree = struct {
     /// P1.8'（2026-05-01）：本帧合成操作序列。曾经在 CompositorPlan.ops，迁入。
     /// frame_clear() 帧间清；plan API 的 appendOp/findXxxOp 通过此存取。
     frame_ops: std.ArrayList(CompositeOp),
-    /// P1.9'（2026-05-01）：本帧 plan_layer_id (= 顺序索引) → LayerId 索引。
+    /// P1.9'（2026-05-01）：本帧 plan_layer_id (= 顺序索引) -> LayerId 索引。
     /// 曾经在 CompositorPlan.tree_layer_ids，迁入。
     frame_layer_ids: std.ArrayList(LayerId),
-    /// Retained plan 层身份：(root_node_id, effect_kind) → 持久 tree LayerId。
+    /// Retained plan 层身份：(root_node_id, effect_kind) -> 持久 tree LayerId。
     /// planAppendLayer 命中时**复用** tree layer（原地更新 composited descriptor、
     /// 保留 surface_valid），miss 时才 createLayer；planBuild 末尾 epoch 清扫
     /// 本帧未出现的条目。layer 身份从此跨帧稳定（不再是帧内序号）。
@@ -252,7 +252,7 @@ pub const LayerTree = struct {
     pub fn createLayer(self: *LayerTree, root_element: ElementId, reason: PromotionReason, parent: LayerId) !LayerId {
         // 世代退役（防 ABA，对齐 element_id.SlotMap / ElementTable）：
         // generation 推进到 MAX_GEN（=NULL 的 generation）的 slot 永久退役。
-        // alive 位挡不住复用后的 ABA——复用槽 alive=true、generation 回卷后
+        // alive 位挡不住复用后的 ABA，复用槽 alive=true、generation 回卷后
         // 与陈旧 LayerId 假匹配。create/destroy 两侧各推进一次，两侧都要判。
         while (self.free_list.pop()) |idx| {
             const next_gen = self.generations.items[idx] +% 1;
@@ -382,7 +382,7 @@ pub const LayerTree = struct {
     /// GPU encoder 写回（damage 通路合流 2026-07-30）：retained 层本帧的实际
     /// 重绘决策。kind: 0=cache hit（零重绘）1=整层重画 2=部分重绘。
     /// rect = local space {min_x,min_y,max_x,max_y}。写进 encoder_repaint_kind /
-    /// encoder_damage_rect（观测字段）——与 addDamage 的生产通路分离，
+    /// encoder_damage_rect（观测字段），与 addDamage 的生产通路分离，
     /// 生产申报由 encoder 的 captureLayerTreeDamage 取走即清（consume-clear）。
     pub fn noteEncoderOutcome(self: *LayerTree, stable_id: u32, kind: u8, rect: [4]f32) void {
         for (self.layers.items) |*l| {
@@ -546,7 +546,7 @@ pub const LayerTree = struct {
         return tree_layer.composited;
     }
 
-    /// 帧间清本帧的 plan ops 与 ordinal 索引。retained 化后**不再销毁 layer**——
+    /// 帧间清本帧的 plan ops 与 ordinal 索引。retained 化后**不再销毁 layer**,
     /// tree layer 跨帧持久（plan_by_node 键控），退场清扫由 planBuildFromPropertyTree
     /// 末尾的 epoch sweep 负责。
     pub fn planClear(self: *LayerTree) void {
@@ -561,7 +561,7 @@ pub const LayerTree = struct {
     pub fn planAppendLayer(self: *LayerTree, layer: CompositedLayer) !u32 {
         // 先把本函数全部可失败操作的容量订好：createLayer 之后不能再有 try。
         // 以前 createLayer 成功、plan_by_node.put 失败会留下一个既不在 plan_by_node
-        // 也不在 frame_layer_ids 的活 layer —— epoch sweep 只遍历 plan_by_node，
+        // 也不在 frame_layer_ids 的活 layer, epoch sweep 只遍历 plan_by_node，
         // 它永远不会被回收，每次失败都多一个。
         try self.frame_layer_ids.ensureUnusedCapacity(self.allocator, 1);
         try self.plan_by_node.ensureUnusedCapacity(self.allocator, 1);
@@ -833,7 +833,7 @@ pub const LayerTree = struct {
 
             // CA-pure：surface 永远走统一的 draw_transform 合成路径（src=owner-local，
             // composite=parent_inverse·owner_world）。不再区分"轴对齐 blit at world bounds" vs "transform
-            // 合成"——那个分叉正是 rest/animation 接缝 bug 的来源。恒 true。
+            // 合成"，那个分叉正是 rest/animation 接缝 bug 的来源。恒 true。
             const has_surface_transform = true;
 
             // ── CA-pure 合成模型（2026-06-07 revamp）──────────────────────────────
@@ -844,7 +844,7 @@ pub const LayerTree = struct {
             //  - 因此 texture 的 src 区域 = opacity_bounds 投到同一帧 = owner_world⁻¹·opacity_bounds。
             //  - 合成回写 = parent_inverse·owner_world（含 position+scale+rotate）。
             //    owner_world 本身就是 CA 的 M：它把 owner-local 内容放回世界并施加动画 scale。
-            //    rest（scale=1）时 owner_world 退化为 Translate(owner_pos) → 精确居中、不漂。
+            //    rest（scale=1）时 owner_world 退化为 Translate(owner_pos) -> 精确居中、不漂。
             const owner_world = if (transform) |tx| tx.world else types.Transform2D.identity();
             const owner_world_inv = owner_world.invert();
             // src = bounds 投到 owner-unscaled-local 帧（与 content 同帧）。texture 覆盖此矩形，
@@ -911,7 +911,7 @@ pub const LayerTree = struct {
             }
 
             // 一个 effect 要么整体进 plan，要么整体跳过：先把它全部 op 的容量订好，
-            // 再建 layer，之后零失败地追加。以前 op 追加失败是 @panic —— 理由是
+            // 再建 layer，之后零失败地追加。以前 op 追加失败是 @panic，理由是
             // begin/end/draw 三元组不可拆，但对编辑器来说 abort 是最坏结局；订不到
             // 容量就跳过这个 effect（与 planAppendLayer 失败同样的降级），三元组
             // 依然不会出现半截。
@@ -942,7 +942,7 @@ pub const LayerTree = struct {
                 //
                 // 例外：owner 自己的 overflow clip 若标了 owner_wraps_children（owner
                 // 有阴影/描边等画在 children clip 之外的内容），该 clip 由渲染树侧
-                // children 包围的 node-local push_clip 承担——apply_clip 在
+                // children 包围的 node-local push_clip 承担，apply_clip 在
                 // begin_layer 后立即 push，会连 owner 自己的阴影/描边一起裁（Popover
                 // 阴影被切成矩形、贴边内容压住描边）。此时 apply_clip 退回到**父**
                 // clip，owner 仍受祖先裁剪。
@@ -973,7 +973,7 @@ pub const LayerTree = struct {
             }
 
             // begin/end/draw_surface 是不可拆的三元组（begin 无 end / 画了不存在的
-            // surface 都会让下游 compositor 渲染错乱）—— 容量已在本 effect 开头订好，
+            // surface 都会让下游 compositor 渲染错乱），容量已在本 effect 开头订好，
             // 这里不可能失败，三条要么全在要么全不在。
             self.planAppendOpAssumeCapacity(.{ .begin_surface = .{
                 .layer_id = layer_id,
@@ -1049,7 +1049,7 @@ fn canReusePromotedSurface(layer: CompositedLayer, transform: ?property_tree_mod
     const current_transform = transform orelse return false;
     if (!layer.promotion_reason.any()) return false;
     if (!runtime.has_promoted_surface_cache) return false;
-    // 跨帧身份比较用 stable_id（retained LayerId raw，含 generation）——帧内序号
+    // 跨帧身份比较用 stable_id（retained LayerId raw，含 generation），帧内序号
     // 会随节点增删平移，曾造成整批 spurious cache miss。
     if (runtime.promoted_surface_layer_id != layer.stable_id) return false;
     if (runtime.promoted_surface_content_version != runtime.content_version) return false;
@@ -1199,7 +1199,7 @@ test "LayerTree: destroyLayer (no callback) just drops GPU handle" {
 
     t.destroyLayer(layer);
     try testing.expect(!t.isAlive(layer));
-    // 没有 release callback —— GPU handle 由 caller 自管（接 ResourcePool 时由
+    // 没有 release callback, GPU handle 由 caller 自管（接 ResourcePool 时由
     // pool.release 走 epoch retirement queue）
 }
 
@@ -1268,7 +1268,7 @@ test "retained plan: planClear 保留 layer，跨帧身份稳定，epoch sweep �
     try testing.expectEqual(@as(u32, 2), tree.liveLayerCount());
     try testing.expectEqual(@as(usize, 0), tree.frame_layer_ids.items.len);
 
-    // 下一帧同 node 重现 → 复用同一 layer（stable_id 不变），ordinal 可以不同
+    // 下一帧同 node 重现 -> 复用同一 layer（stable_id 不变），ordinal 可以不同
     tree.plan_epoch += 1;
     _ = try tree.planAppendLayer(.{
         .root_node_id = 1,
@@ -1279,7 +1279,7 @@ test "retained plan: planClear 保留 layer，跨帧身份稳定，epoch sweep �
         .effect_kind = .composited_group,
     });
     try testing.expectEqual(stable_a, tree.planCompositedAt(0).?.stable_id);
-    // node 2 本帧未出现 → sweep 后销毁
+    // node 2 本帧未出现 -> sweep 后销毁
     tree.planSweepStale();
     try testing.expectEqual(@as(u32, 1), tree.liveLayerCount());
 }
@@ -1389,7 +1389,7 @@ test "P1.10': planAppendLayer mirrors CompositedLayer to tree.composited" {
 }
 
 // =============================================================================
-// Compositor types (CompositedLayer / CompositeOp etc) — historically lived in
+// Compositor types (CompositedLayer / CompositeOp etc), historically lived in
 // compositor_plan.zig; merged into layer_tree.zig with the API that operates on
 // them now living on the LayerTree struct itself (P1.10' 2026-05-01).
 // =============================================================================

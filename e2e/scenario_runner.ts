@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 /**
- * scenario_runner.ts — zenit UI 自动化 runner（最小可靠闭环）
+ * scenario_runner.ts, zenit UI 自动化 runner（最小可靠闭环）
  *
- * 读 scenario（JSON 或 YAML）→ zig build → 起 app（精确 executable + 唯一 RPC dir）
- * → 逐 case：setup → 执行 timeline（wait_for/click/hover/screenshot/assert…）
- * → 抓帧 → design/golden 比对 → 落 report（JSON + 静态 HTML）。
+ * 读 scenario（JSON 或 YAML）-> zig build -> 起 app（精确 executable + 唯一 RPC dir）
+ * -> 逐 case：setup -> 执行 timeline（wait_for/click/hover/screenshot/assert…）
+ * -> 抓帧 -> design/golden 比对 -> 落 report（JSON + 静态 HTML）。
  *
  * 对应 docs/internal/UI_AUTOMATION_PLAN.md §4（v2 schema）。
  *
@@ -114,7 +114,7 @@ function loadScenario(path: string): Scenario {
   return validateScenario(obj as Scenario, path);
 }
 
-/** macOS 自带 ruby，用它做可靠的 YAML→JSON（dev tooling 无外部依赖）。 */
+/** macOS 自带 ruby，用它做可靠的 YAML->JSON（dev tooling 无外部依赖）。 */
 function yamlToJson(yaml: string, path: string): unknown {
   const proc = spawnSync("ruby", ["-ryaml", "-rjson", "-e", "puts JSON.generate(YAML.load_file(ARGV[0]))", path], {
     encoding: "utf8",
@@ -679,7 +679,7 @@ async function main(): Promise<void> {
     const logPath = join(caseOut, "app.log");
     const app = launchApp(scenario.target, rpcDir, logPath, mock ? { ZENIT_API_BASE: mock.url } : undefined);
 
-    // client 从 process.env 读 RPC dir —— 必须和 app 用同一个目录（文件 RPC，不是 HTTP）。
+    // client 从 process.env 读 RPC dir，必须和 app 用同一个目录（文件 RPC，不是 HTTP）。
     process.env.ZENIT_E2E_FILE_RPC_DIR = rpcDir;
 
     const started = Date.now();
@@ -721,7 +721,7 @@ async function main(): Promise<void> {
       const ctx = { outDir: caseOut, epoch: i, mock };
       result.artifacts = await executeTimeline(caseDef.timeline, ctx);
 
-      // 未匹配的 mock 请求 → 该 case 失败（漏 mock 的调用要显式暴露）
+      // 未匹配的 mock 请求 -> 该 case 失败（漏 mock 的调用要显式暴露）
       const unmatched = mock?.getAudit().unmatched ?? [];
       if (unmatched.length > 0) {
         throw new Error(`存在未匹配的 mock 请求: ${JSON.stringify(unmatched)}`);
@@ -731,14 +731,14 @@ async function main(): Promise<void> {
         result.expectations.push(await evaluateExpect(exp, result.artifacts, scenario.meta.id));
       }
 
-      // 状态判定：任一自动 expect 失败 → fail；全是 needs_review → needs_review；否则 pass
+      // 状态判定：任一自动 expect 失败 -> fail；全是 needs_review -> needs_review；否则 pass
       const auto = result.expectations.filter((e) => e.kind !== "needs_review");
       const anyFail = auto.some((e) => e.ok === false);
       if (anyFail) result.status = "fail";
       else if (auto.length === 0) result.status = "needs_review";
       else result.status = "pass";
 
-      // design-pass → 存 golden-candidate（人工评审后经单独提交晋升为 approved baseline，不直接覆盖）
+      // design-pass -> 存 golden-candidate（人工评审后经单独提交晋升为 approved baseline，不直接覆盖）
       for (let e = 0; e < result.expectations.length; e++) {
         const res = result.expectations[e];
         if (res.kind === "design" && res.ok === true) {

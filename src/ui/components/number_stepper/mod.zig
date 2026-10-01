@@ -1,4 +1,4 @@
-/// NumberStepper — 数值步进器（B5）：[-] 42 [+]
+/// NumberStepper，数值步进器（B5）：[-] 42 [+]
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const core = @import("../../core.zig");
@@ -60,7 +60,7 @@ pub const NumberStepperState = struct {
     }
 
     fn syncLabel(self: *NumberStepperState) void {
-        // 整数 step + 整数值 → 无小数显示
+        // 整数 step + 整数值 -> 无小数显示
         // @intFromFloat 对 inf / |v| >= 2^63 直接 panic：超出 i64 的值走浮点格式化
         const fits_i64 = std.math.isFinite(self.value) and @abs(self.value) < 0x1p63;
         const is_int = fits_i64 and self.value == @trunc(self.value) and self.step == @trunc(self.step);
@@ -77,7 +77,7 @@ pub const NumberStepperState = struct {
 
         // a11y 数值跟着每次步进走。syncLabel 是唯一的值落地点（init 与
         // setValue 都经过这里），挂在这儿就不会有"改了值但 AT 没跟上"的缝。
-        // min/max 缺省时用当前值填充，表示该方向无界——总比报 0 强，
+        // min/max 缺省时用当前值填充，表示该方向无界，总比报 0 强，
         // 报 0 会让 AT 以为"已经到底了"。
         if (self.wrapper_node) |w| {
             if (w.behavior.interaction.a11y) |*a| {
@@ -293,12 +293,12 @@ test "NumberStepper: disabled 不响应" {
     try testing.expectEqual(@as(f64, 5), ns.state.value);
 }
 
-// styles.zig 的测试收集 —— 这行是必需的，见 docs/STYLING.md
+// styles.zig 的测试收集，这行是必需的，见 docs/STYLING.md
 test {
     _ = @import("styles.zig");
 }
 
-// 逐分配点 OOM sweep — 见 src/ui/components/oom_sweep.zig
+// 逐分配点 OOM sweep，见 src/ui/components/oom_sweep.zig
 test "number_stepper: mount 在任意分配点失败时不泄漏（sweep）" {
     const sw = @import("../oom_sweep.zig");
     try sw.sweepMount("number_stepper", struct {

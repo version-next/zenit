@@ -22,7 +22,7 @@ extern fn macos_free_image_data(data: [*]u8) void;
 /// Image Shader 源码（单一事实源）
 const image_shader_source: []const u8 = @embedFile("shaders/image.metal");
 
-/// Uniforms 结构 — 与 SDF renderer 相同
+/// Uniforms 结构，与 SDF renderer 相同
 const Uniforms = extern struct {
     viewport_size: [2]f32,
     scale_factor: f32,
@@ -36,7 +36,7 @@ const Uniforms = extern struct {
     clip_polygon_points: [MAX_CLIP_POLYGON_POINTS][2]f32 = [_][2]f32{.{ 0, 0 }} ** MAX_CLIP_POLYGON_POINTS,
 };
 
-/// 图片实例数据 — 对齐 image.metal ImageInstanceData
+/// 图片实例数据，对齐 image.metal ImageInstanceData
 pub const ImageInstance = extern struct {
     rect: [4]f32, // x, y, w, h (逻辑像素)
     uv_rect: [4]f32, // u0, v0, u1, v1 (纹理坐标)
@@ -150,10 +150,10 @@ const MAX_GENERATION = (SHARED_TEXTURE_BIT - 1) >> SLOT_BITS;
 /// **允许回绕**。ABA 论证：
 ///   - generation 的作用是让缓存在 display list 里的**旧句柄**失效。持久纹理
 ///     句柄可以被 app 长期持有，所以持久槽位仍然"耗尽即退役"，绝不回绕。
-///   - external 句柄的生命周期严格限于一次编码（register → draw → flush →
+///   - external 句柄的生命周期严格限于一次编码（register -> draw -> flush ->
 ///     unregister，调用点见 opacity_layer / backdrop_blur），从不跨帧缓存。
 ///     回绕后要与某个旧句柄撞号，需要该旧句柄在同一槽位又经历 2^19 次
-///     register/unregister 之后仍被使用 —— 远超单帧可能的注册次数。
+///     register/unregister 之后仍被使用，远超单帧可能的注册次数。
 ///   - 区间隔离保证持久句柄永远不会落在会回绕的槽位上（否则持久句柄可能
 ///     被回绕后的新 external 绑定"复活"成别的纹理）。
 const EXTERNAL_SLOT_COUNT = 256;
@@ -495,7 +495,7 @@ pub const ImageRenderer = struct {
     allocator: std.mem.Allocator,
     device: *gpu.Backend.Device,
     pipeline: gpu.Backend.RenderPipeline,
-    /// Triple-buffered uniform buffers —— 必须与 instance buffers 一样按帧轮转。
+    /// Triple-buffered uniform buffers，必须与 instance buffers 一样按帧轮转。
     /// 曾经是**单个** buffer 而每帧把 uniform_write_offset 归零：三帧在飞时第 N+1
     /// 帧会覆写 GPU 尚未消费的第 N 帧 viewport/clip/scale，表现为偶发闪烁/错误裁剪。
     uniform_buffers: [BUFFER_COUNT]gpu.Backend.Buffer,
@@ -508,7 +508,7 @@ pub const ImageRenderer = struct {
 
     /// 溢出实例缓冲（每帧槽位各一个，随需增长后**保留**）。
     ///
-    /// 旧实现在 MAX_INSTANCES 用尽后对**每一批**都 createBuffer + destroy ——
+    /// 旧实现在 MAX_INSTANCES 用尽后对**每一批**都 createBuffer + destroy,
     /// 重内容帧每帧多次 driver 分配（走驱动，非 malloc）。改为按帧槽位持有
     /// 一个可增长的 buffer：容量够就直接复用，不够才重建一次。槽位随
     /// current_buffer 轮转，因此不会覆写 GPU 尚在消费的在飞帧数据。
@@ -578,7 +578,7 @@ pub const ImageRenderer = struct {
 
         errdefer pipeline.deinit();
 
-        // Uniform buffer（errdefer 必须在循环外——循环体内的 errdefer 随迭代
+        // Uniform buffer（errdefer 必须在循环外，循环体内的 errdefer 随迭代
         // 作用域失效，等于死代码，这里曾经就是这么写的）
         var uniform_buffers: [BUFFER_COUNT]gpu.Backend.Buffer = undefined;
         var uniform_created: usize = 0;
@@ -887,7 +887,7 @@ pub const ImageRenderer = struct {
         if (self.instances.items.len == 0) return;
 
         // 更新 uniforms
-        // 溢出**不能** clamp 到最后一槽 —— 那会让本批及后续 draw 别名同一块随后
+        // 溢出**不能** clamp 到最后一槽，那会让本批及后续 draw 别名同一块随后
         // 被覆写的内存，静默画错。宁可丢掉这一批并计数告警。
         const uniform_buffer, const uniform_byte_offset = blk: {
             if (self.uniform_write_offset < MAX_UNIFORM_UPDATES) {
@@ -1148,12 +1148,12 @@ fn downsampleRgbaBox(src: []const u8, src_w: u32, src_h: u32, dst: []u8, dst_w: 
 // ============================================================================
 // sRGB ↔ linear 转换查表
 //
-// mip 链生成（uploadMipChain → downsampleRgbaBox）对**每个像素的每个通道**
+// mip 链生成（uploadMipChain -> downsampleRgbaBox）对**每个像素的每个通道**
 // 都要做一次往返转换。原实现每次调 std.math.pow，一张 6016×3384 的 Retina
-// 全屏截图整条 mip 链约需 6800 万次 pow —— 实测 ReleaseFast 下耗时 1195ms，
+// 全屏截图整条 mip 链约需 6800 万次 pow，实测 ReleaseFast 下耗时 1195ms，
 // 主线程直接卡死一秒多。
 //
-// 正向输入是 u8，只有 256 种取值 → 256 项表，**与原实现逐位相同，无精度损失**。
+// 正向输入是 u8，只有 256 种取值 -> 256 项表，**与原实现逐位相同，无精度损失**。
 // 反向输入是 f32，用 12bit 量化表近似；mip 是缩略图，该精度绰绰有余
 // （最大误差 < 1/255，肉眼与逐位比对均不可见）。
 //
@@ -1206,7 +1206,7 @@ inline fn linearToSrgb8(v: f32) u8 {
 
 /// Whether a slot kind owns its texture storage (destroyed by this renderer).
 /// atlas_region 共享图集页（页由 atlas_pages 循环统一释放，再放就是 double-release
-/// → 退出必崩，下游回归）；external storage remains caller-owned.
+/// -> 退出必崩，下游回归）；external storage remains caller-owned.
 fn slotOwnsTexture(kind: TextureKind) bool {
     return kind == .standalone or kind == .stream;
 }
@@ -1327,7 +1327,7 @@ test "texture namespaces and generations reject released handles and wrong owner
 
 test "external 绑定槽位 generation 回绕：高频 register/unregister 不会耗尽" {
     // 回归：每次 unregister 都 bump generation，到 MAX_GENERATION 的槽位永久
-    // 退役。离屏/retained/glass 合成每帧注册数十次 → 约一周后 TooManyTextures，
+    // 退役。离屏/retained/glass 合成每帧注册数十次 -> 约一周后 TooManyTextures，
     // 所有 opacity 层消失。
     var device: gpu.Backend.Device = undefined;
     var store = ImageTextureStore.init(std.testing.allocator, &device, false);

@@ -1,4 +1,4 @@
-//! 文本塑形的纯函数部分 —— 从 `Cx` 析出。
+//! 文本塑形的纯函数部分，从 `Cx` 析出。
 //!
 //! `Cx` 上的 `shapeText` / `shapeVisualLine` / `visualLine` / `measureTextWidth`
 //! 本身要碰 `font_system` + `shaping_cache` + 分配器，留在 `Cx` 上是合理的
@@ -29,7 +29,7 @@ pub const ShapeTextOpts = struct {
 /// 截取最长的合法 UTF-8 前缀。
 ///
 /// ⚠ 为什么需要它：调用方按**字节**切前缀时可能落在多字节序列中间（半个
-/// CJK/emoji）。非法 UTF-8 会让 CoreText 的 NSString 构造失败 —— shape 层
+/// CJK/emoji）。非法 UTF-8 会让 CoreText 的 NSString 构造失败，shape 层
 /// 报 TextShapingFailed，FontSelector 桥则**静默返回 0.0f**，最终宽度 0.00
 /// 直接把 bbox 压塌（下游应用实测：emoji 之后切在 CJK 首字节的"前缀"全部量出
 /// 0.00）。先裁到最长合法前缀，与渲染端实际能显示的内容一致；合法输入零
@@ -42,7 +42,7 @@ pub fn validUtf8Prefix(bytes: []const u8) []const u8 {
 ///
 /// ⚠ family 必须进 key。
 ///
-/// 历史上这里 font_id 恒写 0、family 也不参与哈希 —— 因为全部生产调用点都传
+/// 历史上这里 font_id 恒写 0、family 也不参与哈希，因为全部生产调用点都传
 /// 字面量 "system"（唯一 family，永远自洽，于是这个洞一直没被触发）。一旦有
 /// 第二个 family（字体选择器的预览列表就是），同一段文本换族 shape 会命中
 /// **上一族**的缓存条目，第 2 行起全部退化成第 1 行的字体。
@@ -68,7 +68,7 @@ pub fn shapingKey(opts: ShapeTextOpts) ShapingKey {
     };
 }
 
-/// CSS 数值字重 → 平台字重枚举。
+/// CSS 数值字重 -> 平台字重枚举。
 pub fn mapFontWeight(weight: u16) text_module.FontWeight {
     return if (weight <= 100) .thin else if (weight <= 300) .light else if (weight <= 400) .regular else if (weight <= 500) .medium else if (weight <= 600) .semibold else if (weight <= 700) .bold else if (weight <= 800) .heavy else .black;
 }
@@ -86,7 +86,7 @@ test "validUtf8Prefix: 切在多字节序列中间时裁到上一个完整字符
     const cut = "\xE4\xB8";
     try std.testing.expectEqualStrings("", validUtf8Prefix(cut));
 
-    // "a中" 砍掉 "中" 的尾字节 → 只剩 "a"
+    // "a中" 砍掉 "中" 的尾字节 -> 只剩 "a"
     const mixed = "a\xE4\xB8";
     try std.testing.expectEqualStrings("a", validUtf8Prefix(mixed));
 }

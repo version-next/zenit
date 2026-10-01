@@ -1,13 +1,13 @@
-/// Display List — paint pass 内部 IR。
+/// Display List, paint pass 内部 IR。
 ///
 /// **v0.9-§c c4 (2026-05-13): 此文件仅 core/ 内部使用，外部不应直接 import。**
 /// encoder 主路径已切到 paint_table.DisplayItem (struct, 非 union)。本文件保留
-/// 为 paint pass → display_list_lowering 之间的中转 IR；snapshot.zig 跨帧持有
+/// 为 paint pass -> display_list_lowering 之间的中转 IR；snapshot.zig 跨帧持有
 /// 也使用此 union (Snapshot.commands)。所有 .zig 模块若需 paint 数据，应 import
 /// `paint_table.zig` 而非此文件。
 /// `grep -rn "@import.*display_list.zig" src/` 应只命中 src/ui/core/ 子树。
 ///
-/// DisplayItem 是 paint pass → encoder 之间的唯一 IR。每个 item 通过 ItemHeader
+/// DisplayItem 是 paint pass -> encoder 之间的唯一 IR。每个 item 通过 ItemHeader
 /// 关联到 PropertyTree 中的 transform/clip/effect。paint pass emit local 坐标，
 /// display_list_lowering 在 lowering 时 apply transform 得 world 坐标，encoder 直
 /// 消费 lowered DisplayItem。
@@ -184,7 +184,7 @@ pub const DisplayItem = union(enum) {
         ///
         /// blob_id 是**帧内序号**，text_blob_store 每帧 clear 后重新分配。
         /// 保留（replay/cache）下来的 item 若跨帧存活，同一序号可能已被别的
-        /// 控件占用 —— 于是终端会按自己的字节偏移去切状态栏的 "plaintext"，
+        /// 控件占用，于是终端会按自己的字节偏移去切状态栏的 "plaintext"，
         /// 画出 "plainte"（实测截图）。带上 hash 就能识破并回退到 content。
         blob_content_hash: u64 = 0,
         /// Phase L3: 光栅化策略
@@ -311,7 +311,7 @@ pub const DisplayItem = union(enum) {
         opacity: f32 = 1.0,
         /// 渐变填充（可选）。`gradient_direction == 0` 即纯色走 `color`。
         /// 逐顶点着色由 path_renderer 完成（GPU 侧 PathVertex.color 早已支持），
-        /// 多边形（三角/星形）的渐变填充靠这条 —— 否则只能退化成纯色。
+        /// 多边形（三角/星形）的渐变填充靠这条，否则只能退化成纯色。
         gradient_direction: u8 = 0,
         gradient_stop_colors: [16]Color = [_]Color{Color.rgba(0, 0, 0, 0)} ** 16,
         gradient_stop_positions: [16]f32 = [_]f32{0} ** 16,
@@ -376,10 +376,10 @@ pub const DisplayItem = union(enum) {
         /// `surface_stable_id` = 该 layer 的跨帧稳定身份（retained LayerId 的
         /// packed raw，含 generation ABA 防护）；`surface_content_version` =
         /// 内容版本，内容变一次涨一次。encoder 侧据此判断"同一个 layer 且内容
-        /// 没变" → 可以直接复用上一帧光栅化好的离屏纹理，跳过内容 pass。
+        /// 没变" -> 可以直接复用上一帧光栅化好的离屏纹理，跳过内容 pass。
         ///
         /// INVALID(= std.math.maxInt(u32)) 表示本 layer 不参与 GPU retained
-        /// （非 promoted / 无稳定身份），encoder 必须每帧重画 —— 这是安全默认值。
+        /// （非 promoted / 无稳定身份），encoder 必须每帧重画，这是安全默认值。
         surface_stable_id: u32 = INVALID_SURFACE_ID,
         surface_content_version: u32 = 0,
     },
@@ -538,7 +538,7 @@ pub fn resolveTextRunContent(
         if (blob_store.get(run.blob_id)) |blob| {
             // ⚠️ 身份校验：blob_id 是帧内序号，store 每帧 clear 后重新分配。
             // 跨帧存活的 item（replay/cache 路径）拿着旧序号，可能落在别的
-            // 控件本帧新建的 blob 上 —— 不校验就会按自己的偏移切别人的字节
+            // 控件本帧新建的 blob 上，不校验就会按自己的偏移切别人的字节
             // （实测：终端行画出状态栏 "plaintext" 的切片 "plainte"）。
             // hash 不匹配说明这个序号已经易主，退回 item 自带的 content。
             const identity_ok = run.blob_content_hash == 0 or
@@ -557,7 +557,7 @@ pub fn resolveTextRunContent(
 test "resolveTextRunContent: blob_id 易主时回退到 item 自带文本" {
     // 回归：blob_id 是**帧内序号**，text_blob_store 每帧 clear 后重新分配。
     // 跨帧存活的 item（replay / 命令缓存）拿着旧序号，可能落在别的控件
-    // 本帧新建的 blob 上 —— 不校验身份就会按自己的字节偏移去切别人的字节。
+    // 本帧新建的 blob 上，不校验身份就会按自己的字节偏移去切别人的字节。
     //
     // 实测线上表现：终端行画出状态栏 "plaintext" 的切片 "plainte"、
     // 编辑器 tab 名 "hello.txt" 的切片 "hello.t"（截图实证）。
@@ -609,11 +609,11 @@ test "resolveTextRunContent: blob_id 易主时回退到 item 自带文本" {
 }
 
 test "resolveTextRunContent: 漏传 blob_content_hash 会让身份校验退化成永真" {
-    // 回归（下游编辑器状态栏 "3 × 4" → "4 × 5" 画成 "4 × 4"）：
+    // 回归（下游编辑器状态栏 "3 × 4" -> "4 × 5" 画成 "4 × 4"）：
     // display_list_lowering 的 re-lower 分支逐字段重建 TextRunItem 时，曾经
     // 只抄 blob_id 而**漏抄 blob_content_hash**。漏抄后该字段取默认 0，
     // resolveTextRunContent 的 `run.blob_content_hash == 0` 短路把身份校验
-    // 变成永真 —— item 拿着上一帧的帧内序号，去切本帧**别的 blob** 的字节。
+    // 变成永真，item 拿着上一帧的帧内序号，去切本帧**别的 blob** 的字节。
     //
     // 这个测试用「同序号 + 不同内容」的构造把两种取值摆在一起：带 hash 的
     // 必须识破并回退到自带文本，hash=0 的则会取到冒名 blob 的字节。后者正是
@@ -644,11 +644,11 @@ test "resolveTextRunContent: 漏传 blob_content_hash 会让身份校验退化�
         .blob_id = impostor_id,
     };
 
-    // 正确透传：hash 不匹配 → 识破易主，回退到 item 自带的本帧文本。
+    // 正确透传：hash 不匹配 -> 识破易主，回退到 item 自带的本帧文本。
     var carried = base;
     carried.blob_content_hash = std.hash.Wyhash.hash(0, "4 \xc3\x97 5");
     try testing.expectEqualStrings("4 \xc3\x97 5", resolveTextRunContent(&store, carried));
 
-    // 漏传（=0）：校验被短路，切到冒名 blob 的字节 —— 正是屏幕上的陈旧字形。
+    // 漏传（=0）：校验被短路，切到冒名 blob 的字节，正是屏幕上的陈旧字形。
     try testing.expectEqualStrings("3 \xc3\x97 4", resolveTextRunContent(&store, base));
 }

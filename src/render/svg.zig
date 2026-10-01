@@ -247,11 +247,11 @@ pub fn rasterizeIconMask(
     };
 }
 
-/// Parse an SVG document into an `icon_ir.OwnedRep` — the pre-flattened
+/// Parse an SVG document into an `icon_ir.OwnedRep`, the pre-flattened
 /// geometry the icon mask rasterizer consumes (`rasterizeIconMask` reads
 /// `rep.shapes`, not raw svg bytes). Used by the offline asset generator
 /// (`tools/gen_svg_assets.zig`) so generated `reps` flatten béziers exactly
-/// the way the runtime rasterizer expects — no drift between gen and render.
+/// the way the runtime rasterizer expects, no drift between gen and render.
 ///
 /// `size` is the logical px the rep is keyed at (icons ship one rep at 24).
 /// Caller owns the result; free with `OwnedRep.deinit`.
@@ -350,7 +350,7 @@ fn roundedOutputDimension(value: f32) u32 {
 }
 
 /// 元素级解析结果的处理：畸形元素（error.InvalidSvg）按 SVG 惯例跳过，
-/// 但分配失败必须冒泡——吞掉 OOM 会让图标静默少画几笔，看起来像渲染 bug。
+/// 但分配失败必须冒泡，吞掉 OOM 会让图标静默少画几笔，看起来像渲染 bug。
 fn skipMalformed(result: anyerror!void) error{OutOfMemory}!void {
     result catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -715,7 +715,7 @@ fn appendDrawableOwned(
         return;
     }
 
-    // 所有权合同：本函数接管 contours —— 成功时交给 drawables，失败时释放。
+    // 所有权合同：本函数接管 contours，成功时交给 drawables，失败时释放。
     drawables.append(allocator, .{
         .contours = contours,
         .fill = fill_color,
@@ -1024,7 +1024,7 @@ fn appendContourOwned(
     closed: bool,
 ) !void {
     // 先预留槽位再转移点集：toOwnedSlice 之后的 append 若失败，点集已脱离
-    // `points` 又没进 `contours`，两边的清理都够不着 —— 泄漏。
+    // `points` 又没进 `contours`，两边的清理都够不着，泄漏。
     try contours.ensureUnusedCapacity(allocator, 1);
     const owned_points = try points.toOwnedSlice(allocator);
     contours.appendAssumeCapacity(.{
@@ -1936,13 +1936,13 @@ fn parseDimension(value: []const u8) ?f32 {
 /// 解析带单位的 CSS 属性值（`width="10px"`）：解析前导数字，忽略尾部单位。
 ///
 /// ⚠ 这是 `svg_safety.parseFiniteNumber` 的**近似重复**，但**不能**直接合并：
-/// 两者对分隔符的语义不同 —— parseFiniteNumber 服务 path data（`M 10,20`），
+/// 两者对分隔符的语义不同，parseFiniteNumber 服务 path data（`M 10,20`），
 /// 会先 skipNumberSeparators 吃掉前导逗号/空白；而 CSS 属性值里前导逗号是
 /// 非法的，必须拒绝（`width=",10"` 不是 10）。
 ///
 /// 数值解析核心（符号/小数点/指数/isFinite 拒绝）实测与 parseFiniteNumber
 /// **完全一致**：排除分隔符字符后 20 万轮随机输入零差异（2026-09-22）。
-/// 改动任何一边的数值逻辑时，另一边必须同步 —— 下面的测试锁住这条等价性。
+/// 改动任何一边的数值逻辑时，另一边必须同步，下面的测试锁住这条等价性。
 fn parseUnitFloat(value: []const u8) ?f32 {
     const v = trimAscii(value);
     if (v.len == 0) return null;
@@ -2204,7 +2204,7 @@ test "svg rasterization bounds extreme dimensions and curve geometry" {
 test "parseUnitFloat 与 svg_safety.parseFiniteNumber 的数值核心必须保持一致" {
     // 两份实现逐字节重复（见 parseUnitFloat 的文档注释：分隔符语义不同，
     // 不能合并）。这个测试锁住「除分隔符外行为一致」，让任何一边的数值
-    // 逻辑改动都会在另一边暴露出来 —— 安全修复最怕的就是悄悄分叉。
+    // 逻辑改动都会在另一边暴露出来，安全修复最怕的就是悄悄分叉。
     //
     // 用例不含逗号/空白：那是两者**有意**分歧的地方。
     const cases = [_][]const u8{
@@ -2234,7 +2234,7 @@ test "parseUnitFloat 与 svg_safety.parseFiniteNumber 的数值核心必须保�
 
 test "parseUnitFloat 拒绝前导分隔符（与 path data 的有意分歧）" {
     // CSS 属性值里前导逗号非法：`width=",10"` 不是 10。
-    // 而 path data 的 parseFiniteNumber 会吃掉它 —— 这是两者唯一的分歧点，
+    // 而 path data 的 parseFiniteNumber 会吃掉它，这是两者唯一的分歧点，
     // 显式锁住，免得日后有人"统一"时把它抹平。
     try std.testing.expectEqual(@as(?f32, null), parseUnitFloat(",10"));
 

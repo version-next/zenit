@@ -1,4 +1,4 @@
-/// stories.zig — 每个组件一个 buildXxx(scope, cx) !*Node 的 story。
+/// stories.zig，每个组件一个 buildXxx(scope, cx) !*Node 的 story。
 ///
 /// 无状态组件：摆出代表性 variant/size。
 /// 有状态组件：用 Signal + on_change / cx.on 接线，使其在 storybook 内真可交互。
@@ -171,8 +171,8 @@ const CheckboxStory = struct {
             var t = old;
             t.content = txt;
             // 关键：txt 指向 self.buf（非堆 owned）。必须清 owned/inline_len，
-            // 否则 Node.destroy 会 free(non-heap) → "Invalid free" 崩溃。
-            // （setText 信任 caller 的 owned 标志，不做所有权回收 —— 见 content_table.setText。）
+            // 否则 Node.destroy 会 free(non-heap) -> "Invalid free" 崩溃。
+            // （setText 信任 caller 的 owned 标志，不做所有权回收，见 content_table.setText。）
             t.owned = false;
             t.inline_len = 0;
             self.status.setText(t);
@@ -319,7 +319,7 @@ pub fn buildSlider(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     continuous.state.on_change = ui.Cx.handlerFrom(SliderFeedbackStory, state, SliderFeedbackStory.refresh);
     state.refresh();
 
-    try c.appendChild(a, try label(cx, "Haptic feedback — opt in to try"));
+    try c.appendChild(a, try label(cx, "Haptic feedback: opt in to try"));
     const toggle = try ui.widgets.Switch(.{
         .label_text = "Enable trackpad feedback",
         .initial_checked = false,
@@ -350,7 +350,7 @@ pub fn buildSlider(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     try c.appendChild(a, s1.wrapper);
     try c.appendChild(a, try label(cx, "0–10 step 1, value 5"));
     try c.appendChild(a, s2.wrapper);
-    try c.appendChild(a, try label(cx, "Continuous (step 0) — no feedback"));
+    try c.appendChild(a, try label(cx, "Continuous (step 0): no feedback"));
     try c.appendChild(a, continuous.wrapper);
     const reset = try ui.widgets.Button(.{
         .label = "Reset both to 5 (no feedback)",
@@ -371,7 +371,7 @@ const W = ui.widgets;
 
 // ── Switch ──
 
-/// 开关状态回显 —— e2e 要断言「拨动真的改了状态」，组件本身不渲染当前值。
+/// 开关状态回显，e2e 要断言「拨动真的改了状态」，组件本身不渲染当前值。
 const SwitchStory = struct {
     status: *ui.Node,
     buf: [48]u8 = undefined,
@@ -412,7 +412,7 @@ pub fn buildSwitch(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
 
 // ── Radio / RadioGroup ──
 
-/// RadioGroup 选中值回显 —— 互斥选择是 radio 的定义性语义，必须可断言。
+/// RadioGroup 选中值回显，互斥选择是 radio 的定义性语义，必须可断言。
 const RadioStory = struct {
     status: *ui.Node,
     buf: [48]u8 = undefined,
@@ -908,9 +908,9 @@ fn glassDragHandler(event: ui.events.Event, context: ?*anyopaque) ui.events.Even
 // （与拖拽玻璃 / nav lens 同款机制）。
 //
 // 两个刻意规避（皆实测）：
-//  1. 不用 animateNode——active transform animation 会把 glass 子树推上
+//  1. 不用 animateNode, active transform animation 会把 glass 子树推上
 //     overlay surface 合成路径。
-//  2. 不用 W.GlassBox 组件——组件化 glass + 非零 translate 时后代内容整块
+//  2. 不用 W.GlassBox 组件，组件化 glass + 非零 translate 时后代内容整块
 //     消失只剩壳（plain ext.glass 节点 + translate 则正常，拖拽 story 同款；
 //     待立案修复）。故 tile 用 plain glass slab 手搭。
 const GlassMotionState = struct {
@@ -935,12 +935,12 @@ const GLASS_MOTION_LIFT: f32 = -10; // hover 抬升高度
 const GLASS_MOTION_SINK: f32 = -3; // press 下沉后仍略高于静息位
 
 fn glassMotionShadow(st: *GlassMotionState, lifted: bool) void {
-    // shadow 不参与逐帧插值——hover/rest 两档切换，配合 translate 的连续
+    // shadow 不参与逐帧插值，hover/rest 两档切换，配合 translate 的连续
     // 动画，视觉上已是"影子随抬升散开"。
     if (st.shadow_lifted == lifted) return;
     st.shadow_lifted = lifted;
     // ext 在 story 构造期已建好（同一节点此前设过 corner_radius/glass/inset），
-    // 这里必然命中既有指针、不分配 → 构造上不可能失败。本函数是 void 回调，无法传播。
+    // 这里必然命中既有指针、不分配 -> 构造上不可能失败。本函数是 void 回调，无法传播。
     const ext = st.target.style.ensureExtFallible(st.cx.allocator) catch unreachable;
     if (lifted) {
         ext.setShadow(.{ .color = ui.Color.rgba(10, 14, 30, 90), .blur = 30, .offset_y = 14 });
@@ -1124,7 +1124,7 @@ fn navLensSetMagnified(st: *NavLensState, magnified: bool) void {
     if (st.magnified == magnified) return;
     st.magnified = magnified;
     // ext 在 story 构造期已建好（同一节点此前设过 corner_radius/glass/inset），
-    // 这里必然命中既有指针、不分配 → 构造上不可能失败。本函数是 void 回调，无法传播。
+    // 这里必然命中既有指针、不分配 -> 构造上不可能失败。本函数是 void 回调，无法传播。
     const ext = st.lens.style.ensureExtFallible(st.cx.allocator) catch unreachable;
     const w: f32 = if (magnified) NAV_LENS_ACTIVE_W else NAV_LENS_REST_W;
     const h: f32 = if (magnified) NAV_LENS_ACTIVE_H else NAV_LENS_REST_H;
@@ -1242,7 +1242,7 @@ pub fn buildGlassBox(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     const c = try col(cx, 20);
 
     // ── 1. Toolbar：分组玻璃 capsule（ToolbarSpacer 语义 = 两个独立 slab）──
-    try c.appendChild(a, try label(cx, "Toolbar — grouped glass capsules (ToolbarSpacer splits slabs)"));
+    try c.appendChild(a, try label(cx, "Toolbar: grouped glass capsules (ToolbarSpacer splits slabs)"));
     {
         const bd = try glassBackdrop(cx, 130);
         const bar_row = try ui.box(cx, .{ .direction = .row, .gap = 12, .align_items = .center }, .{});
@@ -1261,7 +1261,7 @@ pub fn buildGlassBox(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     }
 
     // ── 2. Tab bar：浮动 capsule + 独立 search 圆钮（Tab(role: .search)）──
-    try c.appendChild(a, try label(cx, "Tab bar — floating capsule + detached search circle"));
+    try c.appendChild(a, try label(cx, "Tab bar: floating capsule + detached search circle"));
     {
         const bd = try glassBackdrop(cx, 130);
         const bar_row = try ui.box(cx, .{ .direction = .row, .gap = 10, .align_items = .center }, .{});
@@ -1284,7 +1284,7 @@ pub fn buildGlassBox(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     }
 
     // ── 3. Buttons：.glass 与 .glassProminent（prominent = tinted glass）──
-    try c.appendChild(a, try label(cx, "Buttons — .glass and .glassProminent (tinted)"));
+    try c.appendChild(a, try label(cx, "Buttons: .glass and .glassProminent (tinted)"));
     {
         const bd = try glassBackdrop(cx, 120);
         const btn_row = try ui.box(cx, .{ .direction = .row, .gap = 14, .align_items = .center }, .{});
@@ -1308,7 +1308,7 @@ pub fn buildGlassBox(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     }
 
     // ── 4. GlassBox 面板：regular vs clear 变体 ──
-    try c.appendChild(a, try label(cx, "GlassBox panel — .regular vs .clear (clear over 35% dimmed media)"));
+    try c.appendChild(a, try label(cx, "GlassBox panel: .regular vs .clear (clear over 35% dimmed media)"));
     {
         const bd = try glassBackdrop(cx, 220);
         const pair = try ui.box(cx, .{ .direction = .row, .gap = 20, .align_items = .center }, .{});
@@ -1340,7 +1340,7 @@ pub fn buildGlassBox(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     }
 
     // ── 5. Interactive motion：hover 抬升 / press 下沉 / 弹性回弹 ──
-    try c.appendChild(a, try label(cx, "Interactive motion — hover lift, press sink, elastic release (geometry + material)"));
+    try c.appendChild(a, try label(cx, "Interactive motion: hover lift, press sink, elastic release (geometry + material)"));
     {
         const bd = try glassBackdrop(cx, 240);
         const tile_row = try ui.box(cx, .{ .direction = .row, .gap = 20, .align_items = .center }, .{});
@@ -1352,7 +1352,7 @@ pub fn buildGlassBox(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     }
 
     // ── 6. Draggable glass：拖动玻璃观察实时折射 ──
-    try c.appendChild(a, try label(cx, "Drag the glass — live refraction over the canvas"));
+    try c.appendChild(a, try label(cx, "Drag the glass: live refraction over the canvas"));
     {
         const bd = try glassBackdrop(cx, 260);
         const drag_node = try glassCapsule(cx, 56, regularGlass());
@@ -1381,7 +1381,7 @@ pub fn buildGlassBox(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     }
 
     // ── 7. Floating nav toolbar：选中项盖 liquid glass lens，可拖拽 + 悬停放大 ──
-    try c.appendChild(a, try label(cx, "Floating nav — draggable magnifying lens over the active item"));
+    try c.appendChild(a, try label(cx, "Floating nav: draggable magnifying lens over the active item"));
     {
         const page = try ui.box(cx, .{
             .width = .{ .grow = .{} },
@@ -1556,13 +1556,13 @@ fn labRebuildSection(st: *GlassLabState) void {
     const amp_bot = @min(bot_bezel_px * 0.5, 26.0);
     const base_y = sh - 22.0 - @min(gap * 0.55, 20.0) - amp_bot * 0.4;
 
-    // 采样集中在 bezel 区（每边 6 点），中心平台只需端点——总点数 ≤32
+    // 采样集中在 bezel 区（每边 6 点），中心平台只需端点，总点数 ≤32
     const edge_pts: usize = 6;
     var cmds: [34]ui.path.PathCommand = undefined;
     var n: usize = 0;
     const x_l = margin;
     const x_r = sw - margin;
-    // 底面：左→右
+    // 底面：左->右
     {
         var i: usize = 0;
         while (i <= edge_pts) : (i += 1) {
@@ -1580,7 +1580,7 @@ fn labRebuildSection(st: *GlassLabState) void {
             n += 1;
         }
     }
-    // 顶面：右→左
+    // 顶面：右->左
     {
         var i: usize = 0;
         while (i <= edge_pts) : (i += 1) {
@@ -1613,7 +1613,7 @@ fn labRebuildSection(st: *GlassLabState) void {
 pub fn buildGlassEdge(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     const a = cx.allocator;
     const c = try col(cx, 12);
-    try c.appendChild(a, try label(cx, "Glass panels flush with the window edges — edges must stay clean (no dark fringe)"));
+    try c.appendChild(a, try label(cx, "Glass panels flush with the window edges: edges must stay clean (no dark fringe)"));
     const portal = cx.popover_portal_root orelse return c;
 
     const overlay = try ui.box(cx, .{
@@ -1639,7 +1639,7 @@ pub fn buildGlassEdge(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
         try overlay.appendChild(a, panel);
     }
     try portal.appendChild(a, overlay);
-    // portal 子树不在 story 面板子树里，必须随 story scope dispose 显式摘除——
+    // portal 子树不在 story 面板子树里，必须随 story scope dispose 显式摘除,
     // 否则两块全高玻璃永久叠在后续所有 story 上（glassislands e2e 实拍抓到）。
     const Detach = struct { cx: *ui.Cx, portal: *ui.Node, overlay: *ui.Node };
     const d = try a.create(Detach);
@@ -1660,20 +1660,20 @@ pub fn buildGlassEdge(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
 // ── GlassIslands：同帧两个 "blur + rounded_clip 同节点" 岛（下游应用回归）──
 //
 // 回归目标：一个节点同时挂 ext.glass(backdrop_blur) 与 overflow_hidden +
-// corner_radius（effect 链 backdrop_blur → rounded_clip，两个 requires_offscreen）
-// 时，同帧存在两个这样的节点 → 后画节点的内容整体不可见（内容命令没落进
+// corner_radius（effect 链 backdrop_blur -> rounded_clip，两个 requires_offscreen）
+// 时，同帧存在两个这样的节点 -> 后画节点的内容整体不可见（内容命令没落进
 // 自己的 layer 作用域，玻璃背板合成盖在其上）。下游应用 Sidebar+Inspector 实拍。
 pub fn buildGlassIslands(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     _ = scope;
     const a = cx.allocator;
     const c = try col(cx, 12);
-    try c.appendChild(a, try label(cx, "Two blur+rounded-clip islands — BOTH must show their content"));
+    try c.appendChild(a, try label(cx, "Two blur+rounded-clip islands: BOTH must show their content"));
 
     const bd = try glassBackdrop(cx, 420);
-    // 高频黑白条纹靶压在 first 岛左边缘正下方（islands_row padding 24 → 岛左缘
+    // 高频黑白条纹靶压在 first 岛左边缘正下方（islands_row padding 24 -> 岛左缘
     // x=24）：gi=0 承诺"仅 blur"，blur(24) 把 8px 周期条纹平均成灰；rim 区若仍
     // sharp 回退（glass.metal rim_sharp 漏 gi 门控的回归），岛左缘 8px 带会清晰
-    // 透出近黑条纹——e2e 按 rim/参照带 darkest pixel 差分断言。单条宽黑条不行：
+    // 透出近黑条纹，e2e 按 rim/参照带 darkest pixel 差分断言。单条宽黑条不行：
     // 黑条自身 blur 后也偏暗，sharp/blur 只差 ~25 灰阶，抓不住变异。
     const rim_probe = try ui.box(cx, .{
         .position = .absolute,
@@ -1748,13 +1748,13 @@ fn labApply(ctx: *anyopaque) void {
     labRebuildSection(st);
     // 光向指示：与 specular_angle 同步旋转
     // ext 在 story 构造期已建好（同一节点此前设过 corner_radius/glass/inset），
-    // 这里必然命中既有指针、不分配 → 构造上不可能失败。本函数是 void 回调，无法传播。
+    // 这里必然命中既有指针、不分配 -> 构造上不可能失败。本函数是 void 回调，无法传播。
     const arrow_ext = st.light_arrow.style.ensureExtFallible(st.cx.allocator) catch unreachable;
     arrow_ext.rotate = st.sliders[15].value * std.math.pi / 180.0;
     st.light_arrow.markCompositePropDirty();
     const v = st.sliders;
     // ext 在 story 构造期已建好（同一节点此前设过 corner_radius/glass/inset），
-    // 这里必然命中既有指针、不分配 → 构造上不可能失败。本函数是 void 回调，无法传播。
+    // 这里必然命中既有指针、不分配 -> 构造上不可能失败。本函数是 void 回调，无法传播。
     const ext = st.glass.style.ensureExtFallible(st.cx.allocator) catch unreachable;
     ext.glass = .{
         .backdrop_blur = v[0].value,
@@ -2257,7 +2257,7 @@ pub fn buildLayoutBoxModel(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
 }
 
 // ── Tabs ──
-/// Tabs 的选中态回显 —— e2e 要断言「点了就真的切过去」，需要一个可观测的出口。
+/// Tabs 的选中态回显，e2e 要断言「点了就真的切过去」，需要一个可观测的出口。
 /// 组件本身不渲染"当前选中是谁"，所以 story 把 on_change 的 payload 打到一行
 /// 文本上（同 CheckboxStory 的做法）。
 const TabsStory = struct {
@@ -2513,7 +2513,7 @@ pub fn buildModal(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     const m = try W.Modal(.{ .title = "Example Modal", .width = 400 }).visible(vis).mount(scope, cx);
     m.dialog.meta.ownership.meta.test_id = "story.modal.dialog";
     try m.body.appendChild(a, try ui.text(cx, "Modal body content.", .{ .font_size = 14, .color = light.color.fg_primary }));
-    // 带 hover 样式的按钮：damage-rect e2e 用它触发"层内小块变化 → 部分重绘"
+    // 带 hover 样式的按钮：damage-rect e2e 用它触发"层内小块变化 -> 部分重绘"
     const ok_btn = try W.Button(.{ .label = "OK" }).mount(scope, cx);
     ok_btn.meta.ownership.meta.test_id = "story.modal.ok";
     try m.body.appendChild(a, ok_btn);
@@ -2651,7 +2651,7 @@ pub fn buildPopover(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     try card.appendChild(a, try storyGradientSlab(cx, 204, 400));
     try c.appendChild(a, card);
 
-    // ── 超高内容：两侧都放不下 → autosize 把 max_height 收紧到可用高度 ──
+    // ── 超高内容：两侧都放不下 -> autosize 把 max_height 收紧到可用高度 ──
     // 回归锚（e2e "popover: tall content"）：修前面板保持完整高度、best-fit 只挪
     // translate，下缘越过 trigger 把 reference element 盖住。
     try c.appendChild(a, try label(cx, "Tall content: panel must shrink to the viewport, never cover its trigger"));
@@ -2678,7 +2678,7 @@ pub fn buildPopover(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     return c;
 }
 
-/// 竖向四段渐变色块（靛蓝→粉→橙→青）：用于溢出/滚动回归，位置与颜色一一对应。
+/// 竖向四段渐变色块（靛蓝->粉->橙->青）：用于溢出/滚动回归，位置与颜色一一对应。
 fn storyGradientSlab(cx: *ui.Cx, w: f32, h: f32) !*ui.Node {
     const slab = try ui.box(cx, .{ .width = .{ .px = w }, .height = .{ .px = h }, .flex_shrink = 0, .border = .{ .radius = 6 } }, .{});
     const ext = try slab.style.ensureExtFallible(cx.allocator);
@@ -2700,7 +2700,7 @@ fn popSetup(a: std.mem.Allocator, cx: *ui.Cx, scope: *ui.Scope, pop: anytype, bt
 // 验证 z-index manager 的三条合同（e2e 逐条像素断言）：
 //   A. 兄弟 z_index 覆盖 DOM 顺序（red z=3 DOM 最先，仍在最上）
 //   B. overflow_hidden 容器里的 popover/tooltip 溢出容器、盖住后方障碍物
-//      （障碍物内含 rotate 45° 的 transform 节点——transform 层级修复的回归靶）
+//      （障碍物内含 rotate 45° 的 transform 节点，transform 层级修复的回归靶）
 //   C. 嵌套继承：modal(dialog tier) 里开 popover(overlay tier)，必须压过 dialog
 const ZIndexStory = struct {
     visible: *ui.Signal(bool),
@@ -2753,7 +2753,7 @@ pub fn buildZIndex(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     // ── B. overflow 容器 + popover/tooltip + 障碍物 ──
     // stage 用绝对定位把障碍物顶到 clipbox 下缘上方（top=48 < clipbox 高 64），
     // 保证 tooltip 这种矮气泡（trigger 下沿 +offset 起画，~24px 高）也必与障碍物
-    // 交叠 —— 否则断言在测空气（第一版 e2e 实测 tooltip 够不到障碍物）。
+    // 交叠，否则断言在测空气（第一版 e2e 实测 tooltip 够不到障碍物）。
     try c.appendChild(a, try label(cx, "Overflow container: popover & tooltip must escape clip and cover the obstacle"));
     const stage = try ui.box(cx, .{ .width = .{ .px = 420 }, .height = .{ .px = 150 }, .position = .relative }, .{});
     const clipbox = try ui.box(cx, .{
@@ -2783,7 +2783,7 @@ pub fn buildZIndex(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     try stage.appendChild(a, clipbox);
 
     // 障碍物：DOM 在 clipbox 之后的兄弟（无 z 时天然画在弹层之上），绝对定位
-    // top=48 与 clipbox 下缘交叠。内含 rotate 45° 的 transform 节点 ——
+    // top=48 与 clipbox 下缘交叠。内含 rotate 45° 的 transform 节点,
     // transform 层级穿透的回归靶。
     const obstacle = try ui.box(cx, .{
         .position = .absolute,
@@ -2803,8 +2803,8 @@ pub fn buildZIndex(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     try stage.appendChild(a, obstacle);
     try c.appendChild(a, stage);
 
-    // ── C. 复杂布局 + 三级嵌套：modal(dialog) → body 复杂列布局里有 tooltip 和
-    //    popover(嵌套继承压过 dialog) → popover 里再开第二个 modal（再压过 popover）。
+    // ── C. 复杂布局 + 三级嵌套：modal(dialog) -> body 复杂列布局里有 tooltip 和
+    //    popover(嵌套继承压过 dialog) -> popover 里再开第二个 modal（再压过 popover）。
     //    tier 链全程验证：dialog 1000 < 继承 popover < 第二 dialog < tooltip 3000。
     const vis = try scope.createSignal(bool, false);
     const st = try cx.bindState(ZIndexStory, .{ .visible = vis });
@@ -2816,7 +2816,7 @@ pub fn buildZIndex(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     m.dialog.meta.ownership.meta.test_id = "story.zindex.modal.dialog";
     try m.body.appendChild(a, try ui.text(cx, "Popover from inside a modal must stack above the dialog.", .{ .font_size = 13, .color = light.color.fg_primary }));
 
-    // 复杂布局：两列嵌套卡片，各自内部再嵌 column —— 弹层 trigger 埋在深层级里，
+    // 复杂布局：两列嵌套卡片，各自内部再嵌 column，弹层 trigger 埋在深层级里，
     // 验证 z 继承不依赖"trigger 是 modal body 的直接子节点"。
     const cols_row = try ui.box(cx, .{ .direction = .row, .gap = 12, .align_items = .start }, .{});
     inline for (.{ "A", "B" }) |col_name| {
@@ -2947,7 +2947,7 @@ pub fn buildVirtualList(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
 }
 
 // ── VirtualList（动态不等高）──
-// 每行文本长度不同 + 自动换行 → 行高事先根本算不出来，只能量。
+// 每行文本长度不同 + 自动换行 -> 行高事先根本算不出来，只能量。
 // 这正是 measure_items 存在的理由：先按 estimate 占位，布局后读回真高并
 // 补偿滚动位置。
 const vl_dyn_words = [_][]const u8{
@@ -3231,7 +3231,7 @@ pub fn buildIconGallery(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
 
 // ── VectorPath (fill_path 管线：多相邻 path 节点，验收 encoder 合批) ──
 
-/// 10 角星路径（纯折线 ≤32 点 → encoder 转 polygon_fill 模式）
+/// 10 角星路径（纯折线 ≤32 点 -> encoder 转 polygon_fill 模式）
 fn setStarGeometry(node: *ui.Node, a: std.mem.Allocator, size: f32) !void {
     const half = size / 2.0;
     const outer = size * 0.46;
@@ -3250,7 +3250,7 @@ fn setStarGeometry(node: *ui.Node, a: std.mem.Allocator, size: f32) !void {
     try node.setPathHitGeometry(a, &commands, .nonzero);
 }
 
-/// 20 芒 burst（40 顶点 > polygon 32 点预算 → 强制 earclip triangles 模式）
+/// 20 芒 burst（40 顶点 > polygon 32 点预算 -> 强制 earclip triangles 模式）
 fn setBurstGeometry(node: *ui.Node, a: std.mem.Allocator, size: f32) !void {
     const half = size / 2.0;
     const outer = size * 0.46;
@@ -3275,7 +3275,7 @@ pub fn buildVectorPath(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     const c = try col(cx, 16);
 
     // 相邻多 path 节点：encoder 侧应合并为少数 draw（polygon 组 + triangles 组）
-    try c.appendChild(a, try label(cx, "Batched fill_path — adjacent stars (polygon mode)"));
+    try c.appendChild(a, try label(cx, "Batched fill_path: adjacent stars (polygon mode)"));
     const stars = try row(cx, 12);
     const star_colors = [_]ui.Color{
         ui.Color.rgb(235, 87, 87),
@@ -3318,7 +3318,7 @@ pub fn buildVectorPath(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
 // ── Blend Modes（W3C mix-blend：非 normal 走 blend composite pipeline） ──
 //
 // 颜色特意全用 0/255 分量：sRGB 传递函数在 0.0/1.0 处不变，线性空间与
-// sRGB 空间的混合结果一致 —— e2e 能按精确 RGB 值断言，不受"shader 在
+// sRGB 空间的混合结果一致，e2e 能按精确 RGB 值断言，不受"shader 在
 // 线性空间混合"这一实现细节影响。
 //   multiply:   yellow(255,255,0) × cyan(0,255,255)  = green(0,255,0)
 //   screen:     red(255,0,0)    ∪ blue(0,0,255)      = magenta(255,0,255)
@@ -3365,7 +3365,7 @@ pub fn buildBlend(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     }
     try c.appendChild(a, tiles);
 
-    // normal 对照组：同 cyan-on-yellow 但不混合 —— e2e 断言它仍是 cyan，
+    // normal 对照组：同 cyan-on-yellow 但不混合，e2e 断言它仍是 cyan，
     // 证明 blend 路径没把普通合成一起改了。
     try c.appendChild(a, try label(cx, "normal control (should stay cyan)"));
     const control_outer = try ui.box(cx, .{
@@ -3389,13 +3389,13 @@ pub fn buildBlend(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
 // ── Emoji（彩色字形管线：BGRA atlas 页 + shader 彩色分支） ──
 //
 // 验收靠像素而非文本：灰度字形管线也能把 emoji 画出**形状**（覆盖率掩码），
-// 只是丢了颜色。所以 e2e 断言的是"取中心像素，R/G/B 三通道不相等" ——
+// 只是丢了颜色。所以 e2e 断言的是"取中心像素，R/G/B 三通道不相等",
 // 灰度必然三通道相等，三通道不等只可能来自真正的彩色采样。
 //
 // 每个 emoji 单独一个 test_id 节点，且刻意选中心区域是大面积纯色的：
 //   🟥 U+1F7E5 红方块  🟩 U+1F7E9 绿方块  🟦 U+1F7E6 蓝方块
 // 方块类 emoji 中心整块同色，不受字号/抗锯齿/中心点偏移影响，是最稳的
-// 像素靶。文字颜色特意设成中性灰 —— 若 shader 错误地把 emoji 乘上文字色，
+// 像素靶。文字颜色特意设成中性灰，若 shader 错误地把 emoji 乘上文字色，
 // 结果会退回灰度（三通道相等），此测立刻变红。
 pub fn buildEmoji(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     _ = scope;
@@ -3454,12 +3454,12 @@ pub fn buildEmoji(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
 // ── RTL（阿拉伯语 / 希伯来语双向文本） ──
 //
 // 验收靠像素而非文本：文本节点即使把字形**反向重叠**画在一起，
-// query 出来的字符串和节点 rect 也完全正常 —— 只有像素能区分对错。
+// query 出来的字符串和节点 rect 也完全正常，只有像素能区分对错。
 //
 // 判据是**墨迹的水平分布**：正确渲染时 N 个字形沿 pen 依次铺开，
 // 墨迹覆盖节点宽度的大部分；若 RTL 被错误地反向定位，字形会挤成
 // 一坨互相重叠，墨迹只占很窄一段。所以 e2e 断言"墨迹列跨度占比"
-// 有下界 —— 重叠必然让跨度塌缩，此测立刻变红。
+// 有下界，重叠必然让跨度塌缩，此测立刻变红。
 //
 // 除了纯 RTL，还覆盖数字、中性/镜像标点、combining marks、URL/邮箱与
 // 连续方向切换。最后的窄 Textarea 刻意触发 soft wrap，供 e2e 实际验证
@@ -3510,7 +3510,7 @@ pub fn buildRtl(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     numbers.meta.ownership.meta.test_id = "story.rtl.numbers";
     try left.appendChild(a, numbers);
 
-    // 拉丁 → 阿拉伯 → 拉丁 → 希伯来 → 数字，连续跨越多个 bidi run。
+    // 拉丁 -> 阿拉伯 -> 拉丁 -> 希伯来 -> 数字，连续跨越多个 bidi run。
     const mixed = try ui.text(cx, "ab\u{645}\u{631}\u{62D}\u{628}\u{627}cd", .{
         .font_size = 36,
         .color = ui.Color.rgb(0, 0, 0),
@@ -3525,7 +3525,7 @@ pub fn buildRtl(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     try left.appendChild(a, switches);
 
     // Paired-bracket resolution (UAX #9 N0) and mirrored punctuation.
-    try right.appendChild(a, try label(cx, "mirrored punctuation — parentheses / brackets"));
+    try right.appendChild(a, try label(cx, "mirrored punctuation: parentheses / brackets"));
     const parens = try ui.text(cx, "\u{645}\u{631}\u{62D}\u{628}\u{627} (abc) \u{5E9}\u{5DC}\u{5D5}\u{5DD}", .{
         .font_size = 24,
         .color = ui.Color.rgb(0, 0, 0),
@@ -3570,7 +3570,7 @@ pub fn buildRtl(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
 
     // 无硬换行的长 RTL 段落，在窄编辑器内产生多条 display line。e2e 会对
     // 两条视觉行的左右位置点击，并跨行拖选，核对 caret/selection 几何。
-    try c.appendChild(a, try label(cx, "wrapped editable RTL — caret / selection rect / hit-testing"));
+    try c.appendChild(a, try label(cx, "wrapped editable RTL: caret / selection rect / hit-testing"));
     const editor_text =
         "\u{645}\u{631}\u{62D}\u{628}\u{627} \u{628}\u{627}\u{644}\u{639}\u{627}\u{644}\u{645} abc 123 xyz \u{5E9}\u{5DC}\u{5D5}\u{5DD} " ++
         "https://example.com/a-b?q=1:2 test@example.com +12/34 - 56:78 / " ++
@@ -3606,7 +3606,7 @@ pub fn buildGlassMotion(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     const c = try col(cx, 16);
 
     // ── morph：绝对定位玻璃在两个几何/profile 之间过渡 ──
-    try c.appendChild(a, try label(cx, "Morph — glass transitions between two geometries/profiles"));
+    try c.appendChild(a, try label(cx, "Morph: glass transitions between two geometries/profiles"));
     const morph_stage = try glassBackdrop(cx, 200);
     morph_stage.style.justify = .start;
     morph_stage.style.align_items = .start;
@@ -3618,7 +3618,7 @@ pub fn buildGlassMotion(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     try c.appendChild(a, morph_stage);
 
     // ── scroll-edge：玻璃工具条覆盖 ScrollArea 顶部，滚动出现边缘渐变 ──
-    try c.appendChild(a, try label(cx, "Scroll-edge — glass bar over scrolling content"));
+    try c.appendChild(a, try label(cx, "Scroll-edge: glass bar over scrolling content"));
     const se_stage = try ui.box(cx, .{ .width = .{ .px = 420 }, .height = .{ .px = 220 }, .position = .relative }, .{});
     const sa = try W.mountScrollArea(.{ .width = 420, .height = 220, .direction = .vertical }, scope, cx);
     var i: usize = 0;
@@ -3654,12 +3654,12 @@ pub fn buildGlassMotion(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
 // ── GlassChrome：应用 header 玻璃（下游真实用法验收）──
 //
 // 与上面几个 glass story 的关键差异：下游应用的 chrome 用的是
-// **浅色 + 纯 blur** 这一档——glass_intensity = 0（无液态折射/高光），
+// **浅色 + 纯 blur** 这一档，glass_intensity = 0（无液态折射/高光），
 // 只有 backdrop_blur，底色是 88% 白，压在浅米色画布上。
 // 上面的 story 全是深色高饱和胶囊压彩虹底，那一档的问题（rim 光、
-// 折射畸变）在这一档根本不出现；反过来这一档特有的问题——白纱发灰、
+// 折射畸变）在这一档根本不出现；反过来这一档特有的问题，白纱发灰、
 // blur 太弱看不出磨砂、1px 硬边被 blur 吃掉、progressive edge 出接缝
-// ——上面的 story 一个都抓不到。故单列一个 story 对齐下游真实观感。
+// 上面的 story 一个都抓不到。故单列一个 story 对齐下游真实观感。
 //
 // 参数逐条抄自下游应用的 chrome 实现（theme / glass / header）。
 
@@ -3678,7 +3678,7 @@ const CHROME_ISLAND_M: f32 = 10;
 const CHROME_EDGE_H: f32 = 76;
 
 /// progressiveBlurEdge：单节点单 pass 的渐进毛玻璃。
-/// 顶部 30% 满 blur → 底部收敛到 0。平面上下表面 + 零高光/折射/厚度
+/// 顶部 30% 满 blur -> 底部收敛到 0。平面上下表面 + 零高光/折射/厚度
 /// 是为了关掉 Fresnel rim（f_str_top 不受 glass_intensity 门控，
 /// 凸面时下缘会亮一条线）。
 fn progressiveEdgeGlass() ui.GlassParams {
@@ -3754,7 +3754,7 @@ fn chromeCanvas(cx: *ui.Cx, w: f32, h: f32) !*ui.Node {
     }
     try n.appendChild(a, grid);
 
-    // 便签：硬边高饱和色块 —— 玻璃压过去时边缘应糊成柔和过渡带
+    // 便签：硬边高饱和色块，玻璃压过去时边缘应糊成柔和过渡带
     const notes = [_]struct { x: f32, y: f32, w: f32, h: f32, c: ui.Color, t: []const u8 }{
         .{ .x = 24, .y = 16, .w = 120, .h = 88, .c = ui.Color.hex(0xFFD54A), .t = "Ship v1.0" },
         .{ .x = 168, .y = 34, .w = 108, .h = 76, .c = ui.Color.hex(0x7BD8A6), .t = "Glass QA" },
@@ -3881,7 +3881,7 @@ pub fn buildGlassChrome(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     const STAGE_W: f32 = 620;
 
     // ── 1. header 浮在滚动画布之上（画板详情页主场景）──
-    try c.appendChild(a, try label(cx, "App header — pure-blur glass pills floating over a scrolling canvas"));
+    try c.appendChild(a, try label(cx, "App header: pure-blur glass pills floating over a scrolling canvas"));
     const stage = try ui.box(cx, .{
         .width = .{ .px = STAGE_W },
         .height = .{ .px = 200 },
@@ -3910,7 +3910,7 @@ pub fn buildGlassChrome(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     try stage.appendChild(a, edge_strip);
 
     // header wrapper：绝对定位 + translate_y = ISLAND_M（同款）。
-    // 行本身透明——只有里面的胶囊有玻璃。
+    // 行本身透明，只有里面的胶囊有玻璃。
     const hdr_wrap = try ui.box(cx, .{
         .position = .absolute,
         .width = .{ .px = STAGE_W },
@@ -3933,9 +3933,9 @@ pub fn buildGlassChrome(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     try c.appendChild(a, controls);
 
     // ── 2. 渐进式毛玻璃 scroll edge（progressiveBlurEdge）──
-    // 顶部 30% 满 blur → 100% 处收敛到 0。验收点：不该出现下缘切线、
-    // 白纱、或接缝——这些是这一档参数特有的失败模式。
-    try c.appendChild(a, try label(cx, "Progressive blur scroll edge — full blur at top, fading to none (no seam, no bottom hairline)"));
+    // 顶部 30% 满 blur -> 100% 处收敛到 0。验收点：不该出现下缘切线、
+    // 白纱、或接缝，这些是这一档参数特有的失败模式。
+    try c.appendChild(a, try label(cx, "Progressive blur scroll edge: full blur at top, fading to none (no seam, no bottom hairline)"));
     const edge_stage = try ui.box(cx, .{
         .width = .{ .px = STAGE_W },
         .height = .{ .px = 150 },
@@ -3960,8 +3960,8 @@ pub fn buildGlassChrome(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     try c.appendChild(a, edge_stage);
 
     // ── 3. 强度对照阶梯：同一底、只变 backdrop_blur ──
-    // 用于判断 20 这档在浅底上到底够不够"磨砂"——单看一个说不清。
-    try c.appendChild(a, try label(cx, "backdrop_blur ladder (transparent fill) — 0 / 8 / 20 (app) / 40"));
+    // 用于判断 20 这档在浅底上到底够不够"磨砂"，单看一个说不清。
+    try c.appendChild(a, try label(cx, "backdrop_blur ladder (transparent fill): 0 / 8 / 20 (app) / 40"));
     const ladder_stage = try ui.box(cx, .{
         .width = .{ .px = STAGE_W },
         .height = .{ .px = 150 },
@@ -3999,8 +3999,8 @@ pub fn buildGlassChrome(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
 
     // ── 4. 填充不透明度阶梯：blur 固定 20，只变白底 alpha ──
     // 关键对照：应用里用的 0xE0（88% 白）只剩 12% 透光，blur 再大也看不见
-    // ——玻璃钱花了但没有视觉收益。0x99/0xB0 才真读得出磨砂。
-    try c.appendChild(a, try label(cx, "fill alpha ladder at fixed blur 20 — 0x66 / 0x99 / 0xB0 / 0xE0 (app): blur is invisible past ~0xB0"));
+    // 玻璃钱花了但没有视觉收益。0x99/0xB0 才真读得出磨砂。
+    try c.appendChild(a, try label(cx, "fill alpha ladder at fixed blur 20: 0x66 / 0x99 / 0xB0 / 0xE0 (app): blur is invisible past ~0xB0"));
     const alpha_stage = try ui.box(cx, .{
         .width = .{ .px = STAGE_W },
         .height = .{ .px = 150 },
@@ -4111,7 +4111,7 @@ const CanvasEventsStory = struct {
 pub fn buildCanvasEvents(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     const a = cx.allocator;
     const c = try col(cx, 12);
-    try c.appendChild(a, try label(cx, "Canvas events — scroll modifiers / magnify / drag / clipboard image"));
+    try c.appendChild(a, try label(cx, "Canvas events: scroll modifiers / magnify / drag / clipboard image"));
 
     const canvas = try ui.box(cx, .{
         .width = .{ .px = 420 },
@@ -4264,7 +4264,7 @@ const DragStory = struct {
 pub fn buildDrag(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     const a = cx.allocator;
     const c = try col(cx, 12);
-    try c.appendChild(a, try label(cx, "Drag — ui.interaction.drag primitive (threshold 4px, Escape cancels, arrows nudge when focused)"));
+    try c.appendChild(a, try label(cx, "Drag: ui.interaction.drag primitive (threshold 4px, Escape cancels, arrows nudge when focused)"));
 
     // ── 1. 自由移动方块（both 轴 + click 计数 + 键盘等价）──
     const arena = try ui.box(cx, .{
@@ -4337,7 +4337,7 @@ pub fn buildDrag(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     }, DragStory.onResize, st);
 
     // click 计数走独立的 on_click 槽（drag binding 占用 on_event，两者可组合；
-    // 越阈值/取消后 dispatcher 会抑制 click —— 计数不会涨）
+    // 越阈值/取消后 dispatcher 会抑制 click，计数不会涨）
     subject.behavior.events.on_click = .{ .callback = DragStory.onClick, .context = @ptrCast(st) };
     // 键盘等价操作走独立的 on_key_down 槽（key_context 与 event_context 分离）
     subject.behavior.events.on_key_down = DragStory.onKeyDown;
@@ -4346,7 +4346,7 @@ pub fn buildDrag(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     try c.appendChild(a, arena);
     try c.appendChild(a, status_label);
     try c.appendChild(a, clicks_label);
-    try c.appendChild(a, try label(cx, "Horizontal resize — drag the handle; delta is axis-projected"));
+    try c.appendChild(a, try label(cx, "Horizontal resize: drag the handle; delta is axis-projected"));
     try c.appendChild(a, resize_row);
     return c;
 }
@@ -4354,7 +4354,7 @@ pub fn buildDrag(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
 // ── TextAnimJitter ──
 // 文本动画抖动检测 fixture（TEXT_ANIMATION_JITTER_ROOT_FIX_PLAN P3 前哨）。
 //
-// translate：极慢线性平移（1 逻辑 px/s）+ 非整数字号 —— 各 glyph 小数相位不同，
+// translate：极慢线性平移（1 逻辑 px/s）+ 非整数字号，各 glyph 小数相位不同，
 // 逐 glyph 像素吸附会让相邻字距随时间 ±1 物理像素波动。
 // e2e 间隔采样截图，断言字形间距恒定（e2e/text-anim-jitter.test.ts）。
 //
@@ -4405,7 +4405,7 @@ const TextJitterLoop = struct {
                 .on_complete = flip,
                 .on_complete_ctx = @ptrCast(st),
             }),
-            // rotate 不往返：每程 lo→hi 后从头再来（连续旋转）
+            // rotate 不往返：每程 lo->hi 后从头再来（连续旋转）
             .rotate => ui.animateNode(st.node, st.allocator, .{
                 .prop = .rotate,
                 .from = st.lo,
@@ -4449,7 +4449,7 @@ pub fn buildTextAnimJitter(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     const c = try col(cx, 14);
 
     // ── 1. translate（e2e 门禁用，保持在最前、test_id 不变）──
-    try c.appendChild(a, try label(cx, "Translate 1px/s — glyph gaps must stay constant"));
+    try c.appendChild(a, try label(cx, "Translate 1px/s: glyph gaps must stay constant"));
     const wrap = try ui.box(cx, .{
         .width = .{ .px = 560 },
         .height = .{ .px = 56 },
@@ -4472,7 +4472,7 @@ pub fn buildTextAnimJitter(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     });
 
     // ── 2. scale 往返（穿越 1.0：提升/退出接缝处不得跳位或忽糊忽锐）──
-    try c.appendChild(a, try label(cx, "Scale 0.85 ⇄ 1.15 — no snap or sharpness pop at 1.0 crossings"));
+    try c.appendChild(a, try label(cx, "Scale 0.85 ⇄ 1.15: no snap or sharpness pop at 1.0 crossings"));
     const scale_wrap = try ui.box(cx, .{
         .width = .{ .px = 560 },
         .height = .{ .px = 64 },
@@ -4491,7 +4491,7 @@ pub fn buildTextAnimJitter(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     scale_st.launch();
 
     // ── 3. rotate 连续（文本整块匀速转，笔画不得逐字抖）──
-    try c.appendChild(a, try label(cx, "Rotate — continuous slow spin"));
+    try c.appendChild(a, try label(cx, "Rotate: continuous slow spin"));
     const rot_wrap = try ui.box(cx, .{
         .width = .{ .px = 560 },
         .height = .{ .px = 110 },
@@ -4510,7 +4510,7 @@ pub fn buildTextAnimJitter(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     rot_st.launch();
 
     // ── 4. opacity 往返（提升/退出 opacity layer 时位置与清晰度不得跳）──
-    try c.appendChild(a, try label(cx, "Opacity 1.0 ⇄ 0.15 — position/sharpness must not shift"));
+    try c.appendChild(a, try label(cx, "Opacity 1.0 ⇄ 0.15: position/sharpness must not shift"));
     const op_wrap = try ui.box(cx, .{
         .width = .{ .px = 560 },
         .height = .{ .px = 48 },
@@ -4529,7 +4529,7 @@ pub fn buildTextAnimJitter(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     op_st.launch();
 
     // ── 5. backdrop blur 扫动（静态文本上方玻璃 blur 0⇄24：文本不得漂移/闪变）──
-    try c.appendChild(a, try label(cx, "Backdrop blur 0 ⇄ 24 over static text — no drift or flicker"));
+    try c.appendChild(a, try label(cx, "Backdrop blur 0 ⇄ 24 over static text: no drift or flicker"));
     const blur_wrap = try ui.box(cx, .{
         .width = .{ .px = 560 },
         .height = .{ .px = 64 },
@@ -4564,7 +4564,7 @@ pub fn buildTextAnimJitter(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
 // ── WordNav（Batch A2：希腊/西里尔词导航 + 家庭 emoji grapheme 簇）──
 //
 // 修复前症状：cursor.zig 用 `>= 0xE0` 判 multi-byte，2 字节 lead（希腊/西里尔）
-// 落进 ASCII 路径又被 `>= 0x80` 立即 break —— Alt+←/→ 原地卡死、双击选出空范围。
+// 落进 ASCII 路径又被 `>= 0x80` 立即 break, Alt+<-/-> 原地卡死、双击选出空范围。
 // e2e 用 input_state 读回 cursor_pos/anchor 的**字节偏移**断言词边界落点。
 //
 // 预置文本的字节账本（e2e 断言依赖，改文本必须同步改 e2e）：
@@ -4575,7 +4575,7 @@ const WORDNAV_TEXT = "αβγ δεζ привет мир hello world \u{1F468}\u{
 pub fn buildWordNav(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     const a = cx.allocator;
     const c = try col(cx, 12);
-    try c.appendChild(a, try label(cx, "Word navigation — Alt+←/→ jumps whole Greek/Cyrillic words; double-click selects the word; family emoji is one cluster"));
+    try c.appendChild(a, try label(cx, "Word navigation: Alt+←/→ jumps whole Greek/Cyrillic words; double-click selects the word; family emoji is one cluster"));
 
     const ta = try W.Textarea(.{
         .label_text = "Mixed-script sample",
@@ -4592,11 +4592,11 @@ pub fn buildWordNav(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
 
 // ── MultiClick / Gestures（Batch C4 多击与 cancel + Batch A3 long_press tick）──
 //
-// C4 修复前：reset() 每次 mouse-down 清零 click_count → double/triple 结构性
-// 不可达（e2e 双击断言在旧代码必红）；onTouchUp 丢弃时戳 → 相隔 10 秒也算
+// C4 修复前：reset() 每次 mouse-down 清零 click_count -> double/triple 结构性
+// 不可达（e2e 双击断言在旧代码必红）；onTouchUp 丢弃时戳 -> 相隔 10 秒也算
 // double（间隔过期不可 e2e 化，story 保留人工观察）；.cancelled 只读不写。
 // A3 修复前：注册了 long_press 的应用第一帧 tick 必 panic（epoch 时戳 @intCast
-// 溢出）—— 本 story 能加载出首帧就是回归锚；按住 500ms 断言 began 是加强验证。
+// 溢出），本 story 能加载出首帧就是回归锚；按住 500ms 断言 began 是加强验证。
 const MultiClickStory = struct {
     cx: *ui.Cx,
     single_label: *ui.Node,
@@ -4649,7 +4649,7 @@ const MultiClickStory = struct {
         self.cx.needs_redraw = true;
     }
 
-    /// before_render：把计数镜像到 label（仅变化时写），并保持出帧 ——
+    /// before_render：把计数镜像到 label（仅变化时写），并保持出帧,
     /// gesture_arena.tick 只在真渲染帧跑，long_press 的时间判定靠持续出帧推进。
     fn tickHook(node: *ui.Node) void {
         const self: *MultiClickStory = @ptrCast(@alignCast(node.meta.per_frame.hooks.slots.anim_state orelse return));
@@ -4695,7 +4695,7 @@ const MultiClickCleanup = struct {
 pub fn buildMultiClick(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     const a = cx.allocator;
     const c = try col(cx, 12);
-    try c.appendChild(a, try label(cx, "Gesture arena — tap/double/triple counts + press-and-hold long_press (500ms) + pointer-cancel state"));
+    try c.appendChild(a, try label(cx, "Gesture arena: tap/double/triple counts + press-and-hold long_press (500ms) + pointer-cancel state"));
 
     const pad = try ui.box(cx, .{
         .width = .{ .px = 320 },
@@ -4752,7 +4752,7 @@ pub fn buildMultiClick(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
 //   C1：yoyo 完成后裸 play() 重放，首 tick 值必须在 from 附近（旧代码从 to 倒播）。
 //   C2：reverse 后时间线必须在有限步内完成且停在 t=0（旧代码永转）。
 //   C6：kf_now 由按钮显式推进（模拟帧停滞 1s），一次 update 必须批量补齐
-//       多个周期（旧代码 if 单周期推进 → progress 钳 1.0 且 loops 少计）。
+//       多个周期（旧代码 if 单周期推进 -> progress 钳 1.0 且 loops 少计）。
 //   C3：负 stiffness spring 每帧写进 translate_x，值必须有限（旧代码 NaN）。
 const KF_FRAMES = [_]ui.fx.animation.Keyframe{
     .{ .progress = 0.0, .value = 0, .easing = .linear },
@@ -4883,16 +4883,16 @@ fn destroyAnimTimeline(ptr: *anyopaque, alloc: std.mem.Allocator) void {
 pub fn buildAnimCtl(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     const a = cx.allocator;
     const c = try col(cx, 12);
-    try c.appendChild(a, try label(cx, "Animation controls — yoyo replay / timeline reverse / keyframes catch-up / degenerate spring"));
+    try c.appendChild(a, try label(cx, "Animation controls: yoyo replay / timeline reverse / keyframes catch-up / degenerate spring"));
 
-    // yoyo tween：20 → 120 → 20（loops=2 + yoyo），完成后停在 from。
+    // yoyo tween：20 -> 120 -> 20（loops=2 + yoyo），完成后停在 from。
     const yoyo_ctrl = try a.create(ui.fx.AnimationController);
     yoyo_ctrl.* = ui.fx.AnimationController.initTween(.{ .from = 20, .to = 120, .duration = 0.7, .easing = .linear });
     yoyo_ctrl.yoyo = true;
     yoyo_ctrl.loops = 2;
     try scope.registerResource(@ptrCast(yoyo_ctrl), destroyAnimController);
 
-    // timeline：单条 0→100 线性 2s。
+    // timeline：单条 0->100 线性 2s。
     const tl_ctrl = try a.create(ui.fx.AnimationController);
     tl_ctrl.* = ui.fx.AnimationController.initTween(.{ .from = 0, .to = 100, .duration = 2.0, .easing = .linear });
     try scope.registerResource(@ptrCast(tl_ctrl), destroyAnimController);
@@ -4978,7 +4978,7 @@ pub fn buildAnimCtl(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
 // ── CleanupHooks（Batch A4：on_cleanup 恰好触发一次）──
 //
 // 修复前：fireCleanupCallbacks 只置 is_mounted 不清字段，已 mount 节点在
-// removeChild → freeNode 链上必定二次 invoke —— 计数会显示 2。
+// removeChild -> freeNode 链上必定二次 invoke，计数会显示 2。
 // bool 断言抓不到双触发（过程教训 #4），故这里渲染**计数**而非布尔。
 const CleanupStory = struct {
     cx: *ui.Cx,
@@ -5023,7 +5023,7 @@ fn buildCleanupChild(s: *ui.Scope, c: *ui.Cx) anyerror!*ui.Node {
 pub fn buildCleanup(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     const a = cx.allocator;
     const c = try col(cx, 12);
-    try c.appendChild(a, try label(cx, "on_cleanup count — unmounting a subtree with a cleanup hook must add exactly 1 (double-fire adds 2)"));
+    try c.appendChild(a, try label(cx, "on_cleanup count: unmounting a subtree with a cleanup hook must add exactly 1 (double-fire adds 2)"));
 
     const count_label = try ui.text(cx, "cleanups: 0", .{ .font_size = 13, .color = light.color.fg_primary });
     count_label.meta.ownership.meta.test_id = "story.cleanup.count";
@@ -5052,14 +5052,14 @@ pub fn buildCleanup(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
 // ── HeavyText（§5 池化：text renderer overflow instance buffer 保留池）──
 //
 // 单帧塞 > 32768 个 glyph instance（MAX_INSTANCES，见 src/render/text_renderer.zig）
-// 强制走 overflow buffer 路径 —— 修复后该路径是跨帧保留池（曾是每 batch
+// 强制走 overflow buffer 路径，修复后该路径是跨帧保留池（曾是每 batch
 // createBuffer+destroy）。8 个重叠 absolute 层 × 可见约 40 行 × 约 160 字/行
 // ≈ 5 万可见 glyph，稳超预算。e2e 断言区域像素非空白 + app 存活。
 pub fn buildHeavyText(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     _ = scope;
     const a = cx.allocator;
     const c = try col(cx, 10);
-    try c.appendChild(a, try label(cx, "Heavy text overflow — 8 overlapping layers exceed the 32768 glyph-instance budget (pooled overflow path)"));
+    try c.appendChild(a, try label(cx, "Heavy text overflow: 8 overlapping layers exceed the 32768 glyph-instance budget (pooled overflow path)"));
 
     const stack = try ui.box(cx, .{
         .width = .{ .px = 980 },
@@ -5137,7 +5137,7 @@ pub fn buildSecuritySvg(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     _ = scope;
     const a = cx.allocator;
     const c = try col(cx, 14);
-    try c.appendChild(a, try label(cx, "Malformed SVG corpus — every red-team sample must reject promptly without hanging or crashing"));
+    try c.appendChild(a, try label(cx, "Malformed SVG corpus: every red-team sample must reject promptly without hanging or crashing"));
 
     try appendSvgSafetyCase(c, cx, "close operand", "M2 2 L22 2 Z 5");
     try appendSvgSafetyCase(c, cx, "non-finite arc", "M1 1 A1e999 1e999 0 0 1 1e999 1e999");
@@ -5163,7 +5163,7 @@ pub fn buildSecurityOpacity(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     _ = scope;
     const a = cx.allocator;
     const c = try col(cx, 14);
-    try c.appendChild(a, try label(cx, "10 nested composited opacity groups — depth > 8 must not pop or corrupt an outer render target"));
+    try c.appendChild(a, try label(cx, "10 nested composited opacity groups: depth > 8 must not pop or corrupt an outer render target"));
 
     const stage = try ui.box(cx, .{
         .width = .{ .px = 520 },
@@ -5242,7 +5242,7 @@ const SecurityTextStory = struct {
 pub fn buildSecurityText(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     const a = cx.allocator;
     const c = try col(cx, 12);
-    try c.appendChild(a, try label(cx, "65,536-space editable run — exercises wide run counts and stale wrap-break clamping"));
+    try c.appendChild(a, try label(cx, "65,536-space editable run: exercises wide run counts and stale wrap-break clamping"));
     try c.appendChild(a, try label(cx, "Select all and replace with x; the editor must stay alive and report bytes: 1"));
 
     const status = try ui.text(cx, "bytes: 65546 · long space run loaded", .{ .font_size = 13, .color = light.color.fg_primary });
@@ -5313,13 +5313,13 @@ fn buildTeardownGrid(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     return grid;
 }
 
-/// Direct manual reproducer for the crash reported from rowClick → Show dispose:
+/// Direct manual reproducer for the crash reported from rowClick -> Show dispose:
 /// every unmount owns a Grid whose Scope cleanup still references its content
 /// node, so scope cleanup must complete before deferred node destruction.
 pub fn buildTeardownStress(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     const a = cx.allocator;
     const c = try col(cx, 12);
-    try c.appendChild(a, try label(cx, "Reactive teardown ordering — Scope cleanup must run before Grid nodes are freed"));
+    try c.appendChild(a, try label(cx, "Reactive teardown ordering: Scope cleanup must run before Grid nodes are freed"));
 
     const status = try ui.text(cx, "grid mounted · completed cycles: 0", .{ .font_size = 13, .color = light.color.fg_primary });
     status.meta.ownership.meta.test_id = "story.teardownstress.status";

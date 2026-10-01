@@ -1,4 +1,4 @@
-/// 关键帧动画 — 多段进度插值
+/// 关键帧动画，多段进度插值
 ///
 /// 用法:
 /// ```zig
@@ -209,7 +209,7 @@ test "KeyframeAnimation: three keyframes" {
     }, 1000, 1);
     kf.start_time_ms = 1000.0;
 
-    // 25% 进度 → 在 [0, 0.5] 段，局部 50% → value = 50
+    // 25% 进度 -> 在 [0, 0.5] 段，局部 50% -> value = 50
     const v = kf.update(1250.0);
     try std.testing.expectApproxEqAbs(@as(f32, 50.0), v, 1.0);
 }

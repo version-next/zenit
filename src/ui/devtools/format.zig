@@ -1,15 +1,15 @@
-//! DevTools 的格式化工具 —— 从 devtools.zig 析出。
+//! DevTools 的格式化工具，从 devtools.zig 析出。
 //!
 //! 八个纯函数：把布局值（Sizing / Padding / Margin / f32）和可能非法的字节
 //! 串格式化成面板上显示的短文本。只依赖 std 与 core 的值类型，不碰面板状态、
-//! 选中项、节点树 —— 夹在 4600 行的 devtools.zig 里纯属历史堆积。
+//! 选中项、节点树，夹在 4600 行的 devtools.zig 里纯属历史堆积。
 //!
 //! 析出后这些格式化规则可以直接单测：此前要验证「宽度为 fit 时显示什么」
 //! 「截断时会不会切断多字节字符」只能打开 DevTools 面板用眼睛看。
 //!
 //! UTF-8 判定统一走 `text_core.utf8`（2026-09-22）：此前这里有一份 100 行
 //! 手写的 UTF-8 状态机（utf8SeqLen / isValidUtf8Seq / isValidUtf8）。穷举
-//! 比对过——1~3 字节全量、4 字节抽样，与 std 零差异，也就是说那 100 行只是
+//! 比对过，1~3 字节全量、4 字节抽样，与 std 零差异，也就是说那 100 行只是
 //! 把 std 重写了一遍，overlong / surrogate / >U+10FFFF 边界全靠手写维护。
 //! 现已删除，语义不变。
 
@@ -199,7 +199,7 @@ test "truncate: max_len 为 0 时返回空而不是越界" {
 
 test "truncate: 超长时不切断多字节字符" {
     // ⚠ truncate 按 max_len 分配但返回**更短**的切片（省略号之后就截断），
-    //   所以返回值不能直接 free —— 它不是分配的那一块的完整长度。生产调用点
+    //   所以返回值不能直接 free，它不是分配的那一块的完整长度。生产调用点
     //   走的是 frame_arena（整帧一次性回收），这里用 arena 复刻同一语义。
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -207,7 +207,7 @@ test "truncate: 超长时不切断多字节字符" {
     // 6 个中文字符（18 字节），截到 10 字节
     const src = "中文中文中文";
     const out = truncate(arena.allocator(), src, 10);
-    // 产出必须仍是合法 UTF-8 —— 不能切在字符中间
+    // 产出必须仍是合法 UTF-8，不能切在字符中间
     try std.testing.expect(isValidUtf8(out));
     try std.testing.expect(out.len <= 10);
 }

@@ -1,4 +1,4 @@
-/// DropdownMenu — 样式层
+/// DropdownMenu，样式层
 ///
 /// recipe 与具名样式函数；业务逻辑/State/事件处理在 mod.zig。
 const core = @import("../../core.zig");
@@ -9,10 +9,10 @@ const ConditionalStyle = core.ConditionalStyle;
 const recipe_mod = @import("../../recipe.zig");
 
 // ============================================================================
-// DropdownMenuItemRecipe — recipe(danger) + disabled 条件态
+// DropdownMenuItemRecipe, recipe(danger) + disabled 条件态
 //
 // danger 是真变体（每项的种类），走 variant resolver；disabled 是条件，
-// 走 resolve(.{ .is_disabled })——短路语义天然保证 disabled 压过 danger
+// 走 resolve(.{ .is_disabled })，短路语义天然保证 disabled 压过 danger
 // （替代此前 3 条 compounds 互斥梯子）。
 // ============================================================================
 pub const DropdownMenuItemRecipe = recipe_mod.recipe(struct {

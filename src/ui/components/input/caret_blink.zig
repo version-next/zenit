@@ -1,16 +1,16 @@
-//! 光标闪烁相位 —— 从 `TextInputState` 析出。
+//! 光标闪烁相位，从 `TextInputState` 析出。
 //!
 //! 原本是 `TextInputState` 上的两个字段（`blink_epoch` / `last_blink_visible`）
 //! 加三个方法。它们不碰输入状态的任何其它部分（buffer / cursor / selection /
 //! IME 全都无关），是一段纯时间算术，却夹在 3200 行的输入状态机里。
 //!
-//! 搬出来之后，相位计算可以用**构造出来的时间戳**直接单测 —— 此前要验证
+//! 搬出来之后，相位计算可以用**构造出来的时间戳**直接单测，此前要验证
 //! 「闪烁半周期是否正确」「Tab 切焦点同帧 reset 会不会算出负数」只能跑真实
 //! 应用用眼睛看。
 //!
 //! **接口切在哪**：本模块只回答「现在该不该显示光标」和「下次相位翻转还有
 //! 多久」。`last_blink_visible`（上一帧可见性，用于只在翻转时标脏）留给
-//! 调用方 —— 它属于渲染脏标记的账，不属于相位本身。
+//! 调用方，它属于渲染脏标记的账，不属于相位本身。
 
 const std = @import("std");
 const text_utils = @import("text_utils.zig");
@@ -37,7 +37,7 @@ pub const CaretBlink = struct {
     pub fn visible(self: *CaretBlink, now: std.time.Instant) bool {
         if (self.epoch == null) self.reset();
         const epoch = self.epoch orelse return true;
-        // ⚠ 安全减法：epoch 可能比 now 更晚 —— Tab 切换焦点时同一帧内先
+        // ⚠ 安全减法：epoch 可能比 now 更晚，Tab 切换焦点时同一帧内先
         // reset 再查询，两个 Instant 的取样点可能倒挂。裸减会下溢成天文数字，
         // 光标随机闪。
         const elapsed = text_utils.safeElapsedNs(now, epoch);
