@@ -156,6 +156,8 @@ pub const App = struct {
         self.chrome = .{ .initial = try chrome_backend.configure(&self.win, @import("window_config.zig").requestedChrome(config.window), config.window.titlebar_height) };
         try chrome_backend.configureHeader(&self.win, self.chrome.initial, config.window.fullscreen_header, config.window.titlebar_height);
         try chrome_backend.setMinimumSize(&self.win, config.window.min_width, config.window.min_height);
+        try chrome_backend.setMaximizable(&self.win, config.window.maximizable);
+        try chrome_backend.setRestorable(&self.win, config.window.restorable);
         if (config.window.chrome == null and config.window.titlebar == .custom_inset) {
             try self.win.setCustomTitlebar(config.window.titlebar_height, config.window.titlebar_drag_right_inset);
         }

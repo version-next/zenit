@@ -64,6 +64,23 @@ pub fn useSystemTitlebar(win: *Window) !void {
 }
 extern fn zenit_win_chrome_minimum(*anyopaque, u32, u32) c_int;
 extern fn zenit_wayland_chrome_minimum(*anyopaque, u32, u32) c_int;
+extern fn macos_chrome_maximizable(*anyopaque, c_int) c_int;
+pub fn setMaximizable(win: *Window, value: bool) !void {
+    if (comptime builtin.os.tag != .macos) {
+        // Loud reject over a silent capability lie; same contract as
+        // configureHeader's visible policies on unsupported backends.
+        if (!value) return error.UnsupportedWindowCapability;
+        return;
+    }
+    if (macos_chrome_maximizable(handle(win), @intFromBool(value)) != 1) return error.NativeChromeConfigurationFailed;
+}
+extern fn macos_chrome_restorable(*anyopaque, c_int) c_int;
+pub fn setRestorable(win: *Window, value: bool) !void {
+    // Only macOS runs a window restore pass; "never restore" is trivially
+    // true on the other backends, so the flag is accepted there.
+    if (comptime builtin.os.tag != .macos) return;
+    if (macos_chrome_restorable(handle(win), @intFromBool(value)) != 1) return error.NativeChromeConfigurationFailed;
+}
 pub fn setMinimumSize(win: *Window, width: u32, height: u32) !void {
     if (width > 16384 or height > 16384) return error.InvalidWindowMinimumSize;
     if (width == 0 and height == 0) return;

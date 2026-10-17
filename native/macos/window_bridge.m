@@ -2995,6 +2995,10 @@ typedef struct {
 @property (nonatomic, assign) int (*chromeHitCallback)(void*, float, float);
 @property (nonatomic, assign) void* chromeHitContext;
 @property (nonatomic) BOOL chromeHideControls;
+// Zoom/maximize refused; windowShouldZoom: consults this so green button,
+// title-bar double-click and performZoom: stay consistent. Zero default =
+// maximizable, matching an out-of-box NSWindow.
+@property (nonatomic) BOOL zoomDisabled;
 @property (nonatomic) BOOL chromeFullscreenTransition;
 @property (nonatomic) BOOL nativeFullscreenEntering;
 // Query hooks are speculative: only entries without a will/did are timed,
@@ -3095,6 +3099,12 @@ static void zenitInstallFullscreenTrace(void) {
     }
     self.shouldClose = YES;
     return NO; // let Zig handle dirty tabs; will retry performClose after confirm
+}
+
+- (BOOL)windowShouldZoom:(NSWindow *)sender toFrame:(NSRect)frame {
+    (void)sender;(void)frame;
+    // Every zoom entry point funnels through this delegate question.
+    return !self.zoomDisabled;
 }
 
 - (void)windowWillClose:(NSNotification *)notification {
@@ -6487,6 +6497,14 @@ static NSMutableDictionary<NSNumber *, NSMenu *> *zenitMenuById;
     return NO;
 }
 
+- (BOOL)applicationSupportsSecureRestorableState:(NSApplication *)sender {
+    (void)sender;
+    // Declare support for secure restorable-state coding (macOS 12+ API).
+    // Automatic for apps linked on the macOS 14 SDK; explicit declaration
+    // keeps older link configurations on the supported path.
+    return YES;
+}
+
 // Finder double-click / open with / open -a / drag to Dock
 - (BOOL)application:(NSApplication *)sender openFile:(NSString *)filename {
     if (filename.length == 0) return NO;
@@ -7572,6 +7590,10 @@ int macos_chrome_configure(void *owner, int mode, int automatic, float height) {
         for (NSNumber *kind in @[@(NSWindowCloseButton),@(NSWindowMiniaturizeButton),@(NSWindowZoomButton)]) {
             NSButton *b=[w.window standardWindowButton:kind.integerValue];
             b.hidden=mode==2 || !automatic;
+            // windowShouldZoom: is the behavior gate; button state is cosmetic.
+            // Re-assert as cheap insurance for paths not driven here (fullscreen
+            // round trips, state restoration).
+            if (kind.integerValue==NSWindowZoomButton && w.zoomDisabled) b.enabled=NO;
         }
         if (mode==1 && automatic) macos_set_traffic_lights_inset(owner,7,height/2);
         w.window.movableByWindowBackground=NO;
@@ -7591,8 +7613,12 @@ int macos_chrome_system_titlebar(void *owner) {
         w.window.styleMask=(w.window.styleMask & ~(NSWindowStyleMaskFullSizeContentView|NSWindowStyleMaskBorderless))|NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable;
         w.window.titlebarAppearsTransparent=NO;
         w.window.titleVisibility=NSWindowTitleVisible;
-        for (NSNumber *kind in @[@(NSWindowCloseButton),@(NSWindowMiniaturizeButton),@(NSWindowZoomButton)])
-            [w.window standardWindowButton:kind.integerValue].hidden=NO;
+        for (NSNumber *kind in @[@(NSWindowCloseButton),@(NSWindowMiniaturizeButton),@(NSWindowZoomButton)]) {
+            NSButton *b=[w.window standardWindowButton:kind.integerValue];
+            b.hidden=NO;
+            // Keep the zoom opt-out symmetric with chrome_configure's insurance.
+            if (kind.integerValue==NSWindowZoomButton && w.zoomDisabled) b.enabled=NO;
+        }
         w.chromeHideControls=NO;
         w.hasTrafficLightsInset=NO;
         w.titlebarDragHeight=0;
@@ -7617,6 +7643,7 @@ void macos_chrome_state(void *owner, ZenitChromeState *out) {
         out->flags=(w.window.isZoomed?1:0)|((w.window.styleMask & NSWindowStyleMaskFullScreen)?2:0)|(w.window.isKeyWindow?4:0)|(w.chromeFullscreenTransition?8:0);
         out->flags |= 16;
         out->capabilities=63; /* Native resizable edges; no explicit manual resize API. */
+        if (w.zoomDisabled) out->capabilities&=~8; /* drop maximize (bit 3) */
         if (w.fullscreenHeader.active) out->flags |= 128;
         if (w.fullscreenHeader.active && zenitHeaderVisible(w.fullscreenHeader.header)) out->flags |= 256;
         if (w.fullscreenHeader.active && w.fullscreenHeader.hasPresented) out->flags |= 512;
@@ -7637,6 +7664,20 @@ int macos_chrome_minimum(void *owner,uint32_t width,uint32_t height) {
     @autoreleasepool {
         WindowWrapper *w=(__bridge WindowWrapper*)owner;if(!w.window)return 0;
         w.window.contentMinSize=NSMakeSize(width,height);return 1;
+    }
+}
+int macos_chrome_maximizable(void *owner, int enabled) {
+    @autoreleasepool {
+        WindowWrapper *w=(__bridge WindowWrapper*)owner;if(!w.window)return 0;
+        w.zoomDisabled=!enabled;
+        [[w.window standardWindowButton:NSWindowZoomButton] setEnabled:enabled!=0];
+        return 1;
+    }
+}
+int macos_chrome_restorable(void *owner, int enabled) {
+    @autoreleasepool {
+        WindowWrapper *w=(__bridge WindowWrapper*)owner;if(!w.window)return 0;
+        w.window.restorable=enabled!=0;return 1;
     }
 }
 int macos_chrome_action(void *owner, int action, int value) {

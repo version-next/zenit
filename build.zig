@@ -2206,6 +2206,7 @@ pub fn build(b: *std.Build) void {
             "scripts/test_native_memory.sh",
             "scripts/test_native_text_events.sh",
             "scripts/test_native_input_pump.sh",
+            "scripts/test_native_window_capabilities.sh",
         };
         for (native_test_scripts) |script| {
             const run_native = b.addSystemCommand(&.{ "bash", script });

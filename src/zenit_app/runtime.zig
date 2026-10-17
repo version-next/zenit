@@ -654,6 +654,8 @@ pub const App = struct {
         if (config.window.chrome) |requested| if (requested == .native) try chrome_backend.useSystemTitlebar(&app.win);
         try chrome_backend.configureHeader(&app.win, app.chrome.initial, config.window.fullscreen_header, config.window.titlebar_height);
         try chrome_backend.setMinimumSize(&app.win, config.window.min_width, config.window.min_height);
+        try chrome_backend.setMaximizable(&app.win, config.window.maximizable);
+        try chrome_backend.setRestorable(&app.win, config.window.restorable);
         if (config.window.chrome == null and app.chrome.initial.effective_mode == .custom and config.window.titlebar == .custom_inset) {
             // Traffic light centered vertically on custom title bar; x default system origin 7.
             app.win.setTrafficLightsInset(7, config.window.titlebar_height / 2.0);
