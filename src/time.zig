@@ -54,6 +54,25 @@ pub fn monotonicTimestamp(io: std.Io) i128 {
     return std.Io.Clock.awake.now(io).nanoseconds;
 }
 
+/// Retired instructions of the calling thread (Apple silicon PMC via thread_selfcounts); 0 on
+/// other systems or when the counter is unavailable. A cost that, unlike time, does not move with
+/// core type, clock or machine load (performance traces only).
+pub fn threadInstructions() u64 {
+    if (comptime @import("builtin").os.tag != .macos) return 0;
+    const S = struct {
+        extern "c" fn thread_selfcounts(kind: c_int, buf: *[2]u64, nbytes: usize) c_int;
+    };
+    var counts: [2]u64 = .{ 0, 0 };
+    if (S.thread_selfcounts(1, &counts, @sizeOf([2]u64)) != 0) return 0;
+    return counts[0];
+}
+
+/// CPU time consumed by the calling thread. Unlike wall-clock stage timers it excludes time the
+/// thread spends preempted, so per-stage costs stay comparable on a loaded machine.
+pub fn threadCpuTimestamp(io: std.Io) i128 {
+    return std.Io.Clock.cpu_thread.now(io).nanoseconds;
+}
+
 test "elapsed time is ordered and clamps a future epoch" {
     const before: Instant = .{ .timestamp = 100 };
     const after: Instant = .{ .timestamp = 250 };

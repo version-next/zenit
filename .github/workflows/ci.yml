@@ -83,8 +83,10 @@ jobs:
           bash scripts/test_evidence_contract.sh
           bash scripts/test_release_candidate_contract.sh
           bash scripts/test_storybook_e2e_orchestrator.sh
+          bash scripts/test_storybook_e2e_parallel_contract.sh
           bash scripts/test_e2e_leak_contract.sh
           python3 tools/windows_batch_test.py
+          python3 tools/window_lifetime_gate.py --self-test
           bash scripts/test_bench_regression_contract.sh
           bash scripts/check_renderer_metal_boundary.sh
           bash scripts/check_style_literals.sh
@@ -194,6 +196,8 @@ jobs:
       # signature change fails here immediately instead of at real port time. Catches leaks such as
       # Surface.init taking *CAMetalLayer, test stubs writing the .raw field directly, and the
       # renderer directly @importing metal_bindings.
+      - name: Verify executable wasm32-freestanding core (reactive, layout, text, i18n)
+        run: zig build check-wasm
       - name: Run deterministic tests on the Null GPU backend
         env:
           ZENIT_TEST_SEED: "0x5eedcafe20260731"
@@ -335,7 +339,7 @@ jobs:
       # strength: real failures still fail.
       #
       # This step is also the **GPU perf regression gate** (storybook.test.ts trailing
-      # 'perf gate: *' cases): datatable/virtuallist scroll asserts gpu_p95_us < 8000us. Data comes
+      # 'perf gate: *' cases): table/virtuallist list scroll asserts gpu_p95_us < 8000us. Data comes
       # from MTLCommandBuffer GPUEndTime-GPUStartTime, **excluding** CPU/RPC pauses, so a slow
       # runner
       # won't turn it red (CPU-side timing jitters up to 15x, hence no cpu_p95 gate).
@@ -352,6 +356,22 @@ jobs:
           ZENIT_E2E_TEST_FILE: "e2e/interaction-lifecycle.test.ts"
           ZENIT_E2E_TIMEOUT_MS: "30000"
           ZENIT_E2E_EVIDENCE_DIR: "/tmp/zenit_e2e_evidence/lifecycle"
+        run: bash scripts/run_storybook_e2e.sh
+
+      - name: Run Debug window lifetime gate
+        run: |
+          zig build window-chrome -Doptimize=Debug
+          python3 tools/window_lifetime_gate.py \
+            --app "zig-out/Window Chrome.app/Contents/MacOS/window_chrome" \
+            --evidence-dir /tmp/zenit_e2e_evidence/window-lifetime
+
+      - name: Run explicit multi-window capture E2E
+        env:
+          ZENIT_E2E_SKIP_BUILD: "1"
+          ZENIT_E2E_TEST_FILE: "e2e/multi-window-screenshot.test.ts"
+          ZENIT_E2E_TIMEOUT_MS: "30000"
+          ZENIT_E2E_APP_LOG: "/tmp/zenit_multi_window_app.log"
+          ZENIT_E2E_EVIDENCE_DIR: "/tmp/zenit_e2e_evidence/multi-window"
         run: bash scripts/run_storybook_e2e.sh
 
       - name: Run review regression E2E files

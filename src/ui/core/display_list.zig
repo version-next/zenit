@@ -51,6 +51,11 @@ pub const ClipPolygon = struct {
     pub fn empty() ClipPolygon {
         return .{};
     }
+
+    /// The polygon a frame-local reference names (empty for null).
+    pub fn of(p: ?*const ClipPolygon) ClipPolygon {
+        return if (p) |polygon| polygon.* else .{};
+    }
 };
 
 /// Common associating header for each DisplayItem (PropertyTree reference)
@@ -62,7 +67,80 @@ pub const ItemHeader = struct {
     effect_id: u32 = INVALID_ID,
     node_id: u32,
     paint_order: u64 = 0,
+    /// contentFingerprint of the item as recorded (0 = not computed). Set once
+    /// when the item enters a DisplayList and carried by every replay, so an
+    /// unchanged item is never hashed again; whoever rewrites an item's content
+    /// must reset it to 0 (ids above are frame-local and not content).
+    local_fp: u64 = 0,
 };
+
+/// Content fingerprint of a display item: every field of its variant except
+/// the header and frame-local resource ids (text blob_id), slices and
+/// pointees followed (to a bounded depth; deeper pointers hash their address,
+/// which can only make an unchanged item look changed). Never 0.
+pub fn contentFingerprint(item: *const DisplayItem) u64 {
+    var h = std.hash.Wyhash.init(0x6c6f63616c);
+    const tag: u32 = @backingInt(std.meta.activeTag(item.*));
+    h.update(std.mem.asBytes(&tag));
+    switch (item.*) {
+        inline else => |*variant| hashContent(&h, variant.*, 0),
+    }
+    const fp = h.final();
+    return if (fp == 0) 1 else fp;
+}
+
+fn hashContent(h: *std.hash.Wyhash, value: anytype, comptime depth: u32) void {
+    const T = @TypeOf(value);
+    switch (@typeInfo(T)) {
+        .void => {},
+        .bool => h.update(&[_]u8{@intFromBool(value)}),
+        .float => |f| {
+            const bits: @Int(.unsigned, f.bits) = @bitCast(value);
+            h.update(std.mem.asBytes(&bits));
+        },
+        .int => |i| {
+            const wide: @Int(i.signedness, 64) = value;
+            h.update(std.mem.asBytes(&wide));
+        },
+        .@"enum" => hashContent(h, @backingInt(value), depth),
+        .optional => if (value) |v| {
+            h.update("+");
+            hashContent(h, v, depth);
+        } else h.update("-"),
+        .array => for (value) |v| hashContent(h, v, depth),
+        .pointer => |ptr| switch (ptr.size) {
+            .slice => {
+                const n: u64 = value.len;
+                h.update(std.mem.asBytes(&n));
+                if (ptr.child == u8) h.update(value) else for (value) |v| hashContent(h, v, depth);
+            },
+            .one => if (depth < 3) hashContent(h, value.*, depth + 1) else {
+                const addr = @intFromPtr(value);
+                h.update(std.mem.asBytes(&addr));
+            },
+            else => {
+                const addr = @intFromPtr(value);
+                h.update(std.mem.asBytes(&addr));
+            },
+        },
+        .@"struct" => |info| inline for (info.field_names, info.field_types) |name, field_type| {
+            if (comptime field_type == ItemHeader or std.mem.eql(u8, name, "blob_id")) continue;
+            hashContent(h, @field(value, name), depth);
+        },
+        .@"union" => |info| {
+            if (info.tag_type == null) @compileError("contentFingerprint: untagged union " ++ @typeName(T));
+            const tag: u32 = @backingInt(std.meta.activeTag(value));
+            h.update(std.mem.asBytes(&tag));
+            switch (value) {
+                inline else => |v| hashContent(h, v, depth),
+            }
+        },
+        else => @compileError("contentFingerprint: unsupported " ++ @typeName(T)),
+    }
+}
+
+/// Glass parameters of a begin_blur_layer that sets none.
+pub const default_glass: types.ResolvedGlassParams = .{};
 
 pub const DisplayItem = union(enum) {
     fill_rect: struct {
@@ -102,9 +180,11 @@ pub const DisplayItem = union(enum) {
         clip_y: f32,
         clip_w: f32,
         clip_h: f32,
-        clip_radius: f32 = 0,
+        /// TL, TR, BR, BL (.rounded_rect only).
+        clip_radii: [4]f32 = .{ 0, 0, 0, 0 },
         clip_shape_kind: ClipShapeKind = .rect,
-        clip_polygon: ClipPolygon = .{},
+        /// By reference, like push_clip.polygon (null = empty).
+        clip_polygon: ?*const ClipPolygon = null,
     },
     /// Per-side border: shader computes inner outline, no clip needed
     border_per_side: struct {
@@ -356,9 +436,13 @@ pub const DisplayItem = union(enum) {
         y: f32,
         w: f32,
         h: f32,
-        radius: f32 = 0,
+        /// Corner radii TL, TR, BR, BL (read for .rounded_rect only).
+        radii: [4]f32 = .{ 0, 0, 0, 0 },
         shape_kind: ClipShapeKind = .rect,
-        polygon: ClipPolygon = .{},
+        /// By reference (null = empty): a 32-point polygon is most of the item, and every item
+        /// of the union paid for it. DisplayList.append freezes it into the list's payload
+        /// arena; cached copies own theirs (render_cache.duplicateDisplayItem).
+        polygon: ?*const ClipPolygon = null,
     },
     pop_clip: struct {
         header: ItemHeader,
@@ -372,9 +456,8 @@ pub const DisplayItem = union(enum) {
         h: f32,
         opacity: f32,
         /// Stage 3 rounded-clip fold: when same-node rounded_clip folds into opacity layer, rounded
-        /// mask radius applied by composite blit (0 = no radius, semantics same as
-        /// begin_blur_layer).
-        corner_radius: f32 = 0,
+        /// mask radii TL, TR, BR, BL applied by composite blit (all 0 = no mask).
+        corner_radii: [4]f32 = .{ 0, 0, 0, 0 },
         rotate: f32 = 0,
         draw_x: f32 = std.math.nan(f32),
         draw_y: f32 = std.math.nan(f32),
@@ -382,6 +465,8 @@ pub const DisplayItem = union(enum) {
         draw_h: f32 = std.math.nan(f32),
         use_draw_transform: bool = false,
         draw_transform: types.Transform2D = types.Transform2D.identity(),
+        /// draw_transform's translation at rest (CompositedLayer.surface_rest_origin).
+        surface_rest_origin: ?[2]f32 = null,
         blend_mode: types.BlendMode = .normal,
         /// Lens warp of the layer surface at composite (see types.ContentWarp; {cap, edge,
         /// fade_start, fade_width} logical px; all zero = none).
@@ -411,13 +496,16 @@ pub const DisplayItem = union(enum) {
         y: f32,
         w: f32,
         h: f32,
-        corner_radius: f32 = 0,
-        /// Four-corner radii TL/TR/BR/BL (x<0 = uniform corner_radius): ConcentricRectangle glass's
-        /// corners differ
-        corner_radii: [4]f32 = .{ -1, -1, -1, -1 },
+        /// Glass shape corner radii TL/TR/BR/BL, as written on the owner (the same values its
+        /// overflow clip and hit shape read). Raw: the encoder normalises them against the rect the
+        /// glass is evaluated over (src/corner_radii.zig), like every other rounded shape.
+        corner_radii: [4]f32 = .{ 0, 0, 0, 0 },
         /// glass owner node id (stable key for luminance region slot; header is CONTROL without it)
         owner_node: u32 = std.math.maxInt(u32),
-        glass: types.ResolvedGlassParams = .{},
+        /// By reference (it is most of the item: every item of the union paid its ~520 bytes).
+        /// DisplayList.append freezes it into the list's payload arena; cached copies own theirs
+        /// (render_cache.duplicateDisplayItem).
+        glass: *const types.ResolvedGlassParams = &default_glass,
         rotate: f32 = 0,
         draw_x: f32 = std.math.nan(f32),
         draw_y: f32 = std.math.nan(f32),
@@ -425,6 +513,8 @@ pub const DisplayItem = union(enum) {
         draw_h: f32 = std.math.nan(f32),
         use_draw_transform: bool = false,
         draw_transform: types.Transform2D = types.Transform2D.identity(),
+        /// draw_transform's translation at rest (CompositedLayer.surface_rest_origin).
+        surface_rest_origin: ?[2]f32 = null,
     },
     end_blur_layer: struct {
         header: ItemHeader,
@@ -436,7 +526,8 @@ pub const DisplayItem = union(enum) {
         y: f32,
         w: f32,
         h: f32,
-        radius: f32,
+        /// Corner radii TL, TR, BR, BL.
+        radii: [4]f32,
         rotate: f32 = 0,
         draw_x: f32 = std.math.nan(f32),
         draw_y: f32 = std.math.nan(f32),
@@ -444,15 +535,19 @@ pub const DisplayItem = union(enum) {
         draw_h: f32 = std.math.nan(f32),
         use_draw_transform: bool = false,
         draw_transform: types.Transform2D = types.Transform2D.identity(),
+        /// draw_transform's translation at rest (CompositedLayer.surface_rest_origin).
+        surface_rest_origin: ?[2]f32 = null,
     },
     end_rounded_clip: struct {
         header: ItemHeader,
     },
 
     /// Return common ItemHeader of all variants (eliminate caller's switch repetition)
-    pub fn header(self: DisplayItem) ItemHeader {
-        return switch (self) {
-            inline else => |it| it.header,
+    pub fn header(self: *const DisplayItem) ItemHeader {
+        // By pointer: a by-value receiver / capture copies the whole item (a push_clip carries a
+        // 32-point polygon), which made per-item header reads in whole-list scans memcpy-bound.
+        return switch (self.*) {
+            inline else => |*it| it.header,
         };
     }
 
@@ -494,6 +589,9 @@ pub const DisplayList = struct {
     /// rebuilt or been replaced. Keep text slices and path geometry with the
     /// list rather than borrowing them from mutable producer storage.
     payload_arena: std.heap.ArenaAllocator,
+    /// Retained display lists cache content identities for replay/lowering.
+    /// A transient producer whose consumers never read them may opt out.
+    record_content_fingerprints: bool = true,
 
     pub fn init(allocator: Allocator) DisplayList {
         return .{
@@ -519,8 +617,28 @@ pub const DisplayList = struct {
     }
 
     pub fn append(self: *DisplayList, item: DisplayItem) !void {
-        var owned_item = item;
-        switch (owned_item) {
+        _ = try self.appendPtr(&item);
+    }
+
+    /// append, copying the item once, straight into the list (items are a few hundred bytes and
+    /// this runs for every item of every frame). Returns the stored item; nothing is stored on
+    /// error.
+    pub fn appendPtr(self: *DisplayList, item: *const DisplayItem) !*DisplayItem {
+        // An item of this list itself would move with the growth below: copy it out first.
+        const own = self.items.items;
+        if (own.len > 0 and @intFromPtr(item) >= @intFromPtr(own.ptr) and @intFromPtr(item) < @intFromPtr(own.ptr + own.len)) {
+            const copy = item.*;
+            return self.appendPtrUnaliased(&copy);
+        }
+        return self.appendPtrUnaliased(item);
+    }
+
+    fn appendPtrUnaliased(self: *DisplayList, item: *const DisplayItem) !*DisplayItem {
+        try self.items.ensureUnusedCapacity(self.allocator, 1);
+        const slot = self.items.addOneAssumeCapacity();
+        slot.* = item.*;
+        errdefer self.items.items.len -= 1;
+        switch (slot.*) {
             .text_run => |*text| {
                 const arena = self.payload_arena.allocator();
                 text.content = if (text.content.len > 0) try arena.dupe(u8, text.content) else "";
@@ -530,9 +648,26 @@ pub const DisplayList = struct {
             },
             .fill_path => |*path| path.geometry = try self.clonePathGeometry(path.geometry),
             .stroke_path => |*path| path.geometry = try self.clonePathGeometry(path.geometry),
+            .begin_blur_layer => |*blur| {
+                const glass = try self.payload_arena.allocator().create(types.ResolvedGlassParams);
+                glass.* = blur.glass.*;
+                blur.glass = glass;
+            },
+            .push_clip => |*clip| clip.polygon = try self.clonePolygon(clip.polygon),
+            .border_side => |*border| border.clip_polygon = try self.clonePolygon(border.clip_polygon),
             else => {},
         }
-        try self.items.append(self.allocator, owned_item);
+        // Recorded content: fingerprinted once, then carried by every replay.
+        const hp = slot.headerPtr();
+        if (hp.local_fp == 0 and !hp.already_lowered and self.record_content_fingerprints) hp.local_fp = contentFingerprint(slot);
+        return slot;
+    }
+
+    fn clonePolygon(self: *DisplayList, source: ?*const ClipPolygon) !?*const ClipPolygon {
+        const p = source orelse return null;
+        const clone = try self.payload_arena.allocator().create(ClipPolygon);
+        clone.* = p.*;
+        return clone;
     }
 
     fn clonePathGeometry(self: *DisplayList, source: *const types.PathGeometry) !*const types.PathGeometry {
@@ -597,14 +732,13 @@ test "resolveTextRunContent: blob_id 易主时回退到 item 自带文本" {
     defer store.deinit();
 
     // This frame's 0th blob belongs to status bar
-    var other = text_blob_mod.TextLayoutBlob{
+    const other = text_blob_mod.TextLayoutBlob{
         .style_key = .{ .font_size = 13, .font_weight = 400, .line_height = 1.35 },
         .content_hash = std.hash.Wyhash.hash(0, "plaintext"),
         .content = "plaintext",
         .line_count = 1,
     };
-    other.lines[0] = .{ .byte_start = 0, .byte_end = 9, .width = 70 };
-    const other_id = try store.append(other);
+    const other_id = try store.append(other, &.{.{ .byte_start = 0, .byte_end = 9, .width = 70 }});
 
     // Last frame's terminal-line item: also points to 0th, but content hash is its own
     const stale_run = TextRunItem{
@@ -656,14 +790,13 @@ test "resolveTextRunContent: 漏传 blob_content_hash 会让身份校验退化�
     var store = text_blob_mod.BlobStore.init(testing.allocator);
     defer store.deinit();
 
-    var impostor = text_blob_mod.TextLayoutBlob{
+    const impostor = text_blob_mod.TextLayoutBlob{
         .style_key = .{ .font_size = 11, .font_weight = 400, .line_height = 1.35 },
         .content_hash = std.hash.Wyhash.hash(0, "3 \xc3\x97 4"),
         .content = "3 \xc3\x97 4",
         .line_count = 1,
     };
-    impostor.lines[0] = .{ .byte_start = 0, .byte_end = 6, .width = 40 };
-    const impostor_id = try store.append(impostor);
+    const impostor_id = try store.append(impostor, &.{.{ .byte_start = 0, .byte_end = 6, .width = 40 }});
 
     const base = TextRunItem{
         .header = .{ .transform_id = 0, .node_id = 0 },
@@ -686,4 +819,55 @@ test "resolveTextRunContent: 漏传 blob_content_hash 会让身份校验退化�
     // Omitted (=0): validation bypassed, cuts into imposter blob's bytes—exactly the stale glyphs
     // on screen.
     try testing.expectEqualStrings("3 \xc3\x97 4", resolveTextRunContent(&store, base));
+}
+
+test "contentFingerprint names content: not ids, blob numbers or payload addresses" {
+    const testing = std.testing;
+    const run = TextRunItem{
+        .header = .{ .transform_id = 3, .clip_id = 4, .node_id = 9 },
+        .x = 10,
+        .y = 20,
+        .content = "hello",
+        .color = .{ .r = 1, .g = 2, .b = 3, .a = 255 },
+        .font_size = 14,
+    };
+    const base = contentFingerprint(&.{ .text_run = run });
+    try testing.expect(base != 0);
+    // Frame-local ids and the blob sequence number are not content.
+    var moved_ids = run;
+    moved_ids.header = .{ .transform_id = 30, .clip_id = 40, .effect_id = 5, .node_id = 9, .local_fp = 77 };
+    moved_ids.blob_id = 123;
+    try testing.expectEqual(base, contentFingerprint(&.{ .text_run = moved_ids }));
+    // The same bytes elsewhere in memory are the same content.
+    var copy_buf: [5]u8 = "hello".*;
+    var same_text = run;
+    same_text.content = &copy_buf;
+    try testing.expectEqual(base, contentFingerprint(&.{ .text_run = same_text }));
+    // Every content field counts: text, colour, size, position.
+    var other = run;
+    other.content = "hellp";
+    try testing.expect(contentFingerprint(&.{ .text_run = other }) != base);
+    other = run;
+    other.color.g = 7;
+    try testing.expect(contentFingerprint(&.{ .text_run = other }) != base);
+    other = run;
+    other.font_size = 14.5;
+    try testing.expect(contentFingerprint(&.{ .text_run = other }) != base);
+    other = run;
+    other.x = 11;
+    try testing.expect(contentFingerprint(&.{ .text_run = other }) != base);
+}
+
+test "a recorded item is fingerprinted once and replays carry it" {
+    const testing = std.testing;
+    var list = DisplayList.init(testing.allocator);
+    defer list.deinit();
+    const stored = try list.appendPtr(&.{ .fill_rect = .{ .header = .{ .transform_id = 0, .node_id = 1 }, .x = 1, .y = 2, .w = 3, .h = 4, .color = .{ .r = 9, .g = 0, .b = 0, .a = 255 } } });
+    const fp = stored.header().local_fp;
+    try testing.expect(fp != 0);
+    try testing.expectEqual(contentFingerprint(stored), fp);
+    // A replay (an item already fingerprinted) keeps its value.
+    const replay = stored.*;
+    const again = try list.appendPtr(&replay);
+    try testing.expectEqual(fp, again.header().local_fp);
 }

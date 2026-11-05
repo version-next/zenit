@@ -53,7 +53,7 @@ const a11y_preferences = @import("../../a11y/preferences.zig");
 fn contrastOutline(node: *Node, on: bool, radius: f32) void {
     const want: f32 = if (on) 1 else 0;
     if (node.style.border.width == want) return;
-    node.style.border = .{ .width = want, .color = Color.rgba(0, 0, 0, 255), .radius = radius };
+    node.style.border = .{ .overlay = true, .width = want, .color = Color.rgba(0, 0, 0, 255), .radius = radius };
     node.markRenderDirty();
 }
 
@@ -447,7 +447,7 @@ pub const GlassKnob = struct {
         const ext = try white.style.ensureExtFallible(a);
         ext.corner_radius = core.CornerRadius.uniform(spec.rest[1] / 2);
         ext.setShadow(spec.shadow);
-        white.style.border = .{ .width = 0, .color = Color.rgba(0, 0, 0, 0), .radius = spec.rest[1] / 2 };
+        white.style.border = .{ .overlay = true, .width = 0, .color = Color.rgba(0, 0, 0, 0), .radius = spec.rest[1] / 2 };
         return .{ .spec = spec, .glass = g, .white = white };
     }
 
@@ -667,7 +667,7 @@ pub const GlassSliderBuilder = struct {
             .background = lk.track,
         }, .{}));
         (try track.style.ensureExtFallible(a)).inset = .{ .left = .{ .px = 0 }, .top = .{ .px = ty } };
-        track.style.border = .{ .width = 0, .color = Color.rgba(0, 0, 0, 0), .radius = track_h / 2 };
+        track.style.border = .{ .overlay = true, .width = 0, .color = Color.rgba(0, 0, 0, 0), .radius = track_h / 2 };
         (try track.style.ensureExtFallible(a)).corner_radius = core.CornerRadius.uniform(track_h / 2);
         const fill = try core.adoptChild(cx, a, container, try box(cx, .{
             .width = .{ .px = 0 },
@@ -676,7 +676,7 @@ pub const GlassSliderBuilder = struct {
             .background = lk.slider_accent,
         }, .{}));
         (try fill.style.ensureExtFallible(a)).inset = .{ .left = .{ .px = 0 }, .top = .{ .px = ty } };
-        fill.style.border = .{ .width = 0, .color = Color.rgba(0, 0, 0, 0), .radius = track_h / 2 };
+        fill.style.border = .{ .overlay = true, .width = 0, .color = Color.rgba(0, 0, 0, 0), .radius = track_h / 2 };
         (try fill.style.ensureExtFallible(a)).corner_radius = core.CornerRadius.uniform(track_h / 2);
 
         const knob = try GlassKnob.mount(my_scope, cx, container, lk.slider_knob);
@@ -975,7 +975,7 @@ pub const GlassToggleBuilder = struct {
             .background = if (on0 and lk.toggle_strip == null) lk.toggle_on else lk.toggle_off,
         }, .{}));
         (try track.style.ensureExtFallible(a)).inset = .{ .left = .{ .px = 0 }, .top = .{ .px = 0 } };
-        track.style.border = .{ .width = 0, .color = Color.rgba(0, 0, 0, 0), .radius = lk.toggle_size[1] / 2 };
+        track.style.border = .{ .overlay = true, .width = 0, .color = Color.rgba(0, 0, 0, 0), .radius = lk.toggle_size[1] / 2 };
         (try track.style.ensureExtFallible(a)).corner_radius = core.CornerRadius.uniform(lk.toggle_size[1] / 2);
 
         // iOS: the on colour's strip window over the track (TrackStrip)
@@ -989,7 +989,7 @@ pub const GlassToggleBuilder = struct {
             e.inset = .{ .left = .{ .px = 0 }, .top = .{ .px = 0 } };
             e.corner_radius = core.CornerRadius.uniform(lk.toggle_size[1] / 2);
             e.hit_behavior = .pass_through;
-            n.style.border = .{ .width = 0, .color = Color.rgba(0, 0, 0, 0), .radius = lk.toggle_size[1] / 2 };
+            n.style.border = .{ .overlay = true, .width = 0, .color = Color.rgba(0, 0, 0, 0), .radius = lk.toggle_size[1] / 2 };
             break :blk n;
         } else null;
         const knob = try GlassKnob.mount(my_scope, cx, container, lk.toggle_knob);

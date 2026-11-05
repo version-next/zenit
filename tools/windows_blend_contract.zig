@@ -22,7 +22,7 @@ fn clipped(ctx: ui.DrawContext, _: ?*anyopaque) anyerror!void {
     // clip must retain it exactly instead of applying its alpha a second time.
     try dl.append(.{ .begin_opacity_layer = .{ .header = header, .x = ctx.render_x, .y = ctx.render_y, .w = 100, .h = 100, .opacity = 0.5 } });
     try dl.append(.{ .fill_rect = .{ .header = header, .x = 0, .y = 0, .w = 100, .h = 100, .color = ui.Color.rgba(255, 255, 0, 128) } });
-    try dl.append(.{ .push_clip = .{ .header = header, .x = ctx.render_x, .y = ctx.render_y, .w = 100, .h = 100, .radius = 30, .shape_kind = .rounded_rect } });
+    try dl.append(.{ .push_clip = .{ .header = header, .x = ctx.render_x, .y = ctx.render_y, .w = 100, .h = 100, .radii = @splat(30), .shape_kind = .rounded_rect } });
     try dl.append(.{ .begin_opacity_layer = .{ .header = header, .x = ctx.render_x, .y = ctx.render_y, .w = 100, .h = 100, .opacity = 1, .blend_mode = .multiply } });
     try dl.append(.{ .fill_rect = .{ .header = header, .x = 0, .y = 0, .w = 100, .h = 100, .color = ui.Color.rgba(0, 255, 255, 255) } });
     try dl.append(.{ .end_opacity_layer = .{ .header = header } });

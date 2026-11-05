@@ -56,7 +56,9 @@ pub fn run(io: std.Io) !void {
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = font_path, .data = @embedFile("fixtures/fonts/Lora-Regular.ttf") });
     defer std.Io.Dir.cwd().deleteFile(io, font_path) catch {};
     {
-        const app = try App.init(allocator, .{ .io = io, .window = .{ .width = 640, .height = 100 }, .clear_color = .{ .r = 1, .g = 1, .b = 1, .a = 1 } });
+        // A Latin-only primary in a fixed language: the CJK stack stages need Han text to reach
+        // the fallback stack, not the system UI font (Microsoft YaHei UI on a Chinese system).
+        const app = try App.init(allocator, .{ .io = io, .font = .{ .locale = "en-us", .fallback_families = &.{"Segoe UI"} }, .window = .{ .width = 640, .height = 100 }, .clear_color = .{ .r = 1, .g = 1, .b = 1, .a = 1 } });
         defer app.deinit();
         const selected = try app.font_system.loadFont(font_path, 16);
         defer selected.deinit();

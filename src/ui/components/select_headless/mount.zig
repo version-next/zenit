@@ -60,7 +60,7 @@ const ThemeTokens = theme.ThemeTokens;
 
 // SelectSlotRecipe: three slots (trigger / content / item), defined via recipe.slotRecipe.
 // Callers can use SelectSlotRecipe.resolve(.{}, tokens) to get the ConditionalStyle set to
-// apply to a slot Node, or pass MountProps.recipe_override so mount uses custom tokens.
+// apply to a slot Node.
 // Style values are the original hardcoded ones (bg_primary / border / fg_primary / bg_hover /
 // bg_active).
 
@@ -91,13 +91,14 @@ pub const SelectSlotRecipe = recipe_mod.slotRecipe(struct {
                     .text_color = t.tokens.color.fg_primary,
                 },
                 .focus = .{ .background = t.tokens.color.bg_primary },
-                .disabled = .{ .text_color = t.tokens.color.fg_disabled },
+                .disabled = .{ .background = t.tokens.color.disabled_bg, .border_color = t.tokens.color.border, .text_color = t.tokens.color.fg_disabled },
             },
             .content = .{
                 .base = .{ .background = t.tokens.color.bg_primary },
             },
             .item = .{
                 .base = .{ .text_color = t.tokens.color.fg_primary },
+                .selected = .{ .background = t.tokens.color.list_selection_bg, .text_color = t.tokens.color.selection_fg },
                 .hover = .{ .background = t.tokens.color.bg_hover },
                 .active = .{ .background = t.tokens.color.bg_hover },
                 .disabled = .{ .text_color = t.tokens.color.fg_disabled },
@@ -123,23 +124,15 @@ pub const SelectSlotRecipe = recipe_mod.slotRecipe(struct {
 // (control_shell.metrics(tokens, size)), not table here. dropdown row height is list measure, not
 // control frame:
 pub fn itemHeight(size: SelectSize) f32 {
-    return switch (size) {
-        .xs, .sm => 32,
-        .md => 36,
-        .lg => 40,
-    };
+    _ = size;
+    return 28; // RYMhT: menu row, independent of trigger size.
 }
 
 pub fn selectPanelRadius(t: *const ThemeTokens) f32 {
-    return t.tokens.radius.xl;
+    return t.tokens.radius.panel;
 }
 
-pub const select_panel_shadow: core.Shadow = .{
-    .color = core.Color.rgba(0, 0, 0, 18),
-    .blur = 12,
-    .offset_x = 0,
-    .offset_y = 4,
-};
+pub const select_panel_shadow: core.Shadow = theme.light.tokens.shadow.md;
 
 fn eqlValue(comptime ValueT: type, a: ValueT, b: ValueT) bool {
     return if (ValueT == []const u8) std.mem.eql(u8, a, b) else std.meta.eql(a, b);
@@ -285,6 +278,8 @@ pub fn Runtime(comptime ValueT: type) type {
         label: ?*Node,
         chevron: ?*Node,
         frame: ?*Node,
+        /// Default trigger's expanded state (the frame shell's :expanded), mirrored from nav.open.
+        frame_expanded: ?*Signal(bool) = null,
         content: *Node,
 
         /// state machine nav state: open / value mirrored from data source via view, highlight /
@@ -337,11 +332,7 @@ pub fn Runtime(comptime ValueT: type) type {
             self.trigger.setFocusable(!disabled);
             self.trigger.style.cursor = if (disabled) .not_allowed else .pointer;
             if (self.trigger.behavior.interaction.a11y) |*a| a.disabled = disabled;
-            if (self.frame) |f| {
-                const cs = (control_shell.ControlShellConfig{ .size = self.size, .variant = .field }).resolvedConditionalStyle(self.tokens);
-                f.setOpacityRaw(cs.resolve(.{ .is_disabled = disabled }).opacity orelse 1.0);
-                f.style.cursor = if (disabled) .not_allowed else .pointer;
-            }
+            // The default trigger's frame follows its shell's :disabled.
             self.trigger.markRenderDirty();
         }
 
@@ -356,9 +347,10 @@ pub fn Runtime(comptime ValueT: type) type {
                 txt.content = content;
                 txt.owned = false;
                 txt.inline_len = 0;
-                txt.color = if (index == null) self.tokens.tokens.color.fg_disabled else self.trigger_text_color;
+                txt.color = if (self.shown_disabled) self.tokens.tokens.color.fg_disabled else if (index == null) self.tokens.tokens.color.fg_secondary else self.trigger_text_color;
                 label.setText(txt);
             }
+            if (self.frame_expanded) |expanded| expanded.set(self.nav.open);
             label.markLayoutDirty();
             if (self.chevron) |ch| {
                 _ = ch.setTint(if (index == null) self.tokens.tokens.color.fg_tertiary else self.tokens.tokens.color.fg_secondary);
@@ -383,7 +375,16 @@ pub fn Runtime(comptime ValueT: type) type {
             for (self.item_nodes, self.options, 0..) |n, opt, i| {
                 const is_highlight = self.nav.highlight_index == @as(u32, @intCast(i));
                 const is_selected = self.isSelected(opt);
-                n.setBackgroundRaw(if (is_highlight or is_selected) self.tokens.tokens.color.bg_hover else Color.TRANSPARENT);
+                const visual = @import("../combo_box/styles.zig").optionStyle(self.tokens, is_selected).resolve(.{ .is_selected = is_selected, .is_hovered = is_highlight, .is_disabled = opt.disabled });
+                n.setBackgroundRaw(visual.background.?);
+                if (self.render_item == null and n.children.items.len > 0) {
+                    const label = n.children.items[0];
+                    if (label.getText()) |old| {
+                        var text = old;
+                        text.color = visual.text_color.?;
+                        label.setText(text);
+                    }
+                }
                 // default option second child is selected-state check icon
                 if (n.children.items.len > 1) n.children.items[1].setOpacityRaw(if (is_selected) 1 else 0);
                 n.markRenderDirty();
@@ -565,18 +566,18 @@ pub fn Runtime(comptime ValueT: type) type {
                         .direction = .row,
                         .width = .{ .grow = .{} },
                         .height = .{ .px = self.item_h },
-                        .padding = core.Padding.symmetric(8, 12),
+                        .padding = core.Padding.symmetric(0, 8),
                         .justify = .space_between,
                         .align_items = .center,
                         .overflow_hidden = true,
-                        .corner_radius = t.tokens.radius.lg,
+                        .corner_radius = t.tokens.radius.md,
                     } }, .{
                         view.attrs(.{ .style = core.BoxStyle{ .width = .{ .grow = .{} } } }, view.text(.{ .style = core.TextStyle{
                             .color = if (opt.disabled) t.tokens.color.fg_disabled else self.item_text_color,
                             .font_size = self.font_size,
                             .line_height = 1.2,
                         } }, opt.label)),
-                        view.icon(.{ .style = .{ .width = check_px, .height = check_px, .opacity = 0 }, .tint = t.tokens.color.accent }, icons.check),
+                        view.icon(.{ .style = .{ .width = check_px, .height = check_px, .opacity = 0 }, .tint = t.tokens.color.selection_fg }, icons.check),
                     }));
                 }
                 parts.nodes[i] = item;
@@ -610,14 +611,14 @@ pub fn Runtime(comptime ValueT: type) type {
             const is_selected = self.isSelected(opt);
 
             node.style.direction = .row;
-            node.style.padding = core.Padding.symmetric(8, 12);
+            node.style.padding = core.Padding.symmetric(0, 8);
             node.style.justify = .space_between;
             node.style.align_items = .center;
             node.style.overflow_hidden = true;
             // write background before any fallible step: pool node reused, early return on fail
             // cannot leave previous row background
-            node.setBackgroundRaw(if (is_highlighted or is_selected) t.tokens.color.bg_hover else Color.TRANSPARENT);
-            (node.style.ensureExtFallible(cx.allocator) catch return bail(node)).corner_radius = .{ .all = t.tokens.radius.lg };
+            node.setBackgroundRaw(@import("../combo_box/styles.zig").optionStyle(t, is_selected).resolve(.{ .is_selected = is_selected, .is_hovered = is_highlighted, .is_disabled = opt.disabled }).background.?);
+            (node.style.ensureExtFallible(cx.allocator) catch return bail(node)).corner_radius = .{ .all = t.tokens.radius.md };
 
             if (self.render_item) |render_item_fn| {
                 const child = render_item_fn(.{
@@ -637,11 +638,11 @@ pub fn Runtime(comptime ValueT: type) type {
                 }, .{}) catch return bail(node)) catch return bail(node);
                 label.setText(.{
                     .content = opt.label,
-                    .color = if (opt.disabled) t.tokens.color.fg_disabled else self.item_text_color,
+                    .color = @import("../combo_box/styles.zig").optionStyle(t, is_selected).resolve(.{ .is_selected = is_selected, .is_hovered = is_highlighted, .is_disabled = opt.disabled }).text_color.?,
                     .font_size = self.font_size,
                     .line_height = 1.2,
                 });
-                const check_icon = core.adoptChild(cx, cx.allocator, node, core.iconTint(cx, icons.check, t.tokens.color.accent, .{
+                const check_icon = core.adoptChild(cx, cx.allocator, node, core.iconTint(cx, icons.check, t.tokens.color.selection_fg, .{
                     .width = .{ .px = 16 },
                     .height = .{ .px = 16 },
                 }) catch return bail(node)) catch return bail(node);
@@ -740,7 +741,7 @@ fn mountImpl(comptime ValueT: type, props: MountProps(ValueT), scope: *Scope, cx
 
     // resolve recipe, get ConditionalStyle for three slots
     const slots = SelectSlotRecipe.resolve(.{ .variant = props.variant, .size = props.size }, t);
-    const cm = control_shell.metrics(t, props.size);
+    const cm = @import("../input/styles.zig").fieldMetrics(t, props.size);
     const disabled0 = props.disabled.peek();
 
     const value = try reactive.resolveModel(?ValueT, my_scope, props.value);
@@ -783,7 +784,7 @@ fn mountImpl(comptime ValueT: type, props: MountProps(ValueT), scope: *Scope, cx
         .variant = props.variant,
         .placeholder = props.placeholder,
         .item_h = itemHeight(props.size),
-        .font_size = cm.font_size,
+        .font_size = t.tokens.font_size.md,
         .line_height = cm.line_height,
         .item_text_color = slots.item.resolve(.{}).text_color orelse t.tokens.color.fg_primary,
         .trigger_text_color = slots.trigger.resolve(.{}).text_color orelse t.tokens.color.fg_primary,
@@ -833,43 +834,48 @@ fn mountImpl(comptime ValueT: type, props: MountProps(ValueT), scope: *Scope, cx
         // slot).
         // geometry from recipe, frame height = padding_y * 2 + line height. color from this
         // component's recipe trigger slot.
-        const trigger_resolved = slots.trigger.resolve(.{});
         pop.trigger.style.width = .{ .px = props.width };
         pop.trigger.style.height = .{ .fit = .{} };
         const chevron_px: core.Sizing = .{ .px = cm.icon_size };
-        var shell: control_shell.ControlShellResult = undefined;
-        try view.mount(my_scope, cx, pop.trigger, view.capture(&shell, control_shell.ControlShell(.{
-            .size = props.size,
+        // The frame is a ControlShell(.field): hover / expanded / disabled colors and cursor are its
+        // declarative states; geometry and the RYMhT xs shadow stack on it as an overlay.
+        const expanded = try my_scope.createSignal(bool, false);
+        rt.frame_expanded = expanded;
+        var shell: core.ViewParts = undefined;
+        var label_node: *Node = undefined;
+        try view.mount(my_scope, cx, pop.trigger, view.attrs(.{ .style = core.BoxStyle{
+            .width = .{ .grow = .{} },
+            .align_self = .stretch,
+            .padding = core.Padding.symmetric(cm.padding_y, cm.padding_h),
+            .corner_radius = cm.radius,
+            .shadow = t.tokens.shadow.xs,
+        } }, view.with(control_shell.ControlShell(.{
             .variant = .field,
-            .disabled = false,
-            .style = .{
-                .width = .{ .grow = .{} },
-                .background = trigger_resolved.background orelse t.tokens.color.bg_primary,
-                .border = .{ .width = 1, .color = t.tokens.color.input_border, .radius = cm.radius },
-            },
-            .interactive = false,
-            .focus_ring = false,
+            .size = props.size,
+            .disabled = props.disabled,
+            .expanded = expanded,
             .cursor = .pointer,
-        }, .{
-            // label text node itself is content slot (parent is frame); text and color updated by
-            // paintTrigger following selected item
-            .content = control_shell.asSlot(view.text(.{ .style = core.TextStyle{
-                .color = t.tokens.color.fg_disabled,
-                .font_size = cm.font_size,
-                .line_height = cm.line_height,
-            } }, props.placeholder)),
+            .append_style = core.BoxStyle{ .min_height = cm.lineHeightPx() },
             .content_style = core.BoxStyle{
+                .min_height = cm.lineHeightPx(),
                 .width = .{ .grow = .{ .min = 0 } },
                 .flex_shrink = 1,
                 .overflow_hidden = true,
             },
+        }), .{}).capture(&shell).slots(.{
+            // text and color follow the selected item (paintTrigger)
+            .content = view.capture(&label_node, view.text(.{ .style = core.TextStyle{
+                .color = t.tokens.color.fg_disabled,
+                .font_size = cm.font_size,
+                .line_height = cm.line_height,
+            } }, props.placeholder)),
             .append = view.capture(&rt.chevron, view.icon(.{
                 .style = .{ .width = chevron_px, .height = chevron_px },
                 .tint = t.tokens.color.fg_tertiary,
             }, icons.chevron_down)),
         })));
-        rt.frame = shell.node;
-        trigger_label = shell.content_slot.?;
+        rt.frame = shell.root.?;
+        trigger_label = label_node;
         rt.label = trigger_label;
     }
 
@@ -886,18 +892,19 @@ fn mountImpl(comptime ValueT: type, props: MountProps(ValueT), scope: *Scope, cx
         .active_descendant_element_id = 0xFFFFFFFF,
     };
     rt.applyDisabled(disabled0);
+    try @import("../../hooks.zig").useFocusRing(my_scope, cx, pop.trigger, .{ .width = t.tokens.border_width.focus, .offset = t.tokens.size.focus_offset, .color = t.tokens.color.focus_ring });
 
     // ── Content panel ───────────────────────────────────────────
     const content_resolved = slots.content.resolve(.{});
     pop.content.style.direction = .column;
-    pop.content.style.gap = 2;
+    pop.content.style.gap = 0;
     pop.content.style.padding = core.Padding.all(4);
     pop.content.setBackgroundRaw(content_resolved.background orelse t.tokens.color.bg_primary);
     const panel_radius = selectPanelRadius(t);
-    pop.content.style.border = .{ .width = 1, .color = t.tokens.color.border, .radius = panel_radius };
+    pop.content.style.border = .{ .overlay = true, .width = 1, .color = t.tokens.color.border, .radius = panel_radius };
     const content_ext = try pop.content.style.ensureExtFallible(allocator);
     content_ext.corner_radius = .{ .all = panel_radius };
-    content_ext.setShadow(select_panel_shadow);
+    content_ext.setShadow(t.tokens.shadow.md);
     content_ext.hit_shape = .{ .rounded_rect = panel_radius };
     content_ext.clip_shape = .{ .rounded_rect = panel_radius };
     // keyboard works on panel too
@@ -1003,31 +1010,32 @@ test "SelectHeadless: Pvnqs trigger panel and option geometry" {
 
     // frame = pop.trigger's ControlShell node below; height fit by padding_y*2 + line height.
     env.cx.layout();
-    const cm = control_shell.metrics(env.cx.tokens, .md);
+    // RYMhT: field 32px, popup row 28px / radius 4 / inset 4.
+    const cm = @import("../input/styles.zig").fieldMetrics(env.cx.tokens, .md);
     try testing.expectEqual(@as(usize, 1), mounted.trigger.children.items.len);
     const frame = mounted.trigger.children.items[0];
     try testing.expectApproxEqAbs(@as(f32, 32), frame.rectFromWorldOrFallback().h, 0.01);
     try testing.expectEqual(cm.padding_y, frame.style.padding.top);
     try testing.expectEqual(cm.padding_h, frame.style.padding.left);
-    try testing.expectEqual(cm.radius, frame.style.border.radius);
+    try testing.expectEqual(cm.radius, frame.style.effectiveRadius());
     try testing.expectEqual(@as(usize, 2), frame.children.items.len); // content_slot + append_slot
 
-    try testing.expectEqual(@as(f32, 2), mounted.content.style.gap);
+    try testing.expectEqual(@as(f32, 0), mounted.content.style.gap);
     try testing.expectEqual(@as(f32, 4), mounted.content.style.padding.top);
-    try testing.expectEqual(@as(f32, 8), mounted.content.style.border.radius);
+    try testing.expectEqual(@as(f32, 10), mounted.content.style.border.radius);
     try testing.expectEqual(@as(usize, 1), mounted.content.style.shadowSlice().len);
-    try testing.expectEqual(@as(f32, 12), mounted.content.style.shadowSlice()[0].blur);
+    try testing.expectEqual(env.cx.tokens.tokens.shadow.md.blur, mounted.content.style.shadowSlice()[0].blur);
 
     for (rt.item_nodes) |item| {
-        try testing.expectEqual(@as(f32, 36), item.style.height.px);
-        try testing.expectEqual(@as(f32, 8), item.style.padding.top);
-        try testing.expectEqual(@as(f32, 12), item.style.padding.left);
-        try testing.expectEqual(@as(f32, 6), item.style.corner_radius().?.resolve());
+        try testing.expectEqual(@as(f32, 28), item.style.height.px);
+        try testing.expectEqual(@as(f32, 0), item.style.padding.top);
+        try testing.expectEqual(@as(f32, 8), item.style.padding.left);
+        try testing.expectEqual(@as(f32, 4), item.style.corner_radius().?.resolve());
         try testing.expectEqual(@as(usize, 2), item.children.items.len);
     }
     try testing.expectEqual(@as(f32, 0), rt.item_nodes[0].children.items[1].getOpacity());
     try testing.expectEqual(@as(f32, 1), rt.item_nodes[1].children.items[1].getOpacity());
-    try testing.expect(rt.item_nodes[1].getBackground().eql(env.cx.tokens.tokens.color.bg_hover));
+    try testing.expect(rt.item_nodes[1].getBackground().eql(env.cx.tokens.tokens.color.list_selection_bg));
     try testing.expectEqualStrings("Option 2", labelOf(mounted));
 }
 

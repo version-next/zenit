@@ -13,3 +13,6 @@ pub const Mode = provider.Mode;
 pub const light = modes.light;
 pub const dark = modes.dark;
 pub const high_contrast = modes.high_contrast;
+
+/// Fixed-shape parser-to-provider adapter, instantiated only in preview builds.
+pub const previewValues = provider.previewValues;

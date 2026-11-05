@@ -364,6 +364,24 @@ pub fn FrameUse() View {
     var n: i32 = signal(0);
     return <Frame title="T" header={<text>head</text>} footer={<Button onClick={n += 1}>More</Button>}><text>body {n}</text></Frame>;
 }
+/// Optional named slots (?View): a slot box exists only when the caller filled the slot, so an
+/// absent icon leaves no gap.
+pub fn Field(icon: ?View, children: View, append: ?View) View {
+    return (
+        <row testId="field" style={.{ .gap = 6 }}>
+            {if (icon) <box testId="field.icon">{icon}</box>}
+            <row testId="field.content">{children}</row>
+            {if (append) <box testId="field.append"><text>[</text>{append}</box>}
+        </row>
+    );
+}
+pub fn FieldBare() View {
+    return <Field><text>body</text></Field>;
+}
+pub fn FieldFull() View {
+    var n: i32 = signal(0);
+    return <Field icon={<text>ico</text>} append={<Button onClick={n += 1}>go</Button>}><text>body {n}</text></Field>;
+}
 /// P4: icon-color toggles with flag; reverts to mount-time tint on undo.
 pub fn GlyphBox(hot: bool = false) View {
     return <icon testId="glyph" style={States.Glyph.of(.{ .hot = hot })} src={ui.icons.check} />;

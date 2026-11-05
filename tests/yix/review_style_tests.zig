@@ -82,3 +82,35 @@ test "YSS compound expansion limit applies cumulatively per recipe" {
     try std.testing.expect(result == .diagnostic);
     try std.testing.expect(std.mem.indexOf(u8, result.diagnostic.message, "4096") != null);
 }
+
+test "YSS flex basis keywords retain numeric zero and diagnose unknown names" {
+    const text = try output("style a { flex-basis: auto; } style b { flex-basis: content; } style c { flex-basis: 0; } style d { align-content: space-around; align-self: first-baseline; }");
+    defer std.testing.allocator.free(text);
+    for ([_][]const u8{ "ui.FlexBasis.auto", "ui.FlexBasis.content", ".flex_basis = 0", ".align_content = .space_around", ".align_self = .first_baseline" }) |fragment| try std.testing.expect(std.mem.indexOf(u8, text, fragment) != null);
+    const bad = try compiler.style.compile(std.testing.allocator, "style a { flex-basis: bogus; }");
+    try std.testing.expect(bad == .diagnostic);
+    defer std.testing.allocator.free(bad.diagnostic.message);
+    try std.testing.expect(std.mem.indexOf(u8, bad.diagnostic.message, "auto, content") != null);
+}
+
+test "YSS negative flex basis diagnoses literals and fallbacks in compiler and IR" {
+    for ([_][]const u8{
+        "style a { flex-basis: -3; }",
+        "style a { flex-basis: -0.5; }",
+        "style a($basis: ?f32) { flex-basis: $basis ?? -3; }",
+    }) |source| {
+        const result = try compiler.style.compile(std.testing.allocator, source);
+        try std.testing.expect(result == .diagnostic);
+        defer std.testing.allocator.free(result.diagnostic.message);
+        try std.testing.expect(std.mem.indexOf(u8, result.diagnostic.message, "flex-basis must be nonnegative") != null);
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const ir_result = try compiler.style.compileIR(arena.allocator(), source);
+        try std.testing.expect(ir_result == .diagnostic);
+        try std.testing.expect(std.mem.indexOf(u8, ir_result.diagnostic.message, "flex-basis must be nonnegative") != null);
+    }
+    const text = try output("style a { flex-basis: -1; } style b { flex-basis: -2; } style c { flex-basis: 12.5; }");
+    defer std.testing.allocator.free(text);
+    for ([_][]const u8{ ".flex_basis = -1", ".flex_basis = -2", ".flex_basis = 12.5" }) |fragment|
+        try std.testing.expect(std.mem.indexOf(u8, text, fragment) != null);
+}

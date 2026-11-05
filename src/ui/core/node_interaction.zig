@@ -239,6 +239,30 @@ pub fn markSubtreeBeforeRenderHook(self: *Node) void {
     }
 }
 
+/// Drop the before-render tick's quiet-subtree stamp (NodeRuntime.tick_quiet_epoch) on this node
+/// and its ancestors: tick work was added here (hook registered, animation started, linger
+/// requested) through a path that does not necessarily mark anything dirty.
+pub fn invalidateTickQuietChain(self: *Node) void {
+    var cur: ?*Node = self;
+    while (cur) |n| : (cur = n.parent) n.frame_state.frame_local.runtime.tick_quiet_epoch = 0;
+    // The same state (hooks, animations, linger) feeds the retained build outside the dirty bits.
+    @import("render_engine/retained_memo.zig").dropMemoChain(self);
+}
+
+/// Bubble-mark has_untrusted_before_render_subtree: a before_render hook in this subtree is not
+/// known to write only through dirty-marking entries (see Node.beforeRenderHooksCacheTrusted).
+/// Conservative like has_before_render_subtree: never cleared.
+pub fn markSubtreeUntrustedBeforeRenderHook(self: *Node) void {
+    if (self.frame_state.state_bits.flags.has_untrusted_before_render_subtree) return;
+    self.frame_state.state_bits.flags.has_untrusted_before_render_subtree = true;
+    var p = self.parent;
+    while (p) |parent| {
+        if (parent.frame_state.state_bits.flags.has_untrusted_before_render_subtree) break;
+        parent.frame_state.state_bits.flags.has_untrusted_before_render_subtree = true;
+        p = parent.parent;
+    }
+}
+
 /// Increment clip_meta.epoch -> invalidate ensureCustomClipGeometry cache (dirty domain §N1
 /// cross-module call).
 pub fn invalidateCustomClipGeometryCache(self: *Node) void {

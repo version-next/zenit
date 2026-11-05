@@ -10,18 +10,84 @@
 #include <stdio.h>
 #include "dxgi_driver_info.h"
 #include "d3d12_atomic_probe.h"
+#include "d3d12_ledger.h"
 
-struct ZenitD12Device { ID3D12Device *raw; LONG refs; int software; bool vertex_viewport_index; ZenitD12DriverInfo driver_info; SRWLOCK atomic_lock; volatile LONG atomic_state; ZenitAtomicProbe *pending_probe; };
+// Per-frame command objects whose GPU use has ended, kept for reuse: creating
+// a command allocator, list, timestamp query heap, readback buffer and
+// shader-visible descriptor pages for every frame cost hundreds of
+// microseconds. Entries hold raw COM objects only (no ZenitD12Device refs).
+struct D12CommandPoolEntry { ID3D12CommandAllocator *allocator; ID3D12GraphicsCommandList *list; ID3D12QueryHeap *timestamps; ID3D12Resource *readback; void *mapping; };
+static constexpr uint32_t COMMAND_POOL_CAPACITY=8, PAGE_POOL_CAPACITY=16;
+struct ZenitD12Device { ID3D12Device *raw; LONG refs; int software; bool vertex_viewport_index; ZenitD12DriverInfo driver_info; SRWLOCK atomic_lock; volatile LONG atomic_state; ZenitAtomicProbe *pending_probe;
+    SRWLOCK pool_lock; D12CommandPoolEntry command_pool[COMMAND_POOL_CAPACITY]; uint32_t command_pool_count;
+    ID3D12DescriptorHeap *page_pool[2][PAGE_POOL_CAPACITY]; uint32_t page_pool_count[2]; };
+static void release_pool_entry(D12CommandPoolEntry &e) {
+    if (e.list) e.list->Release(); if (e.allocator) e.allocator->Release();
+    if (e.timestamps) e.timestamps->Release();
+    if (e.readback) { if (e.mapping) e.readback->Unmap(0,nullptr); e.readback->Release(); }
+    e={};
+}
 struct ZenitD12Texture {
     ID3D12Resource *raw; ZenitD12Device *owner; LONG refs;
     uint32_t dimension, width, height, depth, mips, usage, samples;
     DXGI_FORMAT format;
+    // Full-range SRVs by view dimension (1..6), created on first use and
+    // shared: a texture's views are immutable. Each holder of a cached view
+    // also holds one texture reference, so these outlive every holder.
+    ZenitD12View *cached_views[7];
+    // SHADER_SAMPLE support of the SRV format: 0 unknown, 1 yes, 2 no.
+    uint8_t sample_support;
+    // Render-target view of mip 0 / layer 0, for single-attachment passes.
+    ID3D12DescriptorHeap *rtv_heap;
+    // ZENIT_GPU_LEDGER accounting (LK_NONE when the ledger is off).
+    uint64_t ledger_bytes; D12LedgerKind ledger_kind;
 };
-struct ZenitD12Buffer { ID3D12Resource *raw; ZenitD12Device *owner; void *mapping; LONG refs; uint64_t size; uint32_t usage; };
+// A cached view (owned by its texture) or a private view (owns a texture ref).
+struct ZenitD12View { ID3D12DescriptorHeap *heap; ZenitD12Texture *texture; LONG refs; uint32_t dimension; bool storage, cached; };
+struct ZenitD12Buffer { ID3D12Resource *raw; ZenitD12Device *owner; void *mapping; LONG refs; uint64_t size; uint32_t usage; uint64_t ledger_bytes; D12LedgerKind ledger_kind; };
 static constexpr uint32_t MAP_READ=1, MAP_WRITE=2, COPY_DST=8, UNIFORM=64, STORAGE=128;
+// ZENIT_D3D12_DEBUG=1: the D3D12 debug layer, its messages printed at each
+// present (zenit_d12_debug_drain). Diagnostics only (slow).
+static bool d12_debug_requested() {
+    static LONG state = 0;
+    LONG v = InterlockedCompareExchange(&state, 0, 0);
+    if (!v) {
+        char buf[4] = {};
+        v = GetEnvironmentVariableA("ZENIT_D3D12_DEBUG", buf, sizeof(buf)) && buf[0] == '1' ? 2 : 1;
+        InterlockedExchange(&state, v);
+    }
+    return v == 2;
+}
+extern "C" void zenit_d12_debug_drain(ID3D12Device *device) {
+    if (!d12_debug_requested() || !device) return;
+    ID3D12InfoQueue *info = nullptr;
+    if (FAILED(device->QueryInterface(IID_ID3D12InfoQueue, (void **)&info))) return;
+    const UINT64 count = info->GetNumStoredMessagesAllowedByRetrievalFilter();
+    for (UINT64 i = 0; i < count; ++i) {
+        SIZE_T size = 0;
+        if (FAILED(info->GetMessage(i, nullptr, &size))) continue;
+        auto message = (D3D12_MESSAGE *)malloc(size);
+        if (!message) break;
+        if (SUCCEEDED(info->GetMessage(i, message, &size)) && message->Severity <= D3D12_MESSAGE_SEVERITY_WARNING)
+            fprintf(stderr, "[d3d12-debug] sev=%d id=%u %s\n", (int)message->Severity, unsigned(message->ID), message->pDescription);
+        free(message);
+    }
+    info->ClearStoredMessages();
+    info->Release();
+    fflush(stderr);
+}
+
 extern "C" int zenit_d12_device_create(int force_warp, ZenitD12Device **out) {
     if (!out) return 1;
     *out = nullptr;
+    if (d12_debug_requested()) {
+        ID3D12Debug *debug = nullptr;
+        if (SUCCEEDED(D3D12GetDebugInterface(IID_ID3D12Debug, (void **)&debug))) {
+            debug->EnableDebugLayer();
+            debug->Release();
+            fprintf(stderr, "[d3d12-debug] debug layer enabled\n");
+        } else fprintf(stderr, "[d3d12-debug] debug layer unavailable\n");
+    }
     ID3D12Device *raw = nullptr;
     HRESULT hr = E_FAIL;
     int software = 0;
@@ -70,6 +136,7 @@ extern "C" int zenit_d12_device_create(int force_warp, ZenitD12Device **out) {
     auto device = (ZenitD12Device *)calloc(1, sizeof(ZenitD12Device));
     if (!device) { raw->Release(); return 2; }
     device->raw = raw; device->refs = 1; device->software = software; device->driver_info=driver_info;
+    d12_ledger_start(raw);
     D3D12_FEATURE_DATA_D3D12_OPTIONS options = {};
     HRESULT options_hr = raw->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options));
     device->vertex_viewport_index = SUCCEEDED(options_hr) && options.VPAndRTArrayIndexFromAnyShaderFeedingRasterizerSupportedWithoutGSEmulation;
@@ -87,6 +154,8 @@ extern "C" void zenit_d12_device_release(ZenitD12Device *device) {
             if (!p->submitted || (p->fence && p->fence->GetCompletedValue()>=1) || FAILED(device->raw->GetDeviceRemovedReason())) delete p;
             else fprintf(stderr,"[d3d12-atomic-probe] retaining pending GPU resources after timeout\n");
         }
+        for (uint32_t i=0;i<device->command_pool_count;++i) release_pool_entry(device->command_pool[i]);
+        for (uint32_t t=0;t<2;++t) for (uint32_t i=0;i<device->page_pool_count[t];++i) device->page_pool[t][i]->Release();
         device->raw->Release(); free(device); }
 }
 extern "C" void zenit_d12_device_driver_info(ZenitD12Device *device, ZenitD12DriverInfo *out) { *out=device->driver_info; }
@@ -208,13 +277,20 @@ extern "C" int zenit_d12_buffer_create(ZenitD12Device *device, uint64_t size, ui
     }
     if (FAILED(hr)) { if (buffer->raw) buffer->raw->Release(); free(buffer); return 2; }
     InterlockedIncrement(&device->refs);
-    buffer->owner = device; buffer->refs = 1; buffer->size = size; buffer->usage = usage; *out = buffer;
+    buffer->owner = device; buffer->refs = 1; buffer->size = size; buffer->usage = usage;
+    if (d12_ledger_enabled()) {
+        buffer->ledger_kind = heap.Type == D3D12_HEAP_TYPE_UPLOAD ? LK_BUF_UPLOAD : heap.Type == D3D12_HEAP_TYPE_READBACK ? LK_BUF_READBACK : LK_BUF_DEFAULT;
+        buffer->ledger_bytes = d12_ledger_allocation_bytes(device->raw, desc);
+        d12_ledger_add(buffer, buffer->ledger_kind, buffer->ledger_bytes, (uint32_t)size, 1, 0);
+    }
+    *out = buffer;
     return 0;
 }
 extern "C" void zenit_d12_buffer_retain(ZenitD12Buffer *buffer) { if (buffer) InterlockedIncrement(&buffer->refs); }
 extern "C" void zenit_d12_buffer_release(ZenitD12Buffer *buffer) {
     if (!buffer || InterlockedDecrement(&buffer->refs) != 0) return;
     // Recorded and submitted commands retain buffers until their GPU use ends.
+    d12_ledger_remove(buffer, buffer->ledger_kind, buffer->ledger_bytes);
     if (buffer->mapping) buffer->raw->Unmap(0, nullptr);
     buffer->raw->Release(); zenit_d12_device_release(buffer->owner); free(buffer);
 }
@@ -255,7 +331,14 @@ struct ZenitD12Commands {
     LONG refs;
     bool closed, submitted;
     ZenitD12RenderPass *pass;
+    // Objects direct draws reference, released with the command (after its
+    // fence): one growing array instead of per-draw bind groups and nodes.
+    void **retained; uint8_t *retained_kinds; uint32_t retained_count, retained_capacity;
+    // Frame-pair timestamp objects handed over from the device pool, used by
+    // enable_timestamps (released with the command if it never takes them).
+    ID3D12QueryHeap *pooled_timestamps; ID3D12Resource *pooled_readback; void *pooled_mapping;
 };
+enum : uint8_t { RETAIN_BUFFER, RETAIN_VIEW, RETAIN_SAMPLER, RETAIN_PIPELINE };
 struct D12Pending { ZenitD12Commands *commands; uint64_t serial; D12Pending *next; };
 struct ZenitD12Queue {
     ID3D12CommandQueue *raw;
@@ -270,9 +353,33 @@ struct ZenitD12Queue {
     bool fail_next_signal;
 #endif
 };
+static void release_retained(ZenitD12Commands *commands);
 extern "C" void zenit_d12_commands_release(ZenitD12Commands *commands) {
     if (!commands || InterlockedDecrement(&commands->refs) != 0) return;
-    commands->list->Release(); commands->allocator->Release();
+    // The last reference ends with the command's GPU use (the queue holds one
+    // until its fence), so its allocator, list and readback may be reused.
+    auto device=commands->owner;
+    D12CommandPoolEntry entry={commands->allocator,commands->list};
+    bool reusable=!FAILED(device->raw->GetDeviceRemovedReason()) && (commands->closed || SUCCEEDED(commands->list->Close()));
+    // Only the frame pair (no per-draw profile) has the standard query layout.
+    if (reusable && commands->timestamp_heap && !commands->draw_timings && commands->timestamp_readback->refs==1) {
+        entry.timestamps=commands->timestamp_heap; commands->timestamp_heap=nullptr;
+        entry.readback=commands->timestamp_readback->raw; entry.mapping=commands->timestamp_readback->mapping;
+        // The raw readback moves to the command pool (bounded by its capacity);
+        // its ledger entry ends with this wrapper.
+        d12_ledger_remove(commands->timestamp_readback, commands->timestamp_readback->ledger_kind, commands->timestamp_readback->ledger_bytes);
+        free(commands->timestamp_readback); commands->timestamp_readback=nullptr; zenit_d12_device_release(device);
+    }
+    if (reusable) {
+        AcquireSRWLockExclusive(&device->pool_lock);
+        if (device->command_pool_count<COMMAND_POOL_CAPACITY) { device->command_pool[device->command_pool_count++]=entry; entry={}; }
+        ReleaseSRWLockExclusive(&device->pool_lock);
+    }
+    release_pool_entry(entry);
+    if (commands->pooled_timestamps || commands->pooled_readback) {
+        D12CommandPoolEntry unused={nullptr,nullptr,commands->pooled_timestamps,commands->pooled_readback,commands->pooled_mapping};
+        release_pool_entry(unused);
+    }
     if (commands->timestamp_heap) commands->timestamp_heap->Release();
     if (commands->timestamp_fence) commands->timestamp_fence->Release();
     zenit_d12_buffer_release(commands->timestamp_readback);
@@ -282,9 +389,17 @@ extern "C" void zenit_d12_commands_release(ZenitD12Commands *commands) {
         zenit_d12_buffer_release(node->source); zenit_d12_buffer_release(node->destination);
         zenit_d12_texture_release(node->texture); zenit_d12_texture_release(node->other_texture); release_dispatch(node->dispatch); release_render(node->render); release_draw(node->draw); free(node);
     }
-    for (auto page:commands->descriptor_pages) while (page) {
-        auto next=page->next; page->heap->Release(); free(page); page=next;
+    for (uint32_t type=0;type<2;++type) for (auto page=commands->descriptor_pages[type];page;) {
+        auto next=page->next; bool pooled=false;
+        if (page->capacity==(type?256u:1024u) && !FAILED(device->raw->GetDeviceRemovedReason())) {
+            AcquireSRWLockExclusive(&device->pool_lock);
+            if (device->page_pool_count[type]<PAGE_POOL_CAPACITY) { device->page_pool[type][device->page_pool_count[type]++]=page->heap; pooled=true; }
+            ReleaseSRWLockExclusive(&device->pool_lock);
+        }
+        if (!pooled) page->heap->Release();
+        free(page); page=next;
     }
+    release_retained(commands);
     zenit_d12_device_release(commands->owner); free(commands);
 }
 extern "C" int zenit_d12_commands_create(ZenitD12Device *device, ZenitD12Commands **out) {
@@ -293,6 +408,19 @@ extern "C" int zenit_d12_commands_create(ZenitD12Device *device, ZenitD12Command
     if (!device) return 1;
     auto commands = (ZenitD12Commands *)calloc(1, sizeof(ZenitD12Commands));
     if (!commands) return 2;
+    D12CommandPoolEntry pooled={};
+    AcquireSRWLockExclusive(&device->pool_lock);
+    if (device->command_pool_count) pooled=device->command_pool[--device->command_pool_count];
+    ReleaseSRWLockExclusive(&device->pool_lock);
+    if (pooled.allocator) {
+        if (SUCCEEDED(pooled.allocator->Reset()) && SUCCEEDED(pooled.list->Reset(pooled.allocator,nullptr))) {
+            commands->allocator=pooled.allocator; commands->list=pooled.list;
+            commands->pooled_timestamps=pooled.timestamps; commands->pooled_readback=pooled.readback; commands->pooled_mapping=pooled.mapping;
+            commands->owner = device; commands->refs = 1;
+            InterlockedIncrement(&device->refs); *out = commands; return 0;
+        }
+        release_pool_entry(pooled);
+    }
     HRESULT hr = device->raw->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
         IID_ID3D12CommandAllocator, (void **)&commands->allocator);
     if (SUCCEEDED(hr)) hr = device->raw->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
@@ -352,6 +480,18 @@ extern "C" int zenit_d12_commands_enable_timestamps(ZenitD12Commands *commands) 
     if (profile) {
         commands->draw_timings = (D12DrawTiming *)calloc(MAX_PROFILE_DRAWS, sizeof(D12DrawTiming));
         if (commands->draw_timings) desc.Count += MAX_PROFILE_DRAWS * 2;
+    }
+    if (!commands->draw_timings && commands->pooled_timestamps && commands->pooled_readback) {
+        auto readback=(ZenitD12Buffer *)calloc(1,sizeof(ZenitD12Buffer));
+        if (readback) {
+            readback->raw=commands->pooled_readback; readback->mapping=commands->pooled_mapping; readback->owner=commands->owner;
+            readback->refs=1; readback->size=uint64_t(desc.Count)*8; readback->usage=MAP_READ | COPY_DST;
+            InterlockedIncrement(&commands->owner->refs);
+            commands->timestamp_heap=commands->pooled_timestamps; commands->timestamp_readback=readback;
+            commands->pooled_timestamps=nullptr; commands->pooled_readback=nullptr; commands->pooled_mapping=nullptr;
+            commands->list->EndQuery(commands->timestamp_heap, D3D12_QUERY_TYPE_TIMESTAMP, 0);
+            return 0;
+        }
     }
     ID3D12QueryHeap *heap = nullptr;
     if (FAILED(commands->owner->raw->CreateQueryHeap(&desc, IID_ID3D12QueryHeap, (void **)&heap))) {
@@ -638,11 +778,22 @@ extern "C" int zenit_d12_texture_create(ZenitD12Device *device, uint32_t dimensi
     texture->owner = device; texture->refs = 1; texture->dimension = dimension;
     texture->width = width; texture->height = height; texture->depth = depth;
     texture->mips = mips; texture->samples = samples; texture->format = (DXGI_FORMAT)format; texture->usage = usage;
+    if (d12_ledger_enabled()) {
+        texture->ledger_kind = ds ? LK_TEX_DEPTH : (usage & 16u) ? LK_TEX_TARGET : LK_TEX_SAMPLED;
+        texture->ledger_bytes = d12_ledger_allocation_bytes(device->raw, desc);
+        d12_ledger_add(texture, texture->ledger_kind, texture->ledger_bytes, width, height, format);
+    }
     InterlockedIncrement(&device->refs); *out = texture; return 0;
 }
+extern "C" void zenit_d12_texture_ledger_label(ZenitD12Texture *texture, const char *label, size_t len) { d12_ledger_label(texture, label, len); }
+extern "C" void zenit_d12_buffer_ledger_label(ZenitD12Buffer *buffer, const char *label, size_t len) { d12_ledger_label(buffer, label, len); }
 extern "C" void zenit_d12_texture_retain(ZenitD12Texture *texture) { if (texture) InterlockedIncrement(&texture->refs); }
 extern "C" void zenit_d12_texture_release(ZenitD12Texture *texture) {
     if (!texture || InterlockedDecrement(&texture->refs) != 0) return;
+    // No holder remains: each would still hold a texture reference.
+    d12_ledger_remove(texture, texture->ledger_kind, texture->ledger_bytes);
+    for (auto view:texture->cached_views) if (view) { view->heap->Release(); free(view); }
+    if (texture->rtv_heap) texture->rtv_heap->Release();
     texture->raw->Release(); zenit_d12_device_release(texture->owner); free(texture);
 }
 #include "d3d12_surface_impl.h"
@@ -762,7 +913,6 @@ extern "C" int zenit_d12_commands_texture_region_copy(ZenitD12Commands *commands
     return 0;
 }
 
-struct ZenitD12View { ID3D12DescriptorHeap *heap; ZenitD12Texture *texture; LONG refs; uint32_t dimension; bool storage; };
 struct ZenitD12Sampler { ID3D12DescriptorHeap *heap; ZenitD12Device *owner; LONG refs; uint32_t filter; };
 extern "C" int zenit_d12_view_create(ZenitD12Texture *texture, uint32_t dimension, uint32_t base_mip,
     uint32_t mips, uint32_t base_layer, uint32_t layers, ZenitD12View **out) {
@@ -801,6 +951,13 @@ extern "C" int zenit_d12_view_create(ZenitD12Texture *texture, uint32_t dimensio
         desc.Texture3D.MostDetailedMip = base_mip; desc.Texture3D.MipLevels = mips; break;
     default: return 1;
     }
+    // Renderers bind the same textures every frame; a full-range view of a
+    // texture never changes, so it is created once instead of per draw.
+    const bool full=base_mip==0 && mips==texture->mips && base_layer==0 && layers==texture->depth;
+    if (full && texture->cached_views[dimension]) {
+        auto view=texture->cached_views[dimension];
+        InterlockedIncrement(&texture->refs); InterlockedIncrement(&view->refs); *out=view; return 0;
+    }
     if (depth_format(texture->format)) {
         D3D12_FEATURE_DATA_FORMAT_SUPPORT cap={}; cap.Format=desc.Format;
         if (FAILED(texture->owner->raw->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT,&cap,sizeof(cap))) || !(cap.Support1 & D3D12_FORMAT_SUPPORT1_SHADER_LOAD)) return 1;
@@ -811,7 +968,9 @@ extern "C" int zenit_d12_view_create(ZenitD12Texture *texture, uint32_t dimensio
     HRESULT hr = texture->owner->raw->CreateDescriptorHeap(&heap, IID_ID3D12DescriptorHeap, (void **)&view->heap);
     if (FAILED(hr)) { free(view); return 2; }
     texture->owner->raw->CreateShaderResourceView(texture->raw, &desc, view->heap->GetCPUDescriptorHandleForHeapStart());
-    view->refs = 1; view->dimension = dimension; view->texture = texture; InterlockedIncrement(&texture->refs); *out = view; return 0;
+    view->refs = 1; view->dimension = dimension; view->texture = texture; InterlockedIncrement(&texture->refs);
+    if (full) { view->cached=true; texture->cached_views[dimension]=view; }
+    *out = view; return 0;
 }
 extern "C" int zenit_d12_storage_view_create(ZenitD12Texture *texture, uint32_t dimension,
     uint32_t mip, uint32_t layer, uint32_t layers, ZenitD12View **out) {
@@ -843,8 +1002,25 @@ extern "C" int zenit_d12_storage_view_create(ZenitD12Texture *texture, uint32_t 
     InterlockedIncrement(&texture->refs); *out=v; return 0;
 }
 extern "C" int zenit_d12_view_is_storage(ZenitD12View *v) { return v->storage; }
+// Format support never changes for a device; query it once per texture.
+static bool texture_samplable(ZenitD12Texture *t) {
+    if (!t->sample_support) {
+        D3D12_FEATURE_DATA_FORMAT_SUPPORT support={}; support.Format=depth_srv_format(t->format);
+        t->sample_support=SUCCEEDED(t->owner->raw->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT,&support,sizeof(support))) &&
+            (support.Support1 & D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE)?1:2;
+    }
+    return t->sample_support==1;
+}
+static void view_retain(ZenitD12View *view) {
+    InterlockedIncrement(&view->refs);
+    if (view->cached) InterlockedIncrement(&view->texture->refs);
+}
 extern "C" void zenit_d12_view_release(ZenitD12View *view) {
-    if (!view || InterlockedDecrement(&view->refs)!=0) return;
+    if (!view) return;
+    // A cached view's holder releases its texture reference; the texture
+    // frees the view with itself.
+    if (view->cached) { InterlockedDecrement(&view->refs); zenit_d12_texture_release(view->texture); return; }
+    if (InterlockedDecrement(&view->refs)!=0) return;
     view->heap->Release(); zenit_d12_texture_release(view->texture); free(view);
 }
 extern "C" int zenit_d12_sampler_create(ZenitD12Device *device, uint32_t filter, uint32_t address_u,
@@ -945,11 +1121,7 @@ extern "C" int zenit_d12_bind_group_create(ZenitD12Device *device, ZenitD12Pipel
                 (b->kind==5 && b->storage_format && (DXGI_FORMAT)b->storage_format!=e.view->texture->format)) return 1;
             uint32_t sample=zenit_d12_view_sample_type(e.view);
             if (b->sample_type && b->sample_type!=sample && !(b->sample_type==2 && sample==1)) return 1;
-            if (b->sample_type==1 || b->sample_type==3) {
-                D3D12_FEATURE_DATA_FORMAT_SUPPORT support={}; support.Format=depth_srv_format(e.view->texture->format);
-                if (FAILED(device->raw->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT,&support,sizeof(support))) ||
-                    !(support.Support1 & D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE)) return 1;
-            }
+            if ((b->sample_type==1 || b->sample_type==3) && !texture_samplable(e.view->texture)) return 1;
             continue;
         }
         if (b->kind==4) {
@@ -994,7 +1166,7 @@ extern "C" int zenit_d12_bind_group_create(ZenitD12Device *device, ZenitD12Pipel
         uint32_t type=b.kind==4;
         auto handle=g->heaps[type]->GetCPUDescriptorHandleForHeapStart(); handle.ptr+=SIZE_T(slots[type]++)*increments[type];
         if (e->view) {
-            InterlockedIncrement(&e->view->refs);
+            view_retain(e->view);
             device->raw->CopyDescriptorsSimple(1,handle,e->view->heap->GetCPUDescriptorHandleForHeapStart(),D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
             continue;
         }
@@ -1107,6 +1279,13 @@ struct ZenitD12RenderPass {
     // textures, which may change access within a render pass.
     ZenitD12Texture *read_textures[32]; uint32_t read_count;
     D3D12_RECT draw_regions[4]; uint32_t draw_region_count;
+    // Command-list state already set in this pass. Consecutive draws mostly
+    // share pipeline, root signature, descriptor page and fixed state; setting
+    // them again per draw was pure CPU cost. Zeroed (unknown) at pass begin.
+    ID3D12PipelineState *bound_pso; ID3D12RootSignature *bound_root; ID3D12DescriptorHeap *bound_heaps[2];
+    uint32_t bound_topology, bound_stencil, bound_viewport_count; bool bound_fixed;
+    float bound_blend[4]; D3D12_VIEWPORT bound_viewports[4]; D3D12_RECT bound_scissors[4];
+    D3D12_VERTEX_BUFFER_VIEW bound_vertex[32]; uint32_t bound_vertex_mask;
 };
 extern "C" int zenit_d12_render_pass_regions(ZenitD12RenderPass *pass,const uint32_t *bounds,uint32_t count) {
     if (!pass || pass->commands->pass!=pass || count>4 || (count && (!bounds || !pass->commands->owner->vertex_viewport_index))) return 1;
@@ -1203,14 +1382,23 @@ extern "C" int zenit_d12_render_pass_begin(ZenitD12Commands *commands, const Zen
     auto pass=(ZenitD12RenderPass *)calloc(1,sizeof(ZenitD12RenderPass));
     if (!r || !node || !pass) { free(r); free(node); free(pass); return 2; }
     D3D12_DESCRIPTOR_HEAP_DESC h={}; h.Type=D3D12_DESCRIPTOR_HEAP_TYPE_RTV; h.NumDescriptors=count;
-    if (count && FAILED(commands->owner->raw->CreateDescriptorHeap(&h,IID_ID3D12DescriptorHeap,(void **)&r->heap))) {
+    // Most passes render into mip 0 / layer 0 of one texture: reuse that
+    // texture's RTV (descriptors are immutable once written) instead of a new
+    // descriptor heap per pass. The pass holds a heap reference as before.
+    auto first=count==1?attachments[0].texture:nullptr;
+    const bool cached_rtv=first && attachments[0].mip==0 && attachments[0].layer==0 && first->depth==1;
+    bool write_rtv=true;
+    if (cached_rtv && first->rtv_heap) { r->heap=first->rtv_heap; r->heap->AddRef(); write_rtv=false; }
+    else if (count && FAILED(commands->owner->raw->CreateDescriptorHeap(&h,IID_ID3D12DescriptorHeap,(void **)&r->heap))) {
         free(r); free(node); free(pass); return 2;
     }
+    if (cached_rtv && !first->rtv_heap) { first->rtv_heap=r->heap; first->rtv_heap->AddRef(); }
     D3D12_CPU_DESCRIPTOR_HANDLE handles[8]={};
     uint32_t increment=commands->owner->raw->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     for (uint32_t i=0;i<count;++i) {
         auto t=attachments[i].texture; r->attachments[i]=attachments[i]; InterlockedIncrement(&t->refs); if (attachments[i].resolve) InterlockedIncrement(&attachments[i].resolve->refs); ++r->count;
         handles[i]=r->heap->GetCPUDescriptorHandleForHeapStart(); handles[i].ptr+=SIZE_T(i)*increment;
+        if (!write_rtv) continue;
         D3D12_RENDER_TARGET_VIEW_DESC d={}; d.Format=t->format;
         if (t->samples>1) {
             if (t->depth==1) d.ViewDimension=D3D12_RTV_DIMENSION_TEXTURE2DMS;
@@ -1272,11 +1460,19 @@ static int reserve_draw_descriptors(ZenitD12Commands *commands,uint32_t type,uin
         auto next=(D12DescriptorPage *)calloc(1,sizeof(D12DescriptorPage));
         if (!next) return 2;
         next->capacity=count>(type?256u:1024u)?count:(type?256u:1024u);
-        D3D12_DESCRIPTOR_HEAP_DESC h={};
-        h.Type=type?D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER:D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        h.NumDescriptors=next->capacity; h.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-        if (FAILED(commands->owner->raw->CreateDescriptorHeap(&h,IID_ID3D12DescriptorHeap,(void **)&next->heap))) {
-            free(next); return 2;
+        auto device=commands->owner;
+        if (next->capacity==(type?256u:1024u)) {
+            AcquireSRWLockExclusive(&device->pool_lock);
+            if (device->page_pool_count[type]) next->heap=device->page_pool[type][--device->page_pool_count[type]];
+            ReleaseSRWLockExclusive(&device->pool_lock);
+        }
+        if (!next->heap) {
+            D3D12_DESCRIPTOR_HEAP_DESC h={};
+            h.Type=type?D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER:D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+            h.NumDescriptors=next->capacity; h.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+            if (FAILED(device->raw->CreateDescriptorHeap(&h,IID_ID3D12DescriptorHeap,(void **)&next->heap))) {
+                free(next); return 2;
+            }
         }
         next->next=page; commands->descriptor_pages[type]=next; page=next;
     }
@@ -1300,6 +1496,184 @@ extern "C" int zenit_d12_render_pass_clear_opaque(ZenitD12RenderPass *pass, cons
 #endif
     return 0;
 }
+static int retain_reserve(ZenitD12Commands *c, uint32_t more) {
+    if (c->retained_count+more<=c->retained_capacity) return 0;
+    uint32_t capacity=c->retained_capacity?c->retained_capacity:256;
+    while (capacity<c->retained_count+more) capacity*=2;
+    auto items=(void **)realloc(c->retained,capacity*sizeof(void *)); if (!items) return 2;
+    c->retained=items;
+    auto kinds=(uint8_t *)realloc(c->retained_kinds,capacity); if (!kinds) return 2;
+    c->retained_kinds=kinds; c->retained_capacity=capacity; return 0;
+}
+static void retain_push(ZenitD12Commands *c, uint8_t kind, void *item) {
+    c->retained[c->retained_count]=item; c->retained_kinds[c->retained_count++]=kind;
+}
+static void release_retained(ZenitD12Commands *c) {
+    for (uint32_t i=0;i<c->retained_count;++i) switch (c->retained_kinds[i]) {
+    case RETAIN_BUFFER: zenit_d12_buffer_release((ZenitD12Buffer *)c->retained[i]); break;
+    case RETAIN_VIEW: zenit_d12_view_release((ZenitD12View *)c->retained[i]); break;
+    case RETAIN_SAMPLER: zenit_d12_sampler_release((ZenitD12Sampler *)c->retained[i]); break;
+    default: zenit_d12_render_pipeline_release((ZenitD12RenderPipeline *)c->retained[i]); break;
+    }
+    free(c->retained); free(c->retained_kinds);
+    c->retained=nullptr; c->retained_kinds=nullptr; c->retained_count=c->retained_capacity=0;
+}
+// Pass/pipeline/vertex/index validation shared by both draw entry points.
+struct D12DrawSetup {
+    ZenitD12RenderInfo info; D3D12_VIEWPORT viewport; D3D12_RECT scissor; bool indexed;
+    D3D12_INDEX_BUFFER_VIEW index_view; D3D12_VERTEX_BUFFER_VIEW views[32];
+    ZenitD12Buffer *buffers[33]; D3D12_RESOURCE_STATES states[33]; uint32_t unique;
+};
+static int setup_draw(ZenitD12RenderPass *pass, ZenitD12RenderPipeline *pipeline, const ZenitD12Draw *draw, D12DrawSetup &d) {
+    auto commands=pass->commands;
+    zenit_d12_render_pipeline_info(pipeline,&d.info);
+    const auto &info=d.info;
+    if (info.samples!=pass->samples || info.target_count!=pass->resources->count || uint64_t(draw->first_vertex)+draw->vertices>UINT32_MAX ||
+        uint64_t(draw->first_instance)+draw->instances>UINT32_MAX) return 1;
+    for (uint32_t i=0;i<info.target_count;++i) if (info.formats[i]!=uint32_t(pass->resources->attachments[i].texture->format)) return 1;
+    auto ds=pass->resources->depth.texture;
+    if (info.depth_format!=(ds?uint32_t(ds->format):0) || draw->stencil_reference>255 ||
+        (ds && ((info.depth_write && pass->resources->depth.depth_read_only) || (info.stencil_write && pass->resources->depth.stencil_read_only)))) return 1;
+    uint32_t width=draw->width,height=draw->height;
+    if (width==UINT32_MAX && height==UINT32_MAX) { width=pass->width; height=pass->height; }
+    if (draw->x>pass->width || width>pass->width-draw->x || draw->y>pass->height || height>pass->height-draw->y) return 1;
+    for (auto v:draw->blend) if (!(v>=-FLT_MAX && v<=FLT_MAX)) return 1;
+    d.viewport={0,0,float(pass->width),float(pass->height),0,1};
+    if (draw->has_viewport>1) return 1;
+    if (draw->has_viewport) {
+        for (auto v:draw->viewport) if (!(v>=-FLT_MAX && v<=FLT_MAX)) return 1;
+        auto v=draw->viewport;
+        if (v[0]<D3D12_VIEWPORT_BOUNDS_MIN || v[1]<D3D12_VIEWPORT_BOUNDS_MIN ||
+            v[0]>D3D12_VIEWPORT_BOUNDS_MAX || v[1]>D3D12_VIEWPORT_BOUNDS_MAX ||
+            v[2]<0 || v[3]<0 || v[0]+v[2]>D3D12_VIEWPORT_BOUNDS_MAX || v[1]+v[3]>D3D12_VIEWPORT_BOUNDS_MAX ||
+            v[4]<0 || v[5]>1 || v[4]>v[5]) return 1;
+        d.viewport={v[0],v[1],v[2],v[3],v[4],v[5]};
+    }
+    d.scissor={LONG(draw->x),LONG(draw->y),LONG(draw->x+width),LONG(draw->y+height)};
+    d.indexed=draw->index_buffer!=nullptr;
+    d.index_view={};
+    if (d.indexed) {
+        auto b=draw->index_buffer; uint32_t element=draw->index_format==1?2:4;
+        if ((draw->index_format!=1 && draw->index_format!=2) || b->owner!=commands->owner ||
+            !(b->usage & 16u) || (b->usage & MAP_READ) || draw->index_offset%element ||
+            draw->index_offset>b->size || draw->index_size>b->size-draw->index_offset ||
+            draw->index_size>UINT32_MAX || draw->index_size%element ||
+            uint64_t(draw->first_index)+draw->vertices>UINT32_MAX ||
+            (uint64_t(draw->first_index)+draw->vertices)*element>draw->index_size ||
+            (info.strip_index && info.strip_index!=draw->index_format)) return 1;
+        d.index_view.BufferLocation=b->raw->GetGPUVirtualAddress()+draw->index_offset;
+        d.index_view.SizeInBytes=UINT(draw->index_size);
+        d.index_view.Format=element==2?DXGI_FORMAT_R16_UINT:DXGI_FORMAT_R32_UINT;
+    } else if (draw->index_format || draw->first_index || draw->base_vertex || draw->index_offset || draw->index_size) return 1;
+    uint32_t slots=0; d.unique=0;
+    for (uint32_t i=0;i<draw->buffer_count;++i) {
+        const auto &b=draw->buffers[i]; auto buffer=b.buffer;
+        if (!buffer || buffer->owner!=commands->owner || !(buffer->usage & 32u) || (buffer->usage & MAP_READ) ||
+            b.slot>=32 || !(info.slots & (1u<<b.slot)) || (slots & (1u<<b.slot)) || b.offset%4 ||
+            b.offset>buffer->size || b.size>buffer->size-b.offset || b.size>UINT32_MAX) return 1;
+        uint64_t start=info.steps[b.slot]?draw->first_instance:draw->first_vertex;
+        uint64_t count=info.steps[b.slot]?draw->instances:draw->vertices;
+        if ((!d.indexed || info.steps[b.slot]) && draw->instances && draw->vertices && count && (start+count-1)*info.strides[b.slot]+info.ends[b.slot]>b.size) return 1;
+        slots|=1u<<b.slot; d.views[i].BufferLocation=buffer->raw->GetGPUVirtualAddress()+b.offset;
+        d.views[i].SizeInBytes=UINT(b.size); d.views[i].StrideInBytes=info.strides[b.slot];
+        uint32_t j=0; while (j<d.unique && d.buffers[j]!=buffer) ++j; if (j==d.unique) d.buffers[d.unique++]=buffer; d.states[j]=D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+    }
+    if (slots!=info.slots) return 1;
+    if (d.indexed) {
+        uint32_t j=0; while (j<d.unique && d.buffers[j]!=draw->index_buffer) ++j;
+        if (j==d.unique) d.buffers[d.unique++]=draw->index_buffer;
+        d.states[j]=(D3D12_RESOURCE_STATES)(d.states[j] | D3D12_RESOURCE_STATE_INDEX_BUFFER);
+    }
+    return 0;
+}
+// Merge one bound resource into the draw's transition set (attachment
+// feedback and conflicting UAV access are rejected).
+static int bind_state(ZenitD12RenderPass *pass, D12BoundState *bound, uint32_t &ns, ZenitD12Buffer *buffer, ZenitD12Texture *texture, uint32_t kind) {
+    if (!buffer && !texture) return 0;
+    if (texture && texture==pass->resources->depth.texture) return 1;
+    for (uint32_t a=0;a<pass->resources->count;++a) if (texture==pass->resources->attachments[a].texture || (texture && texture==pass->resources->attachments[a].resolve)) return 1;
+    auto state=(kind==3 || kind==5)?D3D12_RESOURCE_STATE_UNORDERED_ACCESS:
+        kind==0?D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER:
+        D3D12_RESOURCE_STATES(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    uint32_t slot=0; while (slot<ns && (bound[slot].buffer!=buffer || bound[slot].texture!=texture)) ++slot;
+    if (slot<ns && ((bound[slot].state | state) & D3D12_RESOURCE_STATE_UNORDERED_ACCESS)) return 1;
+    if (slot==ns) { bound[ns].buffer=buffer; bound[ns].texture=texture; bound[ns++].state=D3D12_RESOURCE_STATES(0); }
+    bound[slot].state=D3D12_RESOURCE_STATES(bound[slot].state | state);
+    return 0;
+}
+// Records the draw after its descriptor tables are in place. Skips state the
+// pass already set; tables and draw constants are set every draw.
+static void emit_draw(ZenitD12RenderPass *pass, ZenitD12RenderPipeline *pipeline, const ZenitD12Draw *draw, const D12DrawSetup &d,
+    ID3D12DescriptorHeap *const heaps[2], const D3D12_GPU_DESCRIPTOR_HANDLE tables[4][2], uint32_t groups,
+    const D12BoundState *bound, uint32_t ns) {
+    auto commands=pass->commands; auto list=commands->list; auto layout=zenit_d12_render_pipeline_layout(pipeline);
+    auto pso=(ID3D12PipelineState *)zenit_d12_render_pipeline_native(pipeline);
+    auto root=(ID3D12RootSignature *)zenit_d12_render_pipeline_root(pipeline);
+    if (pass->bound_pso!=pso) { list->SetPipelineState(pso); pass->bound_pso=pso; }
+    if (pass->bound_root!=root) { list->SetGraphicsRootSignature(root); pass->bound_root=root; }
+    ID3D12DescriptorHeap *active[2]={}; uint32_t heap_count=0;
+    for (uint32_t t=0;t<2;++t) if (heaps[t]) active[heap_count++]=heaps[t];
+    // SetDescriptorHeaps replaces both bindings; only a heap this draw uses
+    // needs to match (descriptor tables are rebound below).
+    bool heaps_match=true;
+    for (uint32_t t=0;t<2;++t) if (heaps[t] && pass->bound_heaps[t]!=heaps[t]) heaps_match=false;
+    if (heap_count && !heaps_match) {
+        list->SetDescriptorHeaps(heap_count,active);
+        pass->bound_heaps[0]=heaps[0]; pass->bound_heaps[1]=heaps[1];
+    }
+    for (uint32_t i=0;i<groups;++i) for (uint32_t t=0;t<2;++t) if (tables[i][t].ptr)
+        list->SetGraphicsRootDescriptorTable(zenit_d12_pipeline_layout_table(layout,i,t),tables[i][t]);
+    uint32_t draw_info[4]={d.indexed?uint32_t(draw->base_vertex):draw->first_vertex,draw->first_instance,0,0};
+    list->SetGraphicsRoot32BitConstants(zenit_d12_pipeline_layout_draw_info(layout),4,draw_info,0);
+    if (!pass->bound_fixed || pass->bound_topology!=d.info.topology) { list->IASetPrimitiveTopology((D3D12_PRIMITIVE_TOPOLOGY)d.info.topology); pass->bound_topology=d.info.topology; }
+    if (!pass->bound_fixed || memcmp(pass->bound_blend,draw->blend,sizeof(pass->bound_blend))) { list->OMSetBlendFactor(draw->blend); memcpy(pass->bound_blend,draw->blend,sizeof(pass->bound_blend)); }
+    if (!pass->bound_fixed || pass->bound_stencil!=draw->stencil_reference) { list->OMSetStencilRef(draw->stencil_reference); pass->bound_stencil=draw->stencil_reference; }
+    pass->bound_fixed=true;
+    D3D12_VIEWPORT viewports[4]; D3D12_RECT scissors[4]; uint32_t vp_count=1;
+    if (pass->draw_region_count) {
+        vp_count=pass->draw_region_count;
+        for (uint32_t i=0;i<pass->draw_region_count;++i) {
+            viewports[i]=d.viewport; auto r=pass->draw_regions[i];
+            r.left=r.left>d.scissor.left?r.left:d.scissor.left;
+            r.top=r.top>d.scissor.top?r.top:d.scissor.top;
+            r.right=r.right<d.scissor.right?r.right:d.scissor.right;
+            r.bottom=r.bottom<d.scissor.bottom?r.bottom:d.scissor.bottom;
+            if (r.right<r.left) r.right=r.left;
+            if (r.bottom<r.top) r.bottom=r.top;
+            scissors[i]=r;
+        }
+    } else { viewports[0]=d.viewport; scissors[0]=d.scissor; }
+    if (pass->bound_viewport_count!=vp_count || memcmp(pass->bound_viewports,viewports,vp_count*sizeof(D3D12_VIEWPORT))) {
+        list->RSSetViewports(vp_count,viewports); memcpy(pass->bound_viewports,viewports,vp_count*sizeof(D3D12_VIEWPORT));
+    }
+    if (pass->bound_viewport_count!=vp_count || memcmp(pass->bound_scissors,scissors,vp_count*sizeof(D3D12_RECT))) {
+        list->RSSetScissorRects(vp_count,scissors); memcpy(pass->bound_scissors,scissors,vp_count*sizeof(D3D12_RECT));
+    }
+    pass->bound_viewport_count=vp_count;
+    for (uint32_t i=0;i<draw->buffer_count;++i) {
+        uint32_t slot=draw->buffers[i].slot;
+        if ((pass->bound_vertex_mask & (1u<<slot)) && !memcmp(&pass->bound_vertex[slot],&d.views[i],sizeof(d.views[i]))) continue;
+        list->IASetVertexBuffers(slot,1,&d.views[i]); pass->bound_vertex[slot]=d.views[i]; pass->bound_vertex_mask|=1u<<slot;
+    }
+    for (uint32_t i=0;i<ns;++i) prepare_draw_bound(pass,bound[i]);
+    bool timed=commands->draw_timings && commands->timed_draws<MAX_PROFILE_DRAWS;
+    if (timed) {
+        auto &sample=commands->draw_timings[commands->timed_draws];
+        strncpy(sample.shader,zenit_d12_render_pipeline_entry(pipeline),sizeof(sample.shader)-1);
+        sample.width=pass->width; sample.height=pass->height;
+        sample.vertices=draw->vertices; sample.instances=draw->instances;
+        list->EndQuery(commands->timestamp_heap,D3D12_QUERY_TYPE_TIMESTAMP,2+commands->timed_draws*2);
+    } else if (commands->draw_timings) ++commands->dropped_draws;
+    if (d.indexed) {
+        list->IASetIndexBuffer(&d.index_view);
+        list->DrawIndexedInstanced(draw->vertices,draw->instances,draw->first_index,draw->base_vertex,draw->first_instance);
+    } else list->DrawInstanced(draw->vertices,draw->instances,draw->first_vertex,draw->first_instance);
+    if (timed) {
+        list->EndQuery(commands->timestamp_heap,D3D12_QUERY_TYPE_TIMESTAMP,3+commands->timed_draws*2);
+        ++commands->timed_draws;
+    }
+    for (uint32_t i=0;i<ns;++i) if (!bound[i].texture || !pass_has_read_texture(pass,bound[i].texture)) transition_bound(list,bound[i],true);
+}
 extern "C" int zenit_d12_render_pass_draw(ZenitD12RenderPass *pass, ZenitD12RenderPipeline *pipeline, const ZenitD12Draw *draw) {
     if (!pass || !pipeline || !draw || pass->commands->pass!=pass || draw->buffer_count>32 || (draw->buffer_count && !draw->buffers)) return 1;
     auto commands=pass->commands; auto layout=zenit_d12_render_pipeline_layout(pipeline);
@@ -1314,83 +1688,15 @@ extern "C" int zenit_d12_render_pass_draw(ZenitD12RenderPass *pass, ZenitD12Rend
         total+=g->count;
         for (uint32_t type=0;type<2;++type) descriptors[type]+=g->descriptors[type];
     }
-    ZenitD12RenderInfo info={}; zenit_d12_render_pipeline_info(pipeline,&info);
-    if (info.samples!=pass->samples || info.target_count!=pass->resources->count || uint64_t(draw->first_vertex)+draw->vertices>UINT32_MAX ||
-        uint64_t(draw->first_instance)+draw->instances>UINT32_MAX) return 1;
-    for (uint32_t i=0;i<info.target_count;++i) if (info.formats[i]!=uint32_t(pass->resources->attachments[i].texture->format)) return 1;
-    auto ds=pass->resources->depth.texture;
-    if (info.depth_format!=(ds?uint32_t(ds->format):0) || draw->stencil_reference>255 ||
-        (ds && ((info.depth_write && pass->resources->depth.depth_read_only) || (info.stencil_write && pass->resources->depth.stencil_read_only)))) return 1;
-    uint32_t width=draw->width,height=draw->height;
-    if (width==UINT32_MAX && height==UINT32_MAX) { width=pass->width; height=pass->height; }
-    if (draw->x>pass->width || width>pass->width-draw->x || draw->y>pass->height || height>pass->height-draw->y) return 1;
-    for (auto v:draw->blend) if (!(v>=-FLT_MAX && v<=FLT_MAX)) return 1;
-    D3D12_VIEWPORT viewport={0,0,float(pass->width),float(pass->height),0,1};
-    if (draw->has_viewport>1) return 1;
-    if (draw->has_viewport) {
-        for (auto v:draw->viewport) if (!(v>=-FLT_MAX && v<=FLT_MAX)) return 1;
-        auto v=draw->viewport;
-        if (v[0]<D3D12_VIEWPORT_BOUNDS_MIN || v[1]<D3D12_VIEWPORT_BOUNDS_MIN ||
-            v[0]>D3D12_VIEWPORT_BOUNDS_MAX || v[1]>D3D12_VIEWPORT_BOUNDS_MAX ||
-            v[2]<0 || v[3]<0 || v[0]+v[2]>D3D12_VIEWPORT_BOUNDS_MAX || v[1]+v[3]>D3D12_VIEWPORT_BOUNDS_MAX ||
-            v[4]<0 || v[5]>1 || v[4]>v[5]) return 1;
-        viewport={v[0],v[1],v[2],v[3],v[4],v[5]};
-    }
-    bool indexed=draw->index_buffer!=nullptr;
-    D3D12_INDEX_BUFFER_VIEW index_view={};
-    if (indexed) {
-        auto b=draw->index_buffer; uint32_t element=draw->index_format==1?2:4;
-        if ((draw->index_format!=1 && draw->index_format!=2) || b->owner!=commands->owner ||
-            !(b->usage & 16u) || (b->usage & MAP_READ) || draw->index_offset%element ||
-            draw->index_offset>b->size || draw->index_size>b->size-draw->index_offset ||
-            draw->index_size>UINT32_MAX || draw->index_size%element ||
-            uint64_t(draw->first_index)+draw->vertices>UINT32_MAX ||
-            (uint64_t(draw->first_index)+draw->vertices)*element>draw->index_size ||
-            (info.strip_index && info.strip_index!=draw->index_format)) return 1;
-        index_view.BufferLocation=b->raw->GetGPUVirtualAddress()+draw->index_offset;
-        index_view.SizeInBytes=UINT(draw->index_size);
-        index_view.Format=element==2?DXGI_FORMAT_R16_UINT:DXGI_FORMAT_R32_UINT;
-    } else if (draw->index_format || draw->first_index || draw->base_vertex || draw->index_offset || draw->index_size) return 1;
-    uint32_t slots=0,unique=0; ZenitD12Buffer *buffers[33]={};
-    D3D12_RESOURCE_STATES states[33]={};
-    D3D12_VERTEX_BUFFER_VIEW views[32]={};
-    for (uint32_t i=0;i<draw->buffer_count;++i) {
-        const auto &b=draw->buffers[i]; auto buffer=b.buffer;
-        if (!buffer || buffer->owner!=commands->owner || !(buffer->usage & 32u) || (buffer->usage & MAP_READ) ||
-            b.slot>=32 || !(info.slots & (1u<<b.slot)) || (slots & (1u<<b.slot)) || b.offset%4 ||
-            b.offset>buffer->size || b.size>buffer->size-b.offset || b.size>UINT32_MAX) return 1;
-        uint64_t start=info.steps[b.slot]?draw->first_instance:draw->first_vertex;
-        uint64_t count=info.steps[b.slot]?draw->instances:draw->vertices;
-        if ((!indexed || info.steps[b.slot]) && draw->instances && draw->vertices && count && (start+count-1)*info.strides[b.slot]+info.ends[b.slot]>b.size) return 1;
-        slots|=1u<<b.slot; views[i].BufferLocation=buffer->raw->GetGPUVirtualAddress()+b.offset;
-        views[i].SizeInBytes=UINT(b.size); views[i].StrideInBytes=info.strides[b.slot];
-        uint32_t j=0; while (j<unique && buffers[j]!=buffer) ++j; if (j==unique) buffers[unique++]=buffer; states[j]=D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
-    }
-    if (slots!=info.slots) return 1;
-    if (indexed) {
-        uint32_t j=0; while (j<unique && buffers[j]!=draw->index_buffer) ++j;
-        if (j==unique) buffers[unique++]=draw->index_buffer;
-        states[j]=(D3D12_RESOURCE_STATES)(states[j] | D3D12_RESOURCE_STATE_INDEX_BUFFER);
-    }
+    D12DrawSetup d; int status=setup_draw(pass,pipeline,draw,d); if (status) return status;
     struct StateStorage { D12BoundState *values; ~StateStorage() { free(values); } } storage={
-        (D12BoundState *)calloc(total+unique+1,sizeof(D12BoundState))};
+        (D12BoundState *)calloc(total+d.unique+1,sizeof(D12BoundState))};
     if (!storage.values) return 2;
-    auto bound=storage.values; uint32_t ns=unique;
-    for (uint32_t i=0;i<unique;++i) { bound[i].buffer=buffers[i]; bound[i].state=states[i]; }
+    auto bound=storage.values; uint32_t ns=d.unique;
+    for (uint32_t i=0;i<d.unique;++i) { bound[i].buffer=d.buffers[i]; bound[i].state=d.states[i]; }
     for (uint32_t i=0;i<groups;++i) for (uint32_t j=0;j<draw->groups[i]->count;++j) {
-        auto g=draw->groups[i]; auto buffer=g->entries[j].buffer;
-        auto texture=g->entries[j].view?g->entries[j].view->texture:nullptr;
-        if (!buffer && !texture) continue;
-        // Attachment feedback is unsupported, including disjoint subresources.
-        if (texture && texture==pass->resources->depth.texture) return 1;
-        for (uint32_t a=0;a<pass->resources->count;++a) if (texture==pass->resources->attachments[a].texture || (texture && texture==pass->resources->attachments[a].resolve)) return 1;
-        auto state=(g->kinds[j]==3 || g->kinds[j]==5)?D3D12_RESOURCE_STATE_UNORDERED_ACCESS:
-            g->kinds[j]==0?D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER:
-            D3D12_RESOURCE_STATES(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        uint32_t slot=0; while (slot<ns && (bound[slot].buffer!=buffer || bound[slot].texture!=texture)) ++slot;
-        if (slot<ns && ((bound[slot].state | state) & D3D12_RESOURCE_STATE_UNORDERED_ACCESS)) return 1;
-        if (slot==ns) { bound[ns].buffer=buffer; bound[ns++].texture=texture; }
-        bound[slot].state=D3D12_RESOURCE_STATES(bound[slot].state | state);
+        auto g=draw->groups[i];
+        if (bind_state(pass,bound,ns,g->entries[j].buffer,g->entries[j].view?g->entries[j].view->texture:nullptr,g->kinds[j])) return 1;
     }
     auto r=(D12DrawRefs *)calloc(1,sizeof(D12DrawRefs)); auto node=(D12CopyRefs *)calloc(1,sizeof(D12CopyRefs));
     if (!r || !node) { free(r); free(node); return 2; }
@@ -1405,14 +1711,10 @@ extern "C" int zenit_d12_render_pass_draw(ZenitD12RenderPass *pass, ZenitD12Rend
     }
     tables->count=groups;
     for (uint32_t i=0;i<groups;++i) { tables->groups[i]=draw->groups[i]; InterlockedIncrement(&draw->groups[i]->refs); }
-    r->pipeline=pipeline; zenit_d12_render_pipeline_retain(pipeline); r->count=unique;
-    for (uint32_t i=0;i<unique;++i) { r->buffers[i]=buffers[i]; InterlockedIncrement(&buffers[i]->refs); }
+    r->pipeline=pipeline; zenit_d12_render_pipeline_retain(pipeline); r->count=d.unique;
+    for (uint32_t i=0;i<d.unique;++i) { r->buffers[i]=d.buffers[i]; InterlockedIncrement(&d.buffers[i]->refs); }
     node->draw=r; node->next=commands->resources; commands->resources=node;
-    auto list=commands->list; list->SetPipelineState((ID3D12PipelineState *)zenit_d12_render_pipeline_native(pipeline));
-    list->SetGraphicsRootSignature((ID3D12RootSignature *)zenit_d12_render_pipeline_root(pipeline));
-    ID3D12DescriptorHeap *active[2]={}; uint32_t heap_count=0;
-    for (auto heap:tables->heaps) if (heap) active[heap_count++]=heap;
-    if (heap_count) list->SetDescriptorHeaps(heap_count,active);
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu_tables[4][2]={};
     for (uint32_t type=0;type<2;++type) {
         auto heap_type=type?D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER:D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
         uint32_t increment=commands->owner->raw->GetDescriptorHandleIncrementSize(heap_type),offset=descriptor_bases[type];
@@ -1420,51 +1722,149 @@ extern "C" int zenit_d12_render_pass_draw(ZenitD12RenderPass *pass, ZenitD12Rend
             auto g=draw->groups[i]; auto cpu=tables->heaps[type]->GetCPUDescriptorHandleForHeapStart(); cpu.ptr+=SIZE_T(offset)*increment;
             commands->owner->raw->CopyDescriptorsSimple(g->descriptors[type],cpu,g->heaps[type]->GetCPUDescriptorHandleForHeapStart(),heap_type);
             auto gpu=tables->heaps[type]->GetGPUDescriptorHandleForHeapStart(); gpu.ptr+=UINT64(offset)*increment;
-            list->SetGraphicsRootDescriptorTable(zenit_d12_pipeline_layout_table(layout,i,type),gpu);
+            gpu_tables[i][type]=gpu;
             offset+=g->descriptors[type];
         }
     }
-    uint32_t draw_info[4]={indexed?uint32_t(draw->base_vertex):draw->first_vertex,draw->first_instance,0,0};
-    list->SetGraphicsRoot32BitConstants(zenit_d12_pipeline_layout_draw_info(layout),4,draw_info,0);
-    list->IASetPrimitiveTopology((D3D12_PRIMITIVE_TOPOLOGY)info.topology);
-    list->OMSetBlendFactor(draw->blend); list->OMSetStencilRef(draw->stencil_reference);
-    D3D12_RECT scissor={LONG(draw->x),LONG(draw->y),LONG(draw->x+width),LONG(draw->y+height)};
-    if (pass->draw_region_count) {
-        D3D12_VIEWPORT viewports[4]; D3D12_RECT scissors[4];
-        for (uint32_t i=0;i<pass->draw_region_count;++i) {
-            viewports[i]=viewport; auto r=pass->draw_regions[i];
-            r.left=r.left>scissor.left?r.left:scissor.left;
-            r.top=r.top>scissor.top?r.top:scissor.top;
-            r.right=r.right<scissor.right?r.right:scissor.right;
-            r.bottom=r.bottom<scissor.bottom?r.bottom:scissor.bottom;
-            if (r.right<r.left) r.right=r.left;
-            if (r.bottom<r.top) r.bottom=r.top;
-            scissors[i]=r;
+    emit_draw(pass,pipeline,draw,d,tables->heaps,gpu_tables,groups,bound,ns);
+    return 0;
+}
+#ifdef ZENIT_D12_TEST
+static LONG direct_draws;
+extern "C" long zenit_d12_test_direct_draws() { return InterlockedCompareExchange(&direct_draws,0,0); }
+#endif
+// Status of an entry that bind_group_create would reject (the Zig layer
+// reports it as error.InvalidBindGroup, as group creation did).
+static constexpr int BIND_INVALID=6;
+// A draw whose bind groups are given as entries (group_counts[i] entries per
+// group, in group order). Validation equals bind_group_create followed by
+// zenit_d12_render_pass_draw; descriptors are written straight into the
+// command's shader-visible page and the resources retained by the command,
+// with no per-draw bind group objects, CPU descriptor heaps or allocations.
+extern "C" int zenit_d12_render_pass_draw_entries(ZenitD12RenderPass *pass, ZenitD12RenderPipeline *pipeline, const ZenitD12Draw *draw,
+    const ZenitD12BindingEntry *entries, const uint32_t *group_counts, uint32_t group_count) {
+    if (!pass || !pipeline || !draw || pass->commands->pass!=pass || draw->buffer_count>32 || (draw->buffer_count && !draw->buffers) ||
+        draw->group_count || (group_count && !group_counts)) return 1;
+    auto commands=pass->commands; auto device=commands->owner; auto layout=zenit_d12_render_pipeline_layout(pipeline);
+    if (zenit_d12_pipeline_layout_owner(layout)!=device) return 1;
+    uint32_t nb=0,groups=0; auto layout_bindings=zenit_d12_pipeline_layout_bindings(layout,&nb,&groups);
+    if (group_count!=groups || groups>4) return 1;
+    // Per-group entry spans and descriptor counts (bind_group_create checks).
+    const ZenitD12BindingEntry *group_entries[4]={}; uint32_t descriptors[4][2]={}, total=0;
+    for (uint32_t g=0,at=0;g<groups;at+=group_counts[g],++g) {
+        uint32_t count=group_counts[g]; if (count>128 || (count && !entries)) return BIND_INVALID;
+        group_entries[g]=entries+at;
+        uint32_t expected=0;
+        for (uint32_t i=0;i<nb;++i) if (layout_bindings[i].group==g) { expected+=layout_bindings[i].count; descriptors[g][layout_bindings[i].kind==4]+=layout_bindings[i].count; }
+        if (count!=expected) return BIND_INVALID;
+        for (uint32_t i=0;i<count;++i) {
+            const auto &e=group_entries[g][i]; const ZenitD12LayoutBinding *b=nullptr;
+            for (uint32_t j=0;j<nb;++j) if (layout_bindings[j].group==g && layout_bindings[j].binding==e.binding) b=&layout_bindings[j];
+            if (!b || e.array_index>=b->count || unsigned(e.buffer!=nullptr)+unsigned(e.view!=nullptr)+unsigned(e.sampler!=nullptr)!=1) return BIND_INVALID;
+            for (uint32_t j=0;j<i;++j) if (group_entries[g][j].binding==e.binding && group_entries[g][j].array_index==e.array_index) return BIND_INVALID;
+            if (b->kind==1 || b->kind==5) {
+                if (!e.view || e.offset || e.size || e.stride || e.view->texture->owner!=device ||
+                    (b->view_dimension && b->view_dimension!=e.view->dimension) || e.view->storage!=(b->kind==5) ||
+                    (b->kind==5 && b->storage_format && (DXGI_FORMAT)b->storage_format!=e.view->texture->format)) return BIND_INVALID;
+                uint32_t sample=zenit_d12_view_sample_type(e.view);
+                if (b->sample_type && b->sample_type!=sample && !(b->sample_type==2 && sample==1)) return BIND_INVALID;
+                if ((b->sample_type==1 || b->sample_type==3) && !texture_samplable(e.view->texture)) return BIND_INVALID;
+                continue;
+            }
+            if (b->kind==4) {
+                if (!e.sampler || e.offset || e.size || e.stride || e.sampler->owner!=device ||
+                    (b->sampler_type && (b->sampler_type==3)!=bool(zenit_d12_sampler_comparison(e.sampler))) ||
+                    (b->sampler_type==2 && (e.sampler->filter & 0x55u))) return BIND_INVALID;
+                continue;
+            }
+            if (!e.buffer || e.buffer->owner!=device || !e.size || e.offset>e.buffer->size ||
+                e.size>e.buffer->size-e.offset || e.size<b->min_size || (e.buffer->usage & MAP_READ)) return BIND_INVALID;
+            if (b->kind==0) {
+                uint64_t padded=(e.size+255)&~uint64_t(255);
+                if (!(e.buffer->usage & UNIFORM) || e.stride || e.offset%256 || e.size>65536 ||
+                    padded>e.buffer->raw->GetDesc().Width-e.offset) return BIND_INVALID;
+            } else {
+                uint32_t unit=e.stride?e.stride:4;
+                if (!(e.buffer->usage & STORAGE) || (b->kind==3 && (e.buffer->usage & MAP_WRITE)) ||
+                    e.stride>2048 || e.stride%4 || e.offset%unit || (!e.stride && e.offset%D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT) || e.size%unit || e.size/unit>UINT32_MAX) return BIND_INVALID;
+            }
         }
-        list->RSSetViewports(pass->draw_region_count,viewports);
-        list->RSSetScissorRects(pass->draw_region_count,scissors);
-    } else {
-        list->RSSetViewports(1,&viewport); list->RSSetScissorRects(1,&scissor);
+        total+=count;
     }
-    for (uint32_t i=0;i<draw->buffer_count;++i) list->IASetVertexBuffers(draw->buffers[i].slot,1,&views[i]);
-    for (uint32_t i=0;i<ns;++i) prepare_draw_bound(pass,bound[i]);
-    bool timed=commands->draw_timings && commands->timed_draws<MAX_PROFILE_DRAWS;
-    if (timed) {
-        auto &sample=commands->draw_timings[commands->timed_draws];
-        strncpy(sample.shader,zenit_d12_render_pipeline_entry(pipeline),sizeof(sample.shader)-1);
-        sample.width=pass->width; sample.height=pass->height;
-        sample.vertices=draw->vertices; sample.instances=draw->instances;
-        list->EndQuery(commands->timestamp_heap,D3D12_QUERY_TYPE_TIMESTAMP,2+commands->timed_draws*2);
-    } else if (commands->draw_timings) ++commands->dropped_draws;
-    if (indexed) {
-        list->IASetIndexBuffer(&index_view);
-        list->DrawIndexedInstanced(draw->vertices,draw->instances,draw->first_index,draw->base_vertex,draw->first_instance);
-    } else list->DrawInstanced(draw->vertices,draw->instances,draw->first_vertex,draw->first_instance);
-    if (timed) {
-        list->EndQuery(commands->timestamp_heap,D3D12_QUERY_TYPE_TIMESTAMP,3+commands->timed_draws*2);
-        ++commands->timed_draws;
+    // Pipeline checks follow all group checks, as when every group was created
+    // before the draw.
+    for (uint32_t g=0;g<groups;++g) {
+        int status=zenit_d12_render_validate_bindings(pipeline,g,group_entries[g],group_counts[g]); if (status) return status;
     }
-    for (uint32_t i=0;i<ns;++i) if (!bound[i].texture || !pass_has_read_texture(pass,bound[i].texture)) transition_bound(list,bound[i],true);
+    D12DrawSetup d; int status=setup_draw(pass,pipeline,draw,d); if (status) return status;
+    D12BoundState bound[4*128+33]; uint32_t ns=d.unique;
+    for (uint32_t i=0;i<d.unique;++i) { bound[i].buffer=d.buffers[i]; bound[i].texture=nullptr; bound[i].state=d.states[i]; }
+    for (uint32_t g=0;g<groups;++g) for (uint32_t i=0;i<group_counts[g];++i) {
+        const auto &e=group_entries[g][i]; uint32_t kind=0;
+        for (uint32_t j=0;j<nb;++j) if (layout_bindings[j].group==g && layout_bindings[j].binding==e.binding) kind=layout_bindings[j].kind;
+        if (bind_state(pass,bound,ns,e.buffer,e.view?e.view->texture:nullptr,kind)) return 1;
+    }
+    if (retain_reserve(commands,total+d.unique+1)) return 2;
+    ID3D12DescriptorHeap *heaps[2]={}; uint32_t bases[2]={};
+    for (uint32_t t=0;t<2;++t) {
+        uint32_t need=0; for (uint32_t g=0;g<groups;++g) need+=descriptors[g][t];
+        if (!need) continue;
+        if (reserve_draw_descriptors(commands,t,need,&heaps[t],&bases[t])) return 2;
+        heaps[t]->Release(); // The command's page list owns the heap.
+    }
+    retain_push(commands,RETAIN_PIPELINE,pipeline); zenit_d12_render_pipeline_retain(pipeline);
+    for (uint32_t i=0;i<d.unique;++i) { retain_push(commands,RETAIN_BUFFER,d.buffers[i]); InterlockedIncrement(&d.buffers[i]->refs); }
+    D3D12_GPU_DESCRIPTOR_HANDLE tables[4][2]={};
+    uint32_t increments[2]={device->raw->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV),
+        device->raw->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER)};
+    uint32_t offsets[2]={bases[0],bases[1]};
+    for (uint32_t g=0;g<groups;++g) {
+        for (uint32_t t=0;t<2;++t) if (descriptors[g][t]) {
+            auto gpu=heaps[t]->GetGPUDescriptorHandleForHeapStart(); gpu.ptr+=UINT64(offsets[t])*increments[t]; tables[g][t]=gpu;
+        }
+        uint32_t slots[2]={};
+        // Root-table range order, as bind_group_create lays its heap out.
+        for (uint32_t i=0;i<nb;++i) if (layout_bindings[i].group==g) for (uint32_t a=0;a<layout_bindings[i].count;++a) {
+            const auto &b=layout_bindings[i]; const ZenitD12BindingEntry *e=nullptr;
+            for (uint32_t j=0;j<group_counts[g];++j) if (group_entries[g][j].binding==b.binding && group_entries[g][j].array_index==a) e=&group_entries[g][j];
+            uint32_t t=b.kind==4;
+            auto handle=heaps[t]->GetCPUDescriptorHandleForHeapStart(); handle.ptr+=SIZE_T(offsets[t]+slots[t]++)*increments[t];
+            if (e->view) {
+                view_retain(e->view); retain_push(commands,RETAIN_VIEW,e->view);
+                device->raw->CopyDescriptorsSimple(1,handle,e->view->heap->GetCPUDescriptorHandleForHeapStart(),D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+                continue;
+            }
+            if (e->sampler) {
+                InterlockedIncrement(&e->sampler->refs); retain_push(commands,RETAIN_SAMPLER,e->sampler);
+                device->raw->CopyDescriptorsSimple(1,handle,e->sampler->heap->GetCPUDescriptorHandleForHeapStart(),D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+                continue;
+            }
+            InterlockedIncrement(&e->buffer->refs); retain_push(commands,RETAIN_BUFFER,e->buffer);
+            uint32_t unit=e->stride?e->stride:4;
+            if (b.kind==0) {
+                D3D12_CONSTANT_BUFFER_VIEW_DESC v={}; v.BufferLocation=e->buffer->raw->GetGPUVirtualAddress()+e->offset;
+                v.SizeInBytes=UINT((e->size+255)&~uint64_t(255)); device->raw->CreateConstantBufferView(&v,handle);
+            } else if (b.kind==2) {
+                D3D12_SHADER_RESOURCE_VIEW_DESC v={}; v.ViewDimension=D3D12_SRV_DIMENSION_BUFFER;
+                v.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                v.Format=e->stride?DXGI_FORMAT_UNKNOWN:DXGI_FORMAT_R32_TYPELESS;
+                v.Buffer.FirstElement=e->offset/unit; v.Buffer.NumElements=UINT(e->size/unit); v.Buffer.StructureByteStride=e->stride;
+                v.Buffer.Flags=e->stride?D3D12_BUFFER_SRV_FLAG_NONE:D3D12_BUFFER_SRV_FLAG_RAW;
+                device->raw->CreateShaderResourceView(e->buffer->raw,&v,handle);
+            } else {
+                D3D12_UNORDERED_ACCESS_VIEW_DESC v={}; v.ViewDimension=D3D12_UAV_DIMENSION_BUFFER;
+                v.Format=e->stride?DXGI_FORMAT_UNKNOWN:DXGI_FORMAT_R32_TYPELESS;
+                v.Buffer.FirstElement=e->offset/unit; v.Buffer.NumElements=UINT(e->size/unit); v.Buffer.StructureByteStride=e->stride;
+                v.Buffer.Flags=e->stride?D3D12_BUFFER_UAV_FLAG_NONE:D3D12_BUFFER_UAV_FLAG_RAW;
+                device->raw->CreateUnorderedAccessView(e->buffer->raw,nullptr,&v,handle);
+            }
+        }
+        offsets[0]+=descriptors[g][0]; offsets[1]+=descriptors[g][1];
+    }
+    emit_draw(pass,pipeline,draw,d,heaps,tables,groups,bound,ns);
+#ifdef ZENIT_D12_TEST
+    InterlockedIncrement(&direct_draws);
+#endif
     return 0;
 }
 extern "C" int zenit_d12_render_pass_end(ZenitD12RenderPass *pass) {

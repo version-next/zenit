@@ -46,6 +46,15 @@ class BatchContract(unittest.TestCase):
         self.assertEqual(native["exe_name"], "zenit-windows-d3d11-contract.exe")
         self.assertEqual(native["renderer"], "d3d11")
 
+    def test_stage_filter_keeps_only_named_stages_and_rejects_unknown_names(self):
+        code, plan = self.invoke(["--prepare-only", "--require-a11y", "--stages", "input,accessibility-text"])
+        self.assertEqual(code, 0)
+        self.assertEqual([stage["name"] for stage in plan], ["input", "accessibility-text"])
+        self.assertTrue(all(stage["blocking"] for stage in plan))
+        for bad in ("input,no-such-stage", ","):
+            with self.assertRaises(SystemExit):
+                self.invoke(["--prepare-only", "--stages", bad])
+
     def test_full_application_suites_are_unfiltered_and_blocking(self):
         code, plan = self.invoke(["--prepare-only", "--require-a11y", "--renderer", "d3d11", "--full-app-suites"])
         self.assertEqual(code, 0)
@@ -54,6 +63,14 @@ class BatchContract(unittest.TestCase):
             stage = next(stage for stage in plan if stage["name"] == name)
             self.assertTrue(stage["blocking"])
             self.assertEqual(stage["filter"], "")
+
+    def test_full_plan_suite_sources_ship_with_the_controller(self):
+        code, plan = self.invoke(["--prepare-only", "--require-a11y", "--full-app-suites", "--allow-foreground"])
+        self.assertEqual(code, 0)
+        for stage in plan:
+            if stage["kind"] == "e2e":
+                with self.subTest(stage=stage["name"]):
+                    self.assertTrue((batch.REPO / stage["suite_source"]).is_file(), stage["suite_source"])
 
     def test_d3d11_probe_requires_hardware_and_successful_contract(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -82,6 +99,45 @@ class BatchContract(unittest.TestCase):
             stderr.write_text(cases + "\nlifetime smoke complete:\n")
             self.assertTrue(batch.judge(stage, root)[0])
             stderr.write_text(cases + "\nlifetime smoke complete:\nerror(gpa): memory address 0x123 leaked:\n")
+            self.assertFalse(batch.judge(stage, root)[0])
+
+    def test_hover_stages_only_with_foreground_consent(self):
+        code, plan = self.invoke(["--prepare-only", "--require-a11y"])
+        self.assertEqual(code, 0)
+        self.assertFalse(any(p["name"].startswith("hover-") for p in plan))
+        code, plan = self.invoke(["--prepare-only", "--require-a11y", "--allow-foreground"])
+        self.assertEqual(code, 0)
+        hover = {p["name"]: p for p in plan if p["name"].startswith("hover-")}
+        self.assertEqual(set(hover), {"hover-probe", "hover-native"})
+        self.assertTrue(all(p["blocking"] and p["allow_foreground"] for p in hover.values()))
+        self.assertEqual(hover["hover-probe"]["exe_name"], batch.HOVER_PROBE)
+        self.assertEqual(hover["hover-native"]["suite_source"], "e2e/windows-hover-native.test.ts")
+        # Real OS pointer input must reach Cx in this stage.
+        self.assertEqual(hover["hover-native"]["app_env"], {"ZENIT_E2E_ISOLATE_POINTER": "0"})
+        self.assertTrue((batch.REPO / hover["hover-native"]["suite_source"]).is_file())
+
+    def test_hover_probe_requires_every_native_fact_and_the_measurement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "stage-result.json").write_text(json.dumps({"exit_code": 0, "error": ""}))
+            data = {"wheel_routing": 2, "inactive_moves": 3, "inactive_wheels": 1, "cover": {"leave_ms": 9.0},
+                    "uncover": {"move_ms": 12.0}, "release_over_other": {"leaves": 1}}
+            stdout = root / "windows-probe-stdout.log"
+            stderr = root / "windows-probe-stderr.log"
+            facts = "\n".join(f"PASS: fact {i}" for i in range(7))
+            stage = {"name": "hover-probe", "kind": "probe"}
+            stdout.write_text("HOVERPROBE_JSON " + json.dumps(data) + "\n")
+            stderr.write_text(facts + "\nhover probe complete: 0 required fact(s) failed\n")
+            self.assertTrue(batch.judge(stage, root)[0])
+            stderr.write_text(facts + "\nFAIL: WM_MOUSELEAVE when covered\nhover probe complete: 1 required fact(s) failed\n")
+            self.assertFalse(batch.judge(stage, root)[0])
+            stderr.write_text(facts + "\n")  # crashed before completing
+            self.assertFalse(batch.judge(stage, root)[0])
+            stderr.write_text(facts + "\nhover probe complete: 0 required fact(s) failed\n")
+            stdout.write_text("")  # no measurement
+            self.assertFalse(batch.judge(stage, root)[0])
+            stdout.write_text("HOVERPROBE_JSON " + json.dumps(data) + "\n")
+            (root / "stage-result.json").write_text(json.dumps({"exit_code": 1, "error": ""}))
             self.assertFalse(batch.judge(stage, root)[0])
 
     def test_complete_gallery_suite_covers_texture_replacement_without_filter(self):

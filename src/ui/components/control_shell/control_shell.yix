@@ -1,0 +1,92 @@
+//! ControlShell: the layout + style base that Button / Input / Select / DatePicker / Chip compose.
+//!
+//!   root (row: frame, padding, radius, interaction colors)
+//!   +-- icon    (?View: leading icon / spinner)
+//!   +-- content (?View: label / editable surface; grows)
+//!   +-- append  (?View: chevron / clear / count)
+//!
+//! A slot the caller leaves out builds nothing (no box, no gap). Every state is declarative:
+//! variant x size recipe, :hover / :active / :focus from the node, disabled / invalid / expanded /
+//! selected from parameters (signals allowed), so a theme switch re-resolves everything.
+//! Caller-specific looks stack on the component element's `style` (overlay layer, wins over every
+//! state). A composing control's own root look goes in `rootStyle` instead: its layers merge per
+//! state into the tone (a base under the tone's :hover / :active / :disabled, a hover over its
+//! hover), after the geometry and cursor.
+//! The slot children inherit the tone's foreground (text color, `currentColor` icons and drawings)
+//! through every state.
+//! `pins` holds hover / pressed / focus states regardless of the pointer (design specimens).
+//! `focusRing`: the keyboard focus ring's config, null = no ring (whether there is one is fixed at
+//! mount; a present ring follows config changes).
+//! `embedded`: inside a compound control that draws the frame itself (Select's search Input).
+//! `iconVisible` / `contentVisible` / `appendVisible` show and hide a passed slot by data (a slot
+//! is passed or not at mount; a hidden one takes no room and no gap).
+const ui = @import("../../ui.zig");
+const core = @import("../../core.zig");
+const S = @import("styles.yss");
+const ControlVariant = @import("mod.zig").ControlVariant;
+
+pub fn ControlShell(
+    variant: ControlVariant = .secondary,
+    size: S.ControlSize = .md,
+    pill: bool = false,
+    iconOnly: bool = false,
+    leadingIcon: bool = false,
+    iconFit: S.IconFit = .line_box,
+    disabled: bool = false,
+    invalid: bool = false,
+    expanded: bool = false,
+    selected: bool = false,
+    pins: ui.view.Pins = .{},
+    embedded: bool = false,
+    focusable: bool = false,
+    focusRing: ?ui.FocusRingConfig = null,
+    onClick: ?Handler(void) = null,
+    onEvent: ?core.GenericEventCallback = null,
+    eventContext: ?*anyopaque = null,
+    cursor: core.CursorShape = .pointer,
+    disabledCursor: core.CursorShape = .not_allowed,
+    tag: core.ElementTag = .box,
+    rootStyle: core.ConditionalStyle = .{},
+    iconStyle: core.BoxStyle = .{},
+    contentStyle: core.BoxStyle = .{},
+    appendStyle: core.BoxStyle = .{},
+    iconVisible: bool = true,
+    contentVisible: bool = true,
+    appendVisible: bool = true,
+    icon: ?View,
+    content: ?View,
+    append: ?View,
+) View {
+    return (
+        <row
+            tag={tag}
+            style={.{
+                S.root,
+                S.geometry.of(.{ .size = size, .pill = pill, .icon_only = iconOnly, .leading_icon = leadingIcon, .icon_fit = iconFit }),
+                S.pointer.of(.{ .cursor = cursor, .disabled_cursor = disabledCursor, .disabled = disabled }),
+                S.Tone.of(.{ .kind = variant }).merge(rootStyle),
+                S.chrome.of(.{ .embedded = embedded }),
+                S.fade,
+            }}
+            state={.{
+                .disabled = disabled,
+                .invalid = invalid,
+                .expanded = expanded,
+                .selected = selected,
+                .hover = ui.view.atMount(pins).hover,
+                .active = ui.view.atMount(pins).active,
+                .focus = ui.view.atMount(pins).focus,
+                .focus_visible = ui.view.atMount(pins).focus_visible,
+            }}
+            focusable={focusable}
+            focusRing={focusRing}
+            onClick={if (!disabled) onClick}
+            onEvent={if (disabled) null else onEvent}
+            eventContext={eventContext}
+        >
+            {if (icon) <box style={.{ S.icon_slot.of(.{ .size = size, .icon_only = iconOnly }), iconStyle }} visible={iconVisible}>{icon}</box>}
+            {if (content) <row style={.{ S.content_slot.of(.{ .size = size }), contentStyle }} visible={contentVisible}>{content}</row>}
+            {if (append) <row style={.{ S.append_slot.of(.{ .size = size }), appendStyle }} visible={appendVisible}>{append}</row>}
+        </row>
+    );
+}

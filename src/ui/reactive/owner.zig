@@ -14,16 +14,31 @@ pub const ReactiveGraph = graph_mod.ReactiveGraph;
 /// - Uses an Arena allocator to reclaim all memory at once
 /// - On component destruction, Owner.deinit() cleans up all dependencies
 pub const SignalOwner = struct {
+    pub const TestWriteTrace = struct { context: *anyopaque, write: *const fn (*anyopaque, *SignalBase) void };
+    pub const TestTemplateMode = enum { configured, release_tree, comptime_template, runtime_template };
+    pub const TestHook = enum { onMount, onUnmount, onViewAttach, onViewDetach };
     pub const DeferredDisposal = @import("deferred_disposal.zig").Entry;
+    /// Intrusive entry for `runOutsideComputation`; lives inside the requesting resource, which
+    /// must `cancel()` it before it is freed.
+    pub const SettledTask = @import("deferred_disposal.zig").Entry;
 
     /// Arena allocator: all Signal/Effect allocated from here
+    test_write_trace: if (@import("builtin").is_test) ?TestWriteTrace else void = if (@import("builtin").is_test) null else {},
+    template_builder: if (@import("builtin").is_test) TestTemplateMode else void = if (@import("builtin").is_test) .configured else {},
+
+    test_hooks: if (@import("builtin").is_test) [4]usize else void = if (@import("builtin").is_test) @splat(0) else {},
+    test_hook_trace: if (@import("builtin").is_test) std.hash.Wyhash else void = if (@import("builtin").is_test) .init(0) else {},
+    // Test-only A/B template driver; never an LP4 publication entry point.
+    test_template_wrap: if (@import("builtin").is_test) bool else void = if (@import("builtin").is_test) false else {},
+    test_template_depth: if (@import("builtin").is_test) usize else void = if (@import("builtin").is_test) 0 else {},
+
     arena: std.heap.ArenaAllocator,
 
     /// Parent allocator (for Arena itself)
     parent_allocator: Allocator,
 
     /// Thread ID when created (for thread-affinity asserts)
-    thread_id: std.Thread.Id,
+    thread_id: if (@import("builtin").os.tag == .freestanding) void else std.Thread.Id,
 
     /// All Signal list (for cleanup)
     signals: std.ArrayList(*SignalBase),
@@ -56,6 +71,11 @@ pub const SignalOwner = struct {
     scope_disposal_depth: usize = 0,
     deferred_disposals: @import("deferred_disposal.zig").Queue = .{},
     draining_disposals: bool = false,
+
+    /// Event-entry work that arrived while an effect / memo computation was on the stack (see
+    /// `runOutsideComputation`); run once that reactive work has settled.
+    settled_tasks: @import("deferred_disposal.zig").Queue = .{},
+    draining_settled_tasks: bool = false,
 
     pub const debug_checks = @import("builtin").mode == .debug;
     const tracking_stack_reserve = 2 * graph_mod.max_reactive_recursion_depth;
@@ -108,12 +128,19 @@ pub const SignalOwner = struct {
     /// Create a SignalOwner
     ///
     /// parent_alloc: parent allocator, used to create Arena.
+    pub fn recordTestHook(self: *SignalOwner, comptime hook: TestHook) void {
+        if (comptime @import("builtin").is_test) {
+            self.test_hooks[@backingInt(hook)] += 1;
+            self.test_hook_trace.update(@tagName(hook));
+        }
+    }
+
     pub fn init(parent_alloc: Allocator) !*SignalOwner {
         const owner = try parent_alloc.create(SignalOwner);
         owner.* = .{
             .arena = std.heap.ArenaAllocator.init(parent_alloc),
             .parent_allocator = parent_alloc,
-            .thread_id = std.Thread.getCurrentId(),
+            .thread_id = if (@import("builtin").os.tag == .freestanding) {} else std.Thread.getCurrentId(),
             .signals = .empty,
             .effects = .empty,
             .batch_ctx = BatchContext.init(parent_alloc),
@@ -146,6 +173,8 @@ pub const SignalOwner = struct {
         self.assertThread();
         std.debug.assert(self.reactive_callback_depth == 0);
         _ = self.drainDeferredDisposals();
+        // Owners of still-queued settled tasks are released by now; drop the requests unrun.
+        while (self.settled_tasks.popFirst()) |_| {}
         // Single cleanup path: graph.deinit handles all reactive nodes.
         // EffectBase.dependencies / SignalBase.subscribers fields removed.
         // Note: SignalBase.subscribers still exists before P1.5 complete, skip here to keep single
@@ -207,7 +236,60 @@ pub const SignalOwner = struct {
         self.assertThread();
         std.debug.assert(self.reactive_callback_depth > 0);
         self.reactive_callback_depth -= 1;
-        return if (self.reactive_callback_depth == 0) self.drainDeferredDisposals() else false;
+        if (self.reactive_callback_depth != 0) return false;
+        const dispatched = self.drainDeferredDisposals();
+        // Effect creation runs its first pass here: tasks it queued may run once its tracking
+        // frame is gone (graph-driven effects still hold theirs; they drain after the flush).
+        self.drainSettledTasks();
+        return dispatched;
+    }
+
+    /// Whether an effect / memo computation is on the stack. Untrack sentinels do not count:
+    /// they mask tracking, not the computation below them, so the whole stack is scanned.
+    pub fn inReactiveComputation(self: *const SignalOwner) bool {
+        for (self.graph.tracking_stack.items) |id| {
+            if (!id.isNull()) return true;
+        }
+        return false;
+    }
+
+    /// Run event-entry work - typically a model proposal - that a reactive computation set off
+    /// synchronously (e.g. an effect revoking focus delivers a blur whose handler commits a
+    /// draft). Proposals must never run inside an effect / memo, so when one is on the stack the
+    /// request is queued on `entry` and runs after the reactive work settles: when the
+    /// outermost effect drain of the triggering signal write or batch end has finished, or when
+    /// the outermost reactive callback returns. Outside a computation it runs immediately.
+    /// Requests coalesce while queued. `entry` lives in the resource `ptr` points to, which must
+    /// `entry.cancel()` before it is freed; the task re-reads current state, since it may run
+    /// after other effects have changed it.
+    pub fn runOutsideComputation(
+        self: *SignalOwner,
+        entry: *SettledTask,
+        ptr: *anyopaque,
+        task_fn: *const fn (*anyopaque) void,
+    ) void {
+        self.assertThread();
+        if (!self.inReactiveComputation()) {
+            // A queued request for the same work is superseded by this direct run.
+            entry.cancel();
+            task_fn(ptr);
+            return;
+        }
+        if (entry.queue != null) return;
+        self.settled_tasks.append(entry, ptr, task_fn);
+    }
+
+    /// Settle point: run queued `runOutsideComputation` tasks once no computation is on the
+    /// stack and no effect drain is in progress. Called by the reactive write paths after they
+    /// drain; a no-op otherwise.
+    pub fn drainSettledTasks(self: *SignalOwner) void {
+        if (self.settled_tasks.head == null) return;
+        if (self.draining_settled_tasks or self.graph.flushing or self.inReactiveComputation()) return;
+        self.draining_settled_tasks = true;
+        defer self.draining_settled_tasks = false;
+        // Unlink before invoking: a task may write signals (their drain re-enters here and
+        // returns), queue further tasks, or free other entries' owners (which cancel them).
+        while (self.settled_tasks.popFirst()) |entry| entry.dispose_fn(entry.ptr);
     }
 
     /// Entry storage belongs to the resource and must stay stable until its
@@ -282,6 +364,7 @@ pub const SignalOwner = struct {
             std.log.err("[reactive.SignalOwner] graph.endBatch failed: {}", .{err});
         };
         self.batch_ctx.end(self);
+        self.drainSettledTasks();
     }
 
     /// Untrack dependencies
@@ -321,6 +404,7 @@ pub const SignalOwner = struct {
 
     /// Thread-affinity assert (active only with runtime_safety enabled)
     pub fn assertThread(self: *SignalOwner) void {
+        if (@import("builtin").os.tag == .freestanding) return;
         if (!std.debug.runtime_safety) return;
         const current = std.Thread.getCurrentId();
         if (self.thread_id != current) {

@@ -1,11 +1,14 @@
 # Zenit common icons
 
 This is the small provider-neutral source set behind `ui.assets.common`.
-17 of the 18 SVG files are byte-identical copies of Lucide v1.31.0 icons;
+17 of the 20 SVG files are byte-identical copies of Lucide v1.31.0 icons;
 filenames retain Zenit's historical API spelling (`chevron_down`, `x_close`,
 etc.). `mark.svg` maps to Lucide `crosshair.svg`, and `x_close.svg` maps to
 `x.svg`. `star_filled.svg` is Lucide `star.svg` with `fill="currentColor"`
 (the Rate component's default glyph).
+`checkbox_check.svg` and `checkbox_mixed.svg` are Zenit's own 12×12 glyphs
+with a 2px stroke, drawn for the Checkbox box, where Lucide's 24-grid strokes
+render at 1px and read too thin.
 
 The icons are ISC licensed under [`../icons_oss/LICENSE`](../icons_oss/LICENSE).
 Regenerate their flattened geometry with:

@@ -37,7 +37,22 @@ pub const CommandEncoder = struct {
     }
     /// Per-frame pass counters (render thread); the app renderer reads and
     /// resets them into FrameStats. native_ns covers the native begin/end calls.
-    pub var perf_counters: struct { render_passes: u32 = 0, blit_passes: u32 = 0, native_ns: u64 = 0 } = .{};
+    pub var perf_counters: PerfCounters = .{};
+    /// Encode-cost attribution (render thread). draw_ns spans drawChecked;
+    /// bind_ns its binding-table assembly (views, uniform snapshots, bind
+    /// groups); native_draw_ns the native record call.
+    pub const PerfCounters = struct {
+        render_passes: u32 = 0,
+        blit_passes: u32 = 0,
+        native_ns: u64 = 0,
+        draws: u32 = 0,
+        draw_ns: u64 = 0,
+        bind_ns: u64 = 0,
+        native_draw_ns: u64 = 0,
+        uniform_snapshots: u32 = 0,
+        texture_views: u32 = 0,
+        bind_groups: u32 = 0,
+    };
     pub fn beginRenderPass(self: *CommandEncoder, desc: RenderPassDescriptor) !RenderPass {
         if (self.finished) return error.EncoderAlreadyFinished;
         if (self.active_generation != 0) return error.InvalidEncoderState;
@@ -172,10 +187,145 @@ const RenderState = struct {
         for (&self.samplers) |*sampler| if (sampler.*) |*s| s.destroy();
     }
 };
+/// Bind group entries of one draw, assembled on the stack. Texture views and
+/// uniform snapshots it creates are released after the draw is recorded (the
+/// command retains what it uses).
+const GroupEntries = struct {
+    const max_entries = 128;
+    current: *RenderState,
+    pipeline: *d12.RenderPipeline,
+    context: *resources.Context,
+    entries: [max_entries]d12.NativeBindingEntry = undefined,
+    group_counts: [4]u32 = @splat(0),
+    entry_total: usize = 0,
+    views: [max_entries]d12.TextureView = undefined,
+    view_count: usize = 0,
+    uniform_snapshots: [max_entries]d12.Buffer = undefined,
+    snapshot_count: usize = 0,
+    fn deinit(b: *GroupEntries) void {
+        for (b.views[0..b.view_count]) |*view| view.destroy();
+        for (b.uniform_snapshots[0..b.snapshot_count]) |*buffer| buffer.destroy();
+    }
+    /// Whether a bind group made of this group's assembled entries would be
+    /// created (error path only).
+    fn groupValid(b: *GroupEntries, info: anytype, group_index: usize) bool {
+        var at: usize = 0;
+        for (b.group_counts[0..group_index]) |count| at += count;
+        _ = info;
+        return d12.validateBindGroupEntries(&b.pipeline.bindingLayout(), @intCast(group_index), b.entries[at..][0..b.group_counts[group_index]]);
+    }
+    fn add(b: *GroupEntries, info: anytype, group_index: usize) !void {
+        for (info.bindings) |binding| {
+            if (binding.group != group_index) continue;
+            if (b.entry_total == GroupEntries.max_entries) return error.UnsupportedRendererBinding;
+            if (binding.count != 1 or binding.binding >= 32 or binding.visibility == 0 or binding.visibility & ~@as(u32, 3) != 0) return error.UnsupportedRendererBinding;
+            var entry: d12.BindGroupEntry = undefined;
+            switch (binding.kind) {
+                0 => {
+                    entry = try RenderPass.uniformEntry(b.current, binding.visibility & 1 != 0, binding.binding);
+                    if (binding.visibility == 3) {
+                        const fragment = try RenderPass.uniformEntry(b.current, false, binding.binding);
+                        if (entry.buffer.?.raw != fragment.buffer.?.raw or entry.offset != fragment.offset or entry.size != fragment.size) {
+                            if (entry.size != fragment.size) return error.SharedUniformMismatch;
+                            var vs = entry.buffer.?.*;
+                            var ps = fragment.buffer.?.*;
+                            const left = vs.getMappedRange(entry.offset, entry.size.?) catch return error.SharedUniformMismatch;
+                            const right = ps.getMappedRange(fragment.offset, fragment.size.?) catch return error.SharedUniformMismatch;
+                            if (!std.mem.eql(u8, left, right)) return error.SharedUniformMismatch;
+                        }
+                    }
+                    // HLSL cbuffers round the last register to 16 bytes.
+                    // Inline snapshots already own zeroed native padding.
+                    const inline_bytes = if (binding.visibility & 1 != 0) &b.current.vertex_bytes else &b.current.fragment_bytes;
+                    if (inline_bytes[binding.binding] != null) entry.size = std.mem.alignForward(u64, entry.size.?, 16);
+                    // Bind only the shader's declared registers. Using the
+                    // remainder of a large upload allocation copies up to
+                    // 64 KiB per tiny uniform and includes unrelated slots.
+                    entry.size = try reflectedUniformSize(entry.size.?, binding.min_size);
+                    // Shared renderers append CPU-sized uniforms (e.g.340
+                    // bytes), whereas native CBV addresses align to256.
+                    // Snapshot an unaligned host-visible range per draw;
+                    // the command retains it through GPU use.
+                    if (entry.offset % 256 != 0) {
+                        const size = std.mem.alignForward(u64, binding.min_size, 16);
+                        if (size == 0 or size > 65536 or std.mem.alignForward(u64, entry.size.?, 16) < size) return error.InvalidUniformData;
+                        const payload = @min(entry.size.?, size);
+                        var source = entry.buffer.?.*;
+                        const bytes = source.getMappedRange(entry.offset, payload) catch return error.UniformBufferNotHostVisible;
+                        CommandEncoder.perf_counters.uniform_snapshots += 1;
+                        b.uniform_snapshots[b.snapshot_count] = try b.context.createBuffer(b.context.allocator, .{ .size = size, .usage = .{ .uniform = true, .map_write = true } });
+                        const snapshot = &b.uniform_snapshots[b.snapshot_count];
+                        b.snapshot_count += 1;
+                        const mapped = try snapshot.getMappedRange(0, size);
+                        @memset(mapped, 0);
+                        @memcpy(mapped[0..@intCast(payload)], bytes);
+                        entry.buffer = snapshot;
+                        entry.offset = 0;
+                        entry.size = size;
+                    }
+                    if (entry.size.? < binding.min_size) return error.InvalidUniformData;
+                    entry.binding = binding.binding;
+                },
+                2 => {
+                    // Explicit renderer spans expose only the uploaded
+                    // batch; ordinary bindings retain their full range.
+                    entry = try RenderPass.bufferEntry(b.current, binding.visibility & 1 != 0, binding.binding);
+                    entry.stride = try b.pipeline.bufferStride(binding.group, binding.binding);
+                    // Capacity allocations may end in a partial element
+                    // (Path's byte-sized growth with28-byte vertices).
+                    // Expose only complete structured elements, preserving
+                    // raw ByteAddressBuffer ranges and native offset guards.
+                    if (entry.stride != 0) {
+                        entry.size = entry.size.? - entry.size.? % entry.stride;
+                        if (entry.size.? == 0) return error.InvalidStorageData;
+                    }
+                    if (binding.visibility == 3) {
+                        var other = try RenderPass.bufferEntry(b.current, false, binding.binding);
+                        if (entry.stride != 0) other.size = other.size.? - other.size.? % entry.stride;
+                        if (entry.buffer.?.raw != other.buffer.?.raw or entry.offset != other.offset or entry.size != other.size) return error.SharedStorageMismatch;
+                    }
+                },
+                1 => {
+                    if (binding.visibility != 2) return error.UnsupportedRendererBinding;
+                    const texture = if (b.current.textures[binding.binding]) |*t| t else return error.TextureNotSet;
+                    const dimension: gpu.TextureViewDimension = switch (binding.view_dimension) {
+                        1 => .@"1d",
+                        2 => .@"2d",
+                        3 => .@"2d_array",
+                        4 => .cube,
+                        5 => .cube_array,
+                        6 => .@"3d",
+                        else => return error.UnsupportedRendererBinding,
+                    };
+                    // Full-range views are cached by the texture natively.
+                    CommandEncoder.perf_counters.texture_views += 1;
+                    b.views[b.view_count] = try texture.inner.createView(.{ .dimension = dimension });
+                    entry = .{ .binding = binding.binding, .texture_view = &b.views[b.view_count] };
+                    b.view_count += 1;
+                },
+                4 => {
+                    if (binding.visibility != 2) return error.UnsupportedRendererBinding;
+                    const sampler = if (b.current.samplers[binding.binding]) |*smp| smp else return error.SamplerNotSet;
+                    entry = .{ .binding = binding.binding, .sampler = sampler };
+                },
+                else => return error.UnsupportedRendererBinding,
+            }
+            b.entries[b.entry_total] = try d12.nativeBindingEntry(entry);
+            b.entry_total += 1;
+            b.group_counts[group_index] += 1;
+        }
+    }
+};
 pub const RenderPass = struct {
     command_encoder: *CommandEncoder,
     generation: u64,
+    /// The pass renders part of a larger scene at its own coordinates (a
+    /// compositor sprite's cell in a target that ends at the cell): scissors
+    /// past the target are clamped to it instead of rejecting the draw.
+    clamp_scissor: bool = false,
     pub var frame_draw_call_count: u32 = 0;
+    /// What the latest counted (not returned) pass error was (diagnostics).
+    pub var last_error: []const u8 = "";
     pub fn isActive(self: *const RenderPass) bool {
         return !self.command_encoder.finished and self.command_encoder.active_render != null and self.command_encoder.active_generation == self.generation;
     }
@@ -193,7 +343,16 @@ pub const RenderPass = struct {
         self.state().viewport = .{ .x = x, .y = y, .width = width, .height = height, .min_depth = min_depth, .max_depth = max_depth };
     }
     pub fn setScissorRect(self: *RenderPass, x: u32, y: u32, width: u32, height: u32) void {
-        self.state().scissor = .{ .x = x, .y = y, .width = width, .height = height };
+        const current = self.state();
+        if (self.clamp_scissor) {
+            const tw: u32 = @intFromFloat(current.target_size[0]);
+            const th: u32 = @intFromFloat(current.target_size[1]);
+            const left = @min(x, tw);
+            const top = @min(y, th);
+            current.scissor = .{ .x = left, .y = top, .width = @min(x +| width, tw) - left, .height = @min(y +| height, th) - top };
+            return;
+        }
+        current.scissor = .{ .x = x, .y = y, .width = width, .height = height };
     }
     pub fn setVertexBuffer(self: *RenderPass, slot: u32, buffer: *const d12.Buffer, offset: u64) void {
         const current = self.state();
@@ -232,7 +391,8 @@ pub const RenderPass = struct {
     }
     pub fn setFragmentTextureBinding(self: *RenderPass, slot: u32, texture: resources.TextureBinding) void {
         _ = self.state();
-        self.setFragmentTextureBindingChecked(slot, texture) catch {
+        self.setFragmentTextureBindingChecked(slot, texture) catch |err| {
+            last_error = @errorName(err);
             _ = CommandBuffer.error_count.fetchAdd(1, .monotonic);
         };
     }
@@ -284,13 +444,15 @@ pub const RenderPass = struct {
     }
     pub fn setVertexBytes(self: *RenderPass, slot: u32, data: []const u8) void {
         _ = self.state();
-        self.setVertexBytesChecked(slot, data) catch {
+        self.setVertexBytesChecked(slot, data) catch |err| {
+            last_error = @errorName(err);
             _ = CommandBuffer.error_count.fetchAdd(1, .monotonic);
         };
     }
     pub fn setFragmentBytes(self: *RenderPass, slot: u32, data: []const u8) void {
         _ = self.state();
-        self.setFragmentBytesChecked(slot, data) catch {
+        self.setFragmentBytesChecked(slot, data) catch |err| {
+            last_error = @errorName(err);
             _ = CommandBuffer.error_count.fetchAdd(1, .monotonic);
         };
     }
@@ -310,6 +472,12 @@ pub const RenderPass = struct {
     }
     pub fn drawChecked(self: *RenderPass, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) !void {
         if (!self.isActive()) return error.InvalidEncoderState;
+        const clock = @import("clock.zig");
+        const draw_t0 = clock.nowNanoseconds();
+        defer if (draw_t0) |t0| if (clock.nowNanoseconds()) |t1| {
+            CommandEncoder.perf_counters.draw_ns += t1 -| t0;
+        };
+        CommandEncoder.perf_counters.draws += 1;
         const current = self.state();
         const pipeline = if (current.pipeline) |*p| p else return error.PipelineNotSet;
         var bindings: [32]d12.VertexBinding = undefined;
@@ -327,129 +495,42 @@ pub const RenderPass = struct {
         const layout = pipeline.bindingLayout();
         const info = layout.describe();
         if (info.groups > 4) return error.UnsupportedRendererBinding;
-        var groups: [4]d12.BindGroup = undefined;
-        var created: usize = 0;
-        defer for (groups[0..created]) |*group| group.deinit();
-        const context = self.command_encoder.context;
+        // Entries of every group, concatenated in group order; the native
+        // draw validates them as bind groups and writes their descriptors
+        // directly (no per-draw bind group objects or heap allocations).
+        // Entries of every group, concatenated in group order; the native
+        // draw validates them as bind groups and writes their descriptors
+        // directly (no per-draw bind group objects or heap allocations).
+        var b: GroupEntries = .{ .current = current, .pipeline = pipeline, .context = self.command_encoder.context };
+        defer b.deinit();
+        const bind_t0 = clock.nowNanoseconds();
         for (0..info.groups) |group_index| {
-            var entry_count: usize = 0;
-            for (info.bindings) |binding| if (binding.group == group_index) {
-                entry_count += 1;
+            b.add(info, group_index) catch |err| {
+                // As when each group's bind group was created before the next
+                // was assembled: an earlier group creation would reject wins.
+                if (err != error.InvalidBindGroup) for (0..group_index) |g| {
+                    if (!b.groupValid(info, g)) return error.InvalidBindGroup;
+                };
+                return err;
             };
-            const entries = try context.allocator.alloc(d12.BindGroupEntry, entry_count);
-            defer context.allocator.free(entries);
-            const views = try context.allocator.alloc(d12.TextureView, entry_count);
-            defer context.allocator.free(views);
-            var view_count: usize = 0;
-            defer for (views[0..view_count]) |*view| view.destroy();
-            const uniform_snapshots = try context.allocator.alloc(d12.Buffer, entry_count);
-            defer context.allocator.free(uniform_snapshots);
-            var snapshot_count: usize = 0;
-            defer for (uniform_snapshots[0..snapshot_count]) |*buffer| buffer.destroy();
-            var index: usize = 0;
-            for (info.bindings) |binding| {
-                if (binding.group != group_index) continue;
-                if (binding.count != 1 or binding.binding >= 32 or binding.visibility == 0 or binding.visibility & ~@as(u32, 3) != 0) return error.UnsupportedRendererBinding;
-                var entry: d12.BindGroupEntry = undefined;
-                switch (binding.kind) {
-                    0 => {
-                        entry = try uniformEntry(current, binding.visibility & 1 != 0, binding.binding);
-                        if (binding.visibility == 3) {
-                            const fragment = try uniformEntry(current, false, binding.binding);
-                            if (entry.buffer.?.raw != fragment.buffer.?.raw or entry.offset != fragment.offset or entry.size != fragment.size) {
-                                if (entry.size != fragment.size) return error.SharedUniformMismatch;
-                                var vs = entry.buffer.?.*;
-                                var ps = fragment.buffer.?.*;
-                                const left = vs.getMappedRange(entry.offset, entry.size.?) catch return error.SharedUniformMismatch;
-                                const right = ps.getMappedRange(fragment.offset, fragment.size.?) catch return error.SharedUniformMismatch;
-                                if (!std.mem.eql(u8, left, right)) return error.SharedUniformMismatch;
-                            }
-                        }
-                        // HLSL cbuffers round the last register to 16 bytes.
-                        // Inline snapshots already own zeroed native padding.
-                        const inline_bytes = if (binding.visibility & 1 != 0) &current.vertex_bytes else &current.fragment_bytes;
-                        if (inline_bytes[binding.binding] != null) entry.size = std.mem.alignForward(u64, entry.size.?, 16);
-                        // Bind only the shader's declared registers. Using the
-                        // remainder of a large upload allocation copies up to
-                        // 64 KiB per tiny uniform and includes unrelated slots.
-                        entry.size = try reflectedUniformSize(entry.size.?, binding.min_size);
-                        // Shared renderers append CPU-sized uniforms (e.g.340
-                        // bytes), whereas native CBV addresses align to256.
-                        // Snapshot an unaligned host-visible range per draw;
-                        // command-owned bind groups retain it through GPU use.
-                        if (entry.offset % 256 != 0) {
-                            const size = std.mem.alignForward(u64, binding.min_size, 16);
-                            if (size == 0 or size > 65536 or std.mem.alignForward(u64, entry.size.?, 16) < size) return error.InvalidUniformData;
-                            const payload = @min(entry.size.?, size);
-                            var source = entry.buffer.?.*;
-                            const bytes = source.getMappedRange(entry.offset, payload) catch return error.UniformBufferNotHostVisible;
-                            uniform_snapshots[snapshot_count] = try context.createBuffer(context.allocator, .{ .size = size, .usage = .{ .uniform = true, .map_write = true } });
-                            const snapshot = &uniform_snapshots[snapshot_count];
-                            snapshot_count += 1;
-                            const mapped = try snapshot.getMappedRange(0, size);
-                            @memset(mapped, 0);
-                            @memcpy(mapped[0..@intCast(payload)], bytes);
-                            entry.buffer = snapshot;
-                            entry.offset = 0;
-                            entry.size = size;
-                        }
-                        if (entry.size.? < binding.min_size) return error.InvalidUniformData;
-                        entry.binding = binding.binding;
-                    },
-                    2 => {
-                        // Explicit renderer spans expose only the uploaded
-                        // batch; ordinary bindings retain their full range.
-                        entry = try bufferEntry(current, binding.visibility & 1 != 0, binding.binding);
-                        entry.stride = try pipeline.bufferStride(binding.group, binding.binding);
-                        // Capacity allocations may end in a partial element
-                        // (Path's byte-sized growth with28-byte vertices).
-                        // Expose only complete structured elements, preserving
-                        // raw ByteAddressBuffer ranges and native offset guards.
-                        if (entry.stride != 0) {
-                            entry.size = entry.size.? - entry.size.? % entry.stride;
-                            if (entry.size.? == 0) return error.InvalidStorageData;
-                        }
-                        if (binding.visibility == 3) {
-                            var other = try bufferEntry(current, false, binding.binding);
-                            if (entry.stride != 0) other.size = other.size.? - other.size.? % entry.stride;
-                            if (entry.buffer.?.raw != other.buffer.?.raw or entry.offset != other.offset or entry.size != other.size) return error.SharedStorageMismatch;
-                        }
-                    },
-                    1 => {
-                        if (binding.visibility != 2) return error.UnsupportedRendererBinding;
-                        const texture = if (current.textures[binding.binding]) |*t| t else return error.TextureNotSet;
-                        const dimension: gpu.TextureViewDimension = switch (binding.view_dimension) {
-                            1 => .@"1d",
-                            2 => .@"2d",
-                            3 => .@"2d_array",
-                            4 => .cube,
-                            5 => .cube_array,
-                            6 => .@"3d",
-                            else => return error.UnsupportedRendererBinding,
-                        };
-                        views[view_count] = try texture.inner.createView(.{ .dimension = dimension });
-                        entry = .{ .binding = binding.binding, .texture_view = &views[view_count] };
-                        view_count += 1;
-                    },
-                    4 => {
-                        if (binding.visibility != 2) return error.UnsupportedRendererBinding;
-                        const sampler = if (current.samplers[binding.binding]) |*s| s else return error.SamplerNotSet;
-                        entry = .{ .binding = binding.binding, .sampler = sampler };
-                    },
-                    else => return error.UnsupportedRendererBinding,
-                }
-                entries[index] = entry;
-                index += 1;
-            }
-            groups[group_index] = try context.device.createBindGroup(context.allocator, .{ .layout = &layout, .group = @intCast(group_index), .entries = entries });
-            created += 1;
+            CommandEncoder.perf_counters.bind_groups += 1;
         }
-        try current.inner.draw(.{ .pipeline = pipeline, .vertex_buffers = bindings[0..count], .bind_groups = groups[0..created], .vertex_count = vertex_count, .instance_count = instance_count, .first_vertex = first_vertex, .first_instance = first_instance, .viewport = current.viewport, .scissor = current.scissor });
+        const entries = b.entries[0..b.entry_total];
+        const group_counts = b.group_counts[0..info.groups];
+        const native_t0 = clock.nowNanoseconds();
+        if (bind_t0) |t0| if (native_t0) |t1| {
+            CommandEncoder.perf_counters.bind_ns += t1 -| t0;
+        };
+        defer if (native_t0) |t0| if (clock.nowNanoseconds()) |t1| {
+            CommandEncoder.perf_counters.native_draw_ns += t1 -| t0;
+        };
+        try current.inner.drawEntries(.{ .pipeline = pipeline, .vertex_buffers = bindings[0..count], .vertex_count = vertex_count, .instance_count = instance_count, .first_vertex = first_vertex, .first_instance = first_instance, .viewport = current.viewport, .scissor = current.scissor }, entries, group_counts);
         if (vertex_count != 0 and instance_count != 0) frame_draw_call_count += 1;
     }
     pub fn draw(self: *RenderPass, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) void {
         _ = self.state();
         self.drawChecked(vertex_count, instance_count, first_vertex, first_instance) catch |err| {
+            last_error = @errorName(err);
             _ = CommandBuffer.error_count.fetchAdd(1, .monotonic);
             std.log.err("D3D12 draw rejected: {s} (vertices={d}, instances={d}, first_vertex={d}, first_instance={d})", .{ @errorName(err), vertex_count, instance_count, first_vertex, first_instance });
         };
@@ -503,6 +584,9 @@ pub const RenderPass = struct {
             right = @min(right, @as(u64, clip.x) + clip.width);
             bottom = @min(bottom, @as(u64, clip.y) + clip.height);
         }
+        // Nothing of the region is inside the scissor (it may even start past
+        // the target, which a draw would be rejected for).
+        if (right <= left or bottom <= top) return;
         current.scissor = .{ .x = left, .y = top, .width = @intCast(right -| left), .height = @intCast(bottom -| top) };
         self.draw(vertex_count, instance_count, 0, 0);
     }
@@ -526,6 +610,7 @@ pub const RenderPass = struct {
                     right = @min(right, @as(u64, clip.x) + clip.width);
                     bottom = @min(bottom, @as(u64, clip.y) + clip.height);
                 }
+                if (right <= left or bottom <= top) return;
                 current.scissor = .{ .x = left, .y = top, .width = @intCast(right -| left), .height = @intCast(bottom -| top) };
             }
         }

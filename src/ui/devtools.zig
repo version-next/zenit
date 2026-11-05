@@ -599,11 +599,19 @@ fn themeToggleEvent(event: Event, context: ?*anyopaque) EventResult {
     return .handled;
 }
 
+fn freePanelChildren(cx: *Cx, parent: *Node) void {
+    while (parent.children.items.len > 0) {
+        const child = parent.children.items[parent.children.items.len - 1];
+        parent.removeChildRetained(child);
+        cx.freeNode(child);
+    }
+}
+
 /// Switch DevTools window theme and rebuild panel content.
 ///
 /// Panel most colors baked at build from cx.tokens (raw box/text no theme hook), cx.setTheme alone
 /// refreshes components, so full rebuild: routine like detailsBeforeRender, break interaction refs,
-/// unwire hook/scope pointers, dispose content scope, then pop children sequentially. Must call
+/// unwire hook/scope pointers, dispose content scope, then detach/free children sequentially. Must call
 /// from root before_render (tick runs root hook pre-recursion, child replace safe).
 fn applyThemeToggle(state: *DevToolsState, cx: *Cx, target: *Cx, root: *Node) void {
     const opts = state.panel_opts;
@@ -619,10 +627,7 @@ fn applyThemeToggle(state: *DevToolsState, cx: *Cx, target: *Cx, root: *Node) vo
     if (state.scope) |s| s.dispose();
     state.scope = null;
     state.clearMountedNodeRefs();
-    while (root.children.pop()) |child| {
-        child.parent = null;
-        cx.freeNode(child);
-    }
+    freePanelChildren(cx, root);
     _ = state.arena.reset(.retain_capacity);
     // Edit-state Input already freed with old details, exit edit, avoid post-rebuild focus steal.
     clearEditingState(state);
@@ -635,10 +640,7 @@ fn applyThemeToggle(state: *DevToolsState, cx: *Cx, target: *Cx, root: *Node) vo
     state.scope = Scope.init(cx.allocator, state.root_scope.?, cx.owner) catch return;
     buildPanelContent(cx, target, state, root) catch {
         state.clearMountedNodeRefs();
-        while (root.children.pop()) |child| {
-            child.parent = null;
-            cx.freeNode(child);
-        }
+        freePanelChildren(cx, root);
     };
 
     state.tree_dirty = true;
@@ -1663,7 +1665,7 @@ fn renderTreeRowRetained(node: *Node, index: usize, cx: *Cx, user_context: ?*any
     node.style.width = .{ .grow = .{} };
     node.style.cursor = .pointer;
     node.meta.ownership.meta.test_id = tree_row_test_id;
-    node.children.items.len = 0;
+    freePanelChildren(cx, node);
 
     // Expander
     if (entry.has_children) {
@@ -1880,17 +1882,9 @@ fn detailsBeforeRender(content_node: *Node) void {
     if (state.details_scope) |ds| ds.dispose();
     state.details_scope = null;
 
-    // Finally free old children.
-    //
-    // pop not `for (children.items) |child| freeNode(child)`: tick freeNode calls
-    // removeChildIncremental -> children.orderedRemove(i), modifies array mid-iterate, later
-    // iterations skip elements and eventually dereference stale slot (shows
-    // invalidateHandlesInSubtree recursion dereferencing 0xaaaa... poison segfault).
-    // Unlink first, then freeNode, parent-child link severed, removeChildIncremental no-op.
-    while (content_node.children.pop()) |child| {
-        child.parent = null;
-        cx.freeNode(child);
-    }
+    // Detach through the structural seam before freeing. Index from the live
+    // list each time: cleanup may remove/reparent siblings.
+    freePanelChildren(cx, content_node);
 
     // Reclaim frame arena: Trace/State tab event ctx (TracePauseCtx/TraceClickCtx etc.) allocated
     // here, only referenced by freed old subtree.
@@ -4315,6 +4309,65 @@ test "DevTools header theme toggle flips scheme and rebuilds panel content" {
     devtoolsBeforeRender(panel);
     try std.testing.expect(dev.tokens == &theme.light);
     try std.testing.expectEqual(child_count, panel.children.items.len);
+}
+
+// Kept beside the private rebuild hooks so the regression reaches the real
+// event, details and partial-panel failure paths rather than a synthetic tree.
+test "renderer host DevTools theme details rows and failed panel rebuilds" {
+    const a = std.testing.allocator;
+    var host: @import("core/recording_host.zig").RecordingHost = undefined;
+    host.init(a);
+    defer host.deinit();
+    const target = try Cx.init(a, std.testing.io);
+    defer target.deinit();
+    target.root = try core.box(target, .{}, .{});
+
+    var failing = std.testing.FailingAllocator.init(a, .{});
+    const dev = try Cx.init(failing.allocator(), std.testing.io);
+    defer dev.deinit();
+    const panel = try mountPanel(dev, target, .{});
+    dev.root = panel;
+    const state = try getState(dev);
+    try host.expectForest(&.{ target.root.?, panel });
+
+    target.inspector.selected_node_id = target.root.?.id;
+    for (0..2) |_| {
+        state.details_dirty = true;
+        detailsBeforeRender(state.details_content.?);
+        try host.expectForest(&.{ target.root.?, panel });
+    }
+    // Reuse a virtual tree row that already owns children.
+    const row = try core.box(dev, .{}, .{});
+    for (0..2) |_| {
+        renderTreeRowRetained(row, 0, dev, state);
+        try host.expectForest(&.{ target.root.?, panel, row });
+    }
+    dev.freeNode(row);
+
+    _ = themeToggleEvent(.{ .mouse_down = .{ .x = 0, .y = 0, .button = .left } }, state);
+    devtoolsBeforeRender(panel);
+    try host.expectForest(&.{ target.root.?, panel });
+
+    // Offset zero fails the new scope; later offsets fail after panel assembly
+    // has started. Recovery also exercises repeated owner subtree replacement.
+    var partial_failures: usize = 0;
+    for ([_]usize{ 0, 8, 32 }) |offset| {
+        failing.fail_index = failing.alloc_index + offset;
+        state.theme_toggle_pending = true;
+        devtoolsBeforeRender(panel);
+        const induced = failing.has_induced_failure;
+        failing.fail_index = std.math.maxInt(usize);
+        failing.resize_fail_index = std.math.maxInt(usize);
+        try std.testing.expect(induced);
+        try std.testing.expectEqual(@as(usize, 0), panel.children.items.len);
+        if (state.scope != null) partial_failures += 1;
+        try host.expectForest(&.{ target.root.?, panel });
+        state.theme_toggle_pending = true;
+        devtoolsBeforeRender(panel);
+        try std.testing.expect(panel.children.items.len > 0);
+        try host.expectForest(&.{ target.root.?, panel });
+    }
+    try std.testing.expect(partial_failures > 0);
 }
 
 test "DevTools titlebar_safe_top = 0 drops the titlebar spacer for hosts with their own header" {

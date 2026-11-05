@@ -1,167 +1,72 @@
-//! Button styles and rendering: frame = ControlShell recipe (variant colors and sizes in
-//! control_shell/styles.yss) + caller style overrides; hover/pressed only change background
-//! (consistent with recipe interaction states), 150ms transition. View in button.yix.
-//!
-//! The Zig functions here cover two cases YSS cannot express:
-//! - Caller runtime overrides (base_style/hover_style/pressed_style are complete StyleOverride):
-//!   must be merged into the color variant states, then hover/pressed background colors extracted
-//!   (overriding only background still uses the variant hover color); cannot be split into style
-//!   tuples by layer. Text color/font-size/font-weight overrides also apply to label, icon tint,
-//!   and loading ring.
-//! - Geometry computed from theme: row box height = font-size x line height multiplier, icon size =
-//!   min(icon token, row box); needs current theme values.
+//! Button styles. Frame, tone, geometry and interaction states are ControlShell's
+//! (control_shell/styles.yss, glyph icon fit); here: the root style Button merges into the shell's
+//! tone (block sizing, centering, caller overrides), the label tier, the glyph and the loading ring.
+//! Label, glyph and ring declare no color: they inherit the shell's foreground (currentColor)
+//! through every state. View in button.yix.
 const ui = @import("../../ui.zig");
 const core = @import("../../core.zig");
 const Color = core.Color;
-const Border = core.Border;
-const BoxStyle = core.BoxStyle;
-const TextStyle = core.TextStyle;
 const StyleOverride = core.StyleOverride;
+const ConditionalStyle = core.ConditionalStyle;
 const ThemeTokens = core.theme.ThemeTokens;
-const ConditionalStyle = @import("../../recipe.zig").ConditionalStyle;
 const shell = @import("../control_shell/mod.zig");
 const spinner = @import("../spinner/styles.yss");
 
 pub const ButtonVariant = shell.ControlVariant;
 pub const ButtonSize = shell.ControlSize;
 
-/// Frame: variant, size, icon layout, disabled, block-level, and caller override
-pub const Shape = struct {
-    variant: ButtonVariant,
-    size: ButtonSize,
-    icon_only: bool,
-    leading_icon: bool,
-    disabled: bool,
+/// Button's root on the shell, merged per state into the tone (ControlShell rootStyle): the
+/// caller's base_style sits under the tone's :hover / :active / :disabled, hover_style /
+/// pressed_style over the tone's. Content is centered; a block button fills the main axis (an
+/// icon-only one stays square), any other keeps its own width in a stretching parent (centering a
+/// stretched frame would push the label out of its visible box).
+pub const Root = struct {
     block: bool,
-    style: StyleOverride,
-    hover_style: ?StyleOverride,
-    pressed_style: ?StyleOverride,
+    icon_only: bool,
+    base: StyleOverride,
+    hover: ?StyleOverride,
+    pressed: ?StyleOverride,
 };
 
-fn conditional(s: Shape, t: *const ThemeTokens) ConditionalStyle {
-    const config: shell.ControlShellConfig = .{
-        .size = s.size,
-        .variant = s.variant,
-        .disabled = s.disabled,
-        .icon_only = s.icon_only,
-        .leading_icon = s.leading_icon,
-        .style = s.style,
-        .hover_style = s.hover_style,
-        .pressed_style = s.pressed_style,
-    };
-    return config.resolvedConditionalStyle(t);
+pub fn rootStyle(r: Root) ConditionalStyle {
+    var base = r.base;
+    base.justify = .center;
+    if (!r.block) base.no_cross_stretch = true;
+    if (r.block and !r.icon_only) {
+        base.width = .{ .grow = .{} };
+        base.align_self = .stretch;
+    }
+    return .{ .base = base, .hover = r.hover, .active = r.pressed };
 }
 
-/// Frame height = padding_y x 2 + line height (slot minimum), no hardcoded height. Fit-width
-/// buttons reject parent container stretch (prevents full-column expansion, centering pushes
-/// content off-screen); block uses grow to fill actively (icon-only stays square, no stretch). No
-/// interaction state when disabled.
-pub fn root(s: Shape, t: *const ThemeTokens) ConditionalStyle {
-    const cs = conditional(s, t);
-    const r = cs.resolve(.{ .is_disabled = s.disabled });
-    const radius: f32 = r.corner_radius.?;
-    var border: Border = r.border orelse .{};
-    border.radius = radius;
-    if (r.border_color) |c| border.color = c;
-    if (r.border_width) |w| border.width = w;
-    const base: BoxStyle = .{
-        .width = if (s.block and !s.icon_only) .{ .grow = .{} } else r.width.?,
-        .height = r.height.?,
-        .direction = .row,
-        .background = r.background orelse Color.TRANSPARENT,
-        .border = border,
-        .padding = r.padding.?,
-        .align_items = .center,
-        .justify = .center,
-        .gap = r.gap.?,
-        .cursor = r.cursor orelse (if (s.disabled) .not_allowed else .pointer),
-        .hit_shape = .{ .rounded_rect = radius },
-        .clip_shape = .{ .rounded_rect = radius },
-        .opacity = r.opacity,
-        .no_cross_stretch = if (s.block) null else true,
-    };
-    if (s.disabled) return .{ .base = base };
-    const bg = cs.bgColors();
-    return .{ .base = base, .hover = .{ .background = bg.hover }, .active = .{ .background = bg.pressed } };
-}
+/// The label's text tier: the size tier's font size (base_style's when set) and line height.
+/// Weight and color are left to inherit from the root (the tone's, base_style's, and per state
+/// hover_style's / pressed_style's), so a state that changes the weight re-measures the label.
+pub const Label = struct { size: ButtonSize, font_size: ?f32 };
+pub const LabelText = struct { font_size: f32, line_height: f32 };
 
-/// Background transitions between normal/hover/pressed states
-style fade { transition: background 150ms ease-out; }
-
-/// Loading ring canvas fills loading indicator box (box is square per size)
-style spinner_canvas { width: fill; height: fill; }
-
-/// Text and icon: color/font-size/font-weight from recipe (disabled state) and caller override
-pub const Look = struct {
-    variant: ButtonVariant,
-    size: ButtonSize,
-    disabled: bool,
-    style: StyleOverride,
-    tint: ?Color,
-    icon_size: ?f32,
-};
-
-fn resolvedLook(l: Look, t: *const ThemeTokens) StyleOverride {
-    const config: shell.ControlShellConfig = .{ .size = l.size, .variant = l.variant, .disabled = l.disabled };
-    return config.resolvedConditionalStyle(t).resolve(.{ .is_disabled = l.disabled });
-}
-
-pub fn textColor(l: Look, t: *const ThemeTokens) Color {
-    return l.style.text_color orelse resolvedLook(l, t).text_color orelse Color.hex(0xFFFFFF);
-}
-
-pub fn label(l: Look, t: *const ThemeTokens) TextStyle {
+pub fn label(l: Label, t: *const ThemeTokens) LabelText {
     const m = shell.metrics(t, l.size);
-    return .{
-        .color = textColor(l, t),
-        .font_size = l.style.font_size orelse m.font_size,
-        .line_height = m.line_height,
-        .font_weight = l.style.font_weight orelse resolvedLook(l, t).font_weight orelse 500,
-    };
+    return .{ .font_size = l.font_size orelse m.font_size, .line_height = m.line_height };
 }
 
-pub fn icon(l: Look, t: *const ThemeTokens) BoxStyle {
-    const size = l.icon_size orelse shell.metrics(t, l.size).icon_size;
-    return .{ .width = .{ .px = size }, .height = .{ .px = size } };
+/// Glyph stack in the icon slot (svg / texture / ring share one slot element).
+style glyph_stack { align-items: center; justify: center; }
+
+/// Glyph box: icon_size, else the size tier's glyph.
+style glyph($size: ?f32, $tier: ButtonSize) {
+  width: {$size orelse shell.glyphSize($tier)};
+  height: {$size orelse shell.glyphSize($tier)};
 }
 
-/// Icon tint: follows text color when not explicitly provided
-pub fn iconTint(l: Look, t: *const ThemeTokens) Color {
-    return l.tint orelse textColor(l, t);
+/// Glyph tint: icon_tint when given, else the current color (the shell's foreground).
+pub fn glyphTint(tint: ?Color, _: *const ThemeTokens) ?Color {
+    return tint;
 }
 
-pub const Slot = struct { size: ButtonSize, icon_only: bool };
-
-/// Icon slot: minimum height is line height (icon-only: minimum icon_size is square)
-pub fn iconSlot(s: Slot, t: *const ThemeTokens) BoxStyle {
-    const m = shell.metrics(t, s.size);
-    return .{
-        .width = .{ .fit = .{} },
-        .height = .{ .fit = .{} },
-        .align_items = .center,
-        .justify = .center,
-        .min_width = if (s.icon_only) m.icon_size else null,
-        .min_height = if (s.icon_only) m.icon_size else m.lineHeightPx(),
-    };
-}
-
-/// Content slot: shrinks with label (frame justify=center centers overall), minimum height is line
-/// height
-pub fn contentSlot(size: ButtonSize, t: *const ThemeTokens) BoxStyle {
-    return .{
-        .width = .{ .fit = .{} },
-        .height = .{ .fit = .{} },
-        .direction = .row,
-        .align_items = .center,
-        .min_height = shell.metrics(t, size).lineHeightPx(),
-    };
-}
-
-/// Loading indicator: square per icon_size
-pub fn spinnerBox(size: ButtonSize, t: *const ThemeTokens) BoxStyle {
-    const px = shell.metrics(t, size).icon_size;
-    return .{ .width = .{ .px = px }, .height = .{ .px = px }, .align_items = .center, .justify = .center };
-}
+/// Loading ring: a design-icon square, the canvas fills it.
+style ring_box { width: {t.tokens.size.icon}; height: {t.tokens.size.icon}; align-items: center; justify: center; }
+style ring_canvas { width: fill; height: fill; align-self: stretch; }
 
 fn strokeOf(size: ButtonSize) f32 {
     return switch (size) {
@@ -171,19 +76,22 @@ fn strokeOf(size: ButtonSize) f32 {
     };
 }
 
-/// Loading indicator arc (same keyframes as Spinner), color follows text
-pub fn drawSpinner(ctx: ui.DrawContext, l: Look, frame: ui.view.Frame) anyerror!void {
+/// Loading ring arc (same keyframes as Spinner) in the current color.
+/// The ring repeats with the Spinner's loop, so the compositor can run it.
+pub const ring_loop_ms: f64 = spinner.loop_ms;
+
+pub fn drawRing(ctx: ui.DrawContext, size: ButtonSize, frame: ui.view.Frame) anyerror!void {
     const dl = ctx.display_list orelse return;
     const header = ctx.display_header orelse return;
-    const arc = spinner.arcAt(frame.now_ms);
+    const arc = if (core.render_engine.current_reduced_motion) spinner.reducedMotionArc() else spinner.arcAt(frame.now_ms);
     try dl.append(.{ .arc = .{
         .header = header,
         .cx = ctx.local_w / 2.0,
         .cy = ctx.local_h / 2.0,
-        .outer_radius = shell.metrics(frame.tokens, l.size).icon_size / 2.0,
-        .stroke_width = strokeOf(l.size),
+        .outer_radius = frame.tokens.tokens.size.icon / 2.0,
+        .stroke_width = strokeOf(size),
         .start_angle = arc.start,
         .end_angle = arc.end,
-        .color = textColor(l, frame.tokens),
+        .color = ctx.current_color orelse frame.tokens.tokens.color.fg_primary,
     } });
 }

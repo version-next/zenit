@@ -23,9 +23,8 @@ pub const control_shell = @import("control_shell/mod.zig");
 /// Test support: per-allocation OOM sweep during component mount. Export for consumers
 /// to reuse same criteria.
 pub const oom_sweep = @import("oom_sweep.zig");
-pub const controlShell = control_shell.controlShell;
-pub const ControlShellConfig = control_shell.ControlShellConfig;
-pub const ControlShellResult = control_shell.ControlShellResult;
+pub const ControlShell = control_shell.ControlShell;
+pub const IconFit = control_shell.IconFit;
 pub const ControlVariant = control_shell.ControlVariant;
 pub const ControlSize = control_shell.ControlSize;
 
@@ -301,4 +300,5 @@ test {
     // Cross-component control height contract tests (extracted file must be explicitly imported;
     // else silently lost).
     _ = @import("control_height_tests.zig");
+    _ = @import("theme_switch_tests.zig");
 }

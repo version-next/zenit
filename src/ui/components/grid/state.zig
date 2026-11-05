@@ -14,6 +14,7 @@ const Allocator = std.mem.Allocator;
 const core = @import("../../core.zig");
 const Node = core.Node;
 const Cx = core.Cx;
+const Scope = @import("../../reactive.zig").Scope;
 const scroll_area = @import("../scroll_area/mod.zig");
 const ScrollState = scroll_area.ScrollState;
 const ScrollDirection = scroll_area.ScrollDirection;
@@ -30,6 +31,24 @@ pub const CellRenderFn = *const fn (
     cx: *Cx,
     user_ctx: ?*anyopaque,
 ) void;
+
+/// Cell render callback that also receives the grid's own scope (used by `Grid.cells`). That
+/// scope owns the cell pools and is bound to the grid root, so content mounted under it is
+/// released with its cell on rebind *and* with the grid when the grid root is freed.
+pub const ScopedCellRenderFn = *const fn (
+    cell_node: *Node,
+    row: usize,
+    col: usize,
+    scope: *Scope,
+    cx: *Cx,
+    user_ctx: ?*anyopaque,
+) void;
+
+/// How the grid populates a cell (exactly one callback form per grid).
+pub const CellRender = union(enum) {
+    plain: CellRenderFn,
+    scoped: ScopedCellRenderFn,
+};
 
 pub const GridProps = struct {
     /// Total row count
@@ -204,8 +223,19 @@ pub const GridState = struct {
     last_content_ty: f32 = 0,
 
     /// Render callback
-    cell_render_fn: CellRenderFn,
+    cell_render: CellRender,
     cell_render_ctx: ?*anyopaque,
+    /// The grid's own scope (bound to `root`): owner of the cell pools and of everything the
+    /// scoped render callback mounts into them.
+    scope: *Scope,
+
+    /// Populate a (cleared) cell through the grid's render callback.
+    pub fn renderCell(self: *GridState, node: *Node, row: usize, col: usize) void {
+        switch (self.cell_render) {
+            .plain => |f| f(node, row, col, self.cx, self.cell_render_ctx),
+            .scoped => |f| f(node, row, col, self.scope, self.cx, self.cell_render_ctx),
+        }
+    }
 
     pub fn totalContentWidth(self: *const GridState) f32 {
         if (self.col_offsets.len == 0) return 0;
@@ -390,7 +420,7 @@ pub const GridState = struct {
         vp: HostViewport,
         grid_root_top_in_host: f32,
     ) void {
-        const content_top_in_host = grid_root_top_in_host + self.scroll_container.style.padding.top;
+        const content_top_in_host = grid_root_top_in_host + self.scroll_container.style.contentInsets().top;
         self.setExternalRowWindow(
             vp.scroll_y - content_top_in_host - vp.margin,
             vp.scroll_y + vp.height - content_top_in_host + vp.margin,

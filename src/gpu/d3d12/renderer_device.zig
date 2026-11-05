@@ -27,6 +27,7 @@ pub const FrameSync = @import("frame_sync.zig").FrameSync;
 pub const Surface = @import("surface.zig").Surface;
 pub const SurfaceConfiguration = @import("surface.zig").SurfaceConfiguration;
 pub const SurfaceTexture = @import("surface.zig").SurfaceTexture;
+pub const SpriteAtlas = @import("surface.zig").SpriteAtlas;
 extern fn zenit_d12_write_png_rgba([*:0]const u8, [*]const u8, usize, u32, u32, u32) c_int;
 pub fn writePngRgba(path: [:0]const u8, rgba: []const u8, width: u32, height: u32, bytes_per_row: u32) bool {
     return zenit_d12_write_png_rgba(path.ptr, rgba.ptr, rgba.len, width, height, bytes_per_row) == 0;

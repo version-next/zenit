@@ -196,6 +196,19 @@ pub const CommandEncoder = struct {
         };
     }
 
+    /// A render pass with no attachments over a width x height raster
+    /// (Metal): draws write textures from their fragment functions, so one
+    /// encoder can carry independent passes into different targets.
+    pub fn beginAttachmentlessRenderPass(self: *CommandEncoder, width: u32, height: u32) !RenderPass {
+        if (self.state != .initial) return error.InvalidEncoderState;
+        if (width == 0 or height == 0) return error.InvalidTextureRegion;
+        const encoder = mtl.metal_command_buffer_create_attachmentless_render_encoder(self.raw, width, height) orelse
+            return error.RenderEncoderCreationFailed;
+        const generation = self.activatePass(.render_pass);
+        self.active_pass_raw = @ptrCast(encoder);
+        return .{ .encoder = encoder, .command_encoder = self, .generation = generation };
+    }
+
     pub fn beginBlitPass(self: *CommandEncoder) !BlitPass {
         if (self.state != .initial) return error.InvalidEncoderState;
         const encoder = mtl.metal_command_buffer_create_blit_encoder(self.raw) orelse
@@ -313,6 +326,9 @@ pub const RenderPass = struct {
     /// Root target is a cropped piece of the full scene. Preserve the scene's
     /// shader coordinates/NDC arithmetic and translate only rasterization.
     root_crop: ?[4]u32 = null,
+    /// Where the crop lands in the attachment (atlas cells); zero for a
+    /// target that is exactly the crop.
+    root_offset: [2]u32 = .{ 0, 0 },
 
     fn assertActive(self: *const RenderPass) void {
         self.command_encoder.assertActivePass(.render_pass, self.generation);
@@ -341,8 +357,8 @@ pub const RenderPass = struct {
         self.assertActive();
         mtl.metal_render_encoder_set_viewport(
             self.encoder,
-            x - if (self.root_crop) |r| @as(f32, @floatFromInt(r[0])) else @as(f32, 0),
-            y - if (self.root_crop) |r| @as(f32, @floatFromInt(r[1])) else @as(f32, 0),
+            x - if (self.root_crop) |r| @as(f32, @floatFromInt(r[0])) - @as(f32, @floatFromInt(self.root_offset[0])) else @as(f32, 0),
+            y - if (self.root_crop) |r| @as(f32, @floatFromInt(r[1])) - @as(f32, @floatFromInt(self.root_offset[1])) else @as(f32, 0),
             width,
             height,
             min_depth,
@@ -358,7 +374,7 @@ pub const RenderPass = struct {
             const top = @min(@max(y, r[1]), r[1] + r[3]);
             const right = @max(left, @min(x +| width, r[0] + r[2]));
             const bottom = @max(top, @min(y +| height, r[1] + r[3]));
-            mtl.metal_render_encoder_set_scissor_rect(self.encoder, left - r[0], top - r[1], right - left, bottom - top);
+            mtl.metal_render_encoder_set_scissor_rect(self.encoder, left - r[0] + self.root_offset[0], top - r[1] + self.root_offset[1], right - left, bottom - top);
             return;
         }
         mtl.metal_render_encoder_set_scissor_rect(self.encoder, x, y, width, height);

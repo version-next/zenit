@@ -9,16 +9,16 @@ const std = @import("std");
 const mod = @import("mod.zig");
 
 /// Multiple skeleton blocks stacked vertically
-style stack($gap: f32) { width: fit; height: fit; direction: column; gap: $gap; }
+style stack($gap: f32) { no-cross-stretch: true; width: fit; height: fit; direction: column; gap: $gap; }
 
 /// Skeleton block: circle takes width as side length; static background is shimmer's base color
 /// (see baseColor)
 style bone($variant: mod.SkeletonVariant, $width: f32, $height: f32) {
   width: $width;
   height: $height;
-  background: mix(fg-disabled, bg-primary, 0.7);
-  when $variant = text { corner-radius: 4; }
-  when $variant = circular { height: $width; corner-radius: {$width / 2}; }
+  background: skeleton;
+  when $variant = text { corner-radius: md; }
+  when $variant = circular { height: $width; corner-radius: dialog; }
   when $variant = rectangular { corner-radius: md; }
 }
 
@@ -32,9 +32,9 @@ pub fn shimmer(phase: f32, t: *const theme.ThemeTokens) ui.BoxStyle {
 }
 
 fn baseColor(t: *const theme.ThemeTokens) Color {
-    return Color.lerp(t.tokens.color.fg_disabled, t.tokens.color.bg_primary, 0.7);
+    return t.tokens.color.skeleton;
 }
 
 fn highlightColor(t: *const theme.ThemeTokens) Color {
-    return Color.lerp(t.tokens.color.fg_disabled, t.tokens.color.bg_primary, 0.85);
+    return Color.lerp(t.tokens.color.skeleton, t.tokens.color.bg_primary, 0.25);
 }

@@ -28,6 +28,7 @@ const Handler = core.Handler;
 const bind_mod = @import("../../bind.zig");
 const button_mod = @import("../button/mod.zig");
 const styles = @import("styles.zig");
+const icons = @import("zenit_system_icons");
 
 pub const FileUploadProps = struct {
     width: f32 = 360,
@@ -66,6 +67,7 @@ pub const FileUploadResult = struct {
     files: ?*Signal([]const []const u8),
     /// Hint zone (drop target)
     drop_zone: *Node,
+    browse_button: *Node,
     rt: *FileUploadRuntime,
 
     /// Programmatically add one file (custom Browse fill): same proposal pipeline as drag
@@ -199,6 +201,7 @@ pub const FileUploadRuntime = struct {
         const t = cx.tokens;
         var name_node: *Node = undefined;
         const row = try view.render(scope, cx, view.box(.{ .style = styles.fileRowStyle(t) }, .{
+            view.icon(.{ .style = styles.fileIconStyle, .tint = t.tokens.color.fg_primary }, @import("zenit_icons").file),
             // Filename (basename) fills line remainder (pushes x to line end); text copied into
             // node itself (not borrowed from signal double-buffer)
             view.capture(&name_node, view.attrs(.{ .style = core.BoxStyle{ .width = .{ .grow = .{} } } }, view.text(.{ .style = styles.fileNameTextStyle(t) }, std.fs.path.basename(args.path)))),
@@ -207,7 +210,7 @@ pub const FileUploadRuntime = struct {
                 // Subtree text is literal 'x', fallback reads as letter x.
                 .a11y = core.A11yProps{ .role = .button, .label = "Remove file" },
                 .on_click = core.Cx.simpleHandler(RemoveCtx.fire, args.remove),
-            }, view.text(.{ .style = styles.removeGlyphTextStyle(t) }, "x")),
+            }, view.icon(.{ .style = styles.removeIconStyle, .tint = t.tokens.color.fg_secondary }, icons.close)),
         }));
         // Row a11y name points to node's own text copy
         row.behavior.interaction.a11y = .{ .role = .listitem, .label = name_node.getText().?.content };
@@ -259,7 +262,7 @@ fn mountImpl(props: FileUploadProps, scope: *Scope, cx: *Cx) !FileUploadResult {
     const Parts = struct { drop_zone: *Node = undefined, hint: *Node = undefined, list: *Node = undefined };
     var parts: Parts = .{};
     const wrapper = try view.render(my_scope, cx, view.box(.{
-        .style = styles.wrapperStyle(props.width),
+        .style = styles.wrapperStyle(props.width, t),
         // role=group + label: binds 'hint text + Browse button + file list' as single named unit,
         // so AT users tabbing to Browse know which upload control, hear hint.
         .a11y = .{ .role = .group, .label = "File upload" },
@@ -300,12 +303,15 @@ fn mountImpl(props: FileUploadProps, scope: *Scope, cx: *Cx) !FileUploadResult {
     wrapper.addDebugState(@ptrCast(rt));
 
     const browse_btn = button_mod.Button(.{
-        .label = "Browse…",
+        .label = "Choose file…",
         .variant = .secondary,
         .size = .sm,
         .on_click = props.on_browse orelse core.Cx.simpleHandler(onNativeBrowse, rt),
     });
-    try view.mount(my_scope, cx, drop_zone, browse_btn);
+    const browse_node = try browse_btn.mount(my_scope, cx);
+    // FileUploadResult exposes a snapshot browse_button pointer.
+    view.pinComponentRoot(browse_node);
+    _ = try core.adoptChild(cx, cx.allocator, drop_zone, browse_node);
 
     // Drag files into hint zone to add (second entry besides Browse button)
     drop_zone.behavior.events.on_drag_enter = core.Cx.handlerFrom(FileUploadRuntime, rt, onDropEnter);
@@ -315,7 +321,7 @@ fn mountImpl(props: FileUploadProps, scope: *Scope, cx: *Cx) !FileUploadResult {
     // files is Model: rebuildOn rebuilds with it (local also signal, must have effect)
     try bind_mod.rebuildOn(cx, my_scope, files.read, list, rt, FileUploadRuntime.filesKey, FileUploadRuntime.buildRows);
 
-    return .{ .wrapper = wrapper, .files = files.asSignal(), .drop_zone = drop_zone, .rt = rt };
+    return .{ .wrapper = wrapper, .files = files.asSignal(), .drop_zone = drop_zone, .browse_button = browse_node, .rt = rt };
 }
 
 // ============================================================================
@@ -323,7 +329,7 @@ fn mountImpl(props: FileUploadProps, scope: *Scope, cx: *Cx) !FileUploadResult {
 const testing = std.testing;
 
 fn rowNames(r: FileUploadResult, out: [][]const u8) [][]const u8 {
-    for (r.rt.list.children.items, 0..) |row, i| out[i] = row.children.items[0].getText().?.content;
+    for (r.rt.list.children.items, 0..) |row, i| out[i] = row.children.items[1].getText().?.content;
     return out[0..r.rt.list.children.items.len];
 }
 
@@ -358,7 +364,7 @@ test "FileUpload: 添加 / 移除只提议；行跟随 files；max_files 截断"
     try testing.expectEqual(@as(usize, 2), spy.n);
 
     // Click × on first row
-    const close = fu.rt.list.children.items[0].children.items[1];
+    const close = fu.rt.list.children.items[0].children.items[2];
     close.behavior.events.on_click.?.invoke();
     try testing.expectEqual(@as(usize, 1), fu.rt.fileCount());
     try testing.expectEqualStrings("b.txt", rowNames(fu, &names)[0]);

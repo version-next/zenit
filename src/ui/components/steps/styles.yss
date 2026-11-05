@@ -5,7 +5,7 @@ const core = @import("../../core.zig");
 const ui = @import("../../ui.zig");
 const mod = @import("mod.zig");
 
-pub const circle_size: f32 = 28;
+pub const circle_size: f32 = 24;
 /// Min length of vertical connector line (also min vertical spacing between steps)
 pub const v_connector_min: f32 = 24;
 
@@ -15,14 +15,14 @@ pub const v_connector_min: f32 = 24;
 /// current step title is primary color + bold, done step accent, others secondary.
 recipe Step slots(circle, num, icon, title, connector) {
   base {
-    circle { width: 28; height: 28; corner-radius: 14; justify: center; align-items: center; background: border; }
-    num { color: #ffffff; font-size: sm; font-weight: 600; text-align: center; }
-    icon { width: 14; height: 14; icon-color: #ffffff; }
-    title { color: fg-secondary; font-size: sm; font-weight: 400; }
-    connector { width: 2; height: {.{ .grow = .{ .min = v_connector_min } }}; background: border; }
+    circle { width: 24; height: 24; corner-radius: 12; justify: center; align-items: center; background: bg-secondary; border-overlay: true; border-width: 1; border-color: border-strong; }
+    num { color: fg-secondary; font-size: sm; font-weight: 600; text-align: center; line-height: 1.4; }
+    icon { width: 14; height: 14; icon-color: status-fg; }
+    title { color: fg-secondary; font-size: sm; font-weight: 400; line-height: 1.4; }
+    connector { width: 1; height: {.{ .grow = .{ .min = v_connector_min } }}; background: border; }
   }
-  flag completed { circle { background: accent; } title { color: accent; } connector { background: accent; } }
-  flag active { circle { background: accent; } title { color: fg-primary; font-weight: 600; } }
+  flag completed { circle { background: accent; border-overlay: true; border-width: 0; } num { color: status-fg; } title { color: fg-secondary; } connector { background: accent; } }
+  flag active { circle { background: accent; border-overlay: true; border-width: 0; } num { color: status-fg; } title { color: fg-primary; font-weight: 600; } }
 }
 
 style desc { color: fg-secondary; font-size: xs; }
@@ -30,35 +30,40 @@ style desc { color: fg-secondary; font-size: xs; }
 /// Container: fills horizontal row (equal width per step), vertical follows content
 recipe Container {
   base { height: fit; gap: 0; }
-  flag horizontal { width: grow; direction: row; } else { width: fit; direction: column; }
+  flag horizontal { width: grow; direction: row; align-self: stretch; } else { width: fit; direction: column; no-cross-stretch: true; }
 }
 
-style h_step { width: grow; height: fit; direction: column; align-items: center; gap: 6; }
+// Equal step cells are intentional; CSS auto basis would weight them by label content.
+style h_step { width: grow; flex-basis: 0; min-width: 0; height: fit; direction: column; align-items: center; gap: 6; }
 /// Vertical row: align_items = start pins circle to top (centering would lower last step
 /// circle, breaking from prior connector)
-style v_step { width: fit; height: fit; direction: row; align-items: start; gap: 4; }
+style v_step { no-cross-stretch: true; width: fit; height: fit; direction: row; align-items: start; gap: 4; }
 /// Indicator column fills row height; connector (grow) fills space below circle; line bottom
 /// meets next step circle top
-style v_indicator { width: fit; height: grow; direction: column; align-items: center; }
+pub fn vIndicator(t: *const core.ThemeTokens) core.BoxStyle {
+    return .{ .width = .{ .fit = .{} }, .height = .{ .grow = .{} }, .align_self = .stretch, .direction = .column, .align_items = .center,
+        .translate_y = @max(0, (t.tokens.font_size.sm * 1.4 - circle_size) / 2) };
+}
 
 /// Vertical text column: top margin centers title first line with circle (row uses
 /// align_items = start, circle pinned to top); margin based on theme font size
 pub fn vText(t: *const core.ThemeTokens) core.BoxStyle {
-    const title_line_h = t.tokens.font_size.sm * (core.TextProps{}).line_height;
+    // mjlUR: label typography uses 1.4 line height, including vertical alignment.
+    const title_line_h = t.tokens.font_size.sm * 1.4;
     return .{ .width = .{ .fit = .{} }, .height = .{ .fit = .{} }, .direction = .column, .align_items = .start, .gap = 2, .padding = .{ .top = @max(0, (circle_size - title_line_h) / 2) } };
 }
 
 /// Horizontal connector: track from first circle center to last (each step equal width,
 /// center at midpoint). left/right inset only stretch when width = grow (default fit parses as
 /// 0 width, line not drawn)
-style track($steps: usize) { position: absolute; width: grow; height: 2; background: border-strong; inset: {lineInset($steps, $steps -| 1)}; }
+style track($steps: usize) { position: absolute; width: grow; height: 1; background: border-strong; inset: {lineInset($steps, $steps -| 1)}; }
 
 /// Completed segment: from first circle center to current circle center (stops at last if past
 /// end; not shown when current = 0)
 style progress($steps: usize, $current: usize) {
   position: absolute;
   width: grow;
-  height: 2;
+  height: 1;
   background: accent;
   inset: {lineInset($steps, @min($current, $steps -| 1))};
   when {@min($current, $steps -| 1) == 0} { display: none; }
@@ -69,9 +74,15 @@ fn lineInset(n: usize, reached: usize) core.Inset {
     const half = halfStepPct(n);
     const nf: f32 = @floatFromInt(@max(n, 1));
     const end_pct = half + @as(f32, @floatFromInt(reached)) / nf * 100.0;
-    return .{ .top = .{ .px = circle_size / 2 - 1 }, .left = .{ .percent = half }, .right = .{ .percent = 100.0 - end_pct } };
+    return .{ .top = .{ .px = circle_size / 2 - 0.5 }, .left = .{ .percent = half }, .right = .{ .percent = 100.0 - end_pct } };
 }
 
 fn halfStepPct(n: usize) f32 {
     return if (n > 0) 50.0 / @as(f32, @floatFromInt(n)) else 0;
+}
+
+// Preserve the text-bearing circle while expressing the formerly implicit
+// vertical paint offset as an actual inset, recomputed with the theme.
+style num_box {
+  padding: {core.Padding.symmetric(@max(0, (circle_size - t.tokens.font_size.sm * 1.4) / 2), 0)};
 }

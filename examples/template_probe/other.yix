@@ -1,0 +1,4 @@
+const ui = @import("ui");
+pub fn Other() View {
+    return <box testId="other.original"><text>OriginalOther</text></box>;
+}

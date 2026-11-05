@@ -368,7 +368,7 @@ fn installHook(state: *Story, root: *ui.Node) void {
 
 const NotifyS = struct {
     fn root(_: *const ui.theme.Values) ui.BoxStyle {
-        return .{ .width = .{ .grow = .{} }, .gap = 12 };
+        return .{ .width = .{ .grow = .{} }, .align_self = .stretch, .gap = 12 };
     }
     fn group(t: *const ui.theme.Values) ui.BoxStyle {
         return .{
@@ -376,7 +376,7 @@ const NotifyS = struct {
             .gap = 10,
             .padding = ui.Padding.all(14),
             .background = t.tokens.color.bg_secondary,
-            .border = .{ .width = 1, .color = t.tokens.color.border, .radius = t.tokens.radius.lg },
+            .border = .{ .overlay = true, .width = 1, .color = t.tokens.color.border, .radius = t.tokens.radius.lg },
         };
     }
     fn section(_: *const ui.theme.Values) ui.BoxStyle {
@@ -469,7 +469,7 @@ pub fn build(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     hints_n.setListener(.{ .context = @ptrCast(state), .callback = Story.onEvent });
 
     return v.render(scope, cx, v.setup(v.col(.{ .style = NotifyS.root }, .{
-        group("九种类型 Nine kinds", "卡片 392 宽 · 圆角 18 · regular 液态玻璃（GlassBox，同 AppKit NSGlassEffectView）；按钮在分隔线下方，中性灰底不上色。", v.row(control_props, .{
+        group("九种类型 Nine kinds", "卡片 392 宽 · 圆角 18 · regular 液态玻璃（GlassBox，同 AppKit NSGlassEffectView）；内容 12px padding / 8px gap；按钮使用语义色（主操作 accent，次操作 1px border）。", v.row(control_props, .{
             button(state, "成功 Success", "story.notify.btn.success", Story.success, .secondary),
             button(state, "错误 Error", "story.notify.btn.error", Story.failure, .secondary),
             button(state, "警告 Warning", "story.notify.btn.warning", Story.warning, .secondary),

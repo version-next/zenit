@@ -1,77 +1,88 @@
 //! Checkbox / Radio / Switch styling. Views in checkbox.yix / radio.yix / switch.yix,
 //! logic in mod.zig.
 const ui = @import("../../ui.zig");
+// TODO(token): line_height.body = 1.4 (LKxqO control labels).
 
-/// root: control + label row; track: 40x22 capsule; thumb: 18x18 slider (translate-x
-/// positioned, motion and color same transition). Off/on: track switch-track-off <-> accent,
-/// thumb switch-thumb <-> white (intentionally not theme), label secondary <-> primary.
-/// disabled: all translucent, label stays secondary.
+/// root: control + label row; track: capsule (md 40x22, sm 32x18); thumb: slider (md 18,
+/// sm 14; translate-x positioned, motion and color same transition), 2px inset at both
+/// ends. Off/on: track switch-track-off <-> accent, thumb uses inverse foreground when on;
+/// disabled uses explicit semantic colors.
 recipe SwitchParts slots(root, track, thumb, label) {
   base {
-    root { width: fit; height: fit; gap: 8; align-items: center; cursor: pointer; }
-    track { position: relative; width: 40; height: 22; corner-radius: 11; transition: background 200ms ease-out-cubic; }
+    root { width: fit; height: fit; no-cross-stretch: true; gap: 8; align-items: center; cursor: pointer; }
+    track { position: relative; transition: background 200ms ease-out-cubic; }
     thumb {
       position: absolute;
-      width: 18;
-      height: 18;
-      corner-radius: 9;
       translate-y: 2;
-      shadow: 0 1 2 #00000020;
+      shadow: xs;
       transition: translate-x 200ms ease-out-cubic, background 200ms ease-out-cubic;
     }
-    label { font-size: 14; transition: color 200ms ease-out-cubic; }
+    label { font-size: md; line-height: 1.4; transition: color 200ms ease-out-cubic; }
   }
   flag checked {
     track { background: accent; }
-    thumb { background: #ffffff; translate-x: 20; }
+    thumb { background: fg-inverse; translate-x: 20; }
     label { color: fg-primary; }
   } else {
     track { background: switch-track-off; }
     thumb { background: switch-thumb; translate-x: 2; }
-    label { color: fg-secondary; }
+    label { color: fg-primary; }
   }
-  flag disabled { root { opacity: 0.5; cursor: not-allowed; } }
-  when disabled { label { color: fg-secondary; } }
+  variant size = md {
+    sm {
+      track { width: switch-width-sm; height: switch-height-sm; corner-radius: 9; }
+      thumb { width: switch-thumb-sm; height: switch-thumb-sm; corner-radius: 7; }
+    }
+    md {
+      track { width: switch-width; height: switch-height; corner-radius: 11; }
+      thumb { width: switch-thumb; height: switch-thumb; corner-radius: 9; }
+    }
+  }
+  // On: travel = track width - thumb - 2px inset (md 20, sm 16).
+  when checked & size = sm { thumb { translate-x: 16; } }
+  flag disabled { root { cursor: not-allowed; } }
+  when disabled { track { background: border; } thumb { background: bg-secondary; } label { color: fg-disabled; } }
 }
 
-/// root: control + label row; box: 18x18 frame (bg/border 150ms transition); check:
+/// root: control + label row; box: 16x16 frame (bg/border 150ms transition); check:
 /// checkmark icon; indet: half-check overlay; label: label. Box bg/border = checked
-/// (incl half) * disabled; disabled+checked uses special checkbox-disabled-checked-bg.
+/// (incl half) × disabled, resolved by recipe compounds.
 recipe CheckboxParts slots(root, box, check, indet, label) {
   base {
-    root { width: fit; height: fit; gap: 8; align-items: center; }
-    box { width: 18; height: 18; border-width: 1.5; corner-radius: 4; justify: center; align-items: center; transition: background 150ms ease-out, border-color 150ms ease-out; }
-    check { width: 14; height: 14; icon-color: button-primary-fg; }
-    indet { position: absolute; width: 18; height: 18; justify: center; align-items: center; }
-    label { font-size: 14; }
+    root { width: fit; height: fit; no-cross-stretch: true; gap: 8; align-items: center; }
+    box { width: checkbox; height: checkbox; border-overlay: true; border-width: thin; corner-radius: md; justify: center; align-items: center; transition: background 150ms ease-out, border-color 150ms ease-out; }
+    check { width: 12; height: 12; icon-color: fg-inverse; }
+    indet { position: absolute; width: checkbox; height: checkbox; justify: center; align-items: center; }
+    label { font-size: md; line-height: 1.4; }
   }
   flag on;
-  flag disabled { root { cursor: not-allowed; } label { color: fg-secondary; } } else { root { cursor: pointer; } label { color: fg-primary; } }
-  when !on & !disabled { box { background: checkbox-bg; border-color: checkbox-border; } }
+  flag disabled { root { cursor: not-allowed; } label { color: fg-disabled; } } else { root { cursor: pointer; } label { color: fg-primary; } }
+  when !on & !disabled { box { background: bg-primary; border-color: border-strong; } }
   when on & !disabled { box { background: accent; border-color: accent; } }
-  when !on & disabled { box { background: checkbox-disabled-bg; border-color: checkbox-disabled-border; } }
-  when on & disabled { box { background: checkbox-disabled-checked-bg; border-color: checkbox-disabled-checked-bg; } }
+  when !on & disabled { box { background: disabled-bg; border-color: border; } }
+  when on & disabled { box { background: disabled-bg; border-color: disabled-bg; } }
+  when disabled { check { icon-color: fg-disabled; } }
   flag shown { check { opacity: 1; } indet { opacity: 1; } } else { check { opacity: 0; } indet { opacity: 0; } }
 }
 
-/// root: circle + label row (disabled = all translucent, selected color kept); circle:
-/// 18x18 circle (bg/border 150ms transition); dot: checked inner dot (opacity 150ms
+/// root: circle + label row with explicit disabled colors; circle:
+/// 16x16 circle (bg/border 150ms transition); dot: checked inner dot (opacity 150ms
 /// transition); label: label. RadioGroup option: unhovered shows circle border as accent on
 /// hover (selected already accent).
 recipe RadioParts slots(root, circle, dot, label) {
   base {
-    root { width: fit; height: fit; gap: 8; align-items: center; }
-    circle { width: 18; height: 18; border-width: 1.5; corner-radius: full; justify: center; align-items: center; transition: background 150ms ease-out, border-color 150ms ease-out; }
-    dot { width: 9; height: 9; background: fg-inverse; corner-radius: 4.5; transition: opacity 150ms ease-out; }
-    label { font-size: 14; color: fg-primary; }
+    root { width: fit; height: fit; no-cross-stretch: true; gap: 8; align-items: center; }
+    circle { width: checkbox; height: checkbox; border-overlay: true; border-width: thin; corner-radius: full; justify: center; align-items: center; transition: background 150ms ease-out, border-color 150ms ease-out; }
+    dot { width: dot; height: dot; background: fg-inverse; corner-radius: full; transition: opacity 150ms ease-out; }
+    label { font-size: md; line-height: 1.4; color: fg-primary; }
   }
-  flag checked { circle { background: accent; border-color: accent; } dot { opacity: 1; } } else { circle { background: checkbox-bg; border-color: checkbox-border; } dot { opacity: 0; } }
-  flag disabled { root { opacity: 0.5; cursor: not-allowed; } } else { root { opacity: 1; cursor: pointer; } }
+  flag checked { circle { background: accent; border-color: accent; } dot { opacity: 1; } } else { circle { background: bg-primary; border-color: border-strong; } dot { opacity: 0; } }
+  flag disabled { root { cursor: not-allowed; } label { color: fg-disabled; } circle { background: disabled-bg; } dot { background: fg-disabled; } } else { root { cursor: pointer; } }
   flag hovered;
-  when !checked & hovered { circle { border-color: accent; } }
+  when !checked & !disabled & hovered { circle { border-color: accent; } }
 }
 
 recipe RadioGroupLayout {
-  base { height: fit; }
+  base { height: fit; no-cross-stretch: true; }
   flag horizontal { direction: row; gap: 16; } else { direction: column; gap: 8; }
 }

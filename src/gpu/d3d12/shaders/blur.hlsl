@@ -1,7 +1,11 @@
 // Windows counterpart of src/render/shaders/blur.metal (hand port).
-// ported-from-metal-sha256: 822e1573e21ed178fee893067eb04b6397e98da0a6b01edae506f93976f858a9
+// ported-from-metal-sha256: f30f5c5519d3e0a9080415596db451cef8eadfbb51317b677ce6708197adb2b5
 // tools/metal_to_hlsl.py --check fails when blur.metal changes; port the change
-// here and update the hash above.
+// here and update the hash above after auditing backend-specific additions.
+// The audited Metal suffix adds only *_bank attachmentless fragment variants
+// and copy_bank. backdrop_blur.zig enables them exclusively on Metal; Windows
+// keeps the unchanged attachment passes below and copyTextureRegion. The shared
+// Metal prefix is byte-identical to the previously ported fd76c34b source.
 // zenit-entry: vertex kawase_vertex_main
 // zenit-entry: fragment kawase_downsample
 // zenit-entry: fragment kawase_upsample

@@ -7,13 +7,9 @@ const render_context_mod = @import("render_context.zig");
 
 const Node = node_mod.Node;
 
+/// Paint-side name of Node.resolveTextProps: the same resolution layout measures with.
 pub fn resolveNodeLogicalTextProps(node: *Node) ?types.TextProps {
-    var t = node.getText() orelse return null;
-    const inherited = node.resolveInheritedTextStyle();
-    if (inherited.color) |c| t.color = c;
-    if (inherited.font_size) |s| t.font_size = s;
-    if (inherited.font_weight) |w| t.font_weight = w;
-    return t;
+    return node.resolveTextProps();
 }
 
 /// Compute content bounds of an overflow_hidden container's direct children (relative to container
@@ -39,7 +35,7 @@ pub fn computeContentExtent(node: *Node) ContentExtent {
         // (selection_node/cursor_node/preedit_underline_node); their default {0,0,0,0} rect
         // misclassifies as "content above top".
         if (cr.w <= 0 and cr.h <= 0) continue;
-        const child_pad = child.style.padding;
+        const child_pad = child.style.contentInsets();
         // Content start: rect position + translate + padding (negative padding -> content shifted
         // forward)
         const x1 = cr.x + child.style.translate_x + @min(child_pad.left, @as(f32, 0));
@@ -50,7 +46,7 @@ pub fn computeContentExtent(node: *Node) ContentExtent {
 
         // Text node rect.w may be "visible segment width" under some layout paths, not full text
         // width. overflow_fade needs complete content bounds, so fall back to text intrinsic width.
-        if (child.getText()) |text_props| {
+        if (child.resolveTextProps()) |text_props| {
             if (text_props.content.len > 0) {
                 const approx_char_w = @max(@as(f32, 1), text_props.font_size * 0.55);
                 const intrinsic_text_w = text_utils.utf8DisplayWidth(text_props.content, approx_char_w);

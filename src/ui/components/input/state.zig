@@ -183,21 +183,14 @@ pub const TextInputState = struct {
     placeholder_text: ?[]const u8 = null,
     /// Placeholder color override
     placeholder_color: ?core.Color = null,
-    /// Focus ring parent node (unclipped container)
-    focus_ring_host: ?*core.Node = null,
-    /// Whether in Group attached composite scenario
-    grouped_attached: bool = false,
-    /// Input container node reference (on_focus/on_blur update border style)
+    /// The field node (ControlShell root: focus target, a11y, text input client)
     input_container_node: ?*core.Node = null,
-    /// Hover signal reference (blur checks to preserve hover border)
-    hover_signal: ?*core.Signal(bool) = null,
-    /// Whether error state (skip border update on focus/blur)
+    /// Invalid (invalid prop or error message): a11y and editing state; the frame color is the
+    /// shell's :invalid
     has_error: bool = false,
     /// Dynamic disable: when true, event handlers ignore all input (static disable doesn't install
     /// handler)
     disabled: bool = false,
-    /// Composite control embed mode: parent controls border/hover/focus chrome.
-    embedded_chrome: bool = false,
     /// Allocator for StyleExt writes (Group corner radius pass-through, etc.)
     /// Owns single-line undo/redo snapshots. Component mounts replace this fallback with Scope/Cx
     /// allocator and register deinit.
@@ -490,6 +483,7 @@ pub const TextInputState = struct {
     }
 
     pub fn deinit(self: *TextInputState) void {
+        if (self.cx_ref) |cx| cx.sprites.unregister(self);
         if (self.input_overflow) |bytes| self.allocator.free(bytes);
         self.input_overflow = null;
         self.ime_preedit.deinit();
@@ -517,8 +511,8 @@ pub const TextInputState = struct {
             else => false,
         };
         if (unchanged) return;
-        node.style.height = .{ .px = desired };
-        node.markLayoutDirty();
+        // Component-inline: a layered field keeps it across its own style replays.
+        node.setStyleInline(self.allocator, .{ .height = .{ .px = desired } });
     }
 
     // ========== Blink ==========
@@ -1123,10 +1117,6 @@ pub const TextInputState = struct {
     pub fn hasVisualValue(self: *const TextInputState) bool {
         if (self.textarea_doc) |doc| return doc.totalLength() > 0 or self.hasImePreedit();
         return self.buffer_len > 0 or self.hasImePreedit();
-    }
-
-    pub fn restingBorderColor(self: *const TextInputState) core.Color {
-        return @import("styles.zig").restingBorderColor(self.tokens, self.has_error, self.hasVisualValue());
     }
 
     // ========== Soft-wrap ==========

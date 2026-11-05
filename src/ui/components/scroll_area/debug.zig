@@ -15,7 +15,7 @@ pub fn scrollDebugEnabled() bool {
         if (comptime root.build_options.test_mode) return true;
     }
     if (debug_scroll_log_cached) |v| return v;
-    const raw = std.c.getenv("ZENIT_SCROLL_DEBUG");
+    const raw = @import("zenit_environment").getNative("ZENIT_SCROLL_DEBUG");
     if (raw == null) {
         debug_scroll_log_cached = false;
         return false;
@@ -35,7 +35,7 @@ pub fn scrollDebugEnabled() bool {
 
 fn minIntervalNs() u64 {
     if (min_interval_ns_cache) |v| return v;
-    const raw = std.c.getenv("ZENIT_SCROLL_DEBUG_MIN_INTERVAL_MS");
+    const raw = @import("zenit_environment").getNative("ZENIT_SCROLL_DEBUG_MIN_INTERVAL_MS");
     if (raw) |ptr| {
         const value = std.mem.span(ptr);
         if (std.fmt.parseInt(u64, value, 10)) |parsed_ms| {

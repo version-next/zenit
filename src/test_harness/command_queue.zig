@@ -7,6 +7,10 @@ const std = @import("std");
 pub const QUEUE_SIZE = 16;
 pub const RESULT_BUF_SIZE = 256 * 1024; // 256KB JSON result
 
+/// phased: false = phase-less wheel events (a mouse wheel); true = trackpad gestures, one per
+/// span (began, changed..., then ended with zero delta after the span's last event).
+pub const ScrollStream = struct { x: f32, y: f32, step: f32, span: u32, count: u32, interval_ms: f32, phased: bool = false };
+
 pub const TestCommand = union(enum) {
     health: void,
     /// /click also uses MousePayload, internally synthesizing down+up; without modifiers, cases
@@ -20,6 +24,12 @@ pub const TestCommand = union(enum) {
     mouse_down: MousePayload,
     mouse_move: MousePayload,
     mouse_up: MousePayload,
+    /// The platform's `pointer_left` (macOS content exit or covering window, Windows
+    /// WM_MOUSELEAVE, Wayland wl_pointer.leave), through the same Cx entry the runtimes use.
+    pointer_leave: void,
+    /// The platform's window activation appearance (`window_focused.appears_active`), as the
+    /// runtimes apply it; test-mode apps otherwise always report active.
+    window_active: bool,
     key_down: KeyPayload,
     key_up: KeyPayload,
     text_input: TextPayload,
@@ -62,7 +72,7 @@ pub const TestCommand = union(enum) {
     /// Fixed step whose time advances only by clock_advance grants (frozen at 0).
     animation_clock_locked: f32,
     /// Grant ms of animation time to a locked clock.
-    clock_advance: f32,
+    clock_advance: f64,
     /// Incremental per-Cx Console snapshot. after_seq=0 starts at the oldest
     /// retained event; limit is clamped by the executor.
     console_query: ConsoleQueryPayload,
@@ -70,6 +80,9 @@ pub const TestCommand = union(enum) {
     /// Scroll wheel event (with modifiers). phase / momentum per ui.events.ScrollPhase /
     /// MomentumPhase ordinal; default 0 = none (mouse wheel).
     scroll: struct { x: f32, y: f32, dx: f32, dy: f32, phase: u8 = 0, momentum: u8 = 0, shift: bool = false, ctrl: bool = false, alt: bool = false, super: bool = false },
+    /// Wheel events injected by the app at a fixed rate (no RPC per event):
+    /// `step` per event, reversing every `span` events, `count` in total.
+    scroll_stream: ScrollStream,
     /// Trackpad pinch event. phase: 0=began 1=changed 2=ended 3=cancelled.
     magnify: struct { x: f32, y: f32, magnification: f32, phase: u8 },
     /// Drag event. kind: 0=entered 1=updated 2=exited 3=dropped; paths newline-separated.
@@ -80,9 +93,19 @@ pub const TestCommand = union(enum) {
     resize_window: struct { width: u32, height: u32 },
     window: WindowCommand,
     quit_app: void,
+    /// Compositor sprites: query, or enable/disable for this window's Cx.
+    sprites: SpritesCommand,
+    /// CPU damage patches (src/zenit_app/cpu_patch.zig): query/enable/disable.
+    cpu_patches: SpritesCommand,
+    /// WindowServer image of the key window (native layers included) as PNG.
+    composited_screenshot: RecordingStartPayload,
 };
 
-pub const WindowCommand = enum { status, maximize, restore, minimize, close };
+pub const SpritesCommand = enum { query, enable, disable, debug };
+
+/// `occlude`/`reveal` force the window's occlusion state (macOS resource
+/// release path) without covering the real window.
+pub const WindowCommand = enum { status, maximize, restore, minimize, close, occlude, reveal };
 pub const WindowSnapshot = struct { decoration_height: i32, decorated: bool, maximized: bool, active: bool, suspended: bool, width: u32, height: u32 };
 
 pub const RecordingStartPayload = struct {

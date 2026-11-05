@@ -54,6 +54,8 @@ pub const applyHorizontalScroll = scroll_physics.applyHorizontalScroll;
 
 /// ScrollArea properties
 pub const ScrollAreaProps = struct {
+    /// Stable container identity for data-only restart persistence. Borrowed for scope lifetime.
+    persist_key: ?[]const u8 = null,
     width: ?f32 = null,
     height: ?f32 = null,
     direction: ScrollDirection = .vertical,
@@ -90,9 +92,11 @@ fn a11yScrollIntoView(scroll: *Node, target: *Node) bool {
     if (scroll.behavior.events.on_event != scrollEventHandler) return false;
     const ev_ctx: *ScrollEventCtx = @ptrCast(@alignCast(scroll.behavior.events.event_context orelse return false));
     const content = ev_ctx.content orelse return false;
-    const before = ev_ctx.state.scroll_y;
+    const before_y = ev_ctx.state.scroll_y;
+    const before_x = ev_ctx.state.scroll_x;
     scrollIntoView(ev_ctx.state, content, target, .nearest);
-    return ev_ctx.state.scroll_y != before;
+    scrollIntoViewX(ev_ctx.state, content, target, .nearest);
+    return ev_ctx.state.scroll_y != before_y or ev_ctx.state.scroll_x != before_x;
 }
 
 pub fn ScrollArea(props: anytype) ScrollAreaBuilder {
@@ -131,7 +135,7 @@ fn mountImpl(props: ScrollAreaProps, scope: *Scope, cx: *Cx) !ScrollAreaResult {
 
         // Structure: container / content column / two scrollbars (absolute positioned, hit proxy
         // for hitTest)
-        const Parts = struct { content: *Node = undefined, bar_v: *Node = undefined, bar_h: *Node = undefined };
+        const Parts = struct { content: *Node = undefined, bar_v: *Node = undefined, bar_h: *Node = undefined, track_v: *Node = undefined, track_h: *Node = undefined };
         var parts: Parts = .{};
         const bar_radius = ScrollbarVisual.idle_thickness / 2;
         const container = try view.render(my_scope, cx, view.box(.{ .style = container_style, .tag = .scroll }, .{
@@ -144,9 +148,11 @@ fn mountImpl(props: ScrollAreaProps, scope: *Scope, cx: *Cx) !ScrollAreaResult {
                 .height = .{ .fit = .{} },
                 .will_change_transform = true,
             } }, {})),
+            view.capture(&parts.track_v, view.box(.{ .hit_test = false, .style = .{ .position = .absolute, .width = 0, .height = 0 } }, {})),
+            view.capture(&parts.track_h, view.box(.{ .hit_test = false, .style = .{ .position = .absolute, .width = 0, .height = 0 } }, {})),
             view.capture(&parts.bar_v, view.box(.{ .style = BoxStyle{
                 .width = .{ .px = ScrollbarVisual.idle_thickness },
-                .height = .{ .px = 30 },
+                .height = .{ .px = ScrollbarVisual.min_length },
                 .position = .absolute,
                 .background = Color.TRANSPARENT,
                 .border = .{ .radius = bar_radius },
@@ -154,7 +160,7 @@ fn mountImpl(props: ScrollAreaProps, scope: *Scope, cx: *Cx) !ScrollAreaResult {
                 .clip_shape = .{ .rounded_rect = bar_radius },
             } }, {})),
             view.capture(&parts.bar_h, view.box(.{ .style = BoxStyle{
-                .width = .{ .px = 30 },
+                .width = .{ .px = ScrollbarVisual.min_length },
                 .height = .{ .px = ScrollbarVisual.idle_thickness },
                 .position = .absolute,
                 .background = Color.TRANSPARENT,
@@ -165,11 +171,18 @@ fn mountImpl(props: ScrollAreaProps, scope: *Scope, cx: *Cx) !ScrollAreaResult {
         }));
         errdefer cx.freeNode(container);
         container.meta.ownership.meta.component_name = "ScrollArea";
-        container.frame_state.state_bits.flags.disable_render_cache = true;
+        // Below the container the scrollbar hook only moves `content` (translate), flips its
+        // linear-text state (part of the cache stamps) and repaints thumbs / tracks with a
+        // render-dirty mark on change (scrollbar.syncBar*), so the scrolled content stays
+        // cacheable across frames (before_render_hook_descendants_cache_safe, audited in Debug).
+        container.frame_state.state_bits.flags.before_render_hook_descendants_cache_safe = true;
         try core.bindScopeToNode(my_scope, container);
         scope_bound = true;
 
         const content = parts.content;
+        // The scroll offset is content's translate: hit-test the content in its own space so
+        // scrolling moves a hit layer instead of rebuilding the hit index (hit_runtime.HitLayer).
+        content.behavior.interaction.hit_layer = true;
         const scrollbar_v = parts.bar_v;
         const scrollbar_h = parts.bar_h;
         for ([_]*Node{ scrollbar_v, scrollbar_h }) |bar| {
@@ -197,10 +210,10 @@ fn mountImpl(props: ScrollAreaProps, scope: *Scope, cx: *Cx) !ScrollAreaResult {
         state.rubber_band_y_enabled = p.rubber_band_y;
         state.rubber_band_x_enabled = p.rubber_band_x;
         if (p.height) |h| {
-            if (state.viewport_height == 0) state.viewport_height = h - p.padding.vertical();
+            if (state.viewport_height == 0) state.viewport_height = @max(0, h - container.style.contentInsets().vertical());
         }
         if (p.width) |w| {
-            if (state.viewport_width == 0) state.viewport_width = w - p.padding.horizontal();
+            if (state.viewport_width == 0) state.viewport_width = @max(0, w - container.style.contentInsets().horizontal());
         }
 
         // Node on_cleanup relay cell: must outlive my_scope (see ScrollCtxCell),
@@ -214,6 +227,12 @@ fn mountImpl(props: ScrollAreaProps, scope: *Scope, cx: *Cx) !ScrollAreaResult {
             c.* = .{};
             try cx.registerScrollCtxCell(.{
                 .ptr = @ptrCast(c),
+                .can_destroy = struct {
+                    fn ready(ptr: *anyopaque) bool {
+                        const cc: *ScrollCtxCell = @ptrCast(@alignCast(ptr));
+                        return cc.ctx == null and cc.references == 0;
+                    }
+                }.ready,
                 .destroyFn = struct {
                     fn destroy(ptr: *anyopaque, alloc: std.mem.Allocator) void {
                         const cc: *ScrollCtxCell = @ptrCast(@alignCast(ptr));
@@ -229,12 +248,15 @@ fn mountImpl(props: ScrollAreaProps, scope: *Scope, cx: *Cx) !ScrollAreaResult {
             const event_ctx = try my_scope.allocator.create(ScrollEventCtx);
             errdefer my_scope.allocator.destroy(event_ctx);
             event_ctx.* = ScrollEventCtx{
+                .persist_key = p.persist_key,
                 .state = state,
                 .cell = cell,
                 .content = content,
                 .container = container,
                 .scrollbar = scrollbar_v,
                 .scrollbar_h = scrollbar_h,
+                .track_v = parts.track_v,
+                .track_h = parts.track_h,
                 .cx = cx,
                 .scroll_speed = p.scroll_speed,
                 .direction = p.direction,
@@ -281,9 +303,12 @@ fn mountImpl(props: ScrollAreaProps, scope: *Scope, cx: *Cx) !ScrollAreaResult {
         //   then detachScrollAreaBindings skips on null to avoid use-after-free.
         // Context is **cell not event_ctx**: node may outlive ctx and unbinding can't reach it
         // (see ScrollCtxCell). Writing cell is always safe, null ctx is safe no-op.
+        cell.references += 6;
         container.meta.ownership.hooks.on_cleanup = .{ .callback = clearContainerOnNodeFree, .context = @ptrCast(cell) };
         scrollbar_v.meta.ownership.hooks.on_cleanup = .{ .callback = clearScrollbarOnNodeFree, .context = @ptrCast(cell) };
         scrollbar_h.meta.ownership.hooks.on_cleanup = .{ .callback = clearScrollbarHOnNodeFree, .context = @ptrCast(cell) };
+        parts.track_v.meta.ownership.hooks.on_cleanup = .{ .callback = clearTrackVOnNodeFree, .context = @ptrCast(cell) };
+        parts.track_h.meta.ownership.hooks.on_cleanup = .{ .callback = clearTrackHOnNodeFree, .context = @ptrCast(cell) };
         content.meta.ownership.hooks.on_cleanup = .{ .callback = clearContentOnNodeFree, .context = @ptrCast(cell) };
 
         // Apply initial scroll position
@@ -358,7 +383,7 @@ pub fn setScrollY(state: *ScrollState, content: *Node, y: f32) void {
     state.momentum_spent_y = false;
     // Pixel-snap like scrollbarBeforeRender to eliminate text jitter
     content.style.translate_y = state.contentTranslateY();
-    content.markCompositePropDirty();
+    content.markHitLayerMotionPropDirty();
 }
 
 /// Scroll [top, top+height) content range vertically into view.
@@ -420,27 +445,106 @@ pub fn scrollIntoView(
     scrollRectIntoView(state, content, top, nr.h, alignment);
 }
 
+/// Horizontal counterpart of `setScrollY`.
+pub fn setScrollX(state: *ScrollState, content: *Node, x: f32) void {
+    const clamped = std.math.clamp(x, 0, state.maxScrollX());
+    state.scroll_x = clamped;
+    state.bonus_x = 0;
+    state.bonus_velocity_x = 0;
+    state.bounce_active_x = false;
+    state.momentum_spent_x = false;
+    content.style.translate_x = state.contentTranslateX();
+    content.markHitLayerMotionPropDirty();
+}
+
+/// Scroll [left, left+width) content range horizontally into view. `left`
+/// is in content coordinates (not including the current scroll_x).
+pub fn scrollRectIntoViewX(
+    state: *ScrollState,
+    content: *Node,
+    left: f32,
+    width: f32,
+    alignment: ScrollAlign,
+) void {
+    const vw = state.viewport_width;
+    const right = left + width;
+    const cur = state.scroll_x;
+    const target: f32 = switch (alignment) {
+        .start => left,
+        .end => right - vw,
+        .center => left + (width - vw) / 2,
+        .nearest => blk: {
+            // Wider than the viewport: show its start.
+            if (left < cur or width > vw) break :blk left;
+            if (right > cur + vw) break :blk right - vw;
+            break :blk cur;
+        },
+    };
+    if (target == cur) return;
+    setScrollX(state, content, target);
+}
+
+/// Horizontal counterpart of `scrollIntoView` (same laid-out-node contract).
+pub fn scrollIntoViewX(
+    state: *ScrollState,
+    content: *Node,
+    node: *Node,
+    alignment: ScrollAlign,
+) void {
+    const nr = node.rectFromWorldOrFallback();
+    if (nr.w <= 0) return;
+    var left: f32 = 0;
+    var cur: ?*Node = node;
+    var found = false;
+    while (cur) |n| {
+        if (n == content) {
+            found = true;
+            break;
+        }
+        left += n.rectFromWorldOrFallback().x;
+        cur = n.parent;
+    }
+    if (!found) return;
+    scrollRectIntoViewX(state, content, left, nr.w, alignment);
+}
+
 pub const ScrollEventCtx = state_mod.ScrollEventCtx;
 pub const ScrollCtxCell = state_mod.ScrollCtxCell;
 
 fn clearContainerOnNodeFree(ctx: *anyopaque) void {
     const cell: *ScrollCtxCell = @ptrCast(@alignCast(ctx));
     if (cell.ctx) |event_ctx| event_ctx.container = null;
+    cell.release();
 }
 
 fn clearScrollbarOnNodeFree(ctx: *anyopaque) void {
     const cell: *ScrollCtxCell = @ptrCast(@alignCast(ctx));
     if (cell.ctx) |event_ctx| event_ctx.scrollbar = null;
+    cell.release();
 }
 
 fn clearScrollbarHOnNodeFree(ctx: *anyopaque) void {
     const cell: *ScrollCtxCell = @ptrCast(@alignCast(ctx));
     if (cell.ctx) |event_ctx| event_ctx.scrollbar_h = null;
+    cell.release();
+}
+
+fn clearTrackVOnNodeFree(ctx: *anyopaque) void {
+    const cell: *ScrollCtxCell = @ptrCast(@alignCast(ctx));
+    if (cell.ctx) |event_ctx| event_ctx.track_v = null;
+    cell.release();
+}
+
+fn clearTrackHOnNodeFree(ctx: *anyopaque) void {
+    const cell: *ScrollCtxCell = @ptrCast(@alignCast(ctx));
+    if (cell.ctx) |event_ctx| event_ctx.track_h = null;
+    cell.release();
 }
 
 fn clearContentOnNodeFree(ctx: *anyopaque) void {
     const cell: *ScrollCtxCell = @ptrCast(@alignCast(ctx));
     if (cell.ctx) |event_ctx| event_ctx.content = null;
+    cell.release();
 }
 
 fn detachScrollAreaBindings(event_ctx: *ScrollEventCtx) void {
@@ -468,6 +572,7 @@ fn detachScrollAreaBindings(event_ctx: *ScrollEventCtx) void {
         if (container.meta.ownership.hooks.on_cleanup) |cu| {
             if (raw_cell != null and cu.context == raw_cell.? and cu.callback == clearContainerOnNodeFree) {
                 container.meta.ownership.hooks.on_cleanup = null;
+                event_ctx.cell.?.release();
             }
         }
         event_ctx.container = null;
@@ -483,6 +588,7 @@ fn detachScrollAreaBindings(event_ctx: *ScrollEventCtx) void {
         if (scrollbar.meta.ownership.hooks.on_cleanup) |cu| {
             if (raw_cell != null and cu.context == raw_cell.? and cu.callback == clearScrollbarOnNodeFree) {
                 scrollbar.meta.ownership.hooks.on_cleanup = null;
+                event_ctx.cell.?.release();
             }
         }
         event_ctx.scrollbar = null;
@@ -498,15 +604,28 @@ fn detachScrollAreaBindings(event_ctx: *ScrollEventCtx) void {
         if (scrollbar_h.meta.ownership.hooks.on_cleanup) |cu| {
             if (raw_cell != null and cu.context == raw_cell.? and cu.callback == clearScrollbarHOnNodeFree) {
                 scrollbar_h.meta.ownership.hooks.on_cleanup = null;
+                event_ctx.cell.?.release();
             }
         }
         event_ctx.scrollbar_h = null;
     }
 
+    for ([_]?*Node{ event_ctx.track_v, event_ctx.track_h }, [_]*const fn (*anyopaque) void{ clearTrackVOnNodeFree, clearTrackHOnNodeFree }) |maybe, callback| {
+        if (maybe) |track| if (track.meta.ownership.hooks.on_cleanup) |hook| {
+            if (raw_cell != null and hook.context == raw_cell.? and hook.callback == callback) {
+                track.meta.ownership.hooks.on_cleanup = null;
+                event_ctx.cell.?.release();
+            }
+        };
+    }
+    event_ctx.track_v = null;
+    event_ctx.track_h = null;
+
     if (event_ctx.content) |content| {
         if (content.meta.ownership.hooks.on_cleanup) |cu| {
             if (raw_cell != null and cu.context == raw_cell.? and cu.callback == clearContentOnNodeFree) {
                 content.meta.ownership.hooks.on_cleanup = null;
+                event_ctx.cell.?.release();
             }
         }
         event_ctx.content = null;
@@ -517,7 +636,15 @@ fn scrollbarHitProxyProvider(node: *const Node, _: ?*anyopaque, out: []HitProxyS
     // NOTE: ScrollArea nested-chain tests rely on node.rect direct read (World vs scrollbar rect
     // write order).
     // Session 31 attempted World hook switch, reverted.
-    if (out.len < 2 or node.rectFromWorldOrFallback().w <= 0 or node.rectFromWorldOrFallback().h <= 0) return 0;
+    if (out.len < 2) return 0;
+    if (node.rectFromWorldOrFallback().w <= 0 or node.rectFromWorldOrFallback().h <= 0) {
+        // Hidden bar: two empty specs emit no proxy but keep the planned proxy count (the bar's
+        // paint-order range) constant, so showing/hiding the bar is a partial hit rebuild of the
+        // bar instead of a full one (hit_runtime.rebuildSubtree).
+        out[0] = .{ .local_rect = ComputedRect.init(0, 0, 0, 0), .behavior = .self_only };
+        out[1] = out[0];
+        return 2;
+    }
     const slop = ScrollbarVisual.hover_slop;
     out[0] = .{
         .local_rect = ComputedRect.init(-slop, -slop, node.rectFromWorldOrFallback().w + slop * 2, node.rectFromWorldOrFallback().h + slop * 2),
@@ -561,8 +688,8 @@ test "ScrollArea: basic vertical" {
         try result.content.appendChild(std.testing.allocator, item);
     }
 
-    // content + scrollbar (vertical) + scrollbar (horizontal)
-    try std.testing.expectEqual(@as(usize, 3), result.container.children.items.len);
+    // COMPONENTS.json Scrollbar: content + two thumbs + two hover tracks.
+    try std.testing.expectEqual(@as(usize, 5), result.container.children.items.len);
     try std.testing.expectEqual(@as(usize, 10), result.content.children.items.len);
     try std.testing.expect(result.container.style.overflow_hidden);
 }
@@ -1574,16 +1701,28 @@ test "ScrollArea: scrollbar thumb rect updates in before-render hook" {
     state.scroll_y = state.maxScrollY() / 2;
     scrollbarBeforeRender(result.container);
 
-    const thumb_node = result.container.children.items[1];
+    const thumb_node = event_ctx.scrollbar.?;
     try std.testing.expectApproxEqAbs(@as(f32, ScrollbarVisual.idle_thickness), thumb_node.rectFromWorldOrFallback().w, 0.01);
     const expected_x = result.container.rectFromWorldOrFallback().x + result.container.rectFromWorldOrFallback().w - thumb_node.rectFromWorldOrFallback().w - ScrollbarVisual.edge_inset;
     try std.testing.expectApproxEqAbs(expected_x, thumb_node.rectFromWorldOrFallback().x, 0.01);
     const first_y = thumb_node.rectFromWorldOrFallback().y;
-    try std.testing.expect(first_y > result.container.rectFromWorldOrFallback().y + result.container.style.padding.top);
+    try std.testing.expect(first_y > result.container.rectFromWorldOrFallback().y + result.container.style.contentInsets().top);
 
     state.scroll_y = state.maxScrollY();
     scrollbarBeforeRender(result.container);
     try std.testing.expect(thumb_node.rectFromWorldOrFallback().y > first_y);
+
+    // COMPONENTS.json Scrollbar variants and zenit.scrollbar.*: 4 -> 6, track 10, inset 2.
+    try std.testing.expectEqual(ctx.tokens.tokens.color.scrollbar_thumb, thumb_node.getBackground());
+    state.scrollbar_hovered = true;
+    scrollbarBeforeRender(result.container);
+    try std.testing.expectEqual(@as(f32, 6), thumb_node.rectFromWorldOrFallback().w);
+    try std.testing.expectEqual(@as(f32, 10), event_ctx.track_v.?.rectFromWorldOrFallback().w);
+    try std.testing.expectEqual(ctx.tokens.tokens.color.scrollbar_thumb_hover, thumb_node.getBackground());
+    try std.testing.expectEqual(ctx.tokens.tokens.color.scrollbar_track, event_ctx.track_v.?.getBackground());
+    ctx.setTheme(&core.theme.dark);
+    scrollbarBeforeRender(result.container);
+    try std.testing.expectEqual(core.theme.dark.tokens.color.scrollbar_thumb_hover, thumb_node.getBackground());
 }
 
 test "ScrollArea: scope dispose detaches before-render hook and event handlers" {
@@ -1604,8 +1743,9 @@ test "ScrollArea: scope dispose detaches before-render hook and event handlers" 
     }).mount(scope, ctx);
     try root.appendChild(std.testing.allocator, result.container);
 
-    const scrollbar_v = result.container.children.items[1];
-    const scrollbar_h = result.container.children.items[2];
+    const event_ctx: *ScrollEventCtx = @ptrCast(@alignCast(result.container.behavior.events.event_context.?));
+    const scrollbar_v = event_ctx.scrollbar.?;
+    const scrollbar_h = event_ctx.scrollbar_h.?;
 
     scope.dispose();
     scope_disposed = true;
@@ -1783,6 +1923,104 @@ test "scrollIntoView: 按节点 rect 把子节点滚进视野" {
     try sa.content.appendChild(testing.allocator, unlaid);
     scrollIntoView(sa.state, sa.content, unlaid, .start);
     try testing.expectEqual(before, sa.state.scroll_y);
+}
+
+test "scrollIntoViewX: brings a laid-out child into the horizontal viewport" {
+    const testing = std.testing;
+    var cx = try Cx.init(testing.allocator, std.testing.io);
+    defer cx.deinit();
+
+    const root = try box(cx, .{ .width = .{ .px = 200 }, .height = .{ .px = 40 } }, .{});
+    cx.root = root;
+    const scope = try Scope.init(testing.allocator, null, cx.owner);
+    defer scope.dispose();
+
+    const sa = try ScrollArea(.{ .width = 200, .height = 40, .direction = .horizontal }).mount(scope, cx);
+    try root.appendChild(testing.allocator, sa.container);
+    sa.state.content_width = 1000;
+    sa.state.viewport_width = 200;
+    sa.state.external_content_width = true;
+
+    const mid = try box(cx, .{ .width = .{ .px = 1000 }, .height = .{ .px = 40 } }, .{});
+    const target = try box(cx, .{ .width = .{ .px = 60 }, .height = .{ .px = 40 } }, .{});
+    try sa.content.appendChild(testing.allocator, mid);
+    try mid.appendChild(testing.allocator, target);
+    mid.setLayoutRect(.{ .x = 100, .y = 0, .w = 1000, .h = 40 });
+    target.setLayoutRect(.{ .x = 500, .y = 0, .w = 60, .h = 40 });
+
+    // Content coordinate left = 100 + 500 = 600; nearest aligns its right edge.
+    scrollIntoViewX(sa.state, sa.content, target, .nearest);
+    try testing.expectEqual(@as(f32, 460), sa.state.scroll_x);
+    try testing.expectEqual(@as(f32, -460), sa.content.style.translate_x);
+    // Already visible: unchanged.
+    scrollIntoViewX(sa.state, sa.content, target, .nearest);
+    try testing.expectEqual(@as(f32, 460), sa.state.scroll_x);
+    // Left of the viewport: aligns its left edge.
+    sa.state.scroll_x = 700;
+    scrollIntoViewX(sa.state, sa.content, target, .nearest);
+    try testing.expectEqual(@as(f32, 600), sa.state.scroll_x);
+    // Clamped to the scrollable range.
+    scrollIntoViewX(sa.state, sa.content, target, .start);
+    try testing.expectEqual(@as(f32, 600), sa.state.scroll_x);
+    setScrollX(sa.state, sa.content, 5000);
+    try testing.expectEqual(@as(f32, 800), sa.state.scroll_x);
+}
+
+test "LP3 template scroll relay retirement preserves escaped callbacks and window ownership" {
+    const t = std.testing;
+    // Keep another live window while the first is repeatedly retired/recreated.
+    const other = try Cx.init(t.allocator, t.io);
+    defer other.deinit();
+    const other_scope = try Scope.init(t.allocator, null, other.owner);
+    defer other_scope.dispose();
+    const other_area = try ScrollArea(.{ .height = 80 }).mount(other_scope, other);
+    defer other.freeNode(other_area.container);
+    const other_cell = other.scroll_ctx_cells.items[0].ptr;
+    for (0..2) |_| {
+        const cx = try Cx.init(t.allocator, t.io);
+        defer cx.deinit();
+        for (0..12) |round| {
+            const scope = try Scope.init(t.allocator, null, cx.owner);
+            const area = try ScrollArea(.{ .height = 80 }).mount(scope, cx);
+            try t.expectEqual(@as(usize, 1), cx.scroll_ctx_cells.items.len);
+            const cell: *ScrollCtxCell = @ptrCast(@alignCast(cx.scroll_ctx_cells.items[0].ptr));
+            try t.expectEqual(@as(usize, 6), cell.references);
+            if (round % 2 == 0) {
+                scope.dispose();
+                cx.freeNode(area.container);
+            } else {
+                cx.freeNode(area.container);
+                scope.dispose();
+            }
+            try t.expect(cell.ctx == null);
+            try t.expectEqual(@as(usize, 0), cell.references);
+            try t.expectEqual(other_cell, other.scroll_ctx_cells.items[0].ptr);
+        }
+        // A callback hidden from event_ctx's current node slots still owns the
+        // relay. It must remain safe across scope teardown and a later mount.
+        const scope = try Scope.init(t.allocator, null, cx.owner);
+        const area = try ScrollArea(.{ .height = 80 }).mount(scope, cx);
+        const cell: *ScrollCtxCell = @ptrCast(@alignCast(cx.scroll_ctx_cells.items[0].ptr));
+        const escaped = try box(cx, .{}, .{});
+        escaped.meta.ownership.hooks.on_cleanup = .{ .callback = clearContentOnNodeFree, .context = @ptrCast(cell) };
+        cell.references += 1;
+        scope.dispose();
+        cx.freeNode(area.container);
+        try t.expectEqual(@as(usize, 1), cell.references);
+        const next_scope = try Scope.init(t.allocator, null, cx.owner);
+        defer next_scope.dispose();
+        const next = try ScrollArea(.{ .height = 80 }).mount(next_scope, cx);
+        defer cx.freeNode(next.container);
+        try t.expectEqual(@as(usize, 2), cx.scroll_ctx_cells.items.len);
+        cx.freeNode(escaped); // cell.ctx==null, release without touching dead ctx
+        try t.expectEqual(@as(usize, 0), cell.references);
+        const final_scope = try Scope.init(t.allocator, null, cx.owner);
+        defer final_scope.dispose();
+        const last = try ScrollArea(.{ .height = 80 }).mount(final_scope, cx);
+        defer cx.freeNode(last.container);
+        try t.expectEqual(@as(usize, 2), cx.scroll_ctx_cells.items.len);
+        for (cx.scroll_ctx_cells.items) |entry| try t.expect(entry.ptr != @as(*anyopaque, @ptrCast(cell)) or @as(*ScrollCtxCell, @ptrCast(@alignCast(entry.ptr))).ctx != null);
+    }
 }
 
 test "ScrollArea: mountScrollArea 在任意分配点失败时不泄漏" {
@@ -2050,11 +2288,9 @@ test "ScrollArea: ext.max_height（popover autosize 的写法）夹住的列容�
     try t.expect(f.y + f.h <= p.y + p.h + 0.5);
 }
 
-test "ScrollArea: px 0 + overflow_hidden 的隐藏容器里，fit 可收缩子节点保持内容尺寸（隐藏惯用法）" {
-    // Modal closed: barrier = px 0 + overflow_hidden (same as showNode). On hidden children,
-    // content size must stay clipped-only; shrink rules on px parent would crush to 0. After
-    // Quick Open reopens, panel stuck at 0 height (observed with native gate
-    // panel_infra/save_path_identity).
+test "ScrollArea: px 0 + overflow_hidden 的隐藏容器里，flex 收缩为零后重新显示恢复尺寸" {
+    // CSS flex shrinks the hidden dialog to zero. Reopening must recompute
+    // the intrinsic basis, rather than keeping the previously frozen result.
     const t = std.testing;
     var ctx = try Cx.init(t.allocator, std.testing.io);
     defer ctx.deinit();
@@ -2076,6 +2312,778 @@ test "ScrollArea: px 0 + overflow_hidden 的隐藏容器里，fit 可收缩子�
     }
 
     ctx.layout();
+    try t.expectApproxEqAbs(@as(f32, 0), dialog.globalRect().h, 0.5);
+    try t.expectApproxEqAbs(@as(f32, 0), sa.container.globalRect().h, 0.5);
+    hidden.style.width = .{ .px = 300 };
+    hidden.style.height = .{ .px = 200 };
+    hidden.markSizingDirty();
+    ctx.layout();
     try t.expectApproxEqAbs(@as(f32, 120), dialog.globalRect().h, 0.5);
     try t.expectApproxEqAbs(@as(f32, 120), sa.container.globalRect().h, 0.5);
+}
+
+/// Validated read interface; never expose an event-context cast to callers.
+pub const PersistView = struct { key: ?[]const u8, x: f32, y: f32, anchor_required: bool };
+fn persistContext(node: *Node) ?*ScrollEventCtx {
+    if (node.behavior.events.on_event != scrollEventHandler) return null;
+    const ptr = node.behavior.events.event_context orelse return null;
+    const ctx: *ScrollEventCtx = @ptrCast(@alignCast(ptr));
+    if (ctx.cell) |cell| if (cell.ctx != ctx) return null;
+    return ctx;
+}
+pub fn persistView(node: *Node) ?PersistView {
+    const ctx = persistContext(node) orelse return null;
+    return .{ .key = ctx.persist_key orelse node.meta.ownership.meta.test_id, .x = ctx.state.scroll_x, .y = ctx.state.scroll_y, .anchor_required = ctx.state.external_content_height or ctx.state.external_content_width };
+}
+pub fn restorePersistOffset(node: *Node, x: f32, y: f32) void {
+    const ctx = persistContext(node) orelse return;
+    const content = ctx.content orelse return;
+    if (!std.math.isFinite(x) or !std.math.isFinite(y)) return;
+    // The cached extents are only refreshed by scroll events; after a layout that
+    // grew or shrank the content they are stale, and clamping against them would
+    // cut the restored offset short. Re-read them from the current layout rects,
+    // exactly like the scroll event handler does.
+    if (content.parent) |parent| {
+        const pr = parent.rectFromWorldOrFallback();
+        if (pr.h > 0) ctx.state.viewport_height = @max(0, pr.h - parent.style.contentInsets().vertical());
+        if (pr.w > 0) ctx.state.viewport_width = @max(0, pr.w - parent.style.contentInsets().horizontal());
+    }
+    const cr = content.rectFromWorldOrFallback();
+    if (!ctx.state.external_content_height and cr.h > 0) ctx.state.content_height = cr.h;
+    if (!ctx.state.external_content_width and cr.w > 0) ctx.state.content_width = cr.w;
+    setScrollY(ctx.state, content, y);
+    const state = ctx.state;
+    state.touching = false;
+    state.momentum_active = false;
+    state.scroll_x = std.math.clamp(x, 0, state.maxScrollX());
+    state.bonus_x = 0;
+    state.bonus_velocity_x = 0;
+    state.bounce_active_x = false;
+    state.momentum_spent_x = false;
+    content.style.translate_x = state.contentTranslateX();
+    content.markHitLayerMotionPropDirty();
+    ctx.cx.needs_redraw = true;
+}
+
+test "persist scroll key, offset clamp, gesture reset and detached context" {
+    const allocator = std.testing.allocator;
+    const cx = try Cx.init(allocator, std.testing.io);
+    defer cx.deinit();
+    const scope = try Scope.init(allocator, null, cx.owner);
+    cx.root_scope = scope;
+    const result = try ScrollArea(.{ .width = 100, .height = 80, .persist_key = "stable-scroll" }).mount(scope, cx);
+    cx.root = result.container;
+    const state = result.state;
+    state.content_width = 300;
+    state.content_height = 500;
+    state.viewport_width = 100;
+    state.viewport_height = 80;
+    state.bonus_x = 20;
+    state.bonus_y = 30;
+    restorePersistOffset(result.container, 900, 900);
+    const persisted = persistView(result.container).?;
+    try std.testing.expectEqualStrings("stable-scroll", persisted.key.?);
+    try std.testing.expectEqual(@as(f32, 200), persisted.x);
+    try std.testing.expectEqual(@as(f32, 420), persisted.y);
+    try std.testing.expectEqual(@as(f32, 0), state.bonus_x);
+    try std.testing.expectEqual(@as(f32, 0), state.bonus_y);
+    const ctx: *ScrollEventCtx = @ptrCast(@alignCast(result.container.behavior.events.event_context.?));
+    ctx.cell.?.ctx = null;
+    try std.testing.expect(persistView(result.container) == null);
+    restorePersistOffset(result.container, 0, 0);
+    try std.testing.expectEqual(@as(f32, 420), state.scroll_y);
+    ctx.cell.?.ctx = ctx;
+}
+
+// Hover events are window coordinates; scrollbar frames are local to the viewport.
+test "ScrollArea: scrollbar hover survives an offset viewport" {
+    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer ctx.deinit();
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const root = try box(ctx, .{ .width = .fixed(600), .height = .fixed(400), .padding = Padding.all(40) }, .{});
+    ctx.root = root;
+    const sa = try ScrollArea(.{ .width = 300, .height = 200, .content_height = 1000 }).mount(scope, ctx);
+    try root.appendChild(ctx.allocator, sa.container);
+    ctx.layout();
+    sa.state.onScrollActivity();
+    scrollbarBeforeRender(sa.container);
+    const ec: *ScrollEventCtx = @ptrCast(@alignCast(sa.container.behavior.events.event_context.?));
+    const r = ec.scrollbar.?.globalRect();
+    _ = scrollEventHandler(.{ .mouse_move = .{ .x = r.x + r.w / 2, .y = r.y + r.h / 2, .dx = 0, .dy = 0 } }, ec);
+    try std.testing.expect(sa.state.scrollbar_hovered);
+    scrollbarBeforeRender(sa.container);
+    // COMPONENTS.json: hover expands thumb 4 -> 6 and reveals the 10px track.
+    try std.testing.expectEqual(@as(f32, 6), ec.scrollbar.?.rectFromWorldOrFallback().w);
+    try std.testing.expectEqual(@as(f32, 10), ec.track_v.?.rectFromWorldOrFallback().w);
+}
+
+test "ScrollArea: leaving the container clears scrollbar hover" {
+    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer ctx.deinit();
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const root = try box(ctx, .{ .width = .fixed(600), .height = .fixed(400) }, .{});
+    ctx.root = root;
+    const sa = try ScrollArea(.{ .width = 300, .height = 200, .content_width = 800, .content_height = 1000 }).mount(scope, ctx);
+    try root.appendChild(ctx.allocator, sa.container);
+    ctx.layout();
+    sa.state.onScrollActivity();
+    scrollbarBeforeRender(sa.container);
+    const ec: *ScrollEventCtx = @ptrCast(@alignCast(sa.container.behavior.events.event_context.?));
+    const r = ec.scrollbar.?.globalRect();
+    _ = scrollEventHandler(.{ .mouse_move = .{ .x = r.x + r.w / 2, .y = r.y + r.h / 2, .dx = 0, .dy = 0 } }, ec);
+    try std.testing.expect(sa.state.scrollbar_hovered);
+    // The pointer exits straight through the hover slop: no further move reaches the container.
+    _ = scrollEventHandler(.mouse_leave, ec);
+    try std.testing.expect(!sa.state.scrollbar_hovered);
+    try std.testing.expect(!sa.state.scrollbar_hovered_h);
+    scrollbarBeforeRender(sa.container);
+    try std.testing.expectEqual(@as(f32, 4), ec.scrollbar.?.rectFromWorldOrFallback().w);
+}
+
+// ---- Stationary-pointer hover (core/cx_hover.zig) through the real ScrollArea ----
+
+const HoverRig = struct {
+    fn rows(cx: *Cx, parent: *Node, out: []*Node, h: f32) !void {
+        for (out) |*slot| {
+            const row = try box(cx, .{ .width = .{ .grow = .{} }, .height = .{ .px = h } }, .{});
+            // Rows that observe pointer events participate in hit testing (hoverable rows).
+            row.behavior.events.on_event = observe;
+            try parent.appendChild(std.testing.allocator, row);
+            slot.* = row;
+        }
+    }
+
+    fn observe(_: core.Event, _: ?*anyopaque) core.EventResult {
+        return .ignored;
+    }
+
+    fn settle(cx: *Cx) !void {
+        var frames: usize = 0;
+        while (cx.wantsFrame() and frames < 600) : (frames += 1) {
+            cx.advanceFrameClock();
+            cx.layout();
+            _ = cx.render();
+        }
+        try std.testing.expect(!cx.wantsFrame());
+    }
+
+    fn indexOf(rows_: []*Node, node: ?*Node) ?usize {
+        const n = node orelse return null;
+        for (rows_, 0..) |r, i| if (r == n) return i;
+        return null;
+    }
+};
+
+test "ScrollArea: wheel scroll under a stationary pointer moves hover to the row now under it" {
+    var cx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer cx.deinit();
+    cx.setViewport(400, 300);
+    try cx.setTestFrameStep(16);
+    cx.caret_flip_host = true;
+    const scope = try Scope.init(std.testing.allocator, null, cx.owner);
+    defer scope.dispose();
+    const root = try box(cx, .{ .width = .{ .px = 400 }, .height = .{ .px = 300 } }, .{});
+    cx.root = root;
+    const area = try ScrollArea(.{ .width = 300, .height = 200, .content_height = 600, .rubber_band_y = false }).mount(scope, cx);
+    try root.appendChild(std.testing.allocator, area.container);
+    var rows: [15]*Node = undefined;
+    try HoverRig.rows(cx, area.content, &rows, 40);
+    try HoverRig.settle(cx);
+
+    cx.handleMouseMove(150, 20);
+    try std.testing.expectEqual(@as(?usize, 0), HoverRig.indexOf(&rows, cx.hovered_node));
+    cx.handleScroll(.{ .x = 150, .y = 20, .dx = 0, .dy = -80 });
+    try HoverRig.settle(cx);
+    try std.testing.expectEqual(@as(f32, 80), area.state.scroll_y);
+    try std.testing.expectEqual(@as(?usize, 2), HoverRig.indexOf(&rows, cx.hovered_node));
+
+    // Trackpad gesture with momentum: hover tracks every committed position and lands on the row
+    // under the pointer once the content rests.
+    cx.handleScroll(.{ .x = 150, .y = 20, .dx = 0, .dy = 0, .phase = .began });
+    cx.handleScroll(.{ .x = 150, .y = 20, .dx = 0, .dy = -50, .phase = .changed });
+    cx.handleScroll(.{ .x = 150, .y = 20, .dx = 0, .dy = 0, .phase = .ended });
+    cx.handleScroll(.{ .x = 150, .y = 20, .dx = 0, .dy = -30, .momentum = .began });
+    cx.handleScroll(.{ .x = 150, .y = 20, .dx = 0, .dy = 0, .momentum = .ended });
+    try HoverRig.settle(cx);
+    const want: usize = @intFromFloat(@floor((20 + area.state.scroll_y) / 40));
+    try std.testing.expect(area.state.scroll_y > 80);
+    try std.testing.expectEqual(@as(?usize, want), HoverRig.indexOf(&rows, cx.hovered_node));
+}
+
+test "ScrollArea: a wheel that moves nothing requests no frame" {
+    var cx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer cx.deinit();
+    cx.setViewport(400, 300);
+    try cx.setTestFrameStep(16);
+    cx.caret_flip_host = true;
+    const scope = try Scope.init(std.testing.allocator, null, cx.owner);
+    defer scope.dispose();
+    const root = try box(cx, .{ .width = .{ .px = 400 }, .height = .{ .px = 300 } }, .{});
+    cx.root = root;
+    const area = try ScrollArea(.{ .width = 300, .height = 200, .content_height = 600, .rubber_band_y = false }).mount(scope, cx);
+    try root.appendChild(std.testing.allocator, area.container);
+    var rows: [15]*Node = undefined;
+    try HoverRig.rows(cx, area.content, &rows, 40);
+    try HoverRig.settle(cx);
+    // A live stationary pointer over the rows: hover re-resolution must not keep frames going.
+    cx.handleMouseMove(150, 20);
+    try HoverRig.settle(cx);
+
+    // Against the top end: the first wheel reveals the scroller (a visible change) ...
+    cx.handleScroll(.{ .x = 150, .y = 20, .dx = 0, .dy = 40 });
+    try std.testing.expect(cx.wantsFrame());
+    try HoverRig.settle(cx);
+    // ... and a wheel with the scroller already shown and the content pinned changes nothing.
+    cx.handleScroll(.{ .x = 150, .y = 20, .dx = 0, .dy = 40 });
+    try std.testing.expect(!cx.wantsFrame());
+    try std.testing.expectEqual(@as(f32, 0), area.state.scroll_y);
+
+    // A wheel that moves the content renders, and so does the next one pinned at the far end
+    // only while it still moves.
+    cx.handleScroll(.{ .x = 150, .y = 20, .dx = 0, .dy = -1000 });
+    try std.testing.expect(cx.wantsFrame());
+    try HoverRig.settle(cx);
+    try std.testing.expectEqual(@as(f32, 400), area.state.scroll_y);
+    cx.handleScroll(.{ .x = 150, .y = 20, .dx = 0, .dy = -40 });
+    try std.testing.expect(!cx.wantsFrame());
+}
+
+test "ScrollArea: overscroll at a pinned end still renders its rubber band and spring" {
+    var cx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer cx.deinit();
+    cx.setViewport(400, 300);
+    try cx.setTestFrameStep(16);
+    cx.caret_flip_host = true;
+    const scope = try Scope.init(std.testing.allocator, null, cx.owner);
+    defer scope.dispose();
+    const root = try box(cx, .{ .width = .{ .px = 400 }, .height = .{ .px = 300 } }, .{});
+    cx.root = root;
+    const area = try ScrollArea(.{ .width = 300, .height = 200, .content_height = 600 }).mount(scope, cx);
+    try root.appendChild(std.testing.allocator, area.container);
+    var rows: [15]*Node = undefined;
+    try HoverRig.rows(cx, area.content, &rows, 40);
+    try HoverRig.settle(cx);
+    cx.handleMouseMove(150, 20);
+    try HoverRig.settle(cx);
+    // Pinned at the top, a trackpad pull past the end rubber-bands: it renders ...
+    cx.handleScroll(.{ .x = 150, .y = 20, .dx = 0, .dy = 0, .phase = .began });
+    cx.handleScroll(.{ .x = 150, .y = 20, .dx = 0, .dy = 40, .phase = .changed });
+    try std.testing.expect(cx.wantsFrame());
+    try std.testing.expect(area.state.bonus_y != 0);
+    // ... and the release hands the overscroll to the spring, which runs to rest.
+    cx.handleScroll(.{ .x = 150, .y = 20, .dx = 0, .dy = 0, .phase = .ended });
+    try std.testing.expect(cx.wantsFrame());
+    try HoverRig.settle(cx);
+    try std.testing.expectEqual(@as(f32, 0), area.state.bonus_y);
+    try std.testing.expectEqual(@as(f32, 0), area.state.scroll_y);
+}
+
+test "ScrollArea: a wheel over content that cannot scroll requests no frame" {
+    var cx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer cx.deinit();
+    cx.setViewport(400, 300);
+    try cx.setTestFrameStep(16);
+    cx.caret_flip_host = true;
+    const scope = try Scope.init(std.testing.allocator, null, cx.owner);
+    defer scope.dispose();
+    const root = try box(cx, .{ .width = .{ .px = 400 }, .height = .{ .px = 300 } }, .{});
+    cx.root = root;
+    const area = try ScrollArea(.{ .width = 300, .height = 200, .content_height = 120 }).mount(scope, cx);
+    try root.appendChild(std.testing.allocator, area.container);
+    var rows: [3]*Node = undefined;
+    try HoverRig.rows(cx, area.content, &rows, 40);
+    // A window-level capture handler that passes scroll events on (a key-binding layer) is not
+    // a change either.
+    const Keys = struct {
+        var seen: u32 = 0;
+        fn capture(e: core.Event, _: ?*anyopaque) core.EventResult {
+            if (e == .scroll) seen += 1;
+            return .ignored;
+        }
+    };
+    root.behavior.events.on_event_capture = Keys.capture;
+    try HoverRig.settle(cx);
+    cx.handleMouseMove(150, 20);
+    try HoverRig.settle(cx);
+    for ([_]f32{ 40, -40, 12, -12 }) |dy| {
+        cx.handleScroll(.{ .x = 150, .y = 20, .dx = 0, .dy = dy });
+        try std.testing.expect(!cx.wantsFrame());
+    }
+    try std.testing.expectEqual(@as(u32, 4), Keys.seen);
+}
+
+test "ScrollArea: a scroll handler that takes the event without declaring it inert still renders" {
+    var cx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer cx.deinit();
+    cx.setViewport(400, 300);
+    try cx.setTestFrameStep(16);
+    cx.caret_flip_host = true;
+    const root = try box(cx, .{ .width = .{ .px = 400 }, .height = .{ .px = 300 } }, .{});
+    cx.root = root;
+    const canvas = try box(cx, .{ .width = .{ .px = 200 }, .height = .{ .px = 200 } }, .{});
+    const App = struct {
+        var seen: u32 = 0;
+        fn onScroll(_: @import("../../events.zig").ScrollEvent, _: ?*anyopaque) core.EventResult {
+            seen += 1;
+            return .stop;
+        }
+    };
+    canvas.behavior.events.on_scroll = App.onScroll;
+    try root.appendChild(std.testing.allocator, canvas);
+    try HoverRig.settle(cx);
+    cx.handleScroll(.{ .x = 50, .y = 50, .dx = 0, .dy = 12 });
+    try std.testing.expectEqual(@as(u32, 1), App.seen);
+    try std.testing.expect(cx.wantsFrame());
+}
+
+test "ScrollArea: nested and programmatic scroll re-resolve hover under a stationary pointer" {
+    var cx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer cx.deinit();
+    cx.setViewport(400, 300);
+    try cx.setTestFrameStep(16);
+    cx.caret_flip_host = true;
+    const scope = try Scope.init(std.testing.allocator, null, cx.owner);
+    defer scope.dispose();
+    const root = try box(cx, .{ .width = .{ .px = 400 }, .height = .{ .px = 300 } }, .{});
+    cx.root = root;
+    const outer = try ScrollArea(.{ .width = 300, .height = 200, .content_height = 600, .rubber_band_y = false }).mount(scope, cx);
+    try root.appendChild(std.testing.allocator, outer.container);
+    const header = try box(cx, .{ .width = .{ .grow = .{} }, .height = .{ .px = 100 } }, .{});
+    try outer.content.appendChild(std.testing.allocator, header);
+    const inner = try ScrollArea(.{ .width = 300, .height = 120, .content_height = 600, .rubber_band_y = false }).mount(scope, cx);
+    try outer.content.appendChild(std.testing.allocator, inner.container);
+    var rows: [20]*Node = undefined;
+    try HoverRig.rows(cx, inner.content, &rows, 30);
+    const filler = try box(cx, .{ .width = .{ .grow = .{} }, .height = .{ .px = 380 } }, .{});
+    try outer.content.appendChild(std.testing.allocator, filler);
+    try HoverRig.settle(cx);
+
+    // Pointer 50px into the inner list: inner row 1.
+    cx.handleMouseMove(150, 150);
+    try std.testing.expectEqual(@as(?usize, 1), HoverRig.indexOf(&rows, cx.hovered_node));
+    // Programmatic scroll of the outer area carries the inner list up by 60: inner row 3.
+    setScrollY(outer.state, outer.content, 60);
+    try HoverRig.settle(cx);
+    try std.testing.expectEqual(@as(?usize, 3), HoverRig.indexOf(&rows, cx.hovered_node));
+    // Wheel over the inner list scrolls the inner area by 30: inner row 4.
+    cx.handleScroll(.{ .x = 150, .y = 150, .dx = 0, .dy = -30 });
+    try HoverRig.settle(cx);
+    try std.testing.expectEqual(@as(f32, 30), inner.state.scroll_y);
+    try std.testing.expectEqual(@as(?usize, 4), HoverRig.indexOf(&rows, cx.hovered_node));
+}
+
+// ---- Hit layers (core/hit_runtime.zig HitLayer): scrolling moves hit geometry, no rebuild ----
+
+const HitLayerRig = struct {
+    cx: *Cx,
+    scope: *Scope,
+    area: ScrollAreaResult,
+    rows: [15]*Node = undefined,
+
+    fn init(rig: *HitLayerRig) !void {
+        rig.cx = try Cx.init(std.testing.allocator, std.testing.io);
+        rig.cx.setViewport(400, 300);
+        try rig.cx.setTestFrameStep(16);
+        rig.cx.caret_flip_host = true;
+        rig.scope = try Scope.init(std.testing.allocator, null, rig.cx.owner);
+        const root = try box(rig.cx, .{ .width = .{ .px = 400 }, .height = .{ .px = 300 } }, .{});
+        rig.cx.root = root;
+        // Area at y=50: rows above y=50 and below y=250 are clipped by the viewport.
+        const spacer = try box(rig.cx, .{ .width = .{ .px = 400 }, .height = .{ .px = 50 } }, .{});
+        try root.appendChild(std.testing.allocator, spacer);
+        rig.area = try ScrollArea(.{ .width = 300, .height = 200, .content_height = 600, .rubber_band_y = false }).mount(rig.scope, rig.cx);
+        try root.appendChild(std.testing.allocator, rig.area.container);
+        try HoverRig.rows(rig.cx, rig.area.content, &rig.rows, 40);
+        try HoverRig.settle(rig.cx);
+    }
+
+    fn deinit(rig: *HitLayerRig) void {
+        rig.scope.dispose();
+        rig.cx.deinit();
+    }
+
+    fn rowAt(rig: *HitLayerRig, x: f32, y: f32) ?usize {
+        return HoverRig.indexOf(&rig.rows, rig.cx.hitTest(x, y));
+    }
+
+    fn rowEpochs(rig: *HitLayerRig) [15]u32 {
+        var out: [15]u32 = undefined;
+        for (rig.rows, 0..) |row, i| out[i] = row.frame_state.frame_local.spatial.hit.epoch;
+        return out;
+    }
+};
+
+test "ScrollArea hit layer: scrolling moves row hits without rebuilding their proxies" {
+    var rig: HitLayerRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    const cx = rig.cx;
+    try std.testing.expect(rig.area.content.behavior.interaction.hit_layer);
+    try std.testing.expectEqual(@as(?usize, 0), rig.rowAt(150, 60));
+    const epochs = rig.rowEpochs();
+    cx.input_perf = .{};
+
+    // Event time (no frame in between): the next hit already resolves at the new offset.
+    cx.handleScroll(.{ .x = 150, .y = 60, .dx = 0, .dy = -80 });
+    try std.testing.expectEqual(@as(f32, 80), rig.area.state.scroll_y);
+    try std.testing.expectEqual(@as(?usize, 2), rig.rowAt(150, 60));
+    try std.testing.expectEqual(@as(?usize, 6), rig.rowAt(150, 249));
+    // Clip of the (unscrolled) viewport still applies to scrolled rows.
+    try std.testing.expectEqual(@as(?usize, null), rig.rowAt(150, 45));
+    try std.testing.expectEqual(@as(?usize, null), rig.rowAt(150, 255));
+    cx.handleScroll(.{ .x = 150, .y = 60, .dx = 0, .dy = -40 });
+    try std.testing.expectEqual(@as(?usize, 3), rig.rowAt(150, 60));
+    try HoverRig.settle(cx);
+    try std.testing.expectEqual(@as(?usize, 3), rig.rowAt(150, 60));
+    try std.testing.expectEqual(@as(?usize, 7), rig.rowAt(150, 249));
+    // No row proxy was re-emitted by either the event-time refresh or the frames.
+    const after = rig.rowEpochs();
+    try std.testing.expectEqual(@as(u32, 0), cx.input_perf.in_hit_full_rebuilds);
+    try std.testing.expectEqualSlices(u32, &epochs, &after);
+}
+
+test "ScrollArea hit layer: layout change inside scrolled content rebuilds siblings at their new place" {
+    // Partial rebuild inside a moved layer must place the reflowed siblings in layer space, and
+    // the viewport clip entry (outside the layer) must keep clipping them.
+    var rig: HitLayerRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    const cx = rig.cx;
+    cx.handleScroll(.{ .x = 150, .y = 60, .dx = 0, .dy = -80 });
+    try HoverRig.settle(cx);
+    // Row 3 grows by 40: rows 4.. move down by 40 in content space.
+    rig.rows[3].style.height = .{ .px = 80 };
+    rig.rows[3].markLayoutDirty();
+    // Event-time query commits the layout first.
+    // content y of point (150,60) = 60 - 50 + 80 = 90 -> row 2; y=210 -> content 240 -> row 4
+    // (row 3 spans 120..200, row 4 200..240, row 5 240..280).
+    try std.testing.expectEqual(@as(?usize, 2), rig.rowAt(150, 60));
+    try std.testing.expectEqual(@as(?usize, 3), rig.rowAt(150, 150));
+    try std.testing.expectEqual(@as(?usize, 5), rig.rowAt(150, 220));
+    try std.testing.expectEqual(@as(?usize, null), rig.rowAt(150, 260));
+    // Scrolling after the partial rebuild keeps both the rebuilt and the untouched rows exact.
+    cx.handleScroll(.{ .x = 150, .y = 60, .dx = 0, .dy = 40 });
+    try std.testing.expectEqual(@as(f32, 40), rig.area.state.scroll_y);
+    try std.testing.expectEqual(@as(?usize, 1), rig.rowAt(150, 60));
+    try std.testing.expectEqual(@as(?usize, 3), rig.rowAt(150, 190));
+    try std.testing.expectEqual(@as(?usize, 4), rig.rowAt(150, 215));
+    try HoverRig.settle(cx);
+    try std.testing.expectEqual(@as(?usize, 4), rig.rowAt(150, 215));
+}
+
+test "ScrollArea hit layer: partial rebuild below the layer node stays in layer space" {
+    // The rebuild root is a row inside the scrolled content: its parent chain must be composed
+    // relative to the layer node, not in world space.
+    var rig: HitLayerRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    const cx = rig.cx;
+    const chip = try box(cx, .{ .width = .{ .px = 50 }, .height = .{ .px = 20 } }, .{});
+    chip.behavior.events.on_event = HoverRig.observe;
+    try rig.rows[3].appendChild(std.testing.allocator, chip);
+    try HoverRig.settle(cx);
+    cx.handleScroll(.{ .x = 150, .y = 60, .dx = 0, .dy = -80 });
+    try HoverRig.settle(cx);
+    // Row 3 spans content 120..160 -> window y 90..130 at scroll 80; chip at its top-left.
+    try std.testing.expectEqual(@as(?*Node, chip), cx.hitTest(20, 100));
+    chip.style.width = .{ .px = 120 };
+    chip.markLayoutDirty();
+    try std.testing.expectEqual(@as(?*Node, chip), cx.hitTest(100, 100));
+    try std.testing.expectEqual(@as(?usize, 3), rig.rowAt(100, 125));
+    try HoverRig.settle(cx);
+    try std.testing.expectEqual(@as(?*Node, chip), cx.hitTest(100, 100));
+}
+
+test "ScrollArea hit layer: nested areas clip and move independently" {
+    var cx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer cx.deinit();
+    cx.setViewport(400, 300);
+    try cx.setTestFrameStep(16);
+    cx.caret_flip_host = true;
+    const scope = try Scope.init(std.testing.allocator, null, cx.owner);
+    defer scope.dispose();
+    const root = try box(cx, .{ .width = .{ .px = 400 }, .height = .{ .px = 300 } }, .{});
+    cx.root = root;
+    const outer = try ScrollArea(.{ .width = 300, .height = 200, .content_height = 600, .rubber_band_y = false }).mount(scope, cx);
+    try root.appendChild(std.testing.allocator, outer.container);
+    const header = try box(cx, .{ .width = .{ .grow = .{} }, .height = .{ .px = 100 } }, .{});
+    try outer.content.appendChild(std.testing.allocator, header);
+    const inner = try ScrollArea(.{ .width = 300, .height = 120, .content_height = 600, .rubber_band_y = false }).mount(scope, cx);
+    try outer.content.appendChild(std.testing.allocator, inner.container);
+    var rows: [20]*Node = undefined;
+    try HoverRig.rows(cx, inner.content, &rows, 30);
+    const filler = try box(cx, .{ .width = .{ .grow = .{} }, .height = .{ .px = 380 } }, .{});
+    try outer.content.appendChild(std.testing.allocator, filler);
+    try HoverRig.settle(cx);
+
+    // Inner viewport spans y 100..220.
+    try std.testing.expectEqual(@as(?usize, 1), HoverRig.indexOf(&rows, cx.hitTest(150, 150)));
+    // Inner scroll by 30: inner row under y=150 is now row 2; outer does not move.
+    cx.handleScroll(.{ .x = 150, .y = 150, .dx = 0, .dy = -30 });
+    try std.testing.expectEqual(@as(f32, 30), inner.state.scroll_y);
+    try std.testing.expectEqual(@as(f32, 0), outer.state.scroll_y);
+    try std.testing.expectEqual(@as(?usize, 2), HoverRig.indexOf(&rows, cx.hitTest(150, 150)));
+    // Outer scroll by 60 (programmatic) carries the inner viewport to y 40..160.
+    setScrollY(outer.state, outer.content, 60);
+    try std.testing.expectEqual(@as(?usize, 4), HoverRig.indexOf(&rows, cx.hitTest(150, 150)));
+    // Above the moved inner viewport: header (not an inner row); below it: filler.
+    try std.testing.expectEqual(@as(?usize, null), HoverRig.indexOf(&rows, cx.hitTest(150, 35)));
+    try std.testing.expectEqual(@as(?usize, null), HoverRig.indexOf(&rows, cx.hitTest(150, 165)));
+    // y=41 is 1px into the moved inner viewport: inner content y 31 -> row 1.
+    try std.testing.expectEqual(@as(?usize, 1), HoverRig.indexOf(&rows, cx.hitTest(150, 41)));
+    try HoverRig.settle(cx);
+    try std.testing.expectEqual(@as(?usize, 4), HoverRig.indexOf(&rows, cx.hitTest(150, 150)));
+}
+
+fn overlayBox(cx: *Cx, parent: *Node, top: f32, h: f32) !*Node {
+    const n = try box(cx, .{ .width = .{ .px = 100 }, .height = .{ .px = h }, .position = .absolute }, .{});
+    (try n.style.ensureExtFallible(cx.allocator)).inset = .{ .top = .{ .px = top }, .left = .{ .px = 0 } };
+    n.behavior.events.on_event = HoverRig.observe;
+    try parent.appendChild(std.testing.allocator, n);
+    return n;
+}
+
+test "ScrollArea hit layer: overlapping children follow paint order through reorders and z" {
+    // Children of a hit layer are numbered in blocks of their own (hit_runtime.HitBlock); the
+    // topmost hit must still be the last painted one when their order changes without any of
+    // them being rebuilt.
+    var rig: HitLayerRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    const cx = rig.cx;
+    const content = rig.area.content;
+    // Two overlays over row 0 (content y 0..30, window y 50..80), painted after the rows.
+    const a = try overlayBox(cx, content, 0, 30);
+    const b = try overlayBox(cx, content, 0, 30);
+    try HoverRig.settle(cx);
+    try std.testing.expectEqual(b, cx.hitTest(20, 60).?);
+    // Reorder only: a painted last.
+    var order: [17]*Node = undefined;
+    order[0] = b;
+    for (rig.rows, 0..) |row, i| order[i + 1] = row;
+    order[16] = a;
+    try content.replaceChildOrder(std.testing.allocator, &order);
+    try std.testing.expectEqual(a, cx.hitTest(20, 60).?);
+    // Moving b in front of everything (b is first in tree order): positive z paints it last.
+    (try b.style.ensureExtFallible(cx.allocator)).z_index = 3;
+    b.markOrderDirty();
+    b.markInteractionDirty();
+    try std.testing.expectEqual(b, cx.hitTest(20, 60).?);
+    // Rows keep their place under the overlays; outside them rows hit.
+    try std.testing.expectEqual(@as(?usize, 0), rig.rowAt(150, 60));
+    try std.testing.expectEqual(@as(?usize, 3), rig.rowAt(20, 175));
+    try HoverRig.settle(cx);
+    try std.testing.expectEqual(b, cx.hitTest(20, 60).?);
+    try std.testing.expectEqual(@as(?usize, 3), rig.rowAt(20, 175));
+}
+
+test "ScrollArea hit layer: a layer subtree sorts between its node and the node's later siblings" {
+    var cx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer cx.deinit();
+    cx.setViewport(400, 300);
+    try cx.setTestFrameStep(16);
+    cx.caret_flip_host = true;
+    const scope = try Scope.init(std.testing.allocator, null, cx.owner);
+    defer scope.dispose();
+    const root = try box(cx, .{ .width = .{ .px = 400 }, .height = .{ .px = 300 } }, .{});
+    cx.root = root;
+    root.behavior.events.on_event = HoverRig.observe;
+    const outer = try ScrollArea(.{ .width = 300, .height = 200, .content_height = 600, .rubber_band_y = false }).mount(scope, cx);
+    try root.appendChild(std.testing.allocator, outer.container);
+    // An outer row holding a nested area and, painted after it, an overlay over it.
+    const row = try box(cx, .{ .width = .{ .grow = .{} }, .height = .{ .px = 150 } }, .{});
+    row.behavior.events.on_event = HoverRig.observe;
+    try outer.content.appendChild(std.testing.allocator, row);
+    const inner = try ScrollArea(.{ .width = 300, .height = 120, .content_height = 600, .rubber_band_y = false }).mount(scope, cx);
+    try row.appendChild(std.testing.allocator, inner.container);
+    var rows: [20]*Node = undefined;
+    try HoverRig.rows(cx, inner.content, &rows, 30);
+    const cover = try overlayBox(cx, row, 60, 30);
+    // Window-level overlay after the outer area, over its top.
+    const top_cover = try overlayBox(cx, root, 0, 20);
+    try HoverRig.settle(cx);
+
+    try std.testing.expectEqual(top_cover, cx.hitTest(20, 10).?);
+    try std.testing.expectEqual(@as(?usize, 0), HoverRig.indexOf(&rows, cx.hitTest(150, 10)));
+    try std.testing.expectEqual(cover, cx.hitTest(20, 70).?);
+    try std.testing.expectEqual(@as(?usize, 2), HoverRig.indexOf(&rows, cx.hitTest(150, 70)));
+    // Inner rows beat the row and the outer content they are nested in.
+    try std.testing.expectEqual(@as(?usize, 3), HoverRig.indexOf(&rows, cx.hitTest(150, 100)));
+    // Below the inner viewport: the outer row itself.
+    try std.testing.expectEqual(row, cx.hitTest(150, 130).?);
+    // Rebind an inner row (structure change inside the nested layer): order is kept.
+    cx.input_perf = .{};
+    const fresh = try box(cx, .{ .width = .{ .grow = .{} }, .height = .{ .px = 30 } }, .{});
+    fresh.behavior.events.on_event = HoverRig.observe;
+    try inner.content.insertChildBefore(std.testing.allocator, fresh, rows[2]);
+    try std.testing.expectEqual(fresh, cx.hitTest(150, 70).?);
+    try std.testing.expectEqual(cover, cx.hitTest(20, 70).?);
+    try std.testing.expectEqual(@as(?usize, 2), HoverRig.indexOf(&rows, cx.hitTest(150, 100)));
+    try std.testing.expectEqual(@as(u32, 0), cx.input_perf.in_hit_full_rebuilds);
+}
+
+test "ScrollArea hit layer: a removed or hidden row stops hitting without a full rebuild" {
+    var rig: HitLayerRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    const cx = rig.cx;
+    cx.input_perf = .{};
+    // Retained removal: the node stays alive, its proxies must go.
+    const row2 = rig.rows[2];
+    rig.area.content.removeChildRetained(row2);
+    // Row 3 moved up into row 2's place (content y 80..120 -> window y 130..170).
+    try std.testing.expectEqual(@as(?usize, 3), rig.rowAt(150, 140));
+    try std.testing.expect(cx.hitTest(150, 140).? != row2);
+    // Hidden row: no hit, siblings unchanged.
+    rig.rows[5].setHitTestVisible(false);
+    try std.testing.expect(cx.hitTest(150, 225) != rig.rows[5]);
+    try std.testing.expectEqual(@as(?usize, 4), rig.rowAt(150, 185));
+    try std.testing.expectEqual(@as(u32, 0), cx.input_perf.in_hit_full_rebuilds);
+    try rig.area.content.appendChild(std.testing.allocator, row2);
+    try HoverRig.settle(cx);
+    try std.testing.expectEqual(@as(?usize, 3), rig.rowAt(150, 140));
+    // A removed overlay leaves nothing behind: the row under it hits again.
+    const cover = try overlayBox(cx, rig.area.content, 0, 30);
+    try HoverRig.settle(cx);
+    try std.testing.expectEqual(cover, cx.hitTest(20, 60).?);
+    rig.area.content.removeChildRetained(cover);
+    try std.testing.expectEqual(@as(?usize, 0), rig.rowAt(20, 60));
+    try rig.area.content.appendChild(std.testing.allocator, cover);
+    try std.testing.expectEqual(cover, cx.hitTest(20, 60).?);
+}
+
+test "ScrollArea hit layer: a change inside a row is committed when an ancestor of the layer is dirty too" {
+    // The layer node's build keeps rows whose own geometry is unchanged, so the change inside the
+    // row must be a partial root of its own even though the ancestor's root covers the layer node.
+    var rig: HitLayerRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    const cx = rig.cx;
+    const inner = try box(cx, .{ .width = .{ .px = 50 }, .height = .{ .px = 40 } }, .{});
+    inner.behavior.events.on_event = HoverRig.observe;
+    try rig.rows[1].appendChild(std.testing.allocator, inner);
+    try HoverRig.settle(cx);
+    try std.testing.expectEqual(rig.rows[1], cx.hitTest(150, 110).?);
+    cx.input_perf = .{};
+    inner.style.width = .{ .px = 200 };
+    inner.markLayoutDirty();
+    rig.area.container.markLayoutDirty();
+    try std.testing.expectEqual(inner, cx.hitTest(150, 110).?);
+    try std.testing.expectEqual(@as(u32, 0), cx.input_perf.in_hit_full_rebuilds);
+}
+
+test "ScrollArea: latched trackpad gesture and momentum dispatch without hit tests" {
+    var rig: HitLayerRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    const cx = rig.cx;
+    cx.handleScroll(.{ .x = 150, .y = 60, .dx = 0, .dy = 0, .phase = .began });
+    cx.handleScroll(.{ .x = 150, .y = 60, .dx = 0, .dy = -20, .phase = .changed });
+    try std.testing.expectEqual(@as(f32, 20), rig.area.state.scroll_y);
+    // Latched: changed events go to the session owner without querying the scene, even with the
+    // pointer outside the area.
+    const queries = cx.perf.hit_test_count;
+    cx.handleScroll(.{ .x = 390, .y = 290, .dx = 0, .dy = -20, .phase = .changed });
+    cx.handleScroll(.{ .x = 390, .y = 290, .dx = 0, .dy = 0, .phase = .ended });
+    cx.handleScroll(.{ .x = 390, .y = 290, .dx = 0, .dy = -10, .momentum = .began });
+    cx.handleScroll(.{ .x = 390, .y = 290, .dx = 0, .dy = -10, .momentum = .changed });
+    try std.testing.expectEqual(queries, cx.perf.hit_test_count);
+    try std.testing.expectEqual(@as(f32, 60), rig.area.state.scroll_y);
+    cx.handleScroll(.{ .x = 390, .y = 290, .dx = 0, .dy = 0, .momentum = .ended });
+    // A new gesture hit-tests again: outside the area nothing scrolls.
+    cx.handleScroll(.{ .x = 390, .y = 290, .dx = 0, .dy = 0, .phase = .began });
+    try std.testing.expect(cx.perf.hit_test_count > queries);
+    cx.handleScroll(.{ .x = 390, .y = 290, .dx = 0, .dy = -20, .phase = .changed });
+    try std.testing.expectEqual(@as(f32, 60), rig.area.state.scroll_y);
+}
+
+test "Cx hit refresh: one before-render tick per scene mutation between frames" {
+    var rig: HitLayerRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    const cx = rig.cx;
+    // Pending render-only work after the last frame tick (e.g. an animation repaint).
+    rig.rows[0].markRenderDirty();
+    cx.input_perf = .{};
+    _ = cx.hitTest(150, 60);
+    try std.testing.expectEqual(@as(u32, 1), cx.input_perf.in_hit_refresh_forced);
+    // No mutation since that tick: further queries reuse the committed scene.
+    _ = cx.hitTest(150, 60);
+    _ = cx.hitTest(150, 100);
+    try std.testing.expectEqual(@as(u32, 1), cx.input_perf.in_hit_refresh_forced);
+    // A mutation re-runs the tick before the next query.
+    rig.rows[1].markRenderDirty();
+    _ = cx.hitTest(150, 60);
+    try std.testing.expectEqual(@as(u32, 2), cx.input_perf.in_hit_refresh_forced);
+    // Hit-index work is committed even without a mutation-driven tick: a layout change made by
+    // the tick's own hooks is laid out and indexed in the same refresh.
+    try HoverRig.settle(cx);
+}
+
+const HookMoveProbe = struct {
+    var target: ?*Node = null;
+    var want_y: f32 = 0;
+    fn hook(node: *Node) void {
+        _ = node;
+        const t = target orelse return;
+        if (t.style.translate_y != want_y) {
+            t.style.translate_y = want_y;
+            t.markCompositePropDirty();
+        }
+    }
+};
+
+test "Cx hit refresh: a handler's mutation reaches before-render hooks before the next hit" {
+    // A hook that turns handler state into geometry (VirtualList rows, scrollbar thumb, sticky
+    // offsets) must have run before the next event's hit test, as before.
+    var rig: HitLayerRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    const cx = rig.cx;
+    const root = cx.root.?;
+    const probe = try box(cx, .{ .position = .absolute, .width = .{ .px = 60 }, .height = .{ .px = 40 } }, .{});
+    probe.behavior.events.on_event = HoverRig.observe;
+    try root.appendChild(std.testing.allocator, probe);
+    root.meta.per_frame.hooks.before_render.main = HookMoveProbe.hook;
+    HookMoveProbe.target = probe;
+    HookMoveProbe.want_y = 0;
+    defer HookMoveProbe.target = null;
+    try HoverRig.settle(cx);
+    try std.testing.expectEqual(@as(?*Node, probe), cx.hitTest(30, 20));
+    // "Handler": state change plus a dirty mark, as event handlers do.
+    HookMoveProbe.want_y = 100;
+    root.markRenderDirty();
+    try std.testing.expectEqual(@as(?*Node, probe), cx.hitTest(30, 120));
+    try std.testing.expect(cx.hitTest(30, 20) != probe);
+}
+
+test "LC3C ScrollArea border viewport maxScroll and resize use content insets" {
+    var cx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer cx.deinit();
+    const scope = try Scope.init(std.testing.allocator, null, cx.owner);
+    defer scope.dispose();
+    const area = try ScrollArea(.{ .width = 300, .height = 200, .padding = Padding.all(10), .content_height = 1000, .content_width = 800 }).mount(scope, cx);
+    cx.root = area.container;
+    area.state.external_content_height = true;
+    area.state.external_content_width = true;
+    area.container.style.border = .{ .width = 5 };
+    cx.layout();
+    scrollbarBeforeRender(area.container);
+    try std.testing.expectEqual(@as(f32, 170), area.state.viewport_height);
+    try std.testing.expectEqual(@as(f32, 270), area.state.viewport_width);
+    try std.testing.expectEqual(@as(f32, 830), area.state.maxScrollY());
+    try std.testing.expectEqual(@as(f32, 530), area.state.maxScrollX());
+    restorePersistOffset(area.container, 9999, 9999);
+    try std.testing.expectEqual(@as(f32, 830), area.state.scroll_y);
+    try std.testing.expectEqual(@as(f32, 530), area.state.scroll_x);
+    area.container.style.border.overlay = true;
+    area.container.markLayoutDirty();
+    cx.layout();
+    scrollbarBeforeRender(area.container);
+    try std.testing.expectEqual(@as(f32, 820), area.state.maxScrollY());
+    try std.testing.expectEqual(@as(f32, 520), area.state.maxScrollX());
+    try std.testing.expectEqual(area.state.maxScrollY(), area.state.scroll_y);
+    try std.testing.expectEqual(area.state.maxScrollX(), area.state.scroll_x);
 }

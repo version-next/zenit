@@ -6,45 +6,45 @@
 const ui = @import("../../ui.zig");
 const mod = @import("mod.zig");
 
-/// One color's appearance set: background is bg-primary toward foreground 25%, border 50%; close
-/// button hover is the foreground color faded by 80%.
-mixin tone(fg) {
-  root { background: mix(bg-primary, fg, 0.25); border-color: mix(bg-primary, fg, 0.5); }
+/// Dedicated tonal surfaces and outlines, with foreground-colored dismiss feedback.
+mixin tone(fg, bg, edge) {
+  root { background: bg; border-color: edge; }
   label { color: fg; }
   close_text { color: fg; }
   close_icon { icon-color: fg; }
-  close { :hover { background: mix(fg, transparent, 0.8); } }
+  close { :hover { background: bg-hover; } }
 }
 
 recipe Tag slots(root, label, close, close_text, close_icon) {
   base {
-    root { width: fit; direction: row; align-items: center; corner-radius: full; }
-    close { width: 14; height: 14; corner-radius: full; justify: center; align-items: center; cursor: pointer; transition: background 150ms ease-out; }
-    close_text { font-size: 10; }
-    close_icon { width: 10; height: 10; }
+    root { width: fit; direction: row; align-items: center; corner-radius: md; }
+    close { width: 12; height: 12; corner-radius: md; justify: center; align-items: center; cursor: pointer; transition: background 150ms ease-out; }
+    label { font-weight: 400; line-height: 1.2; }
+    close_text { font-size: sm; }
+    close_icon { width: 12; height: 12; }
   }
   variant color = neutral {
     neutral {
-      root { background: bg-tertiary; border-color: border; }
+      root { background: bg-secondary; border-color: border; }
       label { color: fg-primary; }
       close_text { color: fg-primary; }
       close_icon { icon-color: fg-primary; }
-      close { :hover { background: mix(fg-primary, transparent, 0.8); } }
+      close { :hover { background: bg-hover; } }
     }
-    accent { tone(accent); }
-    success { tone(success); }
-    warning { tone(warning); }
-    danger { tone(danger); }
-    info { tone(info); }
+    accent { tone(accent, accent-tag-bg, accent-tag-border); }
+    success { tone(success, success-tag-bg, success-tag-border); }
+    warning { tone(warning, warning-tag-bg, warning-tag-border); }
+    danger { tone(danger, danger-tag-bg, danger-tag-border); }
+    info { tone(info, info-tag-bg, info-tag-border); }
   }
   variant kind = default {
-    default { root { border-width: 0; } }
+    default { root { border-overlay: true; border-width: 0; } }
     outline { }
   }
   variant size = md {
     sm { root { height: 22; padding: space50 space150; gap: space100; } label { font-size: xs; } }
-    md { root { height: 26; padding: 3 space200; gap: space100; } label { font-size: sm; } }
+    md { root { height: 22; padding: space0 space200; gap: space150; } label { font-size: sm; } }
   }
-  // outline: transparent background + 1px border (overrides color dimension's background)
-  when kind = outline { root { background: transparent; border-width: 1; } }
+  // Outline: primary surface + 1px tonal border.
+  when kind = outline { root { background: bg-primary; border-overlay: true; border-width: 1; } }
 }

@@ -47,20 +47,20 @@ pub const MarkdownOptions = struct {
     base_font_size: f32 = 12,
     /// Font size for code regions (default slightly smaller than body).
     code_font_size: f32 = 11,
-    /// Body text color.
-    text_color: Color = Color.hex(0x1F1F1F),
-    /// Inline code / fenced code font color.
-    code_color: Color = Color.hex(0x2F2F35),
-    /// Inline code / fenced code background.
-    code_bg: Color = Color.hex(0xF5F5F7),
-    /// Link text color.
-    link_color: Color = Color.hex(0x0B63CE),
-    /// Horizontal rule color.
-    rule_color: Color = Color.hex(0xE0E0E4),
+    /// Body text color (null follows the active theme).
+    text_color: ?Color = null,
+    /// Inline code / fenced code font color (null follows the active theme).
+    code_color: ?Color = null,
+    /// Inline code / fenced code background (null follows the active theme).
+    code_bg: ?Color = null,
+    /// Link text color (null follows the active theme).
+    link_color: ?Color = null,
+    /// Horizontal rule color (null follows the active theme).
+    rule_color: ?Color = null,
     /// Heading color (inherit text_color if null).
     heading_color: ?Color = null,
     /// Vertical spacing between paragraphs.
-    paragraph_gap: f32 = 4,
+    paragraph_gap: f32 = core.theme.light.tokens.space.space100,
     /// Line spacing inside code block.
     code_line_height: f32 = 1.35,
     /// Body line spacing.
@@ -118,16 +118,24 @@ pub const MarkdownBuilder = struct {
         try core.bindScopeToNode(my_scope, container);
         scope_bound = true;
         const Ctx = struct { cx: *Cx, options: MarkdownOptions };
-        try bind_mod.rebuildOn(cx, my_scope, p.text, container, Ctx{ .cx = cx, .options = p.options }, struct {
-            fn key(text: []const u8) u64 {
+        const Document = struct { text: []const u8, tokens: *const core.ThemeTokens };
+        const theme_signal = try cx.themeSignal();
+        const document = try my_scope.derive(Document, .{ .text = p.text, .theme = theme_signal }, struct {
+            fn compute(c: anytype) Document {
+                return .{ .text = c.text.get(), .tokens = c.theme.get() };
+            }
+        }.compute);
+        try bind_mod.rebuildOn(cx, my_scope, document, container, Ctx{ .cx = cx, .options = p.options }, struct {
+            fn key(doc: Document) u64 {
                 var h = std.hash.Wyhash.init(0);
-                h.update(text);
-                h.update(std.mem.asBytes(&@intFromPtr(text.ptr)));
+                h.update(doc.text);
+                h.update(std.mem.asBytes(&@intFromPtr(doc.text.ptr)));
+                h.update(std.mem.asBytes(&@intFromPtr(doc.tokens)));
                 return h.final();
             }
         }.key, struct {
-            fn build(c: Ctx, rebuild_scope: *Scope, host: *Node, text: []const u8) !void {
-                try renderBlocks(rebuild_scope, c.cx, host, text, c.options);
+            fn build(c: Ctx, rebuild_scope: *Scope, host: *Node, doc: Document) !void {
+                try renderBlocks(rebuild_scope, c.cx, host, doc.text, c.options);
             }
         }.build);
         return container;
@@ -149,7 +157,8 @@ pub fn renderInto(cx: *Cx, container: *Node, text: []const u8, opts: MarkdownOpt
     try renderBlocks(tmp_scope, cx, container, text, opts);
 }
 
-fn renderBlocks(scope: *Scope, cx: *Cx, container: *Node, text: []const u8, opts: MarkdownOptions) !void {
+fn renderBlocks(scope: *Scope, cx: *Cx, container: *Node, text: []const u8, options: MarkdownOptions) !void {
+    const opts = styles.themeOptions(options, cx.tokens);
     const allocator = cx.allocator;
     var scanner = BlockScanner{ .src = text };
     while (try scanner.next(allocator)) |block| {
@@ -294,7 +303,7 @@ const grow_width = core.BoxStyle{ .width = .{ .grow = .{} } };
 fn emitParagraph(scope: *Scope, cx: *Cx, container: *Node, text: []const u8, opts: MarkdownOptions) !void {
     var node: *Node = undefined;
     try view.mount(scope, cx, container, view.capture(&node, view.box(.{ .style = grow_width }, {})));
-    try applyInlineText(cx, node, text, opts.base_font_size, opts.text_color, opts.line_height, 400, opts);
+    try applyInlineText(cx, node, text, opts.base_font_size, styles.resolvedColor(opts, "text_color"), opts.line_height, 400, opts);
 }
 
 fn emitHeading(scope: *Scope, cx: *Cx, container: *Node, level: u8, text: []const u8, opts: MarkdownOptions) !void {
@@ -306,7 +315,7 @@ fn emitHeading(scope: *Scope, cx: *Cx, container: *Node, level: u8, text: []cons
         // hierarchy unexpressed.)
         .a11y = core.A11yProps{ .role = .heading, .label = text },
     }, {})));
-    const color = opts.heading_color orelse opts.text_color;
+    const color = opts.heading_color orelse styles.resolvedColor(opts, "text_color");
     const font_size = opts.base_font_size * mdHeadingSizeMul(level);
     try applyInlineText(cx, node, text, font_size, color, opts.line_height, 600, opts);
 }
@@ -331,7 +340,7 @@ fn emitBlockquote(scope: *Scope, cx: *Cx, container: *Node, text: []const u8, op
         view.box(.{ .style = mdBlockquoteBarStyle(opts) }, {}),
         view.capture(&body, view.box(.{ .style = mdBlockquoteBodyStyle() }, {})),
     }));
-    try applyInlineText(cx, body, text, opts.base_font_size, opts.text_color, opts.line_height, 400, opts);
+    try applyInlineText(cx, body, text, opts.base_font_size, styles.resolvedColor(opts, "text_color"), opts.line_height, 400, opts);
 }
 
 fn emitListItem(scope: *Scope, cx: *Cx, container: *Node, ordered: bool, marker: []const u8, text: []const u8, opts: MarkdownOptions) !void {
@@ -345,7 +354,7 @@ fn emitListItem(scope: *Scope, cx: *Cx, container: *Node, ordered: bool, marker:
         view.text(.{ .style = mdListMarkerText(opts) }, if (ordered) marker else bulletGlyph()),
         view.capture(&body, view.box(.{ .style = grow_width }, {})),
     }));
-    try applyInlineText(cx, body, text, opts.base_font_size, opts.text_color, opts.line_height, 400, opts);
+    try applyInlineText(cx, body, text, opts.base_font_size, styles.resolvedColor(opts, "text_color"), opts.line_height, 400, opts);
 }
 
 fn bulletGlyph() []const u8 {
@@ -394,7 +403,7 @@ fn applyInlineText(
         .font_weight = font_weight,
         .color = text_color,
         .line_height = line_height,
-        .wrap = .word,
+        .wrap = .word_break,
         .spans = owned_spans,
         .spans_owned = has_spans,
     });
@@ -831,4 +840,36 @@ test "Markdown: a text signal re-renders the document" {
     try std.testing.expectEqual(@as(usize, 1), root.children.items.len);
     doc.set("# One\n\nTwo\n\n---");
     try std.testing.expectEqual(@as(usize, 3), root.children.items.len);
+}
+
+test "review regression 5: Markdown semantic defaults and explicit default-colored overrides" {
+    var cx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer cx.deinit();
+    const scope = try Scope.init(std.testing.allocator, null, cx.owner);
+    defer scope.dispose();
+    const node = try Markdown(.{ .text = "Body" }).mount(scope, cx);
+    defer cx.freeNode(node);
+    cx.root = node;
+    defer cx.root = null;
+    try std.testing.expect(Color.eql(node.children.items[0].getText().?.color, cx.tokens.tokens.color.fg_primary));
+    cx.setTheme(&core.theme.dark);
+    try std.testing.expect(Color.eql(node.children.items[0].getText().?.color, core.theme.dark.tokens.color.fg_primary));
+    const custom = core.theme.light.tokens.color.fg_primary;
+    const options = styles.themeOptions(.{ .text_color = custom }, &core.theme.dark);
+    try std.testing.expect(Color.eql(custom, options.text_color.?));
+    cx.root = null;
+}
+
+test "review regression 5: every explicit color survives even when equal to the light default" {
+    const fields = .{ "text_color", "code_color", "code_bg", "link_color", "rule_color" };
+    const tokens = .{ "fg_primary", "fg_primary", "surface_inset", "accent", "border" };
+    inline for (fields, tokens) |field, token| {
+        var options: MarkdownOptions = .{};
+        const explicit = @field(core.theme.light.tokens.color, token);
+        @field(options, field) = explicit;
+        for ([_]*const core.ThemeTokens{ &core.theme.light, &core.theme.dark, &core.theme.high_contrast }) |t| {
+            try std.testing.expectEqual(explicit, @field(styles.themeOptions(options, t), field).?);
+            try std.testing.expectEqual(@field(t.tokens.color, token), @field(styles.themeOptions(.{}, t), field).?);
+        }
+    }
 }

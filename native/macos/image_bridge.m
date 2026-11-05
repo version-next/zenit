@@ -1,5 +1,6 @@
 #import <Foundation/Foundation.h>
 #import <AppKit/AppKit.h>
+#include "clipboard_pasteboard.h"
 #import <CoreGraphics/CoreGraphics.h>
 
 /// Download image from URL and decode to RGBA pixel data.
@@ -325,7 +326,7 @@ static BOOL pathExtensionLooksLikeImage(NSString *ext) {
 /// get raw bytes of index-th image-containing pasteboard item. outUti returns UTI (file-url item
 /// returns extension-inferred description).
 static NSData *clipboardImageDataAtIndex(uint32_t index, NSString **outUti) {
-    NSPasteboard *pb = [NSPasteboard generalPasteboard];
+    NSPasteboard *pb = zenitClipboardPasteboard();
     uint32_t seen = 0;
     for (NSPasteboardItem *item in pb.pasteboardItems) {
         NSData *data = nil;
@@ -360,7 +361,7 @@ static NSData *clipboardImageDataAtIndex(uint32_t index, NSString **outUti) {
 /// fallback: when pasteboard item has no raw image bytes, try NSImage to interpret whole pasteboard
 /// (index 0 only), convert to TIFF for generic decode. lossy/bloated, last resort only.
 static NSData *clipboardImageDataViaNSImage(void) {
-    NSPasteboard *pb = [NSPasteboard generalPasteboard];
+    NSPasteboard *pb = zenitClipboardPasteboard();
     if (![NSImage canInitWithPasteboard:pb]) return nil;
     NSImage *img = [[NSImage alloc] initWithPasteboard:pb];
     if (!img) return nil;
@@ -371,7 +372,7 @@ static NSData *clipboardImageDataViaNSImage(void) {
 /// cost.
 uint32_t macos_clipboard_probe(void) {
     @autoreleasepool {
-        NSPasteboard *pb = [NSPasteboard generalPasteboard];
+        NSPasteboard *pb = zenitClipboardPasteboard();
         uint32_t kinds = 0;
         if ([pb availableTypeFromArray:@[ NSPasteboardTypeString ]]) kinds |= 1;
         for (NSPasteboardItem *item in pb.pasteboardItems) {
@@ -394,7 +395,7 @@ uint32_t macos_clipboard_probe(void) {
 /// count of image items in pasteboard (supports Finder multi-select copy)
 uint32_t macos_clipboard_image_count(void) {
     @autoreleasepool {
-        NSPasteboard *pb = [NSPasteboard generalPasteboard];
+        NSPasteboard *pb = zenitClipboardPasteboard();
         uint32_t count = 0;
         for (NSPasteboardItem *item in pb.pasteboardItems) {
             BOOL has = NO;
@@ -434,7 +435,7 @@ int macos_clipboard_set_image_png(const uint8_t *bytes, size_t len) {
     @autoreleasepool {
         if (!bytes || len == 0) return 0;
         NSData *data = [NSData dataWithBytes:bytes length:len];
-        NSPasteboard *pb = [NSPasteboard generalPasteboard];
+        NSPasteboard *pb = zenitClipboardPasteboard();
         [pb clearContents];
         return [pb setData:data forType:NSPasteboardTypePNG] ? 1 : 0;
     }

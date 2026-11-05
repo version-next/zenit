@@ -174,6 +174,72 @@ extern "C" const ZenitD12LayoutBinding *zenit_d12_pipeline_layout_bindings(Zenit
     *count=p->count; *groups=p->groups; return p->bindings;
 }
 extern "C" void zenit_d12_compute_pipeline_retain(ZenitD12ComputePipeline *p) { InterlockedIncrement(&p->refs); }
+// One reflected shader register (resource element) a draw must bind. Built
+// once per pipeline from the shader reflection: querying reflection objects on
+// every draw cost several microseconds of COM calls and name lookups.
+struct D12Requirement {
+    uint32_t space, slot, element_kind, type, stride; uint64_t minimum;
+    uint32_t dimension, sample; bool storage, comparison;
+};
+static int reflect_requirements(ID3D12ShaderReflection *reflection, D12Requirement **out, uint32_t *count) {
+    D3D12_SHADER_DESC desc={}; if (FAILED(reflection->GetDesc(&desc))) return 2;
+    uint32_t total=0;
+    for (uint32_t i=0;i<desc.BoundResources;++i) {
+        D3D12_SHADER_INPUT_BIND_DESC r={}; if (FAILED(reflection->GetResourceBindingDesc(i,&r))) return 2;
+        total+=r.BindCount;
+    }
+    auto list=(D12Requirement *)calloc(total?total:1,sizeof(D12Requirement)); if (!list) return 2;
+    uint32_t n=0;
+    for (uint32_t i=0;i<desc.BoundResources;++i) {
+        D3D12_SHADER_INPUT_BIND_DESC r={}; if (FAILED(reflection->GetResourceBindingDesc(i,&r))) { free(list); return 2; }
+        D12Requirement q={}; q.space=r.Space; q.element_kind=uint32_t(reflected_kind(r));
+        if (r.Type==D3D_SIT_STRUCTURED || r.Type==D3D_SIT_UAV_RWSTRUCTURED) { q.type=0; q.stride=r.NumSamples; }
+        else if (r.Type==D3D_SIT_CBUFFER) {
+            D3D12_SHADER_BUFFER_DESC b={};
+            if (FAILED(reflection->GetConstantBufferByName(r.Name)->GetDesc(&b))) { fprintf(stderr,"reflection constant buffer failed: %s\n",r.Name); free(list); return 2; }
+            q.type=0; q.minimum=b.Size;
+        } else if (r.Type==D3D_SIT_TEXTURE || r.Type==D3D_SIT_UAV_RWTYPED) {
+            q.type=1; q.storage=r.Type==D3D_SIT_UAV_RWTYPED;
+            q.dimension=r.Dimension==D3D_SRV_DIMENSION_TEXTURE1D?1:r.Dimension==D3D_SRV_DIMENSION_TEXTURE2D?2:
+                r.Dimension==D3D_SRV_DIMENSION_TEXTURE2DARRAY?3:r.Dimension==D3D_SRV_DIMENSION_TEXTURECUBE?4:
+                r.Dimension==D3D_SRV_DIMENSION_TEXTURECUBEARRAY?5:r.Dimension==D3D_SRV_DIMENSION_TEXTURE3D?6:0;
+            q.sample=r.ReturnType==D3D_RETURN_TYPE_SINT?4:r.ReturnType==D3D_RETURN_TYPE_UINT?5:
+                (r.ReturnType==D3D_RETURN_TYPE_FLOAT || r.ReturnType==D3D_RETURN_TYPE_UNORM || r.ReturnType==D3D_RETURN_TYPE_SNORM)?1:0;
+        } else if (r.Type==D3D_SIT_SAMPLER) { q.type=2; q.comparison=(r.uFlags & D3D_SIF_COMPARISON_SAMPLER)!=0; }
+        else if (r.Type==D3D_SIT_BYTEADDRESS || r.Type==D3D_SIT_UAV_RWBYTEADDRESS) q.type=0;
+        else q.type=3; // Unsupported: any draw on this space is rejected.
+        for (uint32_t element=0;element<r.BindCount;++element) { list[n]=q; list[n].slot=r.BindPoint+element; ++n; }
+    }
+    *out=list; *count=n; return 0;
+}
+// Same checks and status as validate_reflected_bindings, on cached requirements.
+static int validate_requirements(const D12Requirement *list, uint32_t n, ZenitD12PipelineLayout *layout, uint32_t group,
+    const ZenitD12BindingEntry *entries, uint32_t count) {
+    for (uint32_t i=0;i<n;++i) {
+        const auto &q=list[i];
+        if (q.space!=group) continue;
+        if (q.type==3) return 1;
+        bool found=false;
+        for (uint32_t j=0;j<count && !found;++j) {
+            const auto &e=entries[j];
+            bool matching=false;
+            for (uint32_t k=0;k<layout->count;++k) {
+                const auto &b=layout->bindings[k];
+                if (b.group==group && b.binding==e.binding && b.kind==q.element_kind &&
+                    e.binding<=q.slot && e.array_index==q.slot-e.binding) { matching=true; break; }
+            }
+            if (!matching) continue;
+            if (q.type==1) {
+                if (!e.view || bool(zenit_d12_view_is_storage(e.view))!=q.storage || !q.dimension || !q.sample || zenit_d12_view_dimension(e.view)!=q.dimension || (zenit_d12_view_sample_type(e.view)!=q.sample && !(q.sample==1 && zenit_d12_view_sample_type(e.view)==3))) return 1;
+            } else if (q.type==2) {
+                if (!e.sampler || q.comparison!=bool(zenit_d12_sampler_comparison(e.sampler))) return 1;
+            } else if (!e.buffer || e.stride!=q.stride || e.size<q.minimum) return 1;
+            found=true;
+        }
+        if (!found) return 1;
+    }
+    return 0;
+}
 static int validate_reflected_bindings(ID3D12ShaderReflection *reflection, ZenitD12PipelineLayout *layout, uint32_t group,
     const ZenitD12BindingEntry *entries, uint32_t count) {
     D3D12_SHADER_DESC desc={}; if (FAILED(reflection->GetDesc(&desc))) return 2;
@@ -224,6 +290,8 @@ extern "C" int zenit_d12_compute_validate_bindings(ZenitD12ComputePipeline *p, u
 
 struct ZenitD12RenderPipeline {
     ID3D12PipelineState *raw; ZenitD12PipelineLayout *layout; LONG refs; ID3D12ShaderReflection *vertex,*fragment;
+    // Vertex then fragment requirements; requirement_status 2 if reflection failed.
+    D12Requirement *requirements; uint32_t requirement_counts[2]; int requirement_status;
     uint32_t topology, strip_index, target_count, formats[8], strides[32], steps[32], ends[32], slots;
     uint32_t depth_format,depth_write,stencil_write,samples;
     char fragment_entry[96];
@@ -420,6 +488,17 @@ extern "C" int zenit_d12_render_pipeline_create(ZenitD12Device *device, ZenitD12
     if (warp_fragment) warp_fragment->Release();
     if (FAILED(hr)) { free(pipeline); vs->Release(); ps->Release(); return 2; }
     pipeline->vertex=vs; pipeline->fragment=ps;
+    {
+        D12Requirement *v=nullptr,*f=nullptr; uint32_t nv=0,nf=0;
+        int status=reflect_requirements(vs,&v,&nv);
+        if (!status) status=reflect_requirements(ps,&f,&nf);
+        if (!status) {
+            pipeline->requirements=(D12Requirement *)calloc(nv+nf?nv+nf:1,sizeof(D12Requirement));
+            if (!pipeline->requirements) status=2;
+            else { memcpy(pipeline->requirements,v,nv*sizeof(*v)); memcpy(pipeline->requirements+nv,f,nf*sizeof(*f)); pipeline->requirement_counts[0]=nv; pipeline->requirement_counts[1]=nf; }
+        }
+        free(v); free(f); pipeline->requirement_status=status;
+    }
     strncpy(pipeline->fragment_entry, zenit_d12_shader_entry(fragment), sizeof(pipeline->fragment_entry)-1);
     pipeline->layout=layout; zenit_d12_pipeline_layout_retain(layout); pipeline->refs=1;
     pipeline->samples=input->samples; pipeline->depth_format=depth.format; pipeline->depth_write=depth.write;
@@ -433,7 +512,7 @@ extern "C" int zenit_d12_render_pipeline_create(ZenitD12Device *device, ZenitD12
 extern "C" void zenit_d12_render_pipeline_retain(ZenitD12RenderPipeline *p) { InterlockedIncrement(&p->refs); }
 extern "C" void zenit_d12_render_pipeline_release(ZenitD12RenderPipeline *p) {
     if (!p || InterlockedDecrement(&p->refs)!=0) return;
-    p->vertex->Release(); p->fragment->Release(); p->raw->Release(); zenit_d12_pipeline_layout_release(p->layout); free(p);
+    p->vertex->Release(); p->fragment->Release(); p->raw->Release(); zenit_d12_pipeline_layout_release(p->layout); free(p->requirements); free(p);
 }
 extern "C" void *zenit_d12_render_pipeline_native(ZenitD12RenderPipeline *p) { return p->raw; }
 extern "C" ZenitD12PipelineLayout *zenit_d12_render_pipeline_layout(ZenitD12RenderPipeline *p) { return p->layout; }
@@ -460,8 +539,9 @@ extern "C" void *zenit_d12_render_pipeline_root(ZenitD12RenderPipeline *p) { ret
 
 extern "C" int zenit_d12_render_validate_bindings(ZenitD12RenderPipeline *p, uint32_t group,
     const ZenitD12BindingEntry *entries, uint32_t count) {
-    int status=validate_reflected_bindings(p->vertex,p->layout,group,entries,count);
-    return status?status:validate_reflected_bindings(p->fragment,p->layout,group,entries,count);
+    if (p->requirement_status) return p->requirement_status;
+    int status=validate_requirements(p->requirements,p->requirement_counts[0],p->layout,group,entries,count);
+    return status?status:validate_requirements(p->requirements+p->requirement_counts[0],p->requirement_counts[1],p->layout,group,entries,count);
 }
 
 extern "C" uint32_t zenit_d12_pipeline_layout_draw_info(ZenitD12PipelineLayout *layout) { return layout->draw_info; }

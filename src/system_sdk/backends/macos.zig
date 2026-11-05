@@ -142,6 +142,9 @@ const GlobalEventSource = struct {
     fn consumeAppBecameActive(_: *@This()) bool {
         return Window.consumeAppBecameActive();
     }
+    fn consumeAppReopen(_: *@This()) bool {
+        return Window.consumeAppReopen();
+    }
     fn isDarkMode(_: *@This()) bool {
         return Window.isDarkMode();
     }
@@ -233,6 +236,40 @@ fn sortOrderedNativeEvents(items: []OrderedNativeEvent) void {
             return lhs.sequence < rhs.sequence;
         }
     }.lessThan);
+}
+
+/// One packet of the ordered native motion stream. A presence marker (the pointer is no longer
+/// over the visible content: tracking-area exit, a window ordered over it, a release outside)
+/// becomes `pointer_left`, in order with the moves around it.
+fn nativeMoveEvent(wid: events.WindowId, move: Window.MouseMoveEvent) events.Event {
+    if (move.left) return .{ .pointer_left = .{ .window_id = wid } };
+    return .{ .mouse_move = .{
+        .window_id = wid,
+        .x = move.x,
+        .y = move.y,
+        .dx = move.dx,
+        .dy = move.dy,
+        .modifiers = MacOSBackend.toModifiers(move.modifiers),
+    } };
+}
+
+test "a native presence marker is pointer_left, ordered with the moves around it" {
+    const before = Window.MouseMoveEvent{ .sequence = 10, .x = 40, .y = 50, .dx = 1, .dy = 0, .modifiers = .{} };
+    const left = Window.MouseMoveEvent{ .sequence = 11, .x = 40, .y = 50, .dx = 0, .dy = 0, .modifiers = .{}, .left = true };
+    const back = Window.MouseMoveEvent{ .sequence = 12, .x = 40, .y = 50, .dx = 0, .dy = 0, .modifiers = .{} };
+    var items = [_]OrderedNativeEvent{
+        .{ .sequence = back.sequence, .event = nativeMoveEvent(3, back) },
+        .{ .sequence = left.sequence, .event = nativeMoveEvent(3, left) },
+        .{ .sequence = before.sequence, .event = nativeMoveEvent(3, before) },
+    };
+    sortOrderedNativeEvents(&items);
+    const EventTag = std.meta.Tag(events.Event);
+    try std.testing.expectEqual(EventTag.mouse_move, std.meta.activeTag(items[0].event));
+    try std.testing.expectEqual(EventTag.pointer_left, std.meta.activeTag(items[1].event));
+    try std.testing.expectEqual(@as(events.WindowId, 3), items[1].event.targetWindowId().?);
+    // Uncovered under a resting pointer: the bridge re-delivers the same position as a move.
+    try std.testing.expectEqual(EventTag.mouse_move, std.meta.activeTag(items[2].event));
+    try std.testing.expectEqual(@as(f32, 40), items[2].event.mouse_move.x);
 }
 
 fn nativeSequenceRegressed(previous: u64, current: u64) bool {
@@ -395,17 +432,14 @@ const WindowEntry = struct {
         while (true) {
             try ordered_native_events.ensureUnusedCapacity(allocator, 1);
             const move = self.window.getMouseMoveEvent() orelse break;
-            ordered_native_events.appendAssumeCapacity(.{
-                .sequence = move.sequence,
-                .event = .{ .mouse_move = .{
-                    .window_id = wid,
-                    .x = move.x,
-                    .y = move.y,
-                    .dx = move.dx,
-                    .dy = move.dy,
-                    .modifiers = MacOSBackend.toModifiers(move.modifiers),
-                } },
-            });
+            const event = nativeMoveEvent(wid, move);
+            ordered_native_events.appendAssumeCapacity(.{ .sequence = move.sequence, .event = event });
+            if (event == .pointer_left) {
+                if (debug_input) {
+                    std.debug.print("[sdk-input] frame={d} native_seq={d} wid={d} pointer_left\n", .{ pump_seq, move.sequence, wid });
+                }
+                continue;
+            }
             self.last_mouse_x = move.x;
             self.last_mouse_y = move.y;
             self.has_last_mouse = true;
@@ -598,17 +632,25 @@ const WindowEntry = struct {
 
 pub const MAX_WINDOWS = 8;
 
+// Native menu packets are process-global, while each App owns its SDK.
+// Owners are heap-stable and register/unregister on the macOS UI thread.
+var menu_owners: ?*MacOSBackend = null;
+
 pub const MacOSBackend = struct {
     allocator: Allocator,
 
     /// multi-window array
     windows: [MAX_WINDOWS]?WindowEntry = @as([MAX_WINDOWS]?WindowEntry, @splat(null)),
     window_count: u8 = 0,
+    menu_owner_next: ?*MacOSBackend = null,
+    menu_owner_registered: bool = false,
     ordered_native_events: std.ArrayList(OrderedNativeEvent) = .empty,
     native_collection_pending: bool = false,
     post_collection_pending: bool = false,
     global_collection_pending: bool = false,
     pending_app_activation: bool = false,
+    /// A consumed native reopen not yet published (survives an OOM retry like activation).
+    pending_app_reopen: bool = false,
     native_batch_complete: bool = false,
     last_dispatched_native_sequence: u64 = 0,
     input_sequence_regressions: u64 = 0,
@@ -637,6 +679,7 @@ pub const MacOSBackend = struct {
         // register first window
         backend_ctx.windows[0] = WindowEntry.initFromWindow(window, window_id);
         backend_ctx.window_count = 1;
+        backend_ctx.registerMenuOwner();
 
         return backend_ctx;
     }
@@ -651,6 +694,7 @@ pub const MacOSBackend = struct {
         }
 
         const backend_ctx = try create(allocator, window, window_id);
+        errdefer deinitImpl(backend_ctx, allocator);
         try capabilities_mod.validateAdvertised(CAPS, vtable);
         return system_sdk.SystemSdk.init(allocator, backend_ctx, &vtable, CAPS);
     }
@@ -697,6 +741,7 @@ pub const MacOSBackend = struct {
             .set_enabled = imeSetEnabledImpl,
             .set_cursor_rect = imeSetCursorRectImpl,
             .discard = imeDiscardImpl,
+            .set_reserved_chords = imeSetReservedChordsImpl,
         },
         .cursor = .{
             .set_shape = cursorSetShapeImpl,
@@ -717,6 +762,7 @@ pub const MacOSBackend = struct {
 
     fn deinitImpl(ctx: *anyopaque, allocator: Allocator) void {
         const self: *MacOSBackend = @ptrCast(@alignCast(ctx));
+        self.unregisterMenuOwner();
         for (self.ordered_native_events.items) |*event| event.deinit(allocator);
         self.ordered_native_events.deinit(allocator);
         allocator.destroy(self);
@@ -792,6 +838,11 @@ pub const MacOSBackend = struct {
             return .{ .should_continue = false, .requested_redraw = false };
         }
         self.pending_app_activation = source.consumeAppBecameActive() or self.pending_app_activation;
+        self.pending_app_reopen = source.consumeAppReopen() or self.pending_app_reopen;
+        if (self.pending_app_reopen) {
+            try queue.push(.{ .app_reopen = {} });
+            self.pending_app_reopen = false;
+        }
         while (true) {
             // Menu events own no payload. Reserving here leaves no fallible
             // operation between native dequeue and SDK publication.
@@ -814,11 +865,44 @@ pub const MacOSBackend = struct {
         return .{ .should_continue = true, .requested_redraw = redraw };
     }
 
+    fn registerMenuOwner(self: *MacOSBackend) void {
+        if (self.menu_owner_registered) return;
+        self.menu_owner_next = menu_owners;
+        menu_owners = self;
+        self.menu_owner_registered = true;
+    }
+
+    fn unregisterMenuOwner(self: *MacOSBackend) void {
+        if (!self.menu_owner_registered) return;
+        var link = &menu_owners;
+        while (link.*) |owner| {
+            if (owner == self) {
+                link.* = self.menu_owner_next;
+                self.menu_owner_next = null;
+                self.menu_owner_registered = false;
+                return;
+            }
+            link = &owner.menu_owner_next;
+        }
+        unreachable;
+    }
+
     fn logicalWindowIdForNative(self: *MacOSBackend, native_id: u64) ?events.WindowId {
         if (native_id == 0) return null;
         for (self.windows) |entry| {
             const window = entry orelse continue;
             if (window.native_window_id == native_id) return window.window_id;
+        }
+        // Whichever SDK pumps first drains the process-global menu queue.
+        // Resolve every live SDK's captured identity before publishing, keeping
+        // the native FIFO intact instead of dropping or reordering foreign work.
+        var current = menu_owners;
+        while (current) |owner| : (current = owner.menu_owner_next) {
+            if (owner == self) continue;
+            for (owner.windows) |entry| {
+                const window = entry orelse continue;
+                if (window.native_window_id == native_id) return window.window_id;
+            }
         }
         return null;
     }
@@ -1043,6 +1127,7 @@ pub const MacOSBackend = struct {
             if (maybe_entry.* == null) {
                 maybe_entry.* = WindowEntry.initFromWindow(window, window_id);
                 self.window_count += 1;
+                self.registerMenuOwner();
                 return;
             }
         }
@@ -1072,6 +1157,7 @@ pub const MacOSBackend = struct {
                     discard(entry.native_window_id);
                     maybe_entry.* = null;
                     self.window_count -|= 1;
+                    if (self.window_count == 0) self.unregisterMenuOwner();
                     return;
                 }
             }
@@ -1088,6 +1174,17 @@ pub const MacOSBackend = struct {
         const self: *MacOSBackend = @ptrCast(@alignCast(ctx));
         const entry = self.findWindowEntry(window_id) orelse return SdkError.InvalidState;
         entry.window.setTextInputEnabled(enabled);
+    }
+
+    fn imeSetReservedChordsImpl(ctx: *anyopaque, window_id: events.WindowId, chords: []const events.ReservedChord) SdkError!void {
+        const self: *MacOSBackend = @ptrCast(@alignCast(ctx));
+        const entry = self.findWindowEntry(window_id) orelse return SdkError.InvalidState;
+        var packed_chords: [32]u32 = undefined;
+        const n = @min(chords.len, packed_chords.len);
+        for (chords[0..n], packed_chords[0..n]) |c, *out| {
+            out.* = Window.packReservedChord(c.keycode, c.modifiers.shift, c.modifiers.ctrl, c.modifiers.alt, c.modifiers.super);
+        }
+        entry.window.setReservedKeyChords(packed_chords[0..n]);
     }
 
     fn imeSetCursorRectImpl(ctx: *anyopaque, window_id: events.WindowId, x: f32, y: f32, width: f32, height: f32) SdkError!void {
@@ -1652,6 +1749,9 @@ test "global phase retries partial menu delivery and preserves activation and th
             self.active = false;
             return result;
         }
+        fn consumeAppReopen(_: *@This()) bool {
+            return false;
+        }
         fn isDarkMode(_: *@This()) bool {
             return true;
         }
@@ -1730,6 +1830,9 @@ test "quit OOM retries without confirming application exit and unregister discar
         fn consumeAppBecameActive(_: *@This()) bool {
             unreachable;
         }
+        fn consumeAppReopen(_: *@This()) bool {
+            unreachable;
+        }
         fn isDarkMode(_: *@This()) bool {
             unreachable;
         }
@@ -1763,9 +1866,125 @@ test "quit OOM retries without confirming application exit and unregister discar
     try t.expectEqual(@as(usize, 0), state.window_count);
 }
 
+test "global phase publishes a native reopen once and keeps it across an OOM retry" {
+    const t = std.testing;
+    const Source = struct {
+        reopen: bool = true,
+        fn appShouldQuit(_: *@This()) bool {
+            return false;
+        }
+        fn consumeAppBecameActive(_: *@This()) bool {
+            return false;
+        }
+        fn consumeAppReopen(self: *@This()) bool {
+            const result = self.reopen;
+            self.reopen = false;
+            return result;
+        }
+        fn isDarkMode(_: *@This()) bool {
+            return false;
+        }
+        fn pollMenu(_: *@This(), _: *u64, _: *u64) bool {
+            return false;
+        }
+    };
+    var source: Source = .{};
+    var state: MacOSBackend = .{ .allocator = t.allocator, .last_is_dark = false };
+    var failing = t.FailingAllocator.init(t.allocator, .{ .fail_index = 0 });
+    var queue = events.EventQueue.init(failing.allocator());
+    defer queue.deinit();
+    // The native flag is consumed before the push fails: the backend must still owe it.
+    try t.expect((try state.resumeGlobalCollection(&queue, &source)) == null);
+    try t.expect(state.pending_app_reopen and !source.reopen);
+    failing.fail_index = std.math.maxInt(usize);
+    _ = (try state.resumeGlobalCollection(&queue, &source)).?;
+    try t.expectEqual(@as(usize, 1), queue.items().len);
+    try t.expect(queue.items()[0] == .app_reopen);
+    try t.expectEqual(@as(?events.WindowId, null), queue.items()[0].targetWindowId());
+    queue.clear();
+    _ = (try state.resumeGlobalCollection(&queue, &source)).?;
+    try t.expectEqual(@as(usize, 0), queue.items().len);
+}
+
 fn retryPause() void {
     var remaining: std.c.timespec = .{ .sec = 0, .nsec = 16 * std.time.ns_per_ms };
     while (std.c.nanosleep(&remaining, &remaining) != 0) {
         if (std.posix.errno(-1) != .INTR) return;
     }
+}
+
+test "global menu collection resolves another SDK owner in FIFO order and retires its identity" {
+    const t = std.testing;
+    var a: MacOSBackend = .{ .allocator = t.allocator, .last_is_dark = false };
+    var b: MacOSBackend = .{ .allocator = t.allocator, .last_is_dark = false };
+    a.windows[0] = .{ .window = undefined, .window_id = 70, .native_window_id = 7 };
+    b.windows[0] = .{ .window = undefined, .window_id = 80, .native_window_id = 8 };
+    a.window_count = 1;
+    b.window_count = 1;
+    a.registerMenuOwner();
+    a.registerMenuOwner(); // Adding another window must not link its SDK twice.
+    defer a.unregisterMenuOwner();
+    b.registerMenuOwner();
+    defer b.unregisterMenuOwner();
+    const Source = struct {
+        index: usize = 0,
+        fn appShouldQuit(_: *@This()) bool {
+            return false;
+        }
+        fn consumeAppBecameActive(_: *@This()) bool {
+            return false;
+        }
+        fn consumeAppReopen(_: *@This()) bool {
+            return false;
+        }
+        fn isDarkMode(_: *@This()) bool {
+            return false;
+        }
+        fn pollMenu(self: *@This(), window: *u64, command: *u64) bool {
+            const ids = [_]u64{ 8, 7, 8, 0 };
+            if (self.index == ids.len) return false;
+            window.* = ids[self.index];
+            self.index += 1;
+            command.* = self.index;
+            return true;
+        }
+    };
+    var source: Source = .{};
+    var queue = events.EventQueue.init(t.allocator);
+    defer queue.deinit();
+    _ = try a.collectGlobalEvents(&queue, &source);
+    try t.expectEqual(@as(usize, 4), queue.items().len);
+    const targets = [_]u64{ 80, 70, 80, 0 };
+    for (queue.items(), targets, 1..) |event, target, command| {
+        try t.expectEqual(target, event.menu_command.window_id);
+        try t.expectEqual(@as(u64, @intCast(command)), event.menu_command.command_id);
+    }
+    a.unregisterMenuOwner();
+    try t.expectEqual(@as(?u64, null), b.logicalWindowIdForNative(7));
+    a.registerMenuOwner(); // B is now in the middle of the owner list.
+    // Real unregistration removes the owner before its storage can be freed.
+    b.unregisterWindowWithMenuDiscard(80, struct {
+        fn discard(_: u64) void {}
+    }.discard);
+    try t.expect(!b.menu_owner_registered);
+    try t.expectEqual(@as(?u64, null), a.logicalWindowIdForNative(8));
+    const temporary = try t.allocator.create(MacOSBackend);
+    temporary.* = .{ .allocator = t.allocator };
+    temporary.windows[0] = .{ .window = undefined, .window_id = 81, .native_window_id = 8 };
+    temporary.window_count = 1;
+    temporary.registerMenuOwner();
+    try t.expectEqual(@as(?u64, 81), a.logicalWindowIdForNative(8));
+    MacOSBackend.deinitImpl(temporary, t.allocator);
+    try t.expectEqual(@as(?u64, null), a.logicalWindowIdForNative(8));
+    b.windows[0] = .{ .window = undefined, .window_id = 800, .native_window_id = 8 };
+    b.window_count = 1;
+    b.registerMenuOwner();
+    try t.expectEqual(@as(?u64, 800), a.logicalWindowIdForNative(8));
+}
+
+test "reserved chord packing matches window_bridge.m (ZENIT_CHORD_*)" {
+    // ⌥] = keycode 30 | OPTION(4) << 16; exact bits per modifier.
+    try std.testing.expectEqual(@as(u32, 30 | (4 << 16)), Window.packReservedChord(30, false, false, true, false));
+    try std.testing.expectEqual(@as(u32, 33 | (2 << 16)), Window.packReservedChord(33, false, true, false, false));
+    try std.testing.expectEqual(@as(u32, 42 | (15 << 16)), Window.packReservedChord(42, true, true, true, true));
 }

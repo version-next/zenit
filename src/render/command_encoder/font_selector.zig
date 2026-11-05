@@ -38,6 +38,10 @@ pub const ResolvedFonts = struct {
     /// false means it's upright fallback for missing glyphs in italic face, not the whole segment's
     /// font.
     fallback_is_script: bool = false,
+    /// Animated raster (`force_linear`) only: the preloaded instance the primary font's glyphs
+    /// rasterize from, scaled to the requested size, when it is not `primary` itself. Never used
+    /// for shaping: `primary` lays the run out under every raster policy (see resolveFonts).
+    raster: ?*Font = null,
 
     /// The font to use for shaping / measuring the whole run; it must be exactly the one the render
     /// side's encodeText hands to the shaper.
@@ -78,8 +82,9 @@ pub const TextFontProps = struct {
     monospace_char_width: f32 = 0,
     /// Renderer can switch whole segment to symbols_font (Menlo, for arrows/tabs etc).
     use_symbols: bool = false,
-    /// During zoom, use *Stable variant (avoid jitter from switching buckets every frame).
-    /// Render and measure must pass the same value, else they pick different Font instances.
+    /// Animated raster: glyphs rasterize from a *Stable preloaded instance (`ResolvedFonts.raster`),
+    /// so a size walking through an animated scale does not derive a font per frame. It never
+    /// changes the shaping fonts: layout is identical under every raster policy.
     force_linear: bool = false,
 };
 
@@ -452,7 +457,28 @@ pub const FontSelector = struct {
     ///
     /// Add new font decision rules **only here**; an if at a call site reintroduces the silent
     /// misalignment.
+    ///
+    /// == The raster policy never reaches shaping ==
+    /// A run switches between static_crisp and animated_stable whenever an animation starts or
+    /// ends. Shaping with the animated policy's preloaded instance (scaled to the requested size)
+    /// gave other advances than the exact-size static font, SF's size-dependent tracking being
+    /// the large part (11px laid out ~10px narrower over 56 chars), so every glyph jumped at the
+    /// switch. Fonts are therefore always resolved as for the static raster; `force_linear` only
+    /// adds the instance the primary glyphs rasterize from (`raster`).
     pub fn resolveFonts(self: *FontSelector, content: []const u8, props: TextFontProps) ResolvedFonts {
+        var layout_props = props;
+        layout_props.force_linear = false;
+        var resolved = self.resolveFontsForRaster(content, layout_props);
+        if (props.force_linear) {
+            const stable = self.resolveFontsForRaster("", props).primary;
+            if (stable != resolved.primary) resolved.raster = stable;
+        }
+        return resolved;
+    }
+
+    /// Font decisions for one raster policy (see resolveFonts: only `.primary` of the
+    /// `force_linear` variant is used, and only to rasterize).
+    fn resolveFontsForRaster(self: *FontSelector, content: []const u8, props: TextFontProps) ResolvedFonts {
         const fs = props.font_size;
         const fw = props.font_weight;
 
@@ -543,32 +569,22 @@ pub const FontSelector = struct {
             if (props.use_italic and primary != regular_font) return .{ .font = regular_font };
             return .{};
         }
+        // Script fallback shapes (measurement, Windows ranges), so it is the layout choice under
+        // every raster policy (see resolveFonts).
         if (script_detect.preferKoreanFallback(content)) {
             if (fw >= 650 and self.korean_bold_count > 0) {
-                return .{ .is_script = true, .font = if (props.force_linear)
-                    self.selectStableFromGroup(&self.korean_bold_fonts, self.korean_bold_count, fs, fw)
-                else
-                    self.selectFromGroup(&self.korean_bold_fonts, self.korean_bold_count, fs) };
+                return .{ .is_script = true, .font = self.selectFromGroup(&self.korean_bold_fonts, self.korean_bold_count, fs) };
             }
             if (self.korean_count > 0) {
-                return .{ .is_script = true, .font = if (props.force_linear)
-                    self.selectStableFromGroup(&self.korean_fonts, self.korean_count, fs, fw)
-                else
-                    self.selectFromGroup(&self.korean_fonts, self.korean_count, fs) };
+                return .{ .is_script = true, .font = self.selectFromGroup(&self.korean_fonts, self.korean_count, fs) };
             }
         }
         if (script_detect.preferCjkFallback(content)) {
             if (fw >= 650 and self.cjk_bold_count > 0) {
-                return .{ .is_script = true, .font = if (props.force_linear)
-                    self.selectStableFromGroup(&self.cjk_bold_fonts, self.cjk_bold_count, fs, fw)
-                else
-                    self.selectFromGroup(&self.cjk_bold_fonts, self.cjk_bold_count, fs) };
+                return .{ .is_script = true, .font = self.selectFromGroup(&self.cjk_bold_fonts, self.cjk_bold_count, fs) };
             }
             if (self.cjk_count > 0) {
-                return .{ .is_script = true, .font = if (props.force_linear)
-                    self.selectStableFromGroup(&self.cjk_fonts, self.cjk_count, fs, fw)
-                else
-                    self.selectFromGroup(&self.cjk_fonts, self.cjk_count, fs) };
+                return .{ .is_script = true, .font = self.selectFromGroup(&self.cjk_fonts, self.cjk_count, fs) };
             }
         }
         // Upright fallback for missing italic glyphs, per-glyph fill-gap, **not** whole segment.

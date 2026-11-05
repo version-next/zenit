@@ -40,7 +40,7 @@ fn labelOf(text: []const u8, count: ?u32, max_count: u32, dot: bool) Label {
 pub fn Badge(label: Text = "", count: ?u32 = null, maxCount: u32 = 99, status: BadgeStatus = .info, size: BadgeSize = .md, dot: bool = false) View {
     const shown = computed(labelOf(label, count, maxCount, dot));
     return (
-        <text style={S.Badge.slot(.label, .{ .status = status, .size = size })} box={S.Badge.slot(.root, .{ .status = status, .size = size, .dot = dot })}>{shown}</text>
+        <text style={S.Badge.slot(.label, .{ .status = status, .size = size })} box={.{ S.Badge.slot(.root, .{ .status = status, .size = size, .dot = dot }), S.centered_label.of(.{ .size = size, .dot = dot }) }}>{shown}</text>
     );
 }
 

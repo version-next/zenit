@@ -181,7 +181,7 @@ pub fn appendNodeShadowAndBackgroundBorrowed(
         });
     } else if (shadow_slice.len == 1) {
         const s1 = shadow_slice[0];
-        if (@import("zenit_environment").has("ZENIT_DEBUG_SHADOW")) {
+        if (@import("zenit_environment").flag("ZENIT_DEBUG_SHADOW")) {
             std.debug.print("[shadow] node={d} comp={s} rect=({d:.0},{d:.0},{d:.0},{d:.0}) r={d:.0} blur={d:.0} a={d}\n", .{
                 node.id, node.meta.ownership.meta.component_name orelse "?", local_rect.x, local_rect.y, local_rect.w, local_rect.h, local_radii[0], s1.blur, s1.color.a,
             });
@@ -660,12 +660,12 @@ pub fn appendNodeMediaBorrowed(
             try cx.display_list.append(.{
                 .image_quad = .{
                     .header = header,
-                    .x = node.style.padding.left,
-                    .y = node.style.padding.top,
-                    .w = @max(0, local_rect.w - node.style.padding.left - node.style.padding.right),
-                    .h = @max(0, local_rect.h - node.style.padding.top - node.style.padding.bottom),
+                    .x = node.style.contentInsets().left,
+                    .y = node.style.contentInsets().top,
+                    .w = @max(0, local_rect.w - node.style.contentInsets().left - node.style.contentInsets().right),
+                    .h = @max(0, local_rect.h - node.style.contentInsets().top - node.style.contentInsets().bottom),
                     .texture_id = im.texture_id,
-                    .tint = im.tint,
+                    .tint = im.paintTint(if (im.tint_current_color) node.resolveTextColor() else null),
                     .corner_radius = node.style.effectiveRadius(),
                     .opacity = draw_opacity,
                 },
@@ -687,11 +687,11 @@ pub fn appendNodeMediaBorrowed(
                     .icon_id = ic.icon_id,
                     .rep_size = ic.rep.size,
                     .rep = ic.rep,
-                    .x = node.style.padding.left,
-                    .y = node.style.padding.top,
-                    .w = @max(0, local_rect.w - node.style.padding.left - node.style.padding.right),
-                    .h = @max(0, local_rect.h - node.style.padding.top - node.style.padding.bottom),
-                    .tint = ic.tint,
+                    .x = node.style.contentInsets().left,
+                    .y = node.style.contentInsets().top,
+                    .w = @max(0, local_rect.w - node.style.contentInsets().left - node.style.contentInsets().right),
+                    .h = @max(0, local_rect.h - node.style.contentInsets().top - node.style.contentInsets().bottom),
+                    .tint = ic.paintTint(if (ic.tint_current_color) node.resolveTextColor() else null),
                     .corner_clip_radius = node.style.effectiveRadius(),
                     .opacity = draw_opacity,
                     // Same rule as text: continuous positions under transform

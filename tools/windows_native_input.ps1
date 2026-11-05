@@ -399,6 +399,49 @@ public static class ZenitNativeInput {
       if(!ClientToScreen(receiverWindow,ref point)||GetAncestor(WindowFromPoint(point),2)!=receiverWindow||!SetCursorPos(point.X,point.Y))throw new InvalidOperationException("Owned receiver not at pointer");}}
     finally{SetThreadDpiAwarenessContext(old);}
   }
+  // Hover liveness (e2e/windows-hover-native.test.ts): real cursor/wheel input over the owned App
+  // while it is foreground OR while the owned receiver (another process's window) is foreground,
+  // which makes the App an inactive window. Never targets any other window.
+  static void HoverGuard(IntPtr app,int process){
+    IntPtr fg=GetForegroundWindow();
+    bool receiverFg;lock(receiverGate){receiverFg=receiverReady&&receiverOwner==process&&fg==receiverWindow&&Owned(receiverWindow,System.Diagnostics.Process.GetCurrentProcess().Id);}
+    if(!Owned(app,process)||!(Owned(fg,process)||receiverFg))throw new InvalidOperationException("Hover input requires the owned App or owned receiver in the foreground");
+  }
+  static Point HoverClientPoint(IntPtr app,double x,double y){
+    Rect r;if(!GetClientRect(app,out r))throw new InvalidOperationException("Missing client bounds");
+    double scale=GetDpiForWindow(app)/96.0;
+    if(Double.IsNaN(x)||Double.IsInfinity(x)||Double.IsNaN(y)||Double.IsInfinity(y)||x<0||y<0||x*scale>=r.Right||y*scale>=r.Bottom)throw new ArgumentException("Hover point must be inside the owned App");
+    Point p=new Point();p.X=(int)Math.Round(x*scale);p.Y=(int)Math.Round(y*scale);
+    if(!ClientToScreen(app,ref p))throw new InvalidOperationException("ClientToScreen failed");
+    return p;
+  }
+  public static void HoverPointerAt(IntPtr app,int process,double x,double y){
+    HoverGuard(app,process);IntPtr old=SetThreadDpiAwarenessContext(new IntPtr(-4));
+    try{Point p=HoverClientPoint(app,x,y);if(!SetCursorPos(p.X,p.Y))throw new InvalidOperationException("Hover cursor movement failed");}
+    finally{SetThreadDpiAwarenessContext(old);}
+  }
+  public static void HoverWheel(IntPtr app,int process,int delta){
+    HoverGuard(app,process);IntPtr old=SetThreadDpiAwarenessContext(new IntPtr(-4));
+    try{
+      Point c;if(!GetCursorPos(out c)||GetAncestor(WindowFromPoint(c),2)!=app)throw new InvalidOperationException("Wheel target under the cursor is not the owned App");
+      Input i=new Input();i.Type=0;i.Data.Mouse.Flags=0x0800;i.Data.Mouse.Data=unchecked((uint)delta);
+      if(SendInput(1,new Input[]{i},Marshal.SizeOf(typeof(Input)))!=1)throw new InvalidOperationException("Wheel input refused");
+    }finally{SetThreadDpiAwarenessContext(old);}
+  }
+  // Order the owned receiver over (cover) or away from (uncover) an App client point, without
+  // changing activation.
+  public static void ReceiverCover(IntPtr app,int process,double x,double y,bool cover){
+    HoverGuard(app,process);IntPtr old=SetThreadDpiAwarenessContext(new IntPtr(-4));
+    try{lock(receiverGate){
+      if(!receiverReady||receiverOwner!=process||receiverWindow==IntPtr.Zero)throw new InvalidOperationException("Receiver unavailable");
+      Point p=HoverClientPoint(app,x,y);Rect b;GetWindowRect(app,out b);
+      int w=300,h=160,left=cover?p.X-w/2:b.Left+20,top=cover?p.Y-h/2:b.Bottom-h-20;
+      if(!cover&&left<=p.X&&p.X<left+w&&top<=p.Y&&p.Y<top+h)top=b.Top+20;
+      if(!SetWindowPos(receiverWindow,new IntPtr(-1),left,top,w,h,0x50))throw new InvalidOperationException("Receiver placement failed");
+      Point probe=p;bool over=GetAncestor(WindowFromPoint(probe),2)==receiverWindow;
+      if(over!=cover)throw new InvalidOperationException(cover?"Receiver does not cover the point":"Receiver still covers the point");
+    }}finally{SetThreadDpiAwarenessContext(old);}
+  }
   public static System.Collections.Hashtable ReceiverStatus(){lock(receiverGate){return new System.Collections.Hashtable{{"ok",true},{"ready",receiverReady},{"thread_alive",receiverThread!=null&&receiverThread.IsAlive},{"foreground",receiverWindow!=IntPtr.Zero&&GetForegroundWindow()==receiverWindow},{"left_button_down",GetAsyncKeyState(1)<0},{"pid",System.Diagnostics.Process.GetCurrentProcess().Id},{"hwnd",receiverWindow.ToInt64()},{"drops",receiverDrops},{"enters",receiverEnters},{"leaves",receiverLeaves},{"kind",receiverKind},{"effect",receiverEffect},{"keys",receiverKeys},{"length",receiverLength},{"hash",receiverHash},{"files_exist",receiverFilesExist},{"error",receiverError}};}}
   public static bool Text(string text,int process) {
     foreach(char c in text) {
@@ -452,6 +495,9 @@ function Invoke-WindowsNativeInput($proc, $body, $held) {
     if (-not $status.foreground) { throw 'Owned native window could not acquire foreground' }
     return $status
   }
+  if ($body.action -eq 'hover-pointer-at') { [ZenitNativeInput]::HoverPointerAt($hwnd,$proc.Id,[double]$body.x,[double]$body.y);return @{ok=$true;foreground=$status.foreground} }
+  if ($body.action -eq 'hover-wheel') { [ZenitNativeInput]::HoverWheel($hwnd,$proc.Id,[int]$body.delta);return @{ok=$true;foreground=$status.foreground} }
+  if ($body.action -in @('receiver-cover','receiver-uncover')) { [ZenitNativeInput]::ReceiverCover($hwnd,$proc.Id,[double]$body.x,[double]$body.y,$body.action -eq 'receiver-cover');return @{ok=$true;foreground=$status.foreground} }
   if ($body.action -eq 'drag-status') { return @{ok=$true;active=[ZenitNativeInput]::DragActive();done=[ZenitNativeInput]::DragDone();effect=[ZenitNativeInput]::DragEffect();error=[ZenitNativeInput]::DragError();diagnostic=[ZenitNativeInput]::DragDiagnostic();foreground=$status.foreground_hwnd;source_foreground=[ZenitNativeInput]::SourceForeground($proc.Id)} }
   if (-not $status.foreground_owned -and -not [ZenitNativeInput]::SourceForeground($proc.Id)) { throw 'Native input refused: foreground is not owned by the test process' }
   if ($body.action -eq 'close') {

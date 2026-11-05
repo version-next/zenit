@@ -34,6 +34,8 @@
 # render_test_module but no addTest has svg as root, so its 10 tests never ran.
 #
 # Cost: one build + one test run (minutes). Compile-error probes can't be batched.
+# Each invocation has an isolated local cache: cached Run results can otherwise
+# suppress stderr from an already-executed identical runtime probe.
 #
 # Usage:
 #   bash scripts/check_orphan_tests.sh                 # full (slow)
@@ -61,21 +63,32 @@ fi
 
 # Test files intentionally hung on other build step (not orphans).
 # Each must document which step it actually hangs on, else can't tell exempt vs escaped.
-EXCLUDE_RE='^(src/render/(metal_integration_tests|glass_material_tests|sdf_gpu_bench)\.zig|src/platform/unsupported/|src/system_sdk/backends/(linux|windows)\.zig|src/system_sdk/windows_test\.zig)'
-#            ^ test-metal (needs real Metal device); glass_material_tests / sdf_gpu_bench @imported
+EXCLUDE_RE='^(src/render/(metal_integration_tests|glass_material_tests|sdf_gpu_bench|tab_lens_gpu_bench|packed_glyph_tests)\.zig|src/ui/(style_reload_manifest|style_reload_tests|template_reload_tests|wasm_smoke)\.zig|src/platform/unsupported/|src/system_sdk/backends/(linux|windows)\.zig|src/system_sdk/windows_test\.zig)'
+#            ^ test-metal (needs real Metal device); glass_material_tests / sdf_gpu_bench /
+#            tab_lens_gpu_bench / packed_glyph_tests (probe-verified on host 2026-10-18,
+#            tab_lens_gpu_bench 2026-11-01) @imported
 #            by metal_integration_tests.zig, same test-metal
 #            ^ cross-compile target, not compiled on macOS
 #            ^ system_sdk Linux / Windows backends: check-system-sdk-cross cross-compile (compile
 #            only no run)
 #            ^ src/system_sdk/windows_test.zig: test-windows-sdk-unit (Windows SDK mock event test
 #            run on host)
+# LP2 manifest/tests: test-style-reload (called by check_clean_tree_gates.sh).
+# Runtime probes on 2026-10-18 hit both paths; all 74 assertions passed. Instrumented
+# manifest/output intentionally fail generator/controller checks; uninstrumented
+# gate must also pass. wasm_smoke: check-wasm, native contract/OOM test probe hit,
+# followed by wasm smoke PASS. Full probe logs are linked in GATEDEBT_REPORT.md.
+# LP4 template_reload_tests: test-template-reload (called by check_clean_tree_gates.sh);
+# PROBE_CMD="zig build test-template-reload -j1" hit it on 2026-10-19.
 
 PROBE_CMD="${PROBE_CMD:-zig build test}"
 
 if [[ $# -gt 0 ]]; then
     FILES=("$@")
 else
-    mapfile -t FILES < <(git ls-files 'src/**/*.zig' | grep -v generated | xargs grep -l '^test ' 2>/dev/null)
+    # Git's ordinary '*' pathspec also matches slashes; '**/' here would miss
+    # top-level src/*.zig (environment/time/reflection/SVG safety tests).
+    mapfile -t FILES < <(git ls-files 'src/*.zig' | grep -v generated | xargs grep -l '^test ' 2>/dev/null)
 fi
 
 TMP="$(mktemp -d)"
@@ -91,7 +104,9 @@ restore_and_exit() {
     done
     rm -rf "$TMP"
 }
-trap restore_and_exit EXIT INT TERM
+trap restore_and_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # WARNING source files in 'probe planted' intermediate state while script runs.
 # Don't `git add -A` / `git commit -a` while it runs, else probes committed.
@@ -107,6 +122,11 @@ for f in "${FILES[@]}"; do
     PROBED+=("$f")
 done
 
+if [[ ${#PROBED[@]} -eq 0 ]]; then
+    echo "ERROR: no test files were probed; missing coverage cannot pass." >&2
+    exit 1
+fi
+
 # Runtime probe, print only no return — see file head 'criteria' section. Path literal (@src().file
 # is module-relative, wrong against repo)
 python3 - "${PROBED[@]}" <<'PY'
@@ -120,9 +140,16 @@ for name in sys.argv[1:]:
     p.write_text(s[:m.end()] + probe + s[m.end():])
 PY
 
-$PROBE_CMD --summary none >"$LOG" 2>&1
+probe_status=0
+# The probe builds and runs the whole suite in a fresh cache. Measured 2026-10-18 on an idle M-series
+# host: 807 s, so 900 s left almost no headroom and concurrent builds tripped the timeout. Keep ~3x.
+python3 scripts/run_orphan_probe.py "$LOG" "$PROBE_CMD" "${ORPHAN_TIMEOUT:-2400}" || probe_status=$?
 # ORPHAN_LOG=path: keep full output of this test (debug criteria)
 [[ -n "${ORPHAN_LOG:-}" ]] && cp "$LOG" "$ORPHAN_LOG"
+if [[ "$probe_status" -ne 0 ]]; then
+    echo "ERROR: probe command failed (exit/crash/timeout/leak); hits cannot make it pass." >&2
+    tail -40 "$LOG" >&2
+fi
 
 orphans=()
 for f in "${PROBED[@]}"; do
@@ -135,3 +162,4 @@ if [[ ${#orphans[@]} -gt 0 ]]; then
     echo "这些文件里的 test 从未被执行 —— 断言从未生效过。" >&2
     exit 1
 fi
+[[ "$probe_status" -eq 0 ]] || exit 1

@@ -9,7 +9,7 @@ const FRAME_LOG_BUDGET: u32 = 96;
 pub fn enabled() bool {
     if (enabled_cache) |value| return value;
 
-    const raw = std.c.getenv("ZENIT_TEXT_FLICKER_TRACE") orelse std.c.getenv("ZENIT_MD_FLICKER_DEBUG");
+    const raw = @import("zenit_environment").getNative("ZENIT_TEXT_FLICKER_TRACE") orelse @import("zenit_environment").getNative("ZENIT_MD_FLICKER_DEBUG");
     if (raw == null) {
         enabled_cache = false;
         return false;

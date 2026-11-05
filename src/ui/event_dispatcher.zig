@@ -39,7 +39,7 @@ fn scrollDebugEnabled() bool {
 }
 
 fn devtoolsHitDebugEnabled() bool {
-    const raw = std.c.getenv("ZENIT_DEVTOOLS_HIT_DEBUG") orelse return false;
+    const raw = @import("zenit_environment").getNative("ZENIT_DEVTOOLS_HIT_DEBUG") orelse return false;
     const value = std.mem.span(raw);
     if (value.len == 0) return true;
     return !std.mem.eql(u8, value, "0");
@@ -201,6 +201,15 @@ pub const EventDispatcher = struct {
         self.suppress_click = true;
     }
 
+    /// End the active press sequence without a release (pointer cancel, window blur): the
+    /// release may never arrive, so the sequence must not keep routing moves to the pressed node
+    /// or hold off stationary hover re-resolution (`hoverFollowsScene`). A late release still
+    /// dispatches mouse_up but cannot synthesize a click.
+    pub fn cancelActivePress(self: *EventDispatcher) void {
+        self.suppress_click = true;
+        self.mouse_down_handle = null;
+    }
+
     pub fn hasPointerCapture(self: *EventDispatcher) bool {
         return self.resolveHandle(self.pointer_capture_handle) != null;
     }
@@ -220,6 +229,27 @@ pub const EventDispatcher = struct {
         defer self.dispatch_depth -= 1;
         self.updateHoveredNode(new_hovered);
         return self.currentHovered();
+    }
+
+    /// Whether hover may follow the scene under a pointer that is not moving. False while a
+    /// pointer sequence owns the pointer: capture (drag, scrollbar thumb, slider) or a left press
+    /// in progress. AppKit tracking areas without NSTrackingEnabledDuringMouseDrag deliver no
+    /// mouseEntered/mouseExited while a button is held, and browsers skip the post-scroll hover
+    /// update while a button is pressed. The re-resolution is deferred, not dropped: the caller
+    /// keeps its scene stamp stale and retries once the sequence ends.
+    pub fn hoverFollowsScene(self: *EventDispatcher) bool {
+        return self.resolveHandle(self.pointer_capture_handle) == null and
+            self.resolveHandle(self.mouse_down_handle) == null;
+    }
+
+    /// Re-resolve hover for a stationary pointer after the scene under it changed (scroll,
+    /// layout, mount/unmount). Delivers exactly the mouse_leave / mouse_enter / on_leave /
+    /// on_hover transitions a pointer move to the same point would, but no mouse_move: the
+    /// pointer did not move (AppKit sends only mouseEntered/mouseExited here). No-op while
+    /// `hoverFollowsScene()` is false. Returns the hovered leaf afterwards.
+    pub fn reconcileHover(self: *EventDispatcher, new_hovered: ?*Node) ?*Node {
+        if (!self.hoverFollowsScene()) return self.currentHovered();
+        return self.syncHover(new_hovered);
     }
 
     pub fn deinit(self: *EventDispatcher) void {
@@ -707,6 +737,22 @@ pub const EventDispatcher = struct {
         return self.dispatch(.{ .scroll = scroll }, target);
     }
 
+    /// Whether `dispatchScroll(scroll, hit)` reads `hit` for this event in the current gesture
+    /// state. It does not for momentum (always the momentum owner) and for changed / ended /
+    /// cancelled phases whose latched session owner is alive and, for changed, still accepts the
+    /// gesture's axis: dispatchScroll then gives the same result for any hit, so the caller may skip
+    /// the hit test. Pointer mode (no registry) validates owners against the hit's root, so it
+    /// always needs the hit.
+    pub fn scrollNeedsHitTarget(self: *EventDispatcher, scroll: events.ScrollEvent) bool {
+        if (self.registry == null) return true;
+        if (scroll.isMomentum()) return false;
+        return switch (scroll.phase) {
+            .none, .may_begin, .began => true,
+            .changed => if (self.scrollSessionOwner(null)) |owner| !scrollOwnerAcceptsGesture(owner, scroll.dx, scroll.dy) else true,
+            .ended, .cancelled => self.scrollSessionOwner(null) == null,
+        };
+    }
+
     /// registry mode stores handle (ptr dangling); no-registry test mode stores ptr only.
     fn setScrollSessionOwner(self: *EventDispatcher, node: ?*Node) void {
         if (self.registry) |registry| {
@@ -1066,6 +1112,52 @@ const HandlerTarget = struct {
 };
 
 /// Call event handler on node
+/// What the scroll handlers of one input scroll event did (Cx.handleScroll). A handler that
+/// takes the event (any result but `.ignored`) changed something unless it says otherwise with
+/// `declareInert` (ScrollArea: offset, overscroll, spring and scroller visibility all as they
+/// were). An app or unknown handler that takes the event is never inert, so it keeps the redraw
+/// every scroll event used to request; a handler that passes (`.ignored`, e.g. a window-level
+/// key capture) changed nothing it did not mark dirty itself. Main (UI) thread only.
+pub const scroll_effect = struct {
+    var inert: u32 = 0;
+    var changed = false;
+
+    pub const Saved = struct { inert: u32, changed: bool };
+
+    /// Start accounting one scroll event; pass the result to `finish`.
+    pub fn begin() Saved {
+        const saved: Saved = .{ .inert = inert, .changed = changed };
+        inert = 0;
+        changed = false;
+        return saved;
+    }
+
+    /// End the accounting `begin` started: whether the event changed something. An event
+    /// dispatched from inside another one's handler restores the outer accounting; a change of
+    /// its own makes the outer event changed too.
+    pub fn finish(saved: Saved) bool {
+        const result = changed;
+        inert = saved.inert;
+        changed = saved.changed or result;
+        return result;
+    }
+
+    /// The running handler changed nothing visible for this scroll event.
+    pub fn declareInert() void {
+        inert +|= 1;
+    }
+
+    /// Around one handler call: `enter` before, `leave` with its result after.
+    fn enter() u32 {
+        return inert;
+    }
+
+    fn leave(event: Event, mark: u32, result: EventResult) EventResult {
+        if (event == .scroll and result != .ignored and inert == mark) changed = true;
+        return result;
+    }
+};
+
 fn invokeHandler(registry: ?*const NodeRegistry, initial_node: *Node, event: Event, phase: EventPhase) EventResult {
     const target = HandlerTarget.init(registry, initial_node);
     var node = initial_node;
@@ -1074,7 +1166,8 @@ fn invokeHandler(registry: ?*const NodeRegistry, initial_node: *Node, event: Eve
     // gesture arbitration ('ancestor preemption' scenarios).
     if (phase == .capture) {
         if (node.behavior.events.on_event_capture) |handler| {
-            return handler(event, node.behavior.events.capture_context orelse node.behavior.events.event_context);
+            const mark = scroll_effect.enter();
+            return scroll_effect.leave(event, mark, handler(event, node.behavior.events.capture_context orelse node.behavior.events.event_context));
         }
         return .ignored;
     }
@@ -1084,7 +1177,8 @@ fn invokeHandler(registry: ?*const NodeRegistry, initial_node: *Node, event: Eve
     // component root as focus target (Input) never sees ancestor capture. Non-ignored stops.
     if (phase == .target) {
         if (node.behavior.events.on_event_capture) |handler| {
-            const result = handler(event, node.behavior.events.capture_context orelse node.behavior.events.event_context);
+            const mark = scroll_effect.enter();
+            const result = scroll_effect.leave(event, mark, handler(event, node.behavior.events.capture_context orelse node.behavior.events.event_context));
             if (result != .ignored) return result;
             node = target.resolve() orelse return .ignored;
         }
@@ -1096,7 +1190,8 @@ fn invokeHandler(registry: ?*const NodeRegistry, initial_node: *Node, event: Eve
 
     // Call generic event handler (if any)
     if (node.behavior.events.on_event) |handler| {
-        const result = handler(event, node.behavior.events.event_context);
+        const mark = scroll_effect.enter();
+        const result = scroll_effect.leave(event, mark, handler(event, node.behavior.events.event_context));
         if (result != .ignored) return result;
         node = target.resolve() orelse return .ignored;
     }
@@ -1115,7 +1210,8 @@ fn invokeHandler(registry: ?*const NodeRegistry, initial_node: *Node, event: Eve
         },
         .scroll => |se| {
             if (node.behavior.events.on_scroll) |sh| {
-                return sh(se, node.behavior.events.event_context);
+                const mark = scroll_effect.enter();
+                return scroll_effect.leave(event, mark, sh(se, node.behavior.events.event_context));
             }
         },
         .drag => |de| {
@@ -1493,6 +1589,104 @@ test "EventDispatcher: mouse hover" {
     // Move out
     _ = dispatcher.dispatchMouseMove(300, 300, hitTestNode(root, 300, 300));
     try std.testing.expectEqual(@as(u32, 1), hover_ctx.leave_count);
+}
+
+const StationaryHoverRig = struct {
+    const Log = struct { enters: [2]u32 = .{ 0, 0 }, leaves: [2]u32 = .{ 0, 0 }, moves: u32 = 0, clicks: u32 = 0 };
+    const Tag = struct { log: *Log, index: usize };
+
+    fn onEvent(event: Event, context: ?*anyopaque) EventResult {
+        const tag: *Tag = @ptrCast(@alignCast(context.?));
+        switch (event) {
+            .mouse_enter => tag.log.enters[tag.index] += 1,
+            .mouse_leave => tag.log.leaves[tag.index] += 1,
+            .mouse_move => tag.log.moves += 1,
+            .click => tag.log.clicks += 1,
+            else => {},
+        }
+        return .ignored;
+    }
+
+    fn row(cx: *core.Cx, root: *Node, tag: *Tag) !*Node {
+        const node = try core.box(cx, .{ .width = .{ .px = 100 }, .height = .{ .px = 40 } }, .{});
+        node.behavior.events.on_event = onEvent;
+        node.behavior.events.event_context = tag;
+        try root.appendChild(std.testing.allocator, node);
+        return node;
+    }
+};
+
+test "EventDispatcher: stationary hover re-resolution sends enter/leave but no mouse_move" {
+    var dispatcher = EventDispatcher.init(std.testing.allocator, std.testing.io);
+    defer dispatcher.deinit();
+    var ctx = try core.Cx.init(std.testing.allocator, std.testing.io);
+    defer ctx.deinit();
+    dispatcher.setRegistry(&ctx.node_registry);
+    var log = StationaryHoverRig.Log{};
+    var tags = [_]StationaryHoverRig.Tag{ .{ .log = &log, .index = 0 }, .{ .log = &log, .index = 1 } };
+    const root = try core.box(ctx, .{ .width = .{ .px = 100 }, .height = .{ .px = 80 } }, .{});
+    const a = try StationaryHoverRig.row(ctx, root, &tags[0]);
+    const b = try StationaryHoverRig.row(ctx, root, &tags[1]);
+    ctx.root = root;
+    ctx.layout();
+
+    _ = dispatcher.dispatchMouseMove(10, 10, a);
+    try std.testing.expectEqual(@as(u32, 1), log.moves);
+    try std.testing.expect(dispatcher.hoverFollowsScene());
+    // Content moved under the pointer: b is now there.
+    try std.testing.expectEqual(b, dispatcher.reconcileHover(b).?);
+    try std.testing.expectEqual(@as(u32, 1), log.leaves[0]);
+    try std.testing.expectEqual(@as(u32, 1), log.enters[1]);
+    try std.testing.expectEqual(@as(u32, 1), log.moves);
+    // Same target again: no duplicate transition.
+    _ = dispatcher.reconcileHover(b);
+    try std.testing.expectEqual(@as(u32, 1), log.enters[1]);
+    // Nothing under the pointer any more.
+    try std.testing.expect(dispatcher.reconcileHover(null) == null);
+    try std.testing.expectEqual(@as(u32, 1), log.leaves[1]);
+}
+
+test "EventDispatcher: press and capture defer stationary hover; cancel ends the press" {
+    var dispatcher = EventDispatcher.init(std.testing.allocator, std.testing.io);
+    defer dispatcher.deinit();
+    var ctx = try core.Cx.init(std.testing.allocator, std.testing.io);
+    defer ctx.deinit();
+    dispatcher.setRegistry(&ctx.node_registry);
+    var log = StationaryHoverRig.Log{};
+    var tags = [_]StationaryHoverRig.Tag{ .{ .log = &log, .index = 0 }, .{ .log = &log, .index = 1 } };
+    const root = try core.box(ctx, .{ .width = .{ .px = 100 }, .height = .{ .px = 80 } }, .{});
+    const a = try StationaryHoverRig.row(ctx, root, &tags[0]);
+    const b = try StationaryHoverRig.row(ctx, root, &tags[1]);
+    ctx.root = root;
+    ctx.layout();
+    _ = dispatcher.dispatchMouseMove(10, 10, a);
+
+    // Left press in progress: hover belongs to the sequence.
+    _ = dispatcher.dispatchMouseDown(10, 10, a, .{});
+    try std.testing.expect(!dispatcher.hoverFollowsScene());
+    try std.testing.expectEqual(a, dispatcher.reconcileHover(b).?);
+    try std.testing.expectEqual(@as(u32, 0), log.leaves[0]);
+    dispatcher.dispatchMouseUp(10, 10, a);
+    try std.testing.expect(dispatcher.hoverFollowsScene());
+    try std.testing.expectEqual(@as(u32, 1), log.clicks);
+
+    // Capture (drag) likewise.
+    dispatcher.setPointerCapture(a);
+    try std.testing.expect(!dispatcher.hoverFollowsScene());
+    try std.testing.expectEqual(a, dispatcher.reconcileHover(b).?);
+    dispatcher.releasePointerCapture();
+    try std.testing.expect(dispatcher.hoverFollowsScene());
+
+    // A cancelled press (blur / pointer cancel) must not keep deferring: the release may never
+    // arrive. A late release dispatches no click.
+    _ = dispatcher.dispatchMouseDown(10, 10, a, .{});
+    try std.testing.expect(!dispatcher.hoverFollowsScene());
+    dispatcher.cancelActivePress();
+    try std.testing.expect(dispatcher.hoverFollowsScene());
+    try std.testing.expectEqual(b, dispatcher.reconcileHover(b).?);
+    try std.testing.expectEqual(@as(u32, 1), log.leaves[0]);
+    dispatcher.dispatchMouseUp(10, 10, a);
+    try std.testing.expectEqual(@as(u32, 1), log.clicks);
 }
 
 test "EventDispatcher: scroll momentum keeps session owner despite hover target change" {

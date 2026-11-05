@@ -4,7 +4,7 @@
 /// Features:
 /// - Variants: default, outlined, elevated
 /// - Interactive (Tab sequence / a11y button) / hoverable
-/// - Selected state (pass signal / derived value): 2px accent border, no hover highlight.
+/// - Selected state (pass signal / derived value): 1px accent-border, no hover highlight.
 const std = @import("std");
 const core = @import("../../core.zig");
 const Cx = core.Cx;
@@ -83,17 +83,17 @@ test "Card: 标题 / 副标题 / 子元素都在卡片里，子元素进内容�
     const sub = findText(card, "Description text").?;
     const body_text = findText(card, "body text").?;
     try std.testing.expectEqual(@as(f32, 300), card.rectFromWorldOrFallback().w);
-    // All coords relative to parent: header = 12 padding + title 18 + gap 4 + subtitle 16 + 12;
-    // content follows, 12px padding.
+    // All coords relative to parent: header = 14 padding + title 18 + gap 2 + subtitle 16 + 2;
+    // content follows, 8px top and 16px side padding.
     const body = body_text.parent.?;
     try std.testing.expectEqual(title.parent.?, sub.parent.?);
-    try std.testing.expectEqual(@as(f32, 12), title.rectFromWorldOrFallback().y);
+    try std.testing.expectEqual(@as(f32, 14), title.rectFromWorldOrFallback().y);
     try std.testing.expectEqual(@as(f32, 18), title.rectFromWorldOrFallback().h);
     try std.testing.expectEqual(@as(f32, 34), sub.rectFromWorldOrFallback().y);
     try std.testing.expectEqual(@as(f32, 16), sub.rectFromWorldOrFallback().h);
     try std.testing.expectEqual(card, body.parent.?);
-    try std.testing.expectEqual(@as(f32, 62), body.rectFromWorldOrFallback().y);
-    try std.testing.expectEqual(@as(f32, 12), body_text.rectFromWorldOrFallback().x);
+    try std.testing.expectEqual(@as(f32, 52), body.rectFromWorldOrFallback().y);
+    try std.testing.expectEqual(@as(f32, 16), body_text.rectFromWorldOrFallback().x);
     try std.testing.expectEqualStrings("Card", card.meta.ownership.meta.component_name.?);
 }
 
@@ -116,10 +116,11 @@ test "Card: 变体决定边框与阴影" {
     defer f.cx.freeNode(outlined);
     const elevated = try Card(.{ .variant = .elevated }).mount(f.scope, f.cx);
     defer f.cx.freeNode(elevated);
+    // COMPONENTS.json Card / *: transparent default outline, 1px outlined/elevated.
     try std.testing.expectEqual(@as(f32, 1), plain.style.border.width);
-    try std.testing.expect(Color.eql(t.tokens.color.border, plain.style.border.color));
-    try std.testing.expect(Color.eql(t.tokens.color.border_strong, outlined.style.border.color));
-    try std.testing.expectEqual(@as(f32, 0), elevated.style.border.width);
+    try std.testing.expect(Color.eql(t.tokens.color.transparent, plain.style.border.color));
+    try std.testing.expect(Color.eql(t.tokens.color.border, outlined.style.border.color));
+    try std.testing.expectEqual(@as(f32, 1), elevated.style.border.width);
     try std.testing.expect(elevated.style.shadow() != null);
     try std.testing.expect(Color.eql(t.tokens.color.bg_primary, elevated.getBackground()));
 }
@@ -163,14 +164,15 @@ test "Card: selected from a signal switches the border and a11y selected" {
     try std.testing.expectEqual(@as(f32, 1), card.style.border.width);
     try std.testing.expect(!card.behavior.interaction.a11y.?.selected);
 
+    // COMPONENTS.json Card / selected: 1px accent_border.
     picked.set(true);
-    try std.testing.expectEqual(@as(f32, 2), card.style.border.width);
-    try std.testing.expect(Color.eql(borderTarget(card), t.tokens.color.accent));
+    try std.testing.expectEqual(@as(f32, 1), card.style.border.width);
+    try std.testing.expect(Color.eql(borderTarget(card), t.tokens.color.accent_border));
     try std.testing.expect(card.behavior.interaction.a11y.?.selected);
 
     picked.set(false);
     try std.testing.expectEqual(@as(f32, 1), card.style.border.width);
-    try std.testing.expect(Color.eql(borderTarget(card), t.tokens.color.border_strong));
+    try std.testing.expect(Color.eql(borderTarget(card), t.tokens.color.border));
 }
 
 test "Card: hover highlights the background only while not selected; outlined highlights the border" {
@@ -181,13 +183,15 @@ test "Card: hover highlights the background only while not selected; outlined hi
     const card = try Card(.{ .title = "Plan", .selected = picked, .hoverable = true }).mount(f.scope, f.cx);
     defer f.cx.freeNode(card);
     hover(card, true);
-    try std.testing.expect(Color.eql(backgroundTarget(card), t.tokens.color.bg_hover));
+    try std.testing.expect(Color.eql(backgroundTarget(card), t.tokens.color.bg_active));
+    // COMPONENTS.json Card / selected: 1px accent_border.
     picked.set(true);
-    try std.testing.expect(Color.eql(backgroundTarget(card), t.tokens.color.bg_primary));
+    try std.testing.expect(Color.eql(backgroundTarget(card), t.tokens.color.accent_surface));
     picked.set(false);
-    try std.testing.expect(Color.eql(backgroundTarget(card), t.tokens.color.bg_hover));
+    try std.testing.expect(Color.eql(backgroundTarget(card), t.tokens.color.bg_active));
     hover(card, false);
-    try std.testing.expect(Color.eql(backgroundTarget(card), t.tokens.color.bg_primary));
+    // COMPONENTS.json Card / default: resting surface is bg_secondary.
+    try std.testing.expect(Color.eql(backgroundTarget(card), t.tokens.color.bg_secondary));
 
     const outlined = try Card(.{ .variant = .outlined, .interactive = true }).mount(f.scope, f.cx);
     defer f.cx.freeNode(outlined);
@@ -204,7 +208,7 @@ test "Card: static, non-hover card builds no effect and no hover hook" {
     defer f.cx.freeNode(card);
     try std.testing.expectEqual(before, f.cx.owner.graph.countByKind().get(.effect));
     try std.testing.expect(card.behavior.events.on_hover == null);
-    try std.testing.expectEqual(@as(f32, 2), card.style.border.width);
+    try std.testing.expectEqual(@as(f32, 1), card.style.border.width);
 }
 
 test "Card: 换主题时颜色跟随" {
@@ -213,7 +217,7 @@ test "Card: 换主题时颜色跟随" {
     const card = try f.add(try Card(.{ .title = "T", .variant = .outlined }).mount(f.scope, f.cx));
     f.cx.setTheme(&core.theme.dark);
     try std.testing.expect(Color.eql(core.theme.dark.tokens.color.bg_primary, card.getBackground()));
-    try std.testing.expect(Color.eql(core.theme.dark.tokens.color.border_strong, card.style.border.color));
+    try std.testing.expect(Color.eql(core.theme.dark.tokens.color.border, card.style.border.color));
     try std.testing.expect(Color.eql(core.theme.dark.tokens.color.fg_primary, findText(card, "T").?.getText().?.color));
 }
 

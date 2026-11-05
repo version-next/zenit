@@ -7,6 +7,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const core = @import("../../core.zig");
+const hooks = @import("../../hooks.zig");
 const view = @import("../../view.zig");
 const Cx = core.Cx;
 const Node = core.Node;
@@ -103,6 +104,7 @@ pub const TreeState = struct {
     selected_bits: [MAX_NODES]bool = @as([MAX_NODES]bool, @splat(false)),
     /// keyboard navigation / Shift range current row and anchor (internal state)
     selected_flat_index: ?usize = null,
+    hovered_index: ?usize = null,
     selection_anchor: ?usize = null,
 
     const MAX_NODES = 128;
@@ -166,7 +168,15 @@ pub const TreeState = struct {
         for (0..self.flat_count) |i| {
             const row = self.flat_node_rows[i] orelse continue;
             const sel = self.selected_bits[i];
-            row.setBackgroundRaw(if (sel) self.selection_bg else Color.TRANSPARENT);
+            row.setBackgroundRaw(styles.rowVisual(sel, self.hovered_index == i, self.flat_nodes[i].data.disabled, self.tokens).background.?);
+            if (row.children.items.len > 0) {
+                const label = row.children.items[row.children.items.len - 1];
+                if (label.getText()) |old| {
+                    var text = old;
+                    text.color = styles.treeRowTextColor(sel, self.flat_nodes[i].data.disabled, self.tokens);
+                    label.setText(text);
+                }
+            }
             // highlight is visual-only; aria-selected is AT's sole selection basis
             if (row.behavior.interaction.a11y) |*a| a.selected = sel;
             row.markRenderDirty();
@@ -345,6 +355,7 @@ pub const TreeState = struct {
     fn buildRows(self: *TreeState, rows_scope: *Scope, container: *Node, nodes: []const TreeNodeData) !void {
         const cx = self.cx;
         self.flat_count = 0;
+        self.hovered_index = null;
         self.flat_node_rows = @as([MAX_NODES]?*Node, @splat(null));
         self.flat_node_indicators = @as([MAX_NODES]?*Node, @splat(null));
         self.selected_flat_index = null;
@@ -419,6 +430,8 @@ pub const TreeState = struct {
                     alloc.destroy(@as(*TreeClickContext, @ptrCast(@alignCast(ptr))));
                 }
             }.cleanup);
+            hooks.setHoverHandler(row, true, Cx.simpleHandler(treeHover, click_ctx));
+            hooks.setHoverHandler(row, false, Cx.simpleHandler(treeLeave, click_ctx));
             row.behavior.events.on_event = treeItemEventHandler;
             row.behavior.events.event_context = @ptrCast(click_ctx);
             if (row.behavior.interaction.a11y) |*a| {
@@ -562,6 +575,17 @@ fn setAccessibleItemSelection(raw: *anyopaque, operation: core.A11yProps.ItemSel
     state.applySelectionStyles();
     if (on_select) |h| h.call(id);
     return true;
+}
+
+fn treeHover(ptr: *anyopaque) void {
+    const c: *TreeClickContext = @ptrCast(@alignCast(ptr));
+    c.state.hovered_index = c.flat_index;
+    c.state.applySelectionStyles();
+}
+fn treeLeave(ptr: *anyopaque) void {
+    const c: *TreeClickContext = @ptrCast(@alignCast(ptr));
+    if (c.state.hovered_index == c.flat_index) c.state.hovered_index = null;
+    c.state.applySelectionStyles();
 }
 
 fn treeItemEventHandler(event: Event, context: ?*anyopaque) EventResult {
@@ -855,7 +879,7 @@ test "Tree: single 模式选中新行取消旧行（默认，行为不变）" {
     try std.testing.expect(st.isSelected(4));
     try std.testing.expect(!st.isSelected(0));
     // background also follows
-    try std.testing.expect(st.flat_node_rows[4].?.getBackground().eql(ctx.tokens.tokens.color.list_selection_bg));
+    try std.testing.expect(st.flat_node_rows[4].?.getBackground().eql(ctx.tokens.tokens.color.selection_bg));
     try std.testing.expect(st.flat_node_rows[0].?.getBackground().eql(Color.TRANSPARENT));
 }
 

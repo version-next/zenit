@@ -48,6 +48,21 @@ pub fn resolveInheritedTextStyle(self: *const Node) InheritedTextStyle {
     return result;
 }
 
+/// The text node's properties as laid out **and** painted (the one resolution both use, so the
+/// measured box always holds what is drawn): color, size and weight the text's own style declared
+/// (TextProps.*_set) stay its own; the others take the nearest value up the ancestors (CSS
+/// inherited properties). The node's own StyleExt values (transition setters such as
+/// setTextColor) always apply. null when the node holds no text.
+pub fn resolveTextProps(self: *const Node) ?types.TextProps {
+    var t = self.getText() orelse return null;
+    const own = self.style.ext;
+    const inherited = resolveInheritedTextStyle(self);
+    if ((if (own) |e| e.text_color else null) orelse (if (t.color_set) null else inherited.color)) |c| t.color = c;
+    if ((if (own) |e| e.text_font_size else null) orelse (if (t.font_size_set) null else inherited.font_size)) |v| t.font_size = v;
+    if ((if (own) |e| e.text_font_weight else null) orelse (if (t.font_weight_set) null else inherited.font_weight)) |v| t.font_weight = v;
+    return t;
+}
+
 /// Walk up for nearest non-null text_color (convenience method)
 pub fn resolveTextColor(self: *const Node) ?types.Color {
     return resolveInheritedTextStyle(self).color;

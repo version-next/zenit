@@ -12,7 +12,7 @@ pub const muted_text = ui.css(.{ .font_size = ui.arb.px(12), .color = ui.arb.hex
 pub const branch = ui.css(.{ .gap = 4, .height = ui.arb.px(28), .align_items = .center });
 pub const trailing = ui.css(.{ .height = ui.arb.px(38), .align_items = .center, .gap = 14 });
 pub const actions = ui.css(.{ .align_items = .center, .gap = 0 });
-pub const drag = ui.css(.{ .width = ui.Sizing.fill(), .min_width = ui.arb.px(160), .height = ui.Sizing.fill() });
+pub const drag = ui.css(.{ .width = ui.Sizing.fill(), .min_width = ui.arb.px(160), .height = ui.Sizing.fill(), .align_self = .stretch });
 pub const content = ui.css(.{ .width = ui.Sizing.fill(), .padding = ui.Padding.all(20), .gap = 16 });
 pub const title = ui.css(.{ .font_size = ui.arb.px(22), .font_weight = 600, .color = ui.arb.hex(0x1d1d1f) });
 pub const section = ui.css(.{ .font_size = ui.arb.px(15), .font_weight = 600, .color = ui.arb.hex(0x1d1d1f) });

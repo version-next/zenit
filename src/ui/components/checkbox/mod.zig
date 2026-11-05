@@ -98,9 +98,12 @@ pub const RadioGroup = @import("_radio.yix.zig").RadioGroup;
 
 // ==================== Switch ====================
 
+/// Switch size: md (40x22, default) or sm (32x18) for dense rows and inline toolbars.
+pub const SwitchSize = enum { sm, md };
+
 /// Create Switch: W.Switch(.{ .label = "Wi-Fi", .checked = wifi }). Props: checked (controlled
-/// Model(bool)) / label / disabled / on_change (reports settled value only). View in switch.yix,
-/// style in styles.yss SwitchParts.
+/// Model(bool)) / label / size (sm / md) / disabled / on_change (reports settled value only).
+/// View in switch.yix, style in styles.yss SwitchParts.
 pub const Switch = @import("_switch.yix.zig").Switch;
 
 /// Test fixture: Cx + root node + scope.
@@ -356,7 +359,7 @@ test "Radio: checked render emits inner dot" {
     try std.testing.expect(saw_dot);
 }
 
-test "Radio: disabled checked keeps selected color and uses container opacity" {
+test "Radio: disabled checked uses LKxqO semantic colors without opacity" {
     var ctx = try Cx.init(std.testing.allocator, std.testing.io);
     defer ctx.deinit();
 
@@ -376,8 +379,10 @@ test "Radio: disabled checked keeps selected color and uses container opacity" {
     }).mount(scope, ctx);
     try root.appendChild(std.testing.allocator, radio);
 
-    try std.testing.expectApproxEqAbs(@as(f32, 0.5), radio.getOpacity(), 0.001);
-    try std.testing.expectEqual(ctx.tokens.tokens.color.accent, radio.children.items[0].getBackground());
+    // LKxqO: disabled background/dot, selected accent border; no blanket fading.
+    try std.testing.expectApproxEqAbs(@as(f32, 1), radio.getOpacity(), 0.001);
+    try std.testing.expectEqual(ctx.tokens.tokens.color.disabled_bg, radio.children.items[0].getBackground());
+    try std.testing.expectEqual(ctx.tokens.tokens.color.fg_disabled, radio.children.items[0].children.items[0].getBackground());
     try std.testing.expectEqual(ctx.tokens.tokens.color.accent, radio.children.items[0].style.border.color);
 }
 
@@ -514,7 +519,7 @@ test "Switch: structure and checked render emits track and thumb" {
     for (commands) |cmd| if (cmd.isFillRect()) {
         const r = cmd;
         if (Color.eql(r.color.toColor(), ctx.tokens.tokens.color.accent) and r.geom.w >= 38 and r.geom.h >= 20) saw_track = true;
-        if (Color.eql(r.color.toColor(), Color.hex(0xFFFFFF)) and r.geom.w >= 16 and r.geom.h >= 16 and r.geom.w <= 20 and r.geom.h <= 20) saw_thumb = true;
+        if (Color.eql(r.color.toColor(), ctx.tokens.tokens.color.fg_inverse) and r.geom.w >= 16 and r.geom.h >= 16 and r.geom.w <= 20 and r.geom.h <= 20) saw_thumb = true;
     };
     try std.testing.expect(saw_track);
     try std.testing.expect(saw_thumb);
@@ -525,6 +530,26 @@ test "Switch: structure and checked render emits track and thumb" {
 fn clickSwitch(sw: *Node) void {
     const h = sw.behavior.events.on_click.?;
     h.callback(h.context);
+}
+
+test "Switch: sm size takes its track, thumb and travel from the sm size tokens" {
+    const f = try Fixture.init();
+    defer f.deinit();
+    const on = try f.scope.createSignal(bool, true);
+    const sw = try f.add(try Switch(.{ .checked = on, .size = .sm }).mount(f.scope, f.cx));
+    const size = f.cx.tokens.tokens.size;
+    const track = sw.children.items[0];
+    const thumb = track.children.items[0];
+    try std.testing.expectEqual(size.switch_width_sm, track.style.width.px);
+    try std.testing.expectEqual(size.switch_height_sm, track.style.height.px);
+    try std.testing.expectEqual(size.switch_thumb_sm, thumb.style.width.px);
+    try std.testing.expectEqual(size.switch_thumb_sm, thumb.style.height.px);
+    // On: the thumb rests 2px from the track's right edge, as at md.
+    try std.testing.expectEqual(size.switch_width_sm - size.switch_thumb_sm - 2, thumb.style.translate_x);
+    // md stays the default and keeps its own tokens.
+    const md = try f.add(try Switch(.{ .checked = true }).mount(f.scope, f.cx));
+    try std.testing.expectEqual(size.switch_width, md.children.items[0].style.width.px);
+    try std.testing.expectEqual(size.switch_width - size.switch_thumb - 2, md.children.items[0].children.items[0].style.translate_x);
 }
 
 test "Switch: local model toggles and reports; disabled source blocks input" {
@@ -562,12 +587,9 @@ test "Switch: bound model — external set moves the thumb with a transition" {
     // offset advance by transition declare in style (translate-x 200ms), target 20
     const slot = thumb.frame_state.frame_local.runtime.transitions.?.find(.translate_x).?;
     try std.testing.expect(slot.active);
-    // label color sync transition (text color via text_color transition interp), end is primary
-    // text
+    // LKxqO: off/on labels both use fg_primary; only the thumb moves.
     const label = sw.children.items[1];
-    const color_slot = label.frame_state.frame_local.runtime.transitions.?.find(.text_color).?;
-    try std.testing.expect(color_slot.active);
-    try std.testing.expectEqual(f.cx.tokens.tokens.color.fg_primary, color_slot.to_color);
+    try std.testing.expectEqual(f.cx.tokens.tokens.color.fg_primary, label.getText().?.color);
     clickSwitch(sw);
     try std.testing.expect(!wifi.peek());
 }

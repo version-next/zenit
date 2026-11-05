@@ -26,6 +26,8 @@ pub const Placement = enum {
 };
 
 pub const WindowConfig = struct {
+    /// Stable logical identity for restart snapshots; null uses creation order.
+    persist_key: ?[]const u8 = null,
     min_width: u32 = 0,
     min_height: u32 = 0,
     width: if (builtin.os.tag == .windows) u32 else u16 = 800,

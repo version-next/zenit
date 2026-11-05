@@ -101,7 +101,14 @@ pub fn hasShapeMeasure() bool {
 /// Clear measure cache. Must call when measure fn changes (different fns,
 /// same key should give different widths).
 pub fn invalidateMeasureCache() void {
-    for (&g_measure_cache) |*e| e.valid = false;
+    // A generation bump invalidates every entry without writing the table
+    // (zero-filled storage stays untouched, outside the process footprint).
+    g_measure_cache_generation +%= 1;
+    g_measure_cache_live = 0;
+    if (g_measure_cache_generation == 0) {
+        @memset(g_measure_cache, .{ .key = undefined, .width = 0, .last_used = 0, .generation = 0 });
+        g_measure_cache_generation = 1;
+    }
 }
 
 // Measure cache: text_hash + font params -> width. Target: shape cache > 95% hit. Hit skips
@@ -110,8 +117,11 @@ pub fn invalidateMeasureCache() void {
 // text each call measure_x N times). Capacity basis: a dense 40KB Chinese document cold-open
 // produces ~16.5k unique (segment, font) keys; 4096 capacity evicted twice in a single
 // open, so revert/reopen redid all shaping.
-// 16384 x ~48B = ~786KB, keeps whole document segments resident.
+// 16384 x ~48B = ~786KB, keeps whole document segments resident. The table
+// starts small and doubles at half load, so a window of labels does not keep
+// the full table resident (hashed writes would dirty most of its pages).
 const MEASURE_CACHE_CAP: usize = 16384;
+const MEASURE_CACHE_INITIAL: usize = 1024;
 const MeasureKey = packed struct {
     text_hash: u64,
     font_size_bits: u32, // f32 reinterpret used as integral key part.
@@ -134,9 +144,34 @@ const MeasureEntry = struct {
     key: MeasureKey,
     width: f32,
     last_used: u64,
-    valid: bool = false,
+    /// Valid when equal to g_measure_cache_generation (never 0).
+    generation: u32 = 0,
 };
-var g_measure_cache: [MEASURE_CACHE_CAP]MeasureEntry = @as([MEASURE_CACHE_CAP]MeasureEntry, @splat(.{ .key = undefined, .width = 0, .last_used = 0, .valid = false }));
+var g_measure_cache: []MeasureEntry = &.{};
+var g_measure_cache_live: usize = 0;
+var g_measure_cache_generation: u32 = 1;
+
+fn measureCacheResize(len: usize) bool {
+    const fresh = std.heap.page_allocator.alloc(MeasureEntry, len) catch return false;
+    @memset(fresh, .{ .key = undefined, .width = 0, .last_used = 0, .generation = 0 });
+    const old = g_measure_cache;
+    g_measure_cache = fresh;
+    g_measure_cache_live = 0;
+    for (old) |e| if (e.generation == g_measure_cache_generation) measureCacheInsert(e);
+    if (old.len > 0) std.heap.page_allocator.free(old);
+    return true;
+}
+
+fn measureCacheInsert(entry: MeasureEntry) void {
+    const base: usize = @intCast((entry.key.text_hash % g_measure_cache.len) & ~@as(u64, 1));
+    const e0 = &g_measure_cache[base];
+    const e1 = &g_measure_cache[base + 1];
+    const gen = g_measure_cache_generation;
+    const target = if (e0.generation != gen) e0 else if (e1.generation != gen) e1 else if (e0.last_used <= e1.last_used) e0 else e1;
+    if (target.generation != gen) g_measure_cache_live += 1;
+    target.* = entry;
+    target.generation = gen;
+}
 var g_measure_cache_clock: u64 = 0;
 var g_measure_cache_hits: u64 = 0;
 var g_measure_cache_misses: u64 = 0;
@@ -177,10 +212,14 @@ inline fn measureKeyEq(a: MeasureKey, b: MeasureKey) bool {
 // (repeated CoreText remeasure), two slots/group + group LRU eviction
 // significantly lowers thrash, same capacity.
 fn measureCacheLookup(key: MeasureKey) ?f32 {
-    const base: usize = @intCast((key.text_hash % MEASURE_CACHE_CAP) & ~@as(u64, 1));
+    if (g_measure_cache.len == 0) {
+        g_measure_cache_misses += 1;
+        return null;
+    }
+    const base: usize = @intCast((key.text_hash % g_measure_cache.len) & ~@as(u64, 1));
     inline for (0..2) |way| {
         const e = &g_measure_cache[base + way];
-        if (e.valid and measureKeyEq(e.key, key)) {
+        if (e.generation == g_measure_cache_generation and measureKeyEq(e.key, key)) {
             g_measure_cache_clock += 1;
             e.last_used = g_measure_cache_clock;
             g_measure_cache_hits += 1;
@@ -192,17 +231,11 @@ fn measureCacheLookup(key: MeasureKey) ?f32 {
 }
 
 fn measureCacheStore(key: MeasureKey, width: f32) void {
-    const base: usize = @intCast((key.text_hash % MEASURE_CACHE_CAP) & ~@as(u64, 1));
-    const e0 = &g_measure_cache[base];
-    const e1 = &g_measure_cache[base + 1];
-    const target = if (!e0.valid) e0 else if (!e1.valid) e1 else if (e0.last_used <= e1.last_used) e0 else e1;
+    if (g_measure_cache.len == 0 and !measureCacheResize(MEASURE_CACHE_INITIAL)) return;
+    if (g_measure_cache_live * 2 >= g_measure_cache.len and g_measure_cache.len < MEASURE_CACHE_CAP)
+        _ = measureCacheResize(g_measure_cache.len * 2);
     g_measure_cache_clock += 1;
-    target.* = .{
-        .key = key,
-        .width = width,
-        .last_used = g_measure_cache_clock,
-        .valid = true,
-    };
+    measureCacheInsert(.{ .key = key, .width = width, .last_used = g_measure_cache_clock });
 }
 
 /// Internal proportional measure + cache. Sole aggregation point for
@@ -248,6 +281,7 @@ fn measureProportional(text: []const u8, font_size: f32, font_weight: u16, use_i
             }
             break :blk native_text.coretext_measure_text_width_utf8(text.ptr, @intCast(text.len), font_size);
         }
+        if (builtin.os.tag == .freestanding) @panic("freestanding text measurement requires an injected hook");
         // Fallback: rough estimate by codepoint (ASCII 0.6em, non-ASCII full-width
         // 1.0em). Can't use byte count; CJK 3 bytes/char, byte count overestimates
         // ~3x (selection/cursor misaligned).
@@ -1149,7 +1183,7 @@ pub fn computeTextLayout(
         line_start = @intCast(line_end);
 
         // Skip space after break (word wrap mode).
-        if (wrap == .word) {
+        if (wrap == .word or wrap == .char or wrap == .word_break or wrap == .keep_all) {
             while (line_start < content.len and content[line_start] == ' ') {
                 line_start += 1;
             }
@@ -1289,18 +1323,20 @@ fn findLineBreak(
 
         if (width_so_far > available_width and pos > 0) {
             // Exceed available width.
-            if (wrap == .word and has_break_point) {
+            if ((wrap == .word or wrap == .char or wrap == .word_break or wrap == .keep_all) and has_break_point) {
                 // Word mode: backtrack to last break point.
                 return .{ .byte_len = last_break_pos, .width = last_break_width };
             }
-            // Char mode or no break point: break before current character.
-            return .{ .byte_len = pos, .width = previous_width };
+            // Normal/keep-all preserve an unbreakable word even when it
+            // overflows the line. Emergency wrapping is an explicit option.
+            if (wrap != .word and wrap != .keep_all)
+                return .{ .byte_len = pos, .width = previous_width };
         }
 
         // Record possible break point.
-        if (wrap == .word) {
+        if (wrap == .word or wrap == .char or wrap == .word_break or wrap == .keep_all) {
             const cp = decodeUtf8(text[pos..@min(pos + 4, @as(u32, @intCast(text.len)))]);
-            if (isCJK(cp)) {
+            if (isCJK(cp) and wrap != .keep_all) {
                 // CJK character, breakable after.
                 last_break_pos = @intCast(next_pos);
                 last_break_width = width_so_far;
@@ -1309,7 +1345,7 @@ fn findLineBreak(
                 // UAX #14: is current cp and next cp breakable between.
                 const next_cp_bytes = text[@intCast(next_pos)..@min(@as(usize, @intCast(next_pos)) + 4, text.len)];
                 const next_cp = decodeUtf8(next_cp_bytes);
-                if (isBreakableCluster(cp, next_cp)) {
+                if (isBreakableCluster(cp, next_cp) and !(wrap == .keep_all and (isCJK(cp) or isCJK(next_cp)))) {
                     last_break_pos = @intCast(next_pos);
                     last_break_width = width_so_far;
                     has_break_point = true;
@@ -1317,6 +1353,8 @@ fn findLineBreak(
             }
         }
 
+        if (width_so_far > available_width and has_break_point and (wrap == .word or wrap == .keep_all))
+            return .{ .byte_len = last_break_pos, .width = last_break_width };
         pos = @intCast(next_pos);
     }
 

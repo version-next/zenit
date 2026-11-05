@@ -29,6 +29,7 @@ const HoverListener = struct {
     owner: *core.SignalOwner,
     on_hover: ?HandlerRef,
     on_leave: ?HandlerRef,
+    queued: if (@import("zenit_environment").dev_preview) bool else void = if (@import("zenit_environment").dev_preview) false else {},
 
     fn head(node: *Node) ?*HoverListener {
         const ptr = node.meta.per_frame.hooks.slots.hover_listeners orelse return null;
@@ -41,9 +42,39 @@ const HoverListener = struct {
         node.behavior.events.on_leave = if (listener) |l| Cx.simpleHandler(onLeave, l) else leave;
     }
 
+    fn pendingHead(node: *Node) ?*HoverListener {
+        if (comptime !@import("zenit_environment").dev_preview) return null;
+        const ptr = node.meta.per_frame.hooks.slots.preview_hover_pending orelse return null;
+        return @ptrCast(@alignCast(ptr));
+    }
+
+    fn unqueue(self: *HoverListener) void {
+        if (comptime !@import("zenit_environment").dev_preview) return;
+        const node = self.node orelse return;
+        const first = pendingHead(node) orelse return;
+        if (first == self) {
+            node.meta.per_frame.hooks.slots.preview_hover_pending = if (self.next) |next| @ptrCast(next) else null;
+        } else {
+            var cursor = first;
+            while (cursor.next) |next| : (cursor = next) {
+                if (next == self) {
+                    cursor.next = self.next;
+                    break;
+                }
+            }
+        }
+        self.queued = false;
+        self.next = null;
+    }
+
     fn detach(self: *HoverListener) void {
         const node = self.node orelse return;
         node.removeDebugSignal(@ptrCast(self.signal));
+        if (comptime @import("zenit_environment").dev_preview) if (self.queued) {
+            self.unqueue();
+            self.node = null;
+            return;
+        };
         const first = head(node) orelse return;
         if (first == self) {
             // Even release builds must not overwrite a later direct writer on cleanup.
@@ -153,6 +184,29 @@ pub fn useHover(scope: *Scope, node: *Node) !*Signal(bool) {
         .on_leave = if (previous) |p| p.on_leave else node.behavior.events.on_leave,
     });
     try scope.onCleanup(HoverListener, listener, HoverListener.detach);
+    if (comptime @import("zenit_environment").dev_preview) if (@import("preview_mount.zig").current != null) {
+        // Track only invalidation on the private candidate node. This list has
+        // no event dispatcher and is not an active hover subscription.
+        listener.queued = true;
+        listener.next = HoverListener.pendingHead(node);
+        node.meta.per_frame.hooks.slots.preview_hover_pending = @ptrCast(listener);
+        _ = try @import("preview_mount.zig").deferAction(scope, .subscription, listener, struct {
+            fn attach(l: *HoverListener, _: *Scope) anyerror!void {
+                const n = l.node orelse return;
+                l.unqueue();
+                // Earlier queued subscriptions have now published. Chain in mount
+                // order rather than retaining the candidate-time list head.
+                assertHoverHandlers(n);
+                l.next = HoverListener.head(n);
+                if (l.next) |p| if (p.owner != l.owner) return error.HoverOwnerMismatch;
+                l.on_hover = if (l.next) |p| p.on_hover else n.behavior.events.on_hover;
+                l.on_leave = if (l.next) |p| p.on_leave else n.behavior.events.on_leave;
+                HoverListener.publish(n, l, null, null);
+            }
+        }.attach);
+        node.addDebugSignal(@ptrCast(is_hovered), "hover", .bool);
+        return is_hovered;
+    };
     HoverListener.publish(node, listener, null, null);
     node.addDebugSignal(@ptrCast(is_hovered), "hover", .bool);
     return is_hovered;
@@ -179,6 +233,15 @@ pub fn usePressed(scope: *Scope, cx: *Cx, node: *Node) !*Signal(bool) {
         }
     };
     const watch = try scope.createState(Watch, .{ .cx = cx, .signal = pressed });
+    if (comptime @import("zenit_environment").dev_preview) if (@import("preview_mount.zig").current != null) {
+        try scope.onCleanup(Watch, watch, Watch.detach);
+        _ = try @import("preview_mount.zig").deferAction(scope, .subscription, .{ .watch = watch, .node = node }, struct {
+            fn attach(c: anytype, _: *Scope) anyerror!void {
+                try c.watch.cx.press_watchers.append(c.watch.cx.allocator, .{ .node = c.node, .signal = c.watch.signal });
+            }
+        }.attach);
+        return pressed;
+    };
     try cx.press_watchers.ensureUnusedCapacity(cx.allocator, 1);
     // Register unregister before publish: OOM leaves no orphan observer
     try scope.onCleanup(Watch, watch, Watch.detach);
@@ -306,6 +369,16 @@ pub fn onCleanup(node: *Node, handler: core.HandlerRef) void {
 /// Before clearNodeScopes/dispose, decouple hook state from node, avoid
 /// accessing Node pointer outside lifecycle during resource destruction.
 pub fn invalidateSubtreeHookState(node: *Node) void {
+    if (comptime @import("zenit_environment").dev_preview) {
+        var pending = HoverListener.pendingHead(node);
+        while (pending) |listener| {
+            node.removeDebugSignal(@ptrCast(listener.signal));
+            listener.node = null;
+            listener.queued = false;
+            pending = listener.next;
+        }
+        node.meta.per_frame.hooks.slots.preview_hover_pending = null;
+    }
     if (HoverListener.head(node)) |first| {
         var cursor: ?*HoverListener = first;
         while (cursor) |listener| {
@@ -315,11 +388,6 @@ pub fn invalidateSubtreeHookState(node: *Node) void {
         }
         // The original callbacks may also borrow the disposed component scope.
         HoverListener.publish(node, null, null, null);
-    }
-    if (node.meta.per_frame.hooks.slots.animated_bg_state) |ptr| {
-        const state: *AnimBgState = @ptrCast(@alignCast(ptr));
-        state.node = null;
-        node.meta.per_frame.hooks.slots.animated_bg_state = null;
     }
     if (node.meta.per_frame.hooks.slots.hover_highlight_state) |ptr| {
         const state: *HoverHighlightState = @ptrCast(@alignCast(ptr));
@@ -378,223 +446,12 @@ pub fn invalidateSubtreeHookState(node: *Node) void {
     node.meta.per_frame.hooks.before_render.count = 0;
     node.meta.per_frame.hooks.before_render.self_only_mask = 0;
     node.meta.per_frame.hooks.on_theme = null;
+    node.meta.per_frame.hooks.theme_decl = null;
     node.meta.per_frame.hooks.view_theme = null;
 
     for (node.children.items) |child| {
         invalidateSubtreeHookState(child);
     }
-}
-
-// ==================== useAnimatedBackground ====================
-
-/// Animated background state (cross-frame persistent)
-pub const AnimBgState = struct {
-    bg_anim: AnimatedColor,
-    cx: ?*Cx = null,
-    node: ?*Node = null,
-    hover_signal: ?*Signal(bool) = null,
-    // Runtime-modifiable target color (external updates via setColors)
-    normal_bg: Color = Color.TRANSPARENT,
-    recipe_normal_bg: Color = Color.TRANSPARENT,
-    normal_override: ?Color = null,
-    hover_bg: Color = Color.TRANSPARENT,
-    recipe_hover_bg: Color = Color.TRANSPARENT,
-    hover_override: ?Color = null,
-    pressed_bg: ?Color = null,
-    recipe_pressed_bg: ?Color = null,
-    pressed_override: ?Color = null,
-    /// First frame jump to target: pre-set selected color shouldn't
-    /// transition in from transparent.
-    settled: bool = false,
-
-    /// Runtime update normal/hover target colors, smooth transition from
-    /// current
-    pub fn setColors(self: *AnimBgState, normal: Color, hover: Color) void {
-        self.recipe_normal_bg = normal;
-        self.normal_bg = self.normal_override orelse normal;
-        self.recipe_hover_bg = hover;
-        self.hover_bg = self.hover_override orelse hover;
-    }
-
-    /// Override only the resting color without fighting the animation hook.
-    /// Passing null restores the recipe-provided resting color.
-    pub fn setNormalOverride(self: *AnimBgState, color: ?Color) void {
-        self.normal_override = color;
-        self.normal_bg = color orelse self.recipe_normal_bg;
-        if (self.node) |node| node.markRenderDirty();
-    }
-
-    /// Override hover/pressed colors same way. Active (selected) button
-    /// overriding resting to solid accent must also override hover, else hover
-    /// flashes to recipe's ghost pale, pale icons invisible. Pass null to
-    /// restore recipe colors.
-    pub fn setInteractionOverride(self: *AnimBgState, hover: ?Color, pressed: ?Color) void {
-        self.hover_override = hover;
-        self.hover_bg = hover orelse self.recipe_hover_bg;
-        self.pressed_override = pressed;
-        self.pressed_bg = pressed orelse self.recipe_pressed_bg;
-        if (self.node) |node| node.markRenderDirty();
-    }
-};
-
-/// Animated background before_render hook
-fn animBgBeforeRender(node: *Node) void {
-    if (node.meta.per_frame.hooks.slots.animated_bg_state) |ctx_ptr| {
-        const state: *AnimBgState = @ptrCast(@alignCast(ctx_ptr));
-        const now_ms = @import("core/render_engine/mod.zig").current_frame_time_ms;
-        var hovered = if (state.hover_signal) |sig| sig.get() else false;
-
-        if (state.cx) |cx| {
-            const actually_hovered = if (cx.hovered_node) |h| h.isDescendantOf(node) else false;
-            if (hovered and !actually_hovered) {
-                if (state.hover_signal) |sig| sig.set(false);
-                hovered = false;
-            } else if (!hovered and actually_hovered) {
-                hovered = true;
-            }
-
-            const pressed = if (cx.pressed_node) |p| p.isDescendantOf(node) else false;
-            const target = if (pressed and hovered and state.pressed_bg != null)
-                state.pressed_bg.?
-            else if (hovered)
-                state.hover_bg
-            else
-                state.normal_bg;
-            if (state.settled) {
-                state.bg_anim.setTarget(target, now_ms);
-            } else {
-                state.bg_anim.setImmediate(target);
-                state.settled = true;
-            }
-        }
-
-        const result = state.bg_anim.tickWithTime(now_ms);
-        // Only setStyle if color changed (avoid unconditional markRenderDirty
-        // each frame)
-        if (!Color.eql(node.getBackground(), result.color)) {
-            node.setBackgroundRaw(result.color);
-            node.markRenderDirty();
-        } else if (result.animating) {
-            // Color unchanged but animation ongoing; keep redraw request
-            node.markRenderDirty();
-        }
-    }
-}
-
-/// useAnimatedBackground config
-pub const AnimatedBgConfig = struct {
-    normal: Color,
-    hover: Color,
-    pressed: ?Color = null,
-    duration: f32 = 0.15,
-    easing: animation.Easing = .ease_out_quad,
-};
-
-/// Add animated background color transition to node (Scope manages
-/// lifetime)
-pub fn useAnimatedBackground(scope: *Scope, cx: *Cx, node: *Node, config: AnimatedBgConfig) !*Signal(bool) {
-    // Allocate animation state on scope (auto-freed at scope dispose)
-    const anim_state = try scope.allocator.create(AnimBgState);
-    anim_state.* = .{
-        .bg_anim = AnimatedColor.initWithConfig(config.normal, .{
-            .duration_ms = config.duration * 1000.0,
-            .easing = config.easing,
-        }),
-        .cx = cx,
-        .node = node,
-        .normal_bg = config.normal,
-        .recipe_normal_bg = config.normal,
-        .hover_bg = config.hover,
-        .recipe_hover_bg = config.hover,
-        .pressed_bg = config.pressed,
-        .recipe_pressed_bg = config.pressed,
-    };
-    {
-        errdefer scope.allocator.destroy(anim_state);
-        try scope.registerResource(@ptrCast(anim_state), struct {
-            fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
-                const s: *AnimBgState = @ptrCast(@alignCast(ptr));
-                if (s.node) |n| {
-                    if (n.meta.per_frame.hooks.slots.animated_bg_state == ptr) n.meta.per_frame.hooks.slots.animated_bg_state = null;
-                    n.removeBeforeRender(animBgBeforeRender);
-                }
-                s.node = null;
-                allocator.destroy(s);
-            }
-        }.destroy);
-    }
-    // State is registered in scope and destroy dereferences s.node; node release via
-    // invalidateSubtreeHookState follows the node->slot backlink to clear s.node. The backlink
-    // must immediately follow registration: if it comes later (after addDebugState/useHover/
-    // onCleanup), any OOM return leaves state registered without a backlink, node release can't
-    // clear it, and a later scope dispose dereferences the freed node.
-    node.meta.per_frame.hooks.slots.animated_bg_state = anim_state;
-    node.addDebugState(@ptrCast(anim_state));
-
-    const is_hovered = try useHover(scope, node);
-    anim_state.hover_signal = is_hovered;
-
-    // hover_signal is **borrowed**: owned by scope, Scope.dispose phases:
-    // 2) cleanups -> 3) effects -> 4) signals -> 5) resources. Signal destroyed
-    // phase 4, but hook unregister in phase 5's resource cleanup. Between, if
-    // animBgBeforeRender triggered (hit-test runs tickBeforeRender same frame,
-    // stack: handleMouseMove -> ensureHitTestSceneFresh -> tickBeforeRender ->
-    // here), `state.hover_signal.get()` reads freed memory.
-    //
-    // Use onCleanup in **phase 2** decouple borrow: signal still alive, clear
-    // first, later hook runs `else false` only. Only hook running before signal
-    // destroy in Scope phase model.
-    try scope.onCleanup(AnimBgState, anim_state, struct {
-        fn dropSignal(s: *AnimBgState) void {
-            s.hover_signal = null;
-        }
-    }.dropSignal);
-
-    // Register as extended callback (does not override main on_before_render, no protection logic
-    // needed)
-    // Only this node's background, written with markRenderDirty.
-    node.addBeforeRenderScoped(animBgBeforeRender, .self);
-
-    // Effect drives color changes (reads color from anim_state, supports runtime setColors updates)
-    if (config.pressed != null) {
-        try scope.createEffect(.{
-            .anim_state = anim_state,
-            .is_hovered = is_hovered,
-            .cx = cx,
-            .node = node,
-        }, struct {
-            fn update(c: anytype) void {
-                const hovered = c.is_hovered.get();
-                const pressed = c.cx.pressed_node == c.node;
-                const s = c.anim_state;
-
-                const target = if (pressed and hovered and s.pressed_bg != null)
-                    s.pressed_bg.?
-                else if (hovered)
-                    s.hover_bg
-                else
-                    s.normal_bg;
-
-                s.bg_anim.setTarget(target, @import("core/render_engine/mod.zig").current_frame_time_ms);
-                c.node.markRenderDirty();
-            }
-        }.update);
-    } else {
-        try scope.createEffect(.{
-            .anim_state = anim_state,
-            .is_hovered = is_hovered,
-            .node = node,
-        }, struct {
-            fn update(c: anytype) void {
-                const hovered = c.is_hovered.get();
-                const s = c.anim_state;
-                s.bg_anim.setTarget(if (hovered) s.hover_bg else s.normal_bg, @import("core/render_engine/mod.zig").current_frame_time_ms);
-                c.node.markRenderDirty();
-            }
-        }.update);
-    }
-
-    return is_hovered;
 }
 
 // ==================== useFocusRing ====================
@@ -604,7 +461,7 @@ pub const FocusRingConfig = struct {
     /// focus ring color (null = use theme border_focus token)
     color: ?Color = null,
     /// focus ring line width
-    width: f32 = 1.5,
+    width: f32 = 2,
     /// spacing between component and ring (like CSS outline-offset)
     offset: f32 = 2,
     /// fade in/out transition duration (seconds)
@@ -633,8 +490,11 @@ pub const FocusRingAnimState = struct {
     opacity_anim: animation.AnimatedValue,
     /// node reference
     node: ?*Node = null,
-    /// outline configuration
+    /// outline configuration; `focus_color` is the color in force: `fixed_color` when the caller
+    /// gave one, else the current theme's focus ring (re-read every frame, so it follows setTheme)
     focus_color: Color,
+    fixed_color: ?Color = null,
+    cx: *Cx,
     focus_width: f32,
     focus_offset: f32,
     /// set allocator needed for outline
@@ -645,6 +505,7 @@ pub const FocusRingAnimState = struct {
 pub fn updateFocusRingConfig(cx: *Cx, node: *Node, config: FocusRingConfig) void {
     const ptr = node.meta.per_frame.hooks.slots.focus_ring_anim orelse return;
     const state: *FocusRingAnimState = @ptrCast(@alignCast(ptr));
+    state.fixed_color = config.color;
     state.focus_color = config.color orelse cx.tokens.tokens.color.focus_ring;
     state.focus_width = config.width;
     state.focus_offset = config.offset;
@@ -665,6 +526,7 @@ fn focusRingBeforeRender(node: *Node) void {
     // get state from node's focus_ring_anim pointer
     if (node.meta.per_frame.hooks.slots.focus_ring_anim) |anim_ptr| {
         const anim_state: *FocusRingAnimState = @ptrCast(@alignCast(anim_ptr));
+        anim_state.focus_color = anim_state.fixed_color orelse anim_state.cx.tokens.tokens.color.focus_ring;
 
         const render_engine = @import("core/render_engine/mod.zig");
         anim_state.opacity_anim.update(render_engine.current_frame_time_ms, render_engine.current_frame_dt_ms / 1000.0);
@@ -846,6 +708,25 @@ pub fn useFocusState(scope: *Scope, cx: *Cx, node: *Node) !FocusState {
         .prev_on_blur = node.behavior.events.on_blur,
     });
     ctx.active = focused_now;
+    if (comptime @import("zenit_environment").dev_preview) if (@import("preview_mount.zig").current != null) {
+        try scope.onCleanup(FocusStateCtx, ctx, struct {
+            fn detach(c: *FocusStateCtx) void {
+                const n = c.node orelse return;
+                c.fm.unsubscribeVisibility(c.subscription_id);
+                detachFocusHandlers(n, c);
+                c.node = null;
+            }
+        }.detach);
+        node.behavior.events.on_focus = Cx.simpleHandler(focusStateOnFocus, @ptrCast(ctx));
+        node.behavior.events.on_blur = Cx.simpleHandler(focusStateOnBlur, @ptrCast(ctx));
+        _ = try @import("preview_mount.zig").deferAction(scope, .subscription, ctx, struct {
+            fn attach(c: *FocusStateCtx, _: *Scope) anyerror!void {
+                if (c.node == null) return;
+                c.subscription_id = try c.fm.subscribeVisibility(c, focusStateVisibilityChanged);
+            }
+        }.attach);
+        return .{ .focused = focused, .visible = visible };
+    };
     ctx.subscription_id = try cx.focus_manager.subscribeVisibility(ctx, focusStateVisibilityChanged);
     errdefer cx.focus_manager.unsubscribeVisibility(ctx.subscription_id);
     try scope.onCleanup(FocusStateCtx, ctx, struct {
@@ -882,6 +763,8 @@ pub fn useFocusRing(scope: *Scope, cx: *Cx, node: *Node, config: FocusRingConfig
             .build(),
         .node = node,
         .focus_color = focus_color,
+        .fixed_color = config.color,
+        .cx = cx,
         .focus_width = config.width,
         .focus_offset = config.offset,
         .allocator = scope.allocator,
@@ -904,11 +787,19 @@ pub fn useFocusRing(scope: *Scope, cx: *Cx, node: *Node, config: FocusRingConfig
         }.destroy);
     }
 
-    // register as extended callback (does not override main on_before_render)
-    // Only this node's outline, written through setStyle + markRenderDirty.
-    node.addBeforeRenderScoped(focusRingBeforeRender, .self);
     node.meta.per_frame.hooks.slots.focus_ring_anim = anim_state;
     node.meta.per_frame.hooks.slots.focus_ring_owned = true;
+
+    // register as extended callback (does not override main on_before_render)
+    // Only this node's outline, written through setStyle + markRenderDirty.
+    if (comptime @import("zenit_environment").dev_preview) {
+        if (!try @import("preview_mount.zig").deferAction(scope, .subscription, anim_state, struct {
+            fn attach(state: *FocusRingAnimState, _: *Scope) anyerror!void {
+                const n = state.node orelse return;
+                n.addBeforeRenderScoped(focusRingBeforeRender, .self);
+            }
+        }.attach)) node.addBeforeRenderScoped(focusRingBeforeRender, .self);
+    } else node.addBeforeRenderScoped(focusRingBeforeRender, .self);
 
     // handler context
     const ring_ctx = try scope.allocator.create(FocusRingCtx);
@@ -930,9 +821,7 @@ pub fn useFocusRing(scope: *Scope, cx: *Cx, node: *Node, config: FocusRingConfig
         }.destroy);
     }
 
-    ring_ctx.subscription_id = try cx.focus_manager.subscribeVisibility(ring_ctx, focusRingVisibilityChanged);
-    errdefer cx.focus_manager.unsubscribeVisibility(ring_ctx.subscription_id);
-    try scope.onCleanup(FocusRingCtx, ring_ctx, struct {
+    const detach = struct {
         fn detach(c: *FocusRingCtx) void {
             // Node invalidation already unsubscribes; its Cx may now be gone.
             const n = c.node orelse return;
@@ -940,7 +829,28 @@ pub fn useFocusRing(scope: *Scope, cx: *Cx, node: *Node, config: FocusRingConfig
             detachFocusHandlers(n, c);
             c.node = null;
         }
-    }.detach);
+    }.detach;
+    if (comptime @import("zenit_environment").dev_preview) {
+        if (@import("preview_mount.zig").current != null) {
+            try scope.onCleanup(FocusRingCtx, ring_ctx, detach);
+            node.behavior.events.on_focus = Cx.simpleHandler(focusRingOnFocus, @ptrCast(ring_ctx));
+            node.behavior.events.on_blur = Cx.simpleHandler(focusRingOnBlur, @ptrCast(ring_ctx));
+            _ = try @import("preview_mount.zig").deferAction(scope, .subscription, ring_ctx, struct {
+                fn attach(c: *FocusRingCtx, _: *Scope) anyerror!void {
+                    if (c.node == null) return;
+                    c.subscription_id = try c.fm.subscribeVisibility(c, focusRingVisibilityChanged);
+                }
+            }.attach);
+        } else {
+            ring_ctx.subscription_id = try cx.focus_manager.subscribeVisibility(ring_ctx, focusRingVisibilityChanged);
+            errdefer cx.focus_manager.unsubscribeVisibility(ring_ctx.subscription_id);
+            try scope.onCleanup(FocusRingCtx, ring_ctx, detach);
+        }
+    } else {
+        ring_ctx.subscription_id = try cx.focus_manager.subscribeVisibility(ring_ctx, focusRingVisibilityChanged);
+        errdefer cx.focus_manager.unsubscribeVisibility(ring_ctx.subscription_id);
+        try scope.onCleanup(FocusRingCtx, ring_ctx, detach);
+    }
 
     // Focus / Blur handlers (chain to previous callback). Named function:
     // invalidateSubtreeHookState
@@ -1017,9 +927,17 @@ pub fn useHoverHighlight(
         }
     }.destroy);
 
-    // register as extended callback
-    target_node.addBeforeRender(hoverHighlightBeforeRender);
     target_node.meta.per_frame.hooks.slots.hover_highlight_state = hl_state;
+
+    // register as extended callback
+    if (comptime @import("zenit_environment").dev_preview) {
+        if (!try @import("preview_mount.zig").deferAction(scope, .subscription, hl_state, struct {
+            fn attach(state: *HoverHighlightState, _: *Scope) anyerror!void {
+                const n = state.target_node orelse return;
+                n.addBeforeRender(hoverHighlightBeforeRender);
+            }
+        }.attach)) target_node.addBeforeRender(hoverHighlightBeforeRender);
+    } else target_node.addBeforeRender(hoverHighlightBeforeRender);
 
     // Effect: set animation target color when hover changes
     try scope.createEffect(.{
@@ -1075,3 +993,13 @@ pub fn toggleEventHandlerFn(event: Event, state: *ToggleState) EventResult {
         else => return .ignored,
     }
 }
+
+/// Test-only traversal; absent from production builds.
+pub const testing = if (@import("builtin").is_test) struct {
+    pub fn hoverListenerCount(node: *Node) usize {
+        var count: usize = 0;
+        var cursor = HoverListener.head(node);
+        while (cursor) |listener| : (cursor = listener.next) count += 1;
+        return count;
+    }
+} else struct {};

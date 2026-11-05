@@ -34,6 +34,18 @@ const PathRenderer = @import("../path_renderer.zig").PathRenderer;
 /// glass timed out); one 64x64 staging texture (16 KiB) per slot.
 pub const LUMINANCE_SLOT_COUNT: usize = 32;
 
+/// A specialized glass composite pipeline (backdrop_blur.glassPipelineFor),
+/// built on a background thread: `pipeline` is published by `state` (release).
+pub const GlassVariant = struct {
+    pub const building: u8 = 0;
+    pub const ready: u8 = 1;
+    pub const failed: u8 = 2;
+    key: u16,
+    state: std.atomic.Value(u8) = .init(building),
+    pipeline: ?gpu.Backend.RenderPipeline = null,
+    thread: ?std.Thread = null,
+};
+
 /// Per-glass luminance slot (see PersistentGpuCache.luminance_slots).
 pub const LuminanceSlot = struct {
     staging: ?gpu.Backend.Texture = null,
@@ -89,7 +101,24 @@ pub const BlurLevelSlot = struct {
 /// new islands degrade to non-hysteretic behavior (see backdrop_blur.zig).
 pub const BLUR_LEVEL_SLOT_COUNT: usize = LUMINANCE_SLOT_COUNT;
 
+/// Pipelines of the batched native glass bank passes (backdrop_blur bank
+/// batch; Metal only): fragment forms that write their target in a render
+/// pass without attachments.
+pub const bank_batch_supported = gpu.backend_kind == .metal;
+pub const BankBatch = if (bank_batch_supported) struct {
+    /// Indexed by backdrop_blur.BankKind; all built or none.
+    pipelines: [5]?gpu.Backend.RenderPipeline = @splat(null),
+
+    pub fn deinit(self: *@This()) void {
+        for (&self.pipelines) |*slot| if (slot.*) |*p| p.deinit();
+        self.* = .{};
+    }
+} else struct {
+    pub fn deinit(_: *@This()) void {}
+};
+
 pub const PersistentGpuCache = struct {
+    bank_batch: BankBatch = .{},
     /// Dual Kawase blur pipelines (lazy-init on first use)
     blur_downsample_pipeline: ?gpu.Backend.RenderPipeline = null,
     blur_upsample_pipeline: ?gpu.Backend.RenderPipeline = null,
@@ -109,6 +138,13 @@ pub const PersistentGpuCache = struct {
     blur_pipeline_failed: bool = false,
     /// Liquid Glass composite pipeline
     glass_pipeline: ?gpu.Backend.RenderPipeline = null,
+    /// The tab lens's field table (tab_lens_field.zig), the composite's fragment buffer 1:
+    /// uploaded with the pipeline, never rewritten, so frames in flight share it.
+    tab_lens_field: ?gpu.Backend.Buffer = null,
+    /// Specialized composite pipelines by backdrop_blur.glassVariantKey
+    /// (Metal; null pipeline = build failed, the general one serves).
+    glass_variants: [16]*GlassVariant = undefined,
+    glass_variant_count: usize = 0,
     glass_uniform_write_offset: u32 = 0,
     glass_uniform_overflow_warned: bool = false,
     /// Glass pipeline failure sticky flag (like blur_pipeline_failed; degrades to pure blur+tint).
@@ -140,10 +176,19 @@ pub const PersistentGpuCache = struct {
     /// Independent of island count, no oscillation regression as pool expands.
     blur_level_slots: [BLUR_LEVEL_SLOT_COUNT]BlurLevelSlot = @as([BLUR_LEVEL_SLOT_COUNT]BlurLevelSlot, @splat(.{})),
 
+    /// Last backdrop key per glass owner: a composite is retained for reuse
+    /// only once its key repeats (glass_reuse.History).
+    glass_history: @import("../glass_reuse.zig").History = .{},
+
     /// Damage-rect dirty region clear pipeline (no-blend direct write (0,0,0,0), scissor to
     /// sub-rectangle).
     damage_clear_pipeline: ?gpu.Backend.RenderPipeline = null,
     damage_clear_pipeline_failed: bool = false,
+    /// Main-target damage fill (clear colour into the damage scissor, Metal).
+    damage_fill_pipeline: ?gpu.Backend.RenderPipeline = null,
+    /// Main-target damage copy (the presented frame drawn under the damage, Metal).
+    damage_copy_pipeline: ?gpu.Backend.RenderPipeline = null,
+    damage_fill_pipeline_failed: bool = false,
 
     /// Blend composite pipeline (non-normal blend modes, lazy-init).
     blend_pipeline: ?gpu.Backend.RenderPipeline = null,
@@ -201,8 +246,17 @@ pub const PersistentGpuCache = struct {
         self.gaussian_downsample_pipeline = null;
         if (self.blur_sampler) |*sampler| sampler.destroy();
         self.blur_sampler = null;
+        self.bank_batch.deinit();
         if (self.glass_pipeline) |*p| p.deinit();
         self.glass_pipeline = null;
+        if (self.tab_lens_field) |*b| b.destroy();
+        self.tab_lens_field = null;
+        for (self.glass_variants[0..self.glass_variant_count]) |v| {
+            if (v.thread) |t| t.join();
+            if (v.pipeline) |*p| p.deinit();
+            std.heap.page_allocator.destroy(v);
+        }
+        self.glass_variant_count = 0;
         if (self.blend_pipeline) |*p| p.deinit();
         self.blend_pipeline = null;
         // Damage clear pipeline (opacity_layer lazy), previously only missing from 12 persistent
@@ -210,6 +264,11 @@ pub const PersistentGpuCache = struct {
         if (self.damage_clear_pipeline) |*p| p.deinit();
         self.damage_clear_pipeline = null;
         self.damage_clear_pipeline_failed = false;
+        if (self.damage_fill_pipeline) |*p| p.deinit();
+        self.damage_fill_pipeline = null;
+        if (self.damage_copy_pipeline) |*p| p.deinit();
+        self.damage_copy_pipeline = null;
+        self.damage_fill_pipeline_failed = false;
     }
 };
 

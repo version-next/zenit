@@ -21,10 +21,20 @@ const Scope = @import("scope.zig").Scope;
 /// }.run);
 /// ```
 pub fn Effect(comptime Context: type, comptime effectFn: anytype) type {
+    // An effect function may return an error union. Its first run happens inside
+    // `create` / `createInScope` (normally while mounting): an error there is returned by the
+    // creating call, with the half-made effect removed, so the mount fails instead of carrying
+    // on with a partly applied result. A later run (a dependency changed) has nobody to report
+    // to: the error is logged and the effect waits for its next run; such functions must leave
+    // their target unchanged when they fail (all-or-nothing writes).
+    const fallible = @typeInfo(@typeInfo(@TypeOf(effectFn)).@"fn".return_type.?) == .error_union;
     return struct {
         base: EffectBase,
         context: Context,
         owner: *SignalOwner,
+        /// error of the first run (fallible effect functions only)
+        first_error: if (fallible) ?anyerror else void = if (fallible) null else {},
+        started: if (fallible) bool else void = if (fallible) false else {},
 
         const Self = @This();
 
@@ -52,10 +62,12 @@ pub fn Effect(comptime Context: type, comptime effectFn: anytype) type {
             // graph markSignalWritten path queues via NodeId, drainPendingEffects runs topo-order,
             // calls this callback.
             const gid = try owner.graph.createNodeRaw(.effect, &graphRecomputeCb, &effect.base);
+            errdefer owner.graph.destroyNode(gid);
             effect.base.graph_node_raw = @bitCast(gid);
 
             // Initial run once (establish dependencies)
             effect.runWithTracking();
+            try effect.takeFirstError();
 
             return effect;
         }
@@ -105,10 +117,18 @@ pub fn Effect(comptime Context: type, comptime effectFn: anytype) type {
                 return error.ScopeDisposed;
             }
             owner.endReactiveCallback();
+            try effect.takeFirstError();
             if (owner.graph.getNode(gid)) |node| {
                 if (node.tracking_failed) return error.OutOfMemory;
             }
             return effect;
+        }
+
+        /// After the first run: its error, if the function returned one (later runs log theirs).
+        fn takeFirstError(self: *Self) !void {
+            if (comptime !fallible) return;
+            self.started = true;
+            if (self.first_error) |err| return err;
         }
 
         /// vtable (Arena path)
@@ -126,7 +146,15 @@ pub fn Effect(comptime Context: type, comptime effectFn: anytype) type {
 
         fn runImpl(base: *EffectBase) void {
             const self: *Self = @fieldParentPtr("base", base);
-            effectFn(self.context);
+            if (comptime !fallible) return effectFn(self.context);
+            if (!self.started) self.first_error = null; // a rerun of the first run starts over
+            effectFn(self.context) catch |err| {
+                if (!self.started) {
+                    self.first_error = err;
+                    return;
+                }
+                std.log.warn("reactive: effect update failed ({s}); its previous result stays until the effect runs again", .{@errorName(err)});
+            };
         }
 
         /// recompute callback in graph dispatch path.
@@ -179,6 +207,41 @@ pub fn createEffect(
 // ===== test =====
 
 const Signal = @import("signal.zig").Signal;
+
+test "Effect: fallible function — first-run error fails creation without leftovers, later errors keep the previous result" {
+    var owner = try SignalOwner.init(std.testing.allocator);
+    defer owner.deinit();
+    const scope = try Scope.init(std.testing.allocator, null, owner);
+    defer scope.dispose();
+    const count = try scope.createSignal(i32, 0);
+    const Ctx = struct {
+        count: *Signal(i32),
+        fail_at: i32,
+        applied: *i32,
+        fn run(c: @This()) error{OutOfMemory}!void {
+            const v = c.count.get();
+            if (v == c.fail_at) return error.OutOfMemory;
+            c.applied.* = v;
+        }
+    };
+    var applied: i32 = -1;
+    const effects = owner.graph.countByKind().get(.effect);
+    try std.testing.expectError(error.OutOfMemory, scope.createEffect(Ctx{ .count = count, .fail_at = 0, .applied = &applied }, Ctx.run));
+    try std.testing.expectEqual(effects, owner.graph.countByKind().get(.effect));
+    try std.testing.expectEqual(@as(usize, 0), scope.effects.items.len);
+    count.set(1); // the failed effect is gone: nothing runs
+    try std.testing.expectEqual(@as(i32, -1), applied);
+
+    try scope.createEffect(Ctx{ .count = count, .fail_at = 2, .applied = &applied }, Ctx.run);
+    try std.testing.expectEqual(@as(i32, 1), applied);
+    count.set(2); // later failure: logged, previous result stays, the effect stays subscribed
+    try std.testing.expectEqual(@as(i32, 1), applied);
+    count.set(3);
+    try std.testing.expectEqual(@as(i32, 3), applied);
+
+    // owner (arena) path reports the first-run error the same way
+    try std.testing.expectError(error.OutOfMemory, createEffect(owner, Ctx{ .count = count, .fail_at = 3, .applied = &applied }, Ctx.run));
+}
 
 test "Effect: basic execution" {
     var owner = try SignalOwner.init(std.testing.allocator);

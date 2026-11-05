@@ -84,17 +84,9 @@ test "Steps: 圆圈序号在 mount 返回后仍正确（不引用循环内栈缓
     }
 }
 
-/// layout rect is parent-local coords; tests comparing geometry across subtrees need accumulate to
-/// same coord system.
+/// Compare rendered geometry, including the marker offset for tall titles.
 fn absRect(n: *Node) core.ComputedRect {
-    var r = n.rectFromWorldOrFallback();
-    var p = n.parent;
-    while (p) |pp| : (p = pp.parent) {
-        const pr = pp.rectFromWorldOrFallback();
-        r.x += pr.x;
-        r.y += pr.y;
-    }
-    return r;
+    return n.globalRect();
 }
 /// circle in one step (fixed circle_size width; skip control-flow anchor etc. zero-size nodes)
 fn circleIn(step: *Node) *Node {
@@ -157,7 +149,8 @@ fn expectVerticalConnectorsJoined(big_fonts: bool) !void {
     if (big_fonts) {
         // text column (title+description) taller than 'circle + shortest connector', connector must
         // stretch with row
-        big.tokens.font_size.sm = 19; // title line_height 26.6 < circle 28, can still center with circle
+        // The title alone must exceed the 24px marker (20 * 1.4 = 28).
+        big.tokens.font_size.sm = 20;
         big.tokens.font_size.xs = 20;
         ctx.tokens = &big;
     }
@@ -176,6 +169,7 @@ fn expectVerticalConnectorsJoined(big_fonts: bool) !void {
     if (big_fonts) {
         // precondition: row truly taller than 'circle + shortest connector', else can't measure
         // stretch
+        try std.testing.expect(rows[0].children.items[1].children.items[0].rectFromWorldOrFallback().h > styles.circle_size);
         try std.testing.expect(rows[0].rectFromWorldOrFallback().h > styles.circle_size + styles.v_connector_min + 1);
     }
 
@@ -225,13 +219,14 @@ test "Steps: 圆圈内序号文本居中于圆心（横竖两向）" {
         var checked: usize = 0;
         for (kids[first_step..]) |step| {
             const circle = if (dir == .horizontal) step.children.items[0] else step.children.items[0].children.items[0];
-            // index is circle's own text (not child nodes), via text_align = .center + render
-            // vertical center; visual center guarded by e2e 'Steps connector continuous + index
-            // centered' ink pixel assertion.
+            // Index remains the circle's own text. Horizontal centering uses
+            // text_align; vertical centering is now an explicit line inset.
+            // E2E additionally checks native glyph ink.
             try std.testing.expectEqual(@as(usize, 0), circle.children.items.len);
             const txt = circle.getText() orelse return error.TestUnexpectedResult;
             try std.testing.expect(txt.content.len > 0);
             try std.testing.expectEqual(core.TextAlign.center, txt.text_align);
+            try std.testing.expectApproxEqAbs(@max(0, (styles.circle_size - txt.font_size * txt.line_height) / 2), circle.style.padding.top, 0.01);
             checked += 1;
         }
         try std.testing.expectEqual(test_steps.len, checked);
@@ -402,7 +397,8 @@ test "Steps: current 变化只改状态（步不重建）；给了对勾图标�
         try std.testing.expect(done.getText() == null);
         try std.testing.expectEqual(core.ElementTag.image, firstElement(done).tag);
         try std.testing.expectEqual(ctx.tokens.tokens.color.accent, done.getBackground());
-        try std.testing.expectEqual(ctx.tokens.tokens.color.border, circleOf(buf[3], dir).getBackground());
+        // mjlUR: pending marker is bg_secondary with a border_strong outline.
+        try std.testing.expectEqual(ctx.tokens.tokens.color.bg_secondary, circleOf(buf[3], dir).getBackground());
 
         // step backward: checkmark retracts, index returns
         step.set(0);

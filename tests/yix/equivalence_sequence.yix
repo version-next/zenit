@@ -1,0 +1,43 @@
+const ui = @import("ui");
+const W = ui.widgets;
+pub const LP3State = struct { value: i32 = 31, mounts: usize = 0 };
+pub const SequenceMode = enum { zero, one, other };
+fn nextMode(mode: SequenceMode) SequenceMode { return switch (mode) { .zero => .one, .one => .other, .other => .zero }; }
+pub const Row = struct { id: u32, title: []const u8 };
+const two = [_]Row{ .{ .id = 1, .title = "one" }, .{ .id = 2, .title = "two" } };
+const three = [_]Row{ .{ .id = 2, .title = "two" }, .{ .id = 3, .title = "three" }, .{ .id = 1, .title = "one" } };
+pub var lp3_ref: ?*ui.view.Ref(*ui.Node) = null;
+fn mounted(root: *ui.view.Ref(*ui.Node), state: ?*LP3State) void { lp3_ref = root; if (state) |s|  { s.mounts += 1; s.value += 11; } }
+fn noop() void {}
+fn Portal(args: anytype) @TypeOf(ui.view.portal(ui.view.text(.{}, "sequence portal"))) {
+    _ = args;
+    return ui.view.portal(ui.view.text(.{}, "sequence portal"));
+}
+
+pub fn Sequence(state: ?*LP3State = null, start: i32 = 0) View {
+    var count: i32 = signal(start);
+    var shown: bool = signal(true);
+    var mode: SequenceMode = signal(.zero);
+    var rows: []const Row = signal(&two);
+    const root = ref();
+    onMount(mounted(root, state));
+    onUnmount(noop());
+    onViewAttach(noop());
+    onViewDetach(noop());
+    return <col ref={root} testId="sequence" focusable={true}
+        onKeyDown={|e| if (e.key == .space) { count += 1; mode = nextMode(mode); }}
+        >
+        <box testId="lp3-show" onClick={shown = !shown}><text>toggle</text></box>
+        <box testId="lp3-match" onClick={mode = nextMode(mode)}><text>next</text></box>
+        <box testId="lp3-add" onClick={rows = &three}><text>add and reorder</text></box>
+        <box testId="lp3-remove" onClick={rows = &two}><text>remove</text></box>
+        <box testId="lp3-clear" onClick={rows = &.{}}><text>clear</text></box>
+        <box testId="lp3-fill" onClick={rows = &two}><text>fill</text></box>
+        <text>state {count}</text>
+        {if (shown) <text>shown</text> else <text>hidden</text>}
+        {switch (mode) { .zero => <text>zero</text>, .one => <text>one</text>, .other => <text>other</text> }}
+        {for (rows) |row| <text key={row.id}>{row.title}</text> else <text>empty</text>}
+        <W.ScrollArea testId="lp3-scroll" height={80} contentHeight={400} onScroll={count += 1}><text>scroll body</text></W.ScrollArea>
+        <Portal/>
+    </col>;
+}

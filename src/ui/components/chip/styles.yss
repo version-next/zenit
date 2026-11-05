@@ -1,0 +1,93 @@
+//! Chip styles (COMPONENTS Chip / *): the look stacks on ControlShell's root as the chip
+//! element's style; ControlShell supplies structure, slots and interaction states.
+const ui = @import("../../ui.zig");
+const core = @import("../../core.zig");
+const theme = core.theme;
+const shell = @import("../control_shell/mod.zig");
+
+pub const ChipSize = enum { xs, sm, md };
+/// Appearance (structure). Selected / disabled are states.
+pub const ChipVariant = enum { default, outline };
+
+/// look = variant × selected × disabled; hover / press only while interactive (not readonly, not
+/// disabled).
+recipe Chip slots(root, label, glyph) {
+  base { root { justify: center; } }
+  variant look = default {
+    default {
+      root { background: bg-primary; border-overlay: true; border: 1 border; shadow: xs; }
+      label { color: fg-primary; }
+      glyph { icon-color: fg-primary; }
+    }
+    active {
+      root { background: selection-bg; border-overlay: true; border: 1 accent-border; shadow: 0 0 0 transparent; }
+      label { color: selection-fg; }
+      glyph { icon-color: selection-fg; }
+    }
+    outline {
+      root { background: bg-secondary; border-overlay: true; border: 1 border-strong; shadow: xs; }
+      label { color: fg-primary; }
+      glyph { icon-color: fg-primary; }
+    }
+    disabled {
+      root { background: bg-secondary; border-overlay: true; border: 1 border; shadow: 0 0 0 transparent; }
+      label { color: fg-secondary; }
+      glyph { icon-color: fg-secondary; }
+    }
+  }
+  flag interactive;
+  when interactive & look in (default, active, outline) {
+    root { :hover { background: bg-active; } :active { background: button-pressed-bg; } }
+  }
+}
+pub const ChipLook = Chip.Dim(.look);
+
+pub fn lookOf(variant: ChipVariant, selected: bool, disabled: bool) ChipLook {
+    if (disabled) return .disabled;
+    if (selected) return .active;
+    return switch (variant) {
+        .default => .default,
+        .outline => .outline,
+    };
+}
+
+/// ControlShell tone under the chip look (frame defaults the look overrides).
+pub fn shellVariant(look: ChipLook) shell.ControlVariant {
+    return switch (look) {
+        .default, .disabled => .secondary,
+        .active => .primary,
+        .outline => .ghost,
+    };
+}
+
+pub fn controlSize(size: ChipSize) shell.ControlSize {
+    return switch (size) {
+        .xs => .xs,
+        .sm => .sm,
+        .md => .md,
+    };
+}
+
+/// COMPONENTS Chip / *: default sm is a 28px raised control; compact / large tiers retained.
+style geometry($size: ChipSize) {
+  height: {switch ($size) { .xs => @as(f32, 20), .sm => t.tokens.size.row, .md => t.tokens.size.control_md }};
+  padding: {core.Padding.symmetric(0, t.tokens.space.space200 + t.tokens.space.space50)};
+  corner-radius: control;
+  gap: space150;
+}
+
+style label { font-size: md; line-height: 1.4; font-weight: 500; }
+
+/// Leading icon: the control's icon size.
+style glyph_size($size: ChipSize) {
+  width: {shell.metrics(t, controlSize($size)).icon_size};
+  height: {shell.metrics(t, controlSize($size)).icon_size};
+}
+
+/// Close button: a notch under the icon size.
+style close($size: ChipSize) {
+  width: {shell.metrics(t, controlSize($size)).icon_size - 2};
+  height: {shell.metrics(t, controlSize($size)).icon_size - 2};
+  justify: center;
+  align-items: center;
+}

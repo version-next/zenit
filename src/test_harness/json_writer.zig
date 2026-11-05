@@ -177,10 +177,12 @@ pub const JsonWriter = struct {
                 return;
             }
         }
-        // The longest finite f32 in fixed notation fits in45 bytes, including
-        // sign, decimal point and three fractional digits.
+        // Preserve f32 values across the wire. Rounding to three decimals made
+        // a submitted entering opacity such as 0.000484 look fully hidden.
+        // Scientific notation also keeps large values JSON floating numbers
+        // rather than overflowing the parser's integer representation.
         var float_buf: [64]u8 = undefined;
-        const s = std.fmt.bufPrint(&float_buf, "{d:.3}", .{f}) catch unreachable;
+        const s = std.fmt.bufPrint(&float_buf, "{e}", .{f}) catch unreachable;
         self.writeRaw(s);
     }
 
@@ -269,6 +271,17 @@ pub const JsonWriter = struct {
         return len;
     }
 };
+
+test "JSON floating values preserve small entering opacity and transition boundaries" {
+    for ([_]f32{ 0.022 * 0.022, 0.000001, -0.000001, 0.998999, 0.999999, 1.40129846e-45 }) |value| {
+        var buf: [256]u8 = undefined;
+        var writer = JsonWriter.init(&buf);
+        writer.floatValue(value);
+        var parsed = try std.json.parseFromSlice(f32, std.testing.allocator, writer.getWritten(), .{});
+        defer parsed.deinit();
+        try std.testing.expectEqual(value, parsed.value);
+    }
+}
 
 test "JSON floating values preserve unknown nonfinite values as null" {
     var buf: [256]u8 = undefined;

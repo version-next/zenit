@@ -81,7 +81,7 @@ pub fn FormFieldOf(comptime T: type) type {
 
             // label_row (dynamic label always created, hides label text when empty)
             const has_label = !config.label_text.isStatic() or config.label_text.peek().len > 0;
-            const label_style: core.TextStyle = .{ .color = t.tokens.color.fg_primary, .font_size = 14, .font_weight = 500 };
+            const label_style: core.TextStyle = @import("../input/styles.zig").labelTextStyle(t);
             const Parts = struct { label: ?*Node = null, control_slot: *Node = undefined, helper: *Node = undefined };
             var parts: Parts = .{};
             // wrapper (column, gap=4), structure consistent with Input
@@ -89,7 +89,7 @@ pub fn FormFieldOf(comptime T: type) type {
                 .style = .{
                     .width = if (config.width) |w| core.Sizing{ .px = w } else core.Sizing{ .grow = .{} },
                     .height = .{ .fit = .{} },
-                    .gap = 4,
+                    .gap = t.tokens.space.space150,
                 },
                 // Visually required is just red * after label; validation failure turns helper red.
                 // AT users can't perceive either. required/invalid are ARIA attributes; screen
@@ -109,13 +109,13 @@ pub fn FormFieldOf(comptime T: type) type {
                     .gap = 4,
                 } }, .{
                     view.capture(&parts.label, view.text(.{ .style = label_style }, "")),
-                    if (config.required) view.text(.{ .style = core.TextStyle{ .color = t.tokens.color.danger, .font_size = 14, .font_weight = 500 } }, "*") else null,
+                    if (config.required) view.text(.{ .style = @import("../input/styles.zig").requiredMarkStyle(t) }, "*") else null,
                 }) else null,
                 // control_slot, control mount point
                 view.capture(&parts.control_slot, view.box(.{ .style = .{ .width = .{ .grow = .{} }, .height = .{ .fit = .{} } } }, {})),
                 // helper_node, dynamically displays error or helper; initial value written
                 // synchronously, then followed by effect tracking error/helper
-                view.capture(&parts.helper, view.text(.{ .style = core.TextStyle{ .color = t.tokens.color.fg_secondary, .font_size = 12 } }, config.helper.peek())),
+                view.capture(&parts.helper, view.text(.{ .style = @import("../input/styles.zig").helperTextStyle(t, false) }, config.helper.peek())),
             }));
             wrapper.meta.ownership.meta.component_name = "FormField";
             // sweep: wrapper lifetime until return (also disposes attached my_scope)
@@ -128,6 +128,7 @@ pub fn FormFieldOf(comptime T: type) type {
             }
             const control_slot = parts.control_slot;
             const helper_node = parts.helper;
+            helper_node.setDisplay(if (config.helper.peek().len > 0) .flex else .none);
 
             // Effect: subscribe to error_sig and helper -> update helper_node (node holds text
             // copy)
@@ -138,7 +139,7 @@ pub fn FormFieldOf(comptime T: type) type {
                 .wrapper = wrapper,
                 .allocator = allocator,
                 .danger_color = t.tokens.color.danger,
-                .secondary_color = t.tokens.color.fg_secondary,
+                .secondary_color = @import("../input/styles.zig").helperTextStyle(t, false).color,
             }, struct {
                 fn update(c: anytype) void {
                     const err = c.error_sig.get();
@@ -150,6 +151,7 @@ pub fn FormFieldOf(comptime T: type) type {
                         a.invalid = err != null;
                     }
                     const content = err orelse help;
+                    c.helper_node.setDisplay(if (content.len > 0) .flex else .none);
                     if (!std.mem.eql(u8, c.helper_node.getText().?.content, content)) {
                         c.helper_node.setTextContent(c.allocator, content) catch |e| {
                             std.log.err("[FormField] helper update failed: {}", .{e});
@@ -213,6 +215,11 @@ pub fn FormFieldOf(comptime T: type) type {
             props.label_text = .{ .value = "" };
             props.helper = .{ .value = "" };
             props.error_msg = .{ .value = "" };
+            props.invalid = reactive.toSource(reactive.map(form.meta(field_enum).error_sig, struct {
+                fn invalid(message: ?[]const u8) bool {
+                    return message != null;
+                }
+            }.invalid));
 
             try view.mount(result.scope, cx, result.control_slot, input_mod.Input(props));
 
@@ -426,6 +433,18 @@ test "FormField: inputField 可编译并绑定回值（守零调用者失效）"
     // Callback properly connected to form (HandlerRef carries context, no bare context field)
     const control_slot = wrapper.children.items[1];
     try std.testing.expect(control_slot.children.items.len >= 1);
+    const Finder = struct {
+        fn find(node: *Node) ?*Node {
+            if (node.tag == .input) return node;
+            for (node.children.items) |child| if (find(child)) |found| return found;
+            return null;
+        }
+    };
+    const input = Finder.find(control_slot).?;
+    form.meta(.email).error_sig.set("Required");
+    try std.testing.expect(input.behavior.interaction.a11y.?.invalid);
+    form.meta(.email).error_sig.set(null);
+    try std.testing.expect(!input.behavior.interaction.a11y.?.invalid);
 }
 
 test "FormField: inputField 回写的值不别名 Input 内部缓冲（字段卸载后不悬垂）" {

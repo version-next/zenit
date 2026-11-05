@@ -60,6 +60,7 @@ pub fn copyTextureRegionAudited(
 }
 
 test "texture copy clear audit includes a clear before a failed blit" {
+    // SKIP-REASON: drives the null backend's fake GPU objects; real backends cover this path in their own suites.
     if (comptime gpu.backend_kind != .null_backend) return error.SkipZigTest;
     const t = @import("std").testing;
     var queue: gpu.Backend.Queue = .{};

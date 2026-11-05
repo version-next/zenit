@@ -58,8 +58,11 @@ pub fn toRenderColor(c: anytype) @import("text_renderer.zig").Color {
 /// Reference sRGB transfer function. Kept as the single source of truth so the
 /// lookup table above is generated from exactly this curve.
 pub fn srgbToLinearExact(v: f32) f32 {
-    if (v <= 0.04045) return v / 12.92;
-    return std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
+    // Round the curve once at f32 storage, rather than rounding every
+    // intermediate operation. Comptime and optimized runtime f32 pow may
+    // otherwise disagree at the last bit for the same byte-valued input.
+    const c: f64 = v;
+    return @floatCast(if (c <= 0.04045) c / 12.92 else std.math.pow(f64, (c + 0.055) / 1.055, 2.4));
 }
 
 /// sRGB to linear for arbitrary floats.

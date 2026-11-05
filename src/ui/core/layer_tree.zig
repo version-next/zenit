@@ -493,14 +493,20 @@ pub const LayerTree = struct {
     pub const EffectPlanState = struct {
         has_plan_layer: bool = false,
         layer_id: u32 = INVALID_ID,
-        layer: ?CompositedLayer = null,
+        /// This frame's plan layer (borrowed from the tree: valid until the next plan build).
+        /// By reference: a CompositedLayer carries glass parameters (~700 bytes) and plan
+        /// states are copied per node.
+        layer: ?*const CompositedLayer = null,
         begin_bounds: ?ComputedRect = null,
         draw_opacity: ?f32 = null,
         has_end_surface: bool = false,
         apply_clip_bounds: ?ComputedRect = null,
         apply_clip_shape_kind: display_list_mod.ClipShapeKind = .rect,
-        apply_clip_radius: f32 = 0,
-        apply_clip_polygon: display_list_mod.ClipPolygon = .{},
+        /// TL, TR, BR, BL (.rounded_rect only).
+        apply_clip_radii: [4]f32 = .{ 0, 0, 0, 0 },
+        /// The apply_clip op's polygon (this frame's plan; null when it has none). By reference:
+        /// plan states are copied per node, and a polygon is most of their size.
+        apply_clip_polygon: ?*const display_list_mod.ClipPolygon = null,
         apply_clip_bounds_fallback: bool = false,
 
         pub fn hasCompleteSurfaceBridge(self: EffectPlanState) bool {
@@ -508,6 +514,14 @@ pub const LayerTree = struct {
                 self.layer != null and
                 self.begin_bounds != null and
                 self.has_end_surface;
+        }
+
+        fn setApplyClip(self: *EffectPlanState, clip: *const ApplyClipOp) void {
+            self.apply_clip_bounds = clip.bounds;
+            self.apply_clip_shape_kind = clip.shape_kind;
+            self.apply_clip_radii = clip.radii;
+            self.apply_clip_polygon = &clip.polygon;
+            self.apply_clip_bounds_fallback = clip.bounds_fallback;
         }
 
         pub fn hasPlanClipBridge(self: EffectPlanState) bool {
@@ -697,24 +711,13 @@ pub const LayerTree = struct {
     pub fn planQueryEffect(self: *const LayerTree, effect_id: u32) EffectPlanState {
         var state = EffectPlanState{};
         const layer_id = self.planFindLayerIdByEffectId(effect_id) orelse {
-            if (self.findApplyClipOpForEffect(effect_id)) |clip_op| {
-                switch (clip_op) {
-                    .apply_clip => |clip| {
-                        state.apply_clip_bounds = clip.bounds;
-                        state.apply_clip_shape_kind = clip.shape_kind;
-                        state.apply_clip_radius = clip.radius;
-                        state.apply_clip_polygon = clip.polygon;
-                        state.apply_clip_bounds_fallback = clip.bounds_fallback;
-                    },
-                    else => unreachable,
-                }
-            }
+            if (self.findApplyClipOpForEffect(effect_id)) |clip| state.setApplyClip(clip);
             return state;
         };
 
         state.has_plan_layer = true;
         state.layer_id = layer_id;
-        state.layer = self.planCompositedAt(layer_id);
+        state.layer = self.planCompositedPtrAt(layer_id);
 
         if (self.findBeginSurfaceOp(layer_id)) |begin_op| {
             switch (begin_op) {
@@ -730,18 +733,7 @@ pub const LayerTree = struct {
         }
         state.has_end_surface = self.hasEndSurfaceOp(layer_id);
 
-        if (self.findApplyClipOpForEffect(effect_id)) |clip_op| {
-            switch (clip_op) {
-                .apply_clip => |clip| {
-                    state.apply_clip_bounds = clip.bounds;
-                    state.apply_clip_shape_kind = clip.shape_kind;
-                    state.apply_clip_radius = clip.radius;
-                    state.apply_clip_polygon = clip.polygon;
-                    state.apply_clip_bounds_fallback = clip.bounds_fallback;
-                },
-                else => unreachable,
-            }
-        }
+        if (self.findApplyClipOpForEffect(effect_id)) |clip| state.setApplyClip(clip);
 
         return state;
     }
@@ -797,10 +789,11 @@ pub const LayerTree = struct {
         if (!tree_id.isNull()) self.markLayerSurfaceRebuilt(tree_id);
     }
 
+    // Ops are matched in place (`*op`): a CompositeOp copy carries a whole clip polygon.
     fn findBeginSurfaceOp(self: *const LayerTree, layer_id: u32) ?CompositeOp {
-        for (self.frame_ops.items) |op| {
-            switch (op) {
-                .begin_surface => |begin| if (begin.layer_id == layer_id) return op,
+        for (self.frame_ops.items) |*op| {
+            switch (op.*) {
+                .begin_surface => |begin| if (begin.layer_id == layer_id) return op.*,
                 else => {},
             }
         }
@@ -808,8 +801,8 @@ pub const LayerTree = struct {
     }
 
     fn hasEndSurfaceOp(self: *const LayerTree, layer_id: u32) bool {
-        for (self.frame_ops.items) |op| {
-            switch (op) {
+        for (self.frame_ops.items) |*op| {
+            switch (op.*) {
                 .end_surface => |end| if (end.layer_id == layer_id) return true,
                 else => {},
             }
@@ -818,23 +811,42 @@ pub const LayerTree = struct {
     }
 
     fn findDrawSurfaceOp(self: *const LayerTree, layer_id: u32) ?CompositeOp {
-        for (self.frame_ops.items) |op| {
-            switch (op) {
-                .draw_surface => |draw| if (draw.layer_id == layer_id) return op,
+        for (self.frame_ops.items) |*op| {
+            switch (op.*) {
+                .draw_surface => |draw| if (draw.layer_id == layer_id) return op.*,
                 else => {},
             }
         }
         return null;
     }
 
-    fn findApplyClipOpForEffect(self: *const LayerTree, effect_id: u32) ?CompositeOp {
-        for (self.frame_ops.items) |op| {
-            switch (op) {
-                .apply_clip => |clip| if (clip.effect_id == effect_id) return op,
+    /// Points into this frame's plan (valid until the next plan build).
+    fn findApplyClipOpForEffect(self: *const LayerTree, effect_id: u32) ?*const ApplyClipOp {
+        for (self.frame_ops.items) |*op| {
+            switch (op.*) {
+                .apply_clip => |*clip| if (clip.effect_id == effect_id) return clip,
                 else => {},
             }
         }
         return null;
+    }
+
+    /// Rest position of the composite quad origin in the target frame: the owner's content frame
+    /// (world transform without its own scale/rotation) places the source origin; the transient
+    /// motion the owner carries in its translate (parent-local units) is taken back out.
+    fn surfaceRestOrigin(
+        parent_inverse: types.Transform2D,
+        node_runtime: ?scene_runtime_mod.SceneNodeRuntime,
+        source: ComputedRect,
+    ) ?[2]f32 {
+        const runtime = node_runtime orelse return null;
+        const ct = runtime.content_transform;
+        const world = ct.applyPoint(source.x, source.y);
+        // The translate sits under the parent's linear transform, which the content frame shares.
+        const m = runtime.content_motion;
+        const rest = parent_inverse.applyPoint(world.x - (ct.a * m[0] + ct.c * m[1]), world.y - (ct.b * m[0] + ct.d * m[1]));
+        if (!std.math.isFinite(rest.x) or !std.math.isFinite(rest.y)) return null;
+        return .{ rest.x, rest.y };
     }
 
     pub fn planBuildFromPropertyTree(
@@ -935,6 +947,7 @@ pub const LayerTree = struct {
                 .surface_parent_inverse = parent_inverse,
                 .surface_source_bounds = surface_source_bounds,
                 .surface_draw_bounds = surface_draw_bounds,
+                .surface_rest_origin = surfaceRestOrigin(parent_inverse, node_runtime, surface_source_bounds),
             };
             if (node_runtime) |runtime| {
                 layer.content_version = runtime.content_version;
@@ -995,15 +1008,18 @@ pub const LayerTree = struct {
                         if (tl.composited) |*c| c.clip_id = apply_clip_id;
                     }
                     const clip = clips[apply_clip_id];
-                    self.planAppendOpAssumeCapacity(.{ .apply_clip = .{
-                        .effect_id = @intCast(i),
-                        .clip_id = apply_clip_id,
-                        .bounds = clip.world_aabb,
-                        .shape_kind = clip.shape_kind,
-                        .radius = clip.radius,
-                        .polygon = clip.polygon,
-                        .bounds_fallback = clip.bounds_fallback,
-                    } });
+                    self.planAppendOpAssumeCapacity(.{
+                        .apply_clip = .{
+                            .effect_id = @intCast(i),
+                            .clip_id = apply_clip_id,
+                            .bounds = clip.world_aabb,
+                            .shape_kind = clip.shape_kind,
+                            // Clip-owner-local corners re-indexed to the world frame of `bounds`.
+                            .radii = if (clip.transform_id < transforms.len) transforms[clip.transform_id].world.orientCornerRadii(clip.radii) else clip.radii,
+                            .polygon = clip.polygon,
+                            .bounds_fallback = clip.bounds_fallback,
+                        },
+                    });
                 }
             }
 
@@ -1544,6 +1560,12 @@ pub const CompositedLayer = struct {
     surface_parent_inverse: types.Transform2D = types.Transform2D.identity(),
     surface_source_bounds: ComputedRect = ComputedRect.init(0, 0, 0, 0),
     surface_draw_bounds: ComputedRect = ComputedRect.init(0, 0, 0, 0),
+    /// Where the composite quad origin (surface_draw_transform's translation) lands in the target
+    /// frame at rest: owner scale/rotation 1/0 and transient motion (an overlay slide) removed.
+    /// The encoder anchors the texture's pixel grid to this point, so the texture holds the same
+    /// pixels for the whole animation and composes onto the direct-draw grid once it settles.
+    /// null: unknown (grid follows the current matrix).
+    surface_rest_origin: ?[2]f32 = null,
 };
 
 /// Composite op.
@@ -1560,15 +1582,18 @@ const CompositeOp = union(enum) {
         opacity: f32,
         transform_id: u32,
     },
-    apply_clip: struct {
-        effect_id: u32,
-        clip_id: u32,
-        bounds: ComputedRect,
-        shape_kind: display_list_mod.ClipShapeKind = .rect,
-        radius: f32 = 0,
-        polygon: display_list_mod.ClipPolygon = .{},
-        bounds_fallback: bool = false,
-    },
+    apply_clip: ApplyClipOp,
+};
+
+pub const ApplyClipOp = struct {
+    effect_id: u32,
+    clip_id: u32,
+    bounds: ComputedRect,
+    shape_kind: display_list_mod.ClipShapeKind = .rect,
+    /// TL, TR, BR, BL (.rounded_rect only).
+    radii: [4]f32 = .{ 0, 0, 0, 0 },
+    polygon: display_list_mod.ClipPolygon = .{},
+    bounds_fallback: bool = false,
 };
 
 test "LayerTree: 世代回卷前 slot 永久退役（悬垂 LayerId 不复活）" {

@@ -15,7 +15,7 @@
 /// Usage example:
 /// ```zig
 /// // CSS transition string -> compile-time parse
-/// node.applyTransition(allocator, comptime transition("background 200ms ease-out, opacity 150ms"));
+/// try node.applyTransition(allocator, comptime transition("background 200ms ease-out, opacity 150ms"));
 ///
 /// // Recipe definition
 /// const ButtonRecipe = recipe(struct {
@@ -108,15 +108,6 @@ pub const ConditionalStyle = struct {
             if (self.invalid) |iv| result = result.merge(iv);
         }
         return result;
-    }
-
-    /// Extract background three-state colors (normal / hover / pressed)
-    /// for hooks.useAnimatedBackground use
-    pub fn bgColors(self: ConditionalStyle) struct { normal: Color, hover: Color, pressed: Color } {
-        const normal = self.base.background orelse Color.TRANSPARENT;
-        const hover_bg = if (self.hover) |h| (h.background orelse normal) else normal;
-        const pressed_bg = if (self.active) |a| (a.background orelse hover_bg) else hover_bg;
-        return .{ .normal = normal, .hover = hover_bg, .pressed = pressed_bg };
     }
 
     /// Deep merge two ConditionalStyle objects (aligns with Panda mergeCss recursive merge)
@@ -214,7 +205,7 @@ pub const ConditionalStyle = struct {
 ///   - variants: tuple of fn(value, tokens) -> ConditionalStyle (optional)
 ///   - derived(variants, tokens) -> ConditionalStyle (optional): cross-dimension logic over
 ///     the full Variants (e.g. padding = f(size, icon mode)). Prefer for continuous geometry;
-///     not a field whitelist. bgColors() reads the final merged result, incl. derived.
+///     not a field whitelist.
 ///   - compounds: tuple of { matches: fn(Variants) -> bool, style: fn(tokens) -> ConditionalStyle }
 pub fn recipe(comptime Config: type) type {
     comptime {
@@ -228,6 +219,7 @@ pub fn recipe(comptime Config: type) type {
         ///
         /// Merge priority: base < variants < derived < compounds (latter overrides)
         pub fn resolve(variants: Variants, tokens: *const ThemeTokens) ConditionalStyle {
+            if (@import("zenit_environment").dev_preview) @import("style_reload.zig").observeGeneration();
             // Step 1: base
             var result: ConditionalStyle = if (@hasDecl(Config, "base"))
                 Config.base(tokens)
@@ -301,6 +293,7 @@ pub fn slotRecipe(comptime Config: type) type {
 
         /// Core resolve, returns ConditionalStyle per slot
         pub fn resolve(variants: Variants, tokens: *const ThemeTokens) Slots {
+            if (@import("zenit_environment").dev_preview) @import("style_reload.zig").observeGeneration();
             // Step 1: base
             var result: Slots = if (@hasDecl(Config, "base"))
                 Config.base(tokens)
@@ -391,7 +384,7 @@ pub const TransitionEntry = struct {
 /// Example:
 /// ```zig
 /// const spec = comptime transition("background 200ms ease-out, opacity 150ms");
-/// node.applyTransition(allocator, &spec);
+/// try node.applyTransition(allocator, &spec);
 /// ```
 pub fn transition(comptime input: []const u8) [countTransitionEntries(input)]TransitionEntry {
     @setEvalBranchQuota(10000);
@@ -1097,30 +1090,6 @@ test "ConditionalStyle: merge keeps margin_spec semantics" {
     try std.testing.expect(merged.hover.?.margin_spec.?.leftIsAuto());
     try std.testing.expect(merged.hover.?.margin_spec.?.rightIsAuto());
     try std.testing.expectEqual(@as(f32, 0.8), merged.hover.?.opacity.?);
-}
-
-test "ConditionalStyle: bgColors" {
-    const s = ConditionalStyle{
-        .base = .{ .background = Color.hex(0xFF0000) },
-        .hover = .{ .background = Color.hex(0x00FF00) },
-        .active = .{ .background = Color.hex(0x0000FF) },
-    };
-    const colors = s.bgColors();
-    try std.testing.expectEqual(Color.hex(0xFF0000), colors.normal);
-    try std.testing.expectEqual(Color.hex(0x00FF00), colors.hover);
-    try std.testing.expectEqual(Color.hex(0x0000FF), colors.pressed);
-}
-
-test "ConditionalStyle: bgColors 继承" {
-    // hover unspecified bg -> inherit normal
-    const s = ConditionalStyle{
-        .base = .{ .background = Color.hex(0xFF0000) },
-        .hover = .{ .opacity = 0.8 },
-    };
-    const colors = s.bgColors();
-    try std.testing.expectEqual(Color.hex(0xFF0000), colors.normal);
-    try std.testing.expectEqual(Color.hex(0xFF0000), colors.hover); // inherits normal
-    try std.testing.expectEqual(Color.hex(0xFF0000), colors.pressed); // inherits hover -> normal
 }
 
 test "recipe: 基础 resolve" {

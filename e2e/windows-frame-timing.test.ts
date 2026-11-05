@@ -8,7 +8,9 @@ test("Windows timing reports CPU work and rejects unreliable GPU samples", async
   const viewport = (await tree()).rect;
   await resetTiming();
   for (let i = 0; i < 40; i++) {
-    await scrollAt(viewport.w*.7, viewport.h/2, 0, i < 20 ? -60 : 60);
+    // The navigation sidebar scrolls (the datatable page itself has nothing to
+    // scroll, and a wheel that moves nothing renders no frame).
+    await scrollAt(120, viewport.h/2, 0, i < 20 ? -60 : 60);
     await sleep(25);
   }
   const measured = await stats();

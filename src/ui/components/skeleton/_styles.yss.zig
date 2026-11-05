@@ -10,11 +10,11 @@ const std = @import("std");
 const mod = @import("mod.zig");
 
 /// Multiple skeleton blocks stacked vertically
-pub const stack = ui.paramStyle(struct { gap: f32, pub const declared = &[_][]const u8{ "width", "height", "direction", "gap", }; pub fn resolve(args: @This(), t: *const ui.theme.Values) ui.BoxStyle { return ui.boxFrom(.{ .width = .fit, .height = .fit, .direction = .column, .gap = args.gap, }, t); } });
+pub const stack = ui.paramStyle(struct { gap: f32, pub const declared = &[_][]const u8{ "no_cross_stretch", "width", "height", "direction", "gap", }; pub fn resolve(args: @This(), t: *const ui.theme.Values) ui.BoxStyle { return ui.boxFrom(.{ .no_cross_stretch = true, .width = .fit, .height = .fit, .direction = .column, .gap = args.gap, }, t); } });
 
 /// Skeleton block: circle takes width as side length; static background is shimmer's base color
 /// (see baseColor)
-pub const bone = ui.paramStyle(struct { variant: mod.SkeletonVariant, width: f32, height: f32, pub const declared = &[_][]const u8{ "width", "height", "background", "corner_radius", }; pub fn resolve(args: @This(), t: *const ui.theme.Values) ui.BoxStyle { var out = ui.boxFrom(.{ .width = args.width, .height = args.height, .background = ui.mix(ui.tokenRef(.color, "fg-disabled"), ui.tokenRef(.color, "bg-primary"), 0.7), }, t); if (args.variant == .text) out = out.merge(ui.boxFrom(.{ .corner_radius = 4, }, t)); if (args.variant == .circular) out = out.merge(ui.boxFrom(.{ .height = args.width, .corner_radius = args.width / 2, }, t)); if (args.variant == .rectangular) out = out.merge(ui.boxFrom(.{ .corner_radius = ui.tokenRef(.radius, "md"), }, t)); return out; } });
+pub const bone = ui.paramStyle(struct { variant: mod.SkeletonVariant, width: f32, height: f32, pub const declared = &[_][]const u8{ "width", "height", "background", "corner_radius", }; pub fn resolve(args: @This(), t: *const ui.theme.Values) ui.BoxStyle { var out = ui.boxFrom(.{ .width = args.width, .height = args.height, .background = ui.tokenRef(.color, "skeleton"), }, t); if (args.variant == .text) out = out.merge(ui.boxFrom(.{ .corner_radius = ui.tokenRef(.radius, "md"), }, t)); if (args.variant == .circular) out = out.merge(ui.boxFrom(.{ .height = args.width, .corner_radius = ui.tokenRef(.radius, "dialog"), }, t)); if (args.variant == .rectangular) out = out.merge(ui.boxFrom(.{ .corner_radius = ui.tokenRef(.radius, "md"), }, t)); return out; } });
 
 /// Shimmer one full cycle duration (hand-written version is 120 frames at 60fps = 2s)
 pub const shimmer_period_ms: f32 = 2000;
@@ -26,11 +26,11 @@ pub fn shimmer(phase: f32, t: *const theme.ThemeTokens) ui.BoxStyle {
 }
 
 fn baseColor(t: *const theme.ThemeTokens) Color {
-    return Color.lerp(t.tokens.color.fg_disabled, t.tokens.color.bg_primary, 0.7);
+    return t.tokens.color.skeleton;
 }
 
 fn highlightColor(t: *const theme.ThemeTokens) Color {
-    return Color.lerp(t.tokens.color.fg_disabled, t.tokens.color.bg_primary, 0.85);
+    return Color.lerp(t.tokens.color.skeleton, t.tokens.color.bg_primary, 0.25);
 }
 
 //# yix-map styles.yss

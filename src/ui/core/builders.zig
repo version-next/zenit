@@ -117,6 +117,7 @@ fn boxThemeHookFor(comptime style_fn: fn (*const theme.ThemeTokens) BoxStyle) no
             // fields (padding/width/font_size etc.), uniformly mark layout (theme switch rare,
             // hot-path free).
             n.markLayoutDirty();
+            n.markInheritedTextDirty(.of(s));
         }
     }.hook;
 }
@@ -205,13 +206,24 @@ pub fn vstack(cx: anytype, style: BoxStyle, children_tuple: anytype) !*Node {
 
 /// Text node style params (named type, reused by textStyled style functions)
 pub const TextStyle = struct {
+    /// Bookkeeping fields set by the style machinery, never written by authors: they are not
+    /// style properties (the YSS schema and its tooling skip them).
+    pub const internal_fields = [_][]const u8{ "color_set", "font_size_set", "font_weight_set" };
+
     color: Color = theme.dark.tokens.color.fg_primary,
+    /// `color` / `font_size` / `font_weight` were declared by this style (see
+    /// TextProps.color_set): the ancestor's inherited value yields to a declared one.
+    color_set: bool = false,
+    font_size_set: bool = false,
+    font_weight_set: bool = false,
     font_size: f32 = 14,
     font_weight: u16 = 400,
     /// Font family id (zenit_app.FontRegistry). 0 = default.
     font_family: u16 = 0,
     line_height: f32 = 1.4,
     wrap: types.TextWrap = .none,
+    overflow_wrap: @FieldType(types.TextProps, "overflow_wrap") = .normal,
+    word_break: @FieldType(types.TextProps, "word_break") = .normal,
     max_lines: u16 = 0,
     /// Per-visual-line horizontal align (see TextProps.text_align)
     text_align: types.TextAlign = .start,

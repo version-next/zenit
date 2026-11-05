@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const ui = @import("ui");
+const graph_assertions = @import("graph_assertions.zig");
 const stories = @import("_stories.yix.zig");
 const counter = @import("yix_counter");
 /// docs/YIX_REFERENCE.md §2.1 example: code in docs must compile and run
@@ -11,6 +12,7 @@ const review_style = @import("_review_style.yss.zig");
 
 comptime {
     _ = @import("review_reactive_tests.zig");
+    _ = @import("lifecycle_split_tests.zig");
 }
 
 const Env = struct {
@@ -331,12 +333,12 @@ test "Yix owned text signal compiles and updates" {
 test "Yix computed over props stays static for static props and follows signal props" {
     var a = try Env.init();
     defer a.deinit();
-    const before = a.cx.owner.graph.countByKind();
+    const before = try graph_assertions.staticCounts(a.cx);
     try a.mount(stories.Doubled(.{ .n = 4 }));
     try testing.expect(a.find("double 8") != null);
     try testing.expectEqualStrings("Doubled", a.root.?.meta.ownership.meta.component_name.?);
     // Static prop: no memo, no effect (matches hand-written component 'static props zero effect')
-    const after = a.cx.owner.graph.countByKind();
+    const after = try graph_assertions.staticCounts(a.cx);
     try testing.expectEqual(before.get(.memo), after.get(.memo));
     try testing.expectEqual(before.get(.effect), after.get(.effect));
 
@@ -573,9 +575,9 @@ test "B1 静态提升按实际依赖收缩：静态参数 + 函数调用里读�
 
     var f = try Env.init();
     defer f.deinit();
-    const before = f.cx.owner.graph.countByKind();
+    const before = try graph_assertions.staticCounts(f.cx);
     try f.mount(stories.StaticTwice(.{ .n = 4 }));
-    const after = f.cx.owner.graph.countByKind();
+    const after = try graph_assertions.staticCounts(f.cx);
     try testing.expect(f.find("twice 8") != null);
     try testing.expectEqual(before.get(.memo), after.get(.memo));
     try testing.expectEqual(before.get(.effect), after.get(.effect));
@@ -720,14 +722,14 @@ test "P3a：普通 box 的 :focus / :focus-visible 由节点焦点驱动，:disa
     try e.mount(stories.StateBox(.{ .disabled = disabled }));
     const sb = findTestId(e.root.?, "sb") orelse return error.TestUnexpectedResult;
     try testing.expectApproxEqAbs(@as(f32, 1), sb.getOpacity(), 0.001);
-    e.cx.focus_manager.last_focus_reason = .click;
-    sb.behavior.events.on_focus.?.invoke();
+    // Focus through the manager: :focus-visible follows its resolved visibility (pointer focus
+    // hides the ring, keyboard focus shows it), not a raw focus reason.
+    e.cx.focus_manager.setFocusWithVisibility(sb, .click, .hide);
     try testing.expectApproxEqAbs(@as(f32, 0.9), sb.getOpacity(), 0.001);
-    sb.behavior.events.on_blur.?.invoke();
-    e.cx.focus_manager.last_focus_reason = .tab;
-    sb.behavior.events.on_focus.?.invoke();
+    e.cx.focus_manager.clearFocus();
+    e.cx.focus_manager.setFocusWithVisibility(sb, .tab, .show);
     try testing.expectApproxEqAbs(@as(f32, 0.8), sb.getOpacity(), 0.001);
-    sb.behavior.events.on_blur.?.invoke();
+    e.cx.focus_manager.clearFocus();
     try testing.expectApproxEqAbs(@as(f32, 1), sb.getOpacity(), 0.001);
     disabled.set(true);
     try testing.expectApproxEqAbs(@as(f32, 0.5), sb.getOpacity(), 0.001);
@@ -759,6 +761,48 @@ test "P3b：具名插槽与 {children} 在容器中间（子元素插在锚点�
     try testing.expect(indexIn(body) < indexIn(after)); // Default slot in middle: inserted before anchor
     try e.click("More"); // Event in footer named slot writes caller signal
     try testing.expect(e.find("body 1") != null);
+}
+
+test "可选具名插槽：缺席不建槽盒、不占 gap；传入时位置正确、事件写调用方信号" {
+    {
+        var e = try Env.init();
+        defer e.deinit();
+        try e.mount(stories.FieldBare(.{}));
+        const field = findTestId(e.root.?, "field") orelse return error.TestUnexpectedResult;
+        try testing.expectEqual(@as(usize, 1), field.children.items.len); // only content
+        try testing.expect(findTestId(e.root.?, "field.icon") == null);
+        try testing.expect(findTestId(e.root.?, "field.append") == null);
+        try testing.expect(e.find("body") != null);
+    }
+    {
+        var e = try Env.init();
+        defer e.deinit();
+        try e.mount(stories.FieldFull(.{}));
+        const field = findTestId(e.root.?, "field") orelse return error.TestUnexpectedResult;
+        try testing.expectEqual(@as(usize, 3), field.children.items.len);
+        const icon = findTestId(e.root.?, "field.icon") orelse return error.TestUnexpectedResult;
+        const append = findTestId(e.root.?, "field.append") orelse return error.TestUnexpectedResult;
+        try testing.expect(icon == field.children.items[0]);
+        try testing.expect(append == field.children.items[2]);
+        const ico = e.find("ico") orelse return error.TestUnexpectedResult;
+        try testing.expect(ico.parent == icon);
+        // Slot at the end of its box: appended after the box's own children.
+        const bracket = e.find("[") orelse return error.TestUnexpectedResult;
+        try testing.expect(bracket.parent == append and indexIn(bracket) == 0);
+        try testing.expect(e.find("body 0") != null);
+        try e.click("go");
+        try testing.expect(e.find("body 1") != null);
+    }
+}
+
+test "可选具名插槽：Zig 调用方 .slots(.{ .icon = null }) 与可选值同样按缺席处理" {
+    var e = try Env.init();
+    defer e.deinit();
+    const no_icon: ?@TypeOf(ui.view.text(.{}, "x")) = null;
+    try e.mount(ui.view.with(stories.Field(.{}), .{ui.view.text(.{}, "body")}).slots(.{ .icon = no_icon, .append = null }));
+    const field = findTestId(e.root.?, "field") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(usize, 1), field.children.items.len);
+    try testing.expect(e.find("body") != null);
 }
 
 fn indexIn(n: *ui.Node) usize {
@@ -932,9 +976,9 @@ test "受控值收到只读源 + onChange：合成 split，父组件改写的值
 test "参数化样式：静态参数不建 effect；可选参数为 null 时取 ?? 后备值" {
     var e = try Env.init();
     defer e.deinit();
-    const before = e.cx.owner.graph.countByKind().get(.effect);
+    const before = (try graph_assertions.staticCounts(e.cx)).get(.effect);
     try e.mount(ui.view.box(.{ .style = params.panel.of(.{ .width = 120, .background = ui.Color.hex(0x112233) }) }, .{}));
-    try testing.expectEqual(before, e.cx.owner.graph.countByKind().get(.effect));
+    try testing.expectEqual(before, (try graph_assertions.staticCounts(e.cx)).get(.effect));
     try testing.expectEqual(ui.Sizing{ .px = 120 }, e.root.?.style.width);
     try testing.expectEqual(ui.Color.hex(0x112233), e.root.?.getBackground());
     try testing.expectEqual(@as(f32, 1), e.root.?.getOpacity());
@@ -992,6 +1036,19 @@ test "参数化样式：多层阴影（token + 自定义）与 token 后备值�
     try testing.expect(n.style.shadowSlice()[1].color.eql(ui.theme.modes.dark.tokens.color.accent));
 }
 
+test "YSS 普通样式的 {zig} 读主题 t：按当前主题解析，换主题跟随" {
+    var e = try Env.init();
+    defer e.deinit();
+    try e.mount(ui.view.box(.{ .style = params.themed_ring }, .{}));
+    e.cx.root = e.root;
+    defer e.cx.root = null;
+    const n = e.root.?;
+    e.cx.setTheme(&ui.theme.modes.light);
+    try testing.expect(n.style.ext.?.outline.?.color.eql(ui.theme.modes.light.tokens.color.accent));
+    e.cx.setTheme(&ui.theme.modes.dark);
+    try testing.expect(n.style.ext.?.outline.?.color.eql(ui.theme.modes.dark.tokens.color.accent));
+}
+
 test "组件参数名以 on 开头但类型是数据（onTop: bool）：字面量与信号按值传；事件参数收到标识符时调用它" {
     var e = try Env.init();
     defer e.deinit();
@@ -1036,4 +1093,22 @@ test "嵌套 for：内层列表是外层行的派生值，内层行引用外层�
     defer e2.deinit();
     try e2.mount(stories.TypeOfProbe(.{ .n = 21 }));
     try testing.expect(e2.find("42") != null);
+}
+
+test "LP3 setup/view: generated hooks and refs roll back at every allocation failure" {
+    const fixture = @import("_lifecycle_split.yix.zig");
+    // Reset the bounded hook log for each mount attempted by the sweep.
+    const Probe = struct {
+        fn component(args: anytype) @TypeOf(fixture.Split(args)) {
+            fixture.log_len = 0;
+            fixture.last_ref = null;
+            return fixture.Split(args);
+        }
+    };
+    try allocationSweep(Probe.component);
+}
+
+test "LP3 setup/view: initial slotted components roll back every allocation failure" {
+    const fixture = @import("_lifecycle_split.yix.zig");
+    try allocationSweep(fixture.SlottedForOom);
 }

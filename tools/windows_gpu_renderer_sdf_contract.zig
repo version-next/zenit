@@ -30,7 +30,7 @@ const Instance = extern struct {
 };
 const Stop = extern struct { color: [4]f32, position: f32, padding: [3]f32 = .{ 0, 0, 0 } };
 comptime {
-    if (@sizeOf(Uniforms) != 340 or @sizeOf(Instance) != 176 or @offsetOf(Instance, "shape") != 128 or @sizeOf(Stop) != 32) @compileError("SDF renderer ABI mismatch");
+    if (@sizeOf(Uniforms) != 356 or @sizeOf(Instance) != 176 or @offsetOf(Instance, "shape") != 128 or @sizeOf(Stop) != 32) @compileError("SDF renderer ABI mismatch");
 }
 /// Coverage as the shader's `aa_step`: smoothstep over ±`aa` around the edge.
 fn mask(distance: f64, aa: f64) f64 {

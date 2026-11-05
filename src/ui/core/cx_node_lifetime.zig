@@ -230,6 +230,7 @@ pub fn freeNode(self: *Cx, node: *Node) void {
         // can request destruction again. Retained unlink keeps callback
         // contexts alive until the traversal/reactive stack unwinds.
         node.pending_free_cx = @ptrCast(self);
+        @import("node_tree.zig").g_retire_gen +%= 1;
         if (node.parent) |parent| parent.removeChildRetained(node);
         self.invalidateReferencesTo(node);
         if (self.owner.reactive_callback_depth > 0) {
@@ -301,6 +302,7 @@ fn freeNodeNow(self: *Cx, node: *Node) void {
     }
     if (node.freeing) return;
     node.freeing = true;
+    @import("node_tree.zig").g_retire_gen +%= 1;
     node.deferred_disposal.cancel();
     node.pending_free_cx = null;
     // focus registry holds bare *Node: must remove before free, else any
@@ -331,6 +333,10 @@ fn freeNodeNow(self: *Cx, node: *Node) void {
     if (node.meta.per_frame.hooks.style_host) |h| {
         node.meta.per_frame.hooks.style_host = null;
         h.destroy(h.ptr);
+    }
+    if (node.meta.per_frame.hooks.theme_inline) |rec| {
+        node.meta.per_frame.hooks.theme_inline = null;
+        rec.destroy();
     }
     self.node_registry.noteNodeFreed(node.id);
     // Trigger the cleanup callback (free user-allocated event context etc).
@@ -419,6 +425,20 @@ fn freeNodeNow(self: *Cx, node: *Node) void {
 }
 
 pub fn registerScrollCtxCell(self: *Cx, cell: OwnedCell) !void {
+    // Do not free from a node/scope callback: that callback may still be on the
+    // stack. At a subsequent registration, no completed callback uses the cell.
+    var i: usize = 0;
+    while (i < self.scroll_ctx_cells.items.len) {
+        const entry = self.scroll_ctx_cells.items[i];
+        if (entry.can_destroy) |ready| {
+            if (ready(entry.ptr)) {
+                _ = self.scroll_ctx_cells.swapRemove(i);
+                entry.destroyFn(entry.ptr, self.allocator);
+                continue;
+            }
+        }
+        i += 1;
+    }
     try self.scroll_ctx_cells.append(self.allocator, cell);
 }
 
@@ -428,28 +448,47 @@ pub fn freeDetachedNodeAfterScopeDispose(self: *Cx, node: *Node) void {
     self.freeNode(node);
 }
 
-pub fn bindScopeToNode(scope: *Scope, node: *Node) !void {
-    const ScopeBinding = struct {
-        node: ?*Node,
-    };
-    const binding = try scope.allocator.create(ScopeBinding);
-    binding.* = .{ .node = node };
-    errdefer scope.allocator.destroy(binding);
+/// A scope-owned, reusable root binding. Detaching does not dispose the scope.
+/// A promoted single root retires the prior binding's reverse reference.
+pub const NodeScopeBinding = struct {
+    scope: *Scope,
+    node: ?*Node = null,
 
-    try scope.registerResource(@ptrCast(binding), struct {
-        fn destroy(ptr: *anyopaque, allocator: Allocator) void {
-            const typed: *ScopeBinding = @ptrCast(@alignCast(ptr));
-            if (typed.node) |bound_node| {
-                hooks_mod.invalidateSubtreeHookState(bound_node);
-                clearNodeScopes(bound_node);
-            }
-            allocator.destroy(typed);
+    pub fn create(scope: *Scope) !*NodeScopeBinding {
+        const binding = try scope.allocator.create(NodeScopeBinding);
+        binding.* = .{ .scope = scope };
+        try scope.adoptResource(binding, destroy);
+        return binding;
+    }
+
+    pub fn detach(self: *NodeScopeBinding) void {
+        if (self.node) |node| {
+            std.debug.assert(node.meta.ownership.scope.node_slot == &self.node);
+            node.meta.ownership.scope.scope = null;
+            node.meta.ownership.scope.node_slot = null;
+            self.node = null;
         }
-    }.destroy);
-    // A component can promote a child node to an outer scope. Retire the
-    // old back-reference only after registration succeeds, otherwise that
-    // scope would later dereference the node freed by its new owner.
-    if (node.meta.ownership.scope.node_slot) |old_slot| old_slot.* = null;
-    node.meta.ownership.scope.scope = scope;
-    node.meta.ownership.scope.node_slot = &binding.node;
+    }
+
+    pub fn attach(self: *NodeScopeBinding, node: *Node) void {
+        self.detach();
+        if (node.meta.ownership.scope.node_slot) |old_slot| old_slot.* = null;
+        self.node = node;
+        node.meta.ownership.scope.scope = self.scope;
+        node.meta.ownership.scope.node_slot = &self.node;
+    }
+
+    fn destroy(ptr: *anyopaque, allocator: Allocator) void {
+        const self: *NodeScopeBinding = @ptrCast(@alignCast(ptr));
+        if (self.node) |node| {
+            hooks_mod.invalidateSubtreeHookState(node);
+            clearNodeScopes(node);
+        }
+        allocator.destroy(self);
+    }
+};
+
+pub fn bindScopeToNode(scope: *Scope, node: *Node) !void {
+    const binding = try NodeScopeBinding.create(scope);
+    binding.attach(node);
 }

@@ -54,6 +54,9 @@ pub const SceneNodeRuntime = struct {
     /// Content-space transform without scale/rotation, for surface transform offscreen source
     /// bounds
     content_transform: Transform2D = .{},
+    /// Transient part of the node's translate (StyleExt.motion_offset, parent-local units): excluded
+    /// from the rest origin a surface anchors its pixel grid to.
+    content_motion: [2]f32 = .{ 0, 0 },
     /// Content-space rect (content_transform.transformRect(local_rect))
     content_bounds: ComputedRect = ComputedRect.init(0, 0, 0, 0),
     /// PropertyTree.transforms index
@@ -66,6 +69,8 @@ pub const SceneNodeRuntime = struct {
     effect_id: u32 = INVALID_ID,
     /// DFS paint order
     paint_order: u64 = 0,
+    /// Index of this node in RenderContext.retained_nodes this frame (its Node pointer).
+    retained_index: u32 = std.math.maxInt(u32),
     display_item_start: u32 = 0,
     display_item_count: u32 = 0,
     display_payload_own_prebuilt: bool = false,
@@ -75,6 +80,14 @@ pub const SceneNodeRuntime = struct {
     display_payload_subtree_prebuilt: bool = false,
     display_payload_subtree_strategy: DisplayPayloadSubtreeStrategy = .none,
     display_payload_subtree_prebuilt_epoch: u64 = 0,
+    /// The subtree's items are not one range this frame: part of it sits in the prebuild prefix,
+    /// part was appended by the paint pass. Its subtree range covers only the appended part, so no
+    /// ancestor may assemble a cross-frame cache from it.
+    subtree_display_split: bool = false,
+    /// The prebuild pass (or a paint-cursor resume) already processed this node this frame:
+    /// any content it prebuilt is in the display list, so the paint pass must not prebuild it
+    /// again. Records are rebuilt every frame, so this needs no epoch.
+    prebuild_visited: bool = false,
     text_blob_start: u32 = 0,
     text_blob_count: u32 = 0,
     subtree_text_blob_start: u32 = 0,
@@ -114,16 +127,88 @@ pub const PromotedSurfaceFrameFlags = packed struct(u8) {
     _reserved: u2 = 0,
 };
 
+/// Scene records keyed by node id: a small id -> slot index map over a dense record array. Records
+/// are a few hundred bytes and rebuilt every frame in DFS order; a hash map holding them by value
+/// scattered every put across its value array, while appends here are sequential. Mirrors the
+/// subset of the std.HashMap API the engine uses.
+pub const NodeTable = struct {
+    allocator: Allocator,
+    index: id_hash.U32HashMapUnmanaged(u32) = .{},
+    values: std.ArrayListUnmanaged(SceneNodeRuntime) = .empty,
+
+    pub const Entry = struct { key_ptr: *const u32, value_ptr: *SceneNodeRuntime };
+    pub const Iterator = struct {
+        inner: id_hash.U32HashMapUnmanaged(u32).Iterator,
+        values: []SceneNodeRuntime,
+        pub fn next(self: *Iterator) ?Entry {
+            const e = self.inner.next() orelse return null;
+            return .{ .key_ptr = e.key_ptr, .value_ptr = &self.values[e.value_ptr.*] };
+        }
+    };
+
+    pub fn deinit(self: *NodeTable) void {
+        self.index.deinit(self.allocator);
+        self.values.deinit(self.allocator);
+    }
+
+    pub fn clearRetainingCapacity(self: *NodeTable) void {
+        self.index.clearRetainingCapacity();
+        self.values.clearRetainingCapacity();
+    }
+
+    pub fn count(self: *const NodeTable) u32 {
+        return self.index.count();
+    }
+
+    pub fn contains(self: *const NodeTable, id: u32) bool {
+        return self.index.contains(id);
+    }
+
+    pub fn getPtr(self: *const NodeTable, id: u32) ?*SceneNodeRuntime {
+        const i = self.index.get(id) orelse return null;
+        return &self.values.items[i];
+    }
+
+    pub fn get(self: *const NodeTable, id: u32) ?SceneNodeRuntime {
+        const p = self.getPtr(id) orelse return null;
+        return p.*;
+    }
+
+    pub fn ensureUnusedCapacity(self: *NodeTable, additional: u32) !void {
+        try self.index.ensureUnusedCapacity(self.allocator, additional);
+        try self.values.ensureUnusedCapacity(self.allocator, additional);
+    }
+
+    pub fn put(self: *NodeTable, id: u32, value: SceneNodeRuntime) !void {
+        try self.ensureUnusedCapacity(1);
+        self.putAssumeCapacity(id, value);
+    }
+
+    pub fn putAssumeCapacity(self: *NodeTable, id: u32, value: SceneNodeRuntime) void {
+        const gop = self.index.getOrPutAssumeCapacity(id);
+        if (gop.found_existing) {
+            self.values.items[gop.value_ptr.*] = value;
+        } else {
+            gop.value_ptr.* = @intCast(self.values.items.len);
+            self.values.appendAssumeCapacity(value);
+        }
+    }
+
+    pub fn iterator(self: *const NodeTable) Iterator {
+        return .{ .inner = self.index.iterator(), .values = self.values.items };
+    }
+};
+
 pub const SceneRuntime = struct {
     allocator: Allocator,
-    nodes: id_hash.U32HashMap(SceneNodeRuntime),
+    nodes: NodeTable,
     /// Per-frame increment for timing validation
     frame_epoch: u64 = 0,
 
     pub fn init(allocator: Allocator) SceneRuntime {
         return .{
             .allocator = allocator,
-            .nodes = id_hash.U32HashMap(SceneNodeRuntime).init(allocator),
+            .nodes = .{ .allocator = allocator },
         };
     }
 

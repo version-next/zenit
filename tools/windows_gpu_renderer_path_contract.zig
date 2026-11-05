@@ -18,10 +18,11 @@ const Uniforms = extern struct {
     ends: [8]u32 = .{ 4, 8, 0, 0, 0, 0, 0, 0 },
     points: [32][2]f32 = @splat(.{ 0, 0 }),
     clip_rect: [4]f32 = .{ 0, 0, 0, 0 },
-    clip_radius: f32 = 0,
+    clip_radii: [4]f32 = .{ 0, 0, 0, 0 },
     clip_shape_kind: u32 = 0,
     pad1: u32 = 0,
     pad2: u32 = 0,
+    pad6: u32 = 0,
     grad_dir: u32 = 0,
     grad_stop_count: u32 = 0,
     grad_center: [2]f32 = .{ 0.5, 0.5 },
@@ -33,8 +34,8 @@ const Uniforms = extern struct {
     grad_positions: [16]f32 = @splat(0),
 };
 comptime {
-    if (@sizeOf(Vertex) != 28 or @offsetOf(Vertex, "color") != 12 or @sizeOf(Uniforms) != 736 or @offsetOf(Uniforms, "points") != 96 or @offsetOf(Uniforms, "clip_rect") != 352 or
-        @offsetOf(Uniforms, "grad_dir") != 384 or @offsetOf(Uniforms, "grad_center") != 392 or @offsetOf(Uniforms, "grad_colors") != 416 or @offsetOf(Uniforms, "grad_positions") != 672) @compileError("Path renderer ABI mismatch");
+    if (@sizeOf(Vertex) != 28 or @offsetOf(Vertex, "color") != 12 or @sizeOf(Uniforms) != 752 or @offsetOf(Uniforms, "points") != 96 or @offsetOf(Uniforms, "clip_rect") != 352 or @offsetOf(Uniforms, "clip_radii") != 368 or
+        @offsetOf(Uniforms, "grad_dir") != 400 or @offsetOf(Uniforms, "grad_center") != 408 or @offsetOf(Uniforms, "grad_colors") != 432 or @offsetOf(Uniforms, "grad_positions") != 688) @compileError("Path renderer ABI mismatch");
 }
 /// CPU reference of draw_mode 2 (FillGradient.tAt / colorAt, straight alpha).
 fn gradientColor(u: Uniforms, x: usize, y: usize) [4]f64 {
@@ -68,7 +69,8 @@ fn clipDistance(x: f64, y: f64, u: Uniforms) f64 {
     const px = x - (u.clip_rect[0] + u.clip_rect[2] * 0.5) * u.scale_factor;
     const py = y - (u.clip_rect[1] + u.clip_rect[3] * 0.5) * u.scale_factor;
     if (u.clip_shape_kind == 2) return (@sqrt(px * px / (hx * hx) + py * py / (hy * hy)) - 1) * @min(hx, hy);
-    const radius = u.clip_radius * u.scale_factor;
+    // The quadrant picks the corner radius: TL, TR, BR, BL.
+    const radius = u.scale_factor * (if (px < 0) (if (py < 0) u.clip_radii[0] else u.clip_radii[3]) else (if (py < 0) u.clip_radii[1] else u.clip_radii[2]));
     const qx = @abs(px) - hx + radius;
     const qy = @abs(py) - hy + radius;
     return @sqrt(@max(qx, 0) * @max(qx, 0) + @max(qy, 0) * @max(qy, 0)) + @min(@max(qx, qy), 0) - radius;
@@ -141,7 +143,7 @@ pub fn run() !void {
     var output: [256]u8 = undefined;
     var draws: usize = 0;
     for ([_]f32{ 1, 2 }) |scale| for (0..2) |mode| for (0..2) |rule| for (0..2) |reverse| for (0..3) |clip_kind| {
-        var uniforms = Uniforms{ .viewport_size = .{ 8 / scale, 8 / scale }, .scale_factor = scale, .draw_mode = @intCast(mode), .fill_rule = @intCast(rule), .clip_shape_kind = @intCast(clip_kind), .clip_rect = .{ 1 / scale, 1 / scale, 6 / scale, 6 / scale }, .clip_radius = 1 / scale };
+        var uniforms = Uniforms{ .viewport_size = .{ 8 / scale, 8 / scale }, .scale_factor = scale, .draw_mode = @intCast(mode), .fill_rule = @intCast(rule), .clip_shape_kind = @intCast(clip_kind), .clip_rect = .{ 1 / scale, 1 / scale, 6 / scale, 6 / scale }, .clip_radii = .{ 1.5 / scale, 0, 1 / scale, 0.5 / scale } };
         const corners = [_][2]f32{ .{ 0.75, 0.75 }, .{ 7.25, 0.75 }, .{ 7.25, 7.25 }, .{ 0.75, 7.25 }, .{ 2.75, 2.75 }, .{ 5.25, 2.75 }, .{ 5.25, 5.25 }, .{ 2.75, 5.25 } };
         for (0..8) |i| {
             const index = if (reverse == 1 and i >= 4) 11 - i else i;
@@ -227,5 +229,5 @@ pub fn run() !void {
         gradient_draws += 1;
     };
     for (0..64) |i| std.mem.swap(u8, &output[i * 4], &output[i * 4 + 2]);
-    std.debug.print("RENDERER_PATH_RGBA8_HEX={s}\nPASS: production HLSL path, {d} draws/{d} CPU-reference pixels (byte tolerance2), vertex stride28/uniform736 packed ABI, nonzero buffer/vertex offsets, fringe alpha, evenodd/nonzero rings, opposite winding, scale1/2 and rounded/ellipse clips; {d} per-fragment radial/conic gradient draws (3 stops, offset centre, start angle, opacity)\n", .{ std.fmt.bytesToHex(output, .lower), draws, draws * 64, gradient_draws });
+    std.debug.print("RENDERER_PATH_RGBA8_HEX={s}\nPASS: production HLSL path, {d} draws/{d} CPU-reference pixels (byte tolerance2), vertex stride28/uniform752 packed ABI, nonzero buffer/vertex offsets, fringe alpha, evenodd/nonzero rings, opposite winding, scale1/2 and per-corner rounded/ellipse clips; {d} per-fragment radial/conic gradient draws (3 stops, offset centre, start angle, opacity)\n", .{ std.fmt.bytesToHex(output, .lower), draws, draws * 64, gradient_draws });
 }

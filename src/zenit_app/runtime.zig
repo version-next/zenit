@@ -3,6 +3,53 @@ extern fn macos_caret_native_ready(*anyopaque) c_int;
 extern fn macos_caret_handoff_begin(*anyopaque) void;
 extern fn macos_caret_handoff_end(*anyopaque) void;
 extern fn macos_caret_patch_show(*anyopaque, c_int) void;
+extern fn metal_glass_clock_trace_enabled() bool;
+extern fn metal_glass_clock_trace_host_time() f64;
+extern fn metal_glass_clock_trace_line([*]const u8, usize) void;
+
+/// Run-loop wait while a harness scroll stream runs. Default: until the next
+/// event is due, like a real wheel event waking the loop. ZENIT_E2E_STREAM_WAKE
+/// =fixed4 restores the old 4 ms poll, =vsync leaves waking to frames (events
+/// coalesce per frame) for measuring how much the wake rate costs.
+fn streamWakeMs(delay_ns: u64) u32 {
+    const S = struct {
+        var mode: ?u8 = null;
+    };
+    if (S.mode == null) {
+        const v = @import("zenit_environment").getBorrowed("ZENIT_E2E_STREAM_WAKE") orelse "";
+        S.mode = if (std.mem.eql(u8, v, "fixed4")) 1 else if (std.mem.eql(u8, v, "vsync")) 2 else 0;
+    }
+    return switch (S.mode.?) {
+        1 => 4,
+        2 => 16,
+        else => @intCast(@max(1, (delay_ns + std.time.ns_per_ms - 1) / std.time.ns_per_ms)),
+    };
+}
+
+/// The pump wait while a harness scroll stream may be due: never past the
+/// stream's next event (null: no stream), and a non-blocking pump stays one.
+fn pumpTimeoutWithStream(timeout_ms: u32, stream_delay_ns: ?u64) u32 {
+    const delay = stream_delay_ns orelse return timeout_ms;
+    if (timeout_ms == 0) return 0;
+    return @min(timeout_ms, streamWakeMs(delay));
+}
+
+test "pump wait ends when the next harness stream event is due" {
+    try std.testing.expectEqual(@as(u32, 16), pumpTimeoutWithStream(16, null));
+    try std.testing.expectEqual(@as(u32, 4), pumpTimeoutWithStream(16, 3_200_000));
+    try std.testing.expectEqual(@as(u32, 1), pumpTimeoutWithStream(16, 0));
+    try std.testing.expectEqual(@as(u32, 9), pumpTimeoutWithStream(9, 40_000_000));
+    try std.testing.expectEqual(@as(u32, 0), pumpTimeoutWithStream(0, 3_200_000));
+}
+
+/// Pacing traces: a natively flipped caret shows at its CA commit.
+fn traceCaretFlip(visible: bool) void {
+    if (comptime gpu.backend_kind != .metal) return;
+    if (!metal_glass_clock_trace_enabled()) return;
+    var line: [128]u8 = undefined;
+    const text = std.fmt.bufPrint(&line, "{{\"kind\":\"caret\",\"visible\":{},\"path\":\"flip\",\"host_time\":{d:.9}}}", .{ visible, metal_glass_clock_trace_host_time() }) catch return;
+    metal_glass_clock_trace_line(text.ptr, text.len);
+}
 extern fn macos_caret_patch_clear(*anyopaque) void;
 extern fn macos_caret_patch_host_retain(*anyopaque) *anyopaque;
 extern fn macos_caret_patch_host_release(*anyopaque) void;
@@ -12,6 +59,8 @@ extern fn macos_caret_test_environment(*anyopaque, c_int) void;
 extern fn macos_caret_capture_window(*anyopaque, [*:0]const u8) c_int;
 extern fn macos_caret_window_number(*anyopaque) c_int;
 extern fn macos_caret_window_visible(*anyopaque) c_int;
+extern fn macos_window_occlusion_generation(*anyopaque) c_ulong;
+extern fn macos_should_render_window(*anyopaque) c_int;
 const SharedGpu = @import("shared_gpu.zig").SharedGpu;
 const chrome_backend = @import("chrome_backend.zig");
 const chrome_controller = @import("chrome_controller.zig");
@@ -83,6 +132,18 @@ const window_lifecycle = @import("window_lifecycle.zig");
 const text_hook_owners = @import("text_hook_owners.zig");
 const selector_scale = @import("selector_scale.zig");
 const render_pacing = @import("render_pacing.zig");
+/// Quiet time after the last CPU patch before stale glass is recomposited
+/// (ZENIT_GLASS_REFRESH_MS overrides, for tests comparing patched frames).
+fn glassRefreshDelayNs() i128 {
+    const S = struct {
+        var cached: ?i128 = null;
+    };
+    if (S.cached == null) {
+        const ms: i128 = if (std.c.getenv("ZENIT_GLASS_REFRESH_MS")) |v| std.fmt.parseInt(i64, std.mem.span(v), 10) catch 250 else 250;
+        S.cached = ms * std.time.ns_per_ms;
+    }
+    return S.cached.?;
+}
 const CaretExit = @import("caret_flip_lifecycle.zig").Exit;
 const CaretHost = @import("caret_flip_lifecycle.zig").Host;
 
@@ -130,6 +191,8 @@ pub const NativeMemoryStats = struct {
     live_header_metal_layers: u64 = 0,
 };
 extern fn zenit_memory_loop_begin() callconv(.c) void;
+extern fn zenit_memory_idle_relief() callconv(.c) void;
+extern fn macos_capture_composited_key_window(path: [*:0]const u8) callconv(.c) c_int;
 extern fn zenit_memory_native_stats(out: *[17]u64) callconv(.c) void;
 pub fn nativeMemoryStats() NativeMemoryStats {
     var values: [17]u64 = @splat(0);
@@ -147,6 +210,7 @@ pub fn mallocMemoryStats() [4]u64 {
 const AppRenderer = renderer_mod.AppRenderer;
 const ClearColor = renderer_mod.ClearColor;
 
+const dev_control = @import("dev_control/mod.zig");
 const test_harness = @import("test_harness");
 
 const pointer_isolation = @import("pointer_isolation.zig");
@@ -191,10 +255,12 @@ fn getFrameStats() test_harness.FrameStatsSnapshot {
         .caret_admission_failures = app.caret_admission.failures,
         .caret_admission_next_ns = app.caret_admission.next_ns,
         .caret_flips = app.caret_flips,
+        .stale_drawable_discards = app.renderer.stale_drawable_discards,
         .caret_last_flip_ms = @intCast(@divTrunc(app.caret_last_flip_ns, std.time.ns_per_ms)),
         .backdrop_luminance = app.renderer.backdrop_luminance orelse -1,
         .paint_duplicate_fills = app.cx.paint_duplicate_fills,
         .paint_duplicate_node = app.cx.paint_duplicate_node,
+        .incremental_verify_mismatches = app.cx.incremental_verify_mismatch_total,
 
         // Single-frame timing (noisy, log only).
         .gpu_execute_us = app.renderer.last_frame_stats.gpu_execute_us,
@@ -214,6 +280,7 @@ fn getFrameStats() test_harness.FrameStatsSnapshot {
         .compute_passes = app.renderer.last_frame_stats.compute_passes,
         .pass_native_us = app.renderer.last_frame_stats.pass_native_us,
         .total_frame_us = app.renderer.last_frame_stats.total_frame_us,
+        .stage_totals = harnessStageTotals(app.renderer.stage_totals),
 
         // Cross-frame P95 (for gate assertions).
         .gpu_p95_us = app.renderer.timing_ring.gpuPercentile(95),
@@ -238,6 +305,7 @@ fn getFrameStats() test_harness.FrameStatsSnapshot {
 fn resetTiming() void {
     const app = g_screenshot_app orelse return;
     app.renderer.timing_ring.reset();
+    app.renderer.stage_totals = .{};
     app.renderer.gpu_timing_ring.reset();
 }
 
@@ -253,10 +321,23 @@ fn quitForHarness() bool {
     return true;
 }
 fn windowCommandForHarness(command: test_harness.WindowCommand) ?test_harness.WindowSnapshot {
-    if (comptime builtin.os.tag != .linux) return null;
+    if (comptime !test_harness.enabled) return null;
     const app = g_screenshot_app orelse return null;
     switch (command) {
+        // Harness-forced occlusion: exercises the occluded-window resource
+        // path in background E2E, where native occlusion is ignored.
+        .occlude, .reveal => {
+            app.occlusion_override = command == .occlude;
+            platform.Window.postEmptyEvent();
+            const size = app.win.getSize();
+            return .{ .decoration_height = 0, .decorated = true, .maximized = false, .active = false, .suspended = command == .occlude, .width = size[0], .height = size[1] };
+        },
+        else => {},
+    }
+    if (comptime builtin.os.tag != .linux) return null;
+    switch (command) {
         .status => {},
+        .occlude, .reveal => unreachable,
         .maximize => app.win.setMaximized(true) catch return null,
         .restore => app.win.setMaximized(false) catch return null,
         .minimize => app.win.minimize() catch return null,
@@ -306,6 +387,24 @@ fn captureWindowScreenshot(owner: *anyopaque, path: []const u8) bool {
     app.cx.beginActiveUse();
     defer app.cx.endActiveUse();
     return app.capturePresentedToPng(path);
+}
+
+fn cpuPatchForHarness(mode: u8, out: *test_harness.CpuPatchStatus) bool {
+    const app = g_screenshot_app orelse return false;
+    if (!@import("cpu_patch.zig").supported) return false;
+    const patcher = &app.renderer.cpu_patch;
+    switch (mode) {
+        1 => patcher.enabled = true,
+        // The next frame goes to the GPU and removes every patch shown.
+        2 => patcher.enabled = false,
+        else => {},
+    }
+    if (mode != 0) patcher.previous_valid = false;
+    out.* = .{ .enabled = patcher.enabled, .cpu_frames = patcher.cpu_frames, .gpu_frames = patcher.gpu_frames, .shown = patcher.shown, .unchanged_frames = patcher.unchanged_frames };
+    const count = @min(patcher.rectCount(), out.rects.len);
+    @memcpy(out.rects[0..count], patcher.shown_rects[0..count]);
+    out.rect_count = count;
+    return true;
 }
 
 fn captureScreenshot(path: []const u8) bool {
@@ -394,6 +493,11 @@ pub const Config = struct {
     window: WindowConfig = .{},
     /// Return false to cancel. Called for native and application close requests.
     on_close_request: ?*const fn (*App) bool = null,
+    /// The user reopened the running application (macOS: Dock icon click, launching it again)
+    /// while none of its windows is visible, e.g. after `on_close_request` hid the only one.
+    /// Typically shows a window again. Called at the event-dispatch boundary. Unset: the
+    /// platform default applies (AppKit restores minimized windows).
+    on_reopen: ?*const fn (*App) void = null,
     /// Called once before teardown, while every App resource is still usable.
     on_destroy: ?*const fn (*App) void = null,
     /// Application-level shortcuts: called for every native key event before
@@ -494,6 +598,20 @@ pub const App = struct {
     /// Consecutive idle (want=false) count; stop link when threshold hit (dampen clean/dirty
     /// jitter).
     idle_streak: u8 = 0,
+    /// Deadline for shrinking frame-loop resources after the last frame
+    /// (null once every stage ran). See `maybeTrimIdle`.
+    idle_trim_due_ns: ?i128 = null,
+    idle_trim_stage: u8 = 0,
+    /// GPU frames seen by the idle trim clock; CPU patch frames do not delay it.
+    idle_trim_gpu_frames: u64 = 0,
+    /// GPU refresh of glass presented stale by CPU patches (cpu_patch.zig),
+    /// due once patches stop.
+    glass_refresh_due_ns: ?i128 = null,
+    /// renderer.frame_count when the refresh delay last restarted.
+    glass_refresh_cpu_frames: u64 = 0,
+    /// Quiet time before trimming; matches the ~1s after which the Metal
+    /// driver returns its own per-process render working set. 0 disables.
+    idle_trim_delay_ns: u64 = std.time.ns_per_s,
     caret_flip_enabled: bool = false,
     caret_debug: bool = false,
     caret_idle_delay_ns: u64 = 2 * std.time.ns_per_s,
@@ -501,6 +619,13 @@ pub const App = struct {
     caret_test_replacement_fault: if (test_harness.enabled) u8 else void = if (test_harness.enabled) 0 else {},
     caret_test_hold: if (test_harness.enabled) bool else void = if (test_harness.enabled) false else {},
     caret_flipping: bool = false,
+    /// The window is fully occluded, minimized or hidden: automatic frames
+    /// are skipped and frame-loop GPU resources are released (see syncOcclusion).
+    occluded: bool = false,
+    /// Native occlusion notifications seen; state is re-read only on change.
+    occlusion_generation: c_ulong = 0,
+    /// Harness-only forced occlusion (`/window` occlude/reveal); null = native.
+    occlusion_override: if (test_harness.enabled) ?bool else void = if (test_harness.enabled) null else {},
     /// Retained native host owns its patches until completed replacement/close.
     caret_patch_layer: ?*anyopaque = null,
     caret_exit: CaretExit = .{},
@@ -519,6 +644,12 @@ pub const App = struct {
 
     /// live-resize sync render guard (setFrameSize callback may nest).
     in_live_resize_render: bool = false,
+    /// Live-resize state last handed to the renderer (drawable depth pin).
+    live_resize_active: bool = false,
+    /// Clear color last mirrored into the native surface background.
+    surface_background: ?ClearColor = null,
+    /// One live-resize frame per display period across setFrameSize and the ticker.
+    live_resize_tick_gate: render_pacing.LiveResizeTickGate = .{},
     /// ZENIT_DEBUG_JANK: time of last consecutive render frame (multi-window loop, see jankProbe).
     debug_jank_prev: ?@import("zenit_time").Instant = null,
 
@@ -575,15 +706,34 @@ pub const App = struct {
         app.consecutive_surface_timeouts = 0;
         app.surface_retry_at_ns = 0;
         app.idle_streak = 0;
-        const caret_env = @import("zenit_environment").getOwned(allocator, "ZENIT_CARET_FLIP") catch null;
-        defer if (caret_env) |value| allocator.free(value);
-        app.caret_flip_enabled = builtin.os.tag == .macos and gpu.backend_kind == .metal and
-            if (caret_env) |value| std.mem.eql(u8, value, "1") else false;
+        // Native idle patches stop full-size Metal submissions on each blink,
+        // allowing the graphics working set to trim while the editor is active.
+        // Admission still falls back to ordinary drawing for unsupported scenes;
+        // an explicit 0 keeps the control path available for regression checks.
+        app.caret_flip_enabled = false;
+        if (comptime builtin.os.tag == .macos and gpu.backend_kind == .metal) {
+            const caret_env = @import("zenit_environment").getBorrowed("ZENIT_CARET_FLIP");
+            app.caret_flip_enabled = if (caret_env) |value| std.mem.eql(u8, value, "1") else true;
+        }
         app.caret_debug = @import("zenit_environment").getBorrowed("ZENIT_CARET_FLIP_DEBUG") != null;
         const idle_env = @import("zenit_environment").getOwned(allocator, "ZENIT_CARET_FLIP_IDLE_MS") catch null;
         defer if (idle_env) |value| allocator.free(value);
         const idle_ms = if (idle_env) |value| std.fmt.parseInt(u32, value, 10) catch 2000 else 2000;
         app.caret_idle_delay_ns = @as(u64, std.math.clamp(idle_ms, 500, 60000)) * std.time.ns_per_ms;
+        app.idle_trim_due_ns = null;
+        app.idle_trim_stage = 0;
+        app.idle_trim_gpu_frames = 0;
+        app.occluded = false;
+        app.occlusion_generation = 0;
+        if (comptime test_harness.enabled) app.occlusion_override = null;
+        app.glass_refresh_due_ns = null;
+        app.glass_refresh_cpu_frames = 0;
+        app.idle_trim_delay_ns = std.time.ns_per_s;
+        const trim_env = @import("zenit_environment").getOwned(allocator, "ZENIT_IDLE_TRIM_MS") catch null;
+        defer if (trim_env) |value| allocator.free(value);
+        if (trim_env) |value| if (std.fmt.parseInt(u32, value, 10)) |ms| {
+            app.idle_trim_delay_ns = @as(u64, ms) * std.time.ns_per_ms;
+        } else |_| {};
         app.caret_tick_only = false;
         app.caret_test_hold = if (test_harness.enabled) false else {};
         app.caret_flipping = false;
@@ -778,6 +928,19 @@ pub const App = struct {
         // UI Cx
         app.cx = try ui.Cx.init(allocator, config.io);
         app.cx.caret_flip_host = app.caret_flip_enabled;
+        // Compositor sprites replace a node's GPU paint with a native layer, which
+        // drawable readback (test screenshots) cannot see: off under the test
+        // harness unless ZENIT_SPRITES=1; ZENIT_SPRITES=0 disables them anywhere.
+        // CPU damage patches (cpu_patch.zig); off under the test harness,
+        // whose drawable readback cannot see them (ZENIT_CPU_PATCH=1 forces).
+        app.renderer.cpu_patch.enabled = @import("cpu_patch.zig").supported and blk: {
+            const value = @import("zenit_environment").getBorrowed("ZENIT_CPU_PATCH") orelse break :blk !test_harness.enabled;
+            break :blk !std.mem.eql(u8, value, "0");
+        };
+        app.cx.sprites.enabled = @import("sprite_host.zig").supported and blk: {
+            const value = @import("zenit_environment").getBorrowed("ZENIT_SPRITES") orelse break :blk !test_harness.enabled;
+            break :blk !std.mem.eql(u8, value, "0");
+        };
         // Project the a11y tree only once an assistive client queries this process.
         app.cx.a11y_on_demand = true;
         app.cx.console().configure(app.config.console);
@@ -830,6 +993,8 @@ pub const App = struct {
         // App and renderer are heap-stable here; the callbacks stay pointed at
         // this App's selector until a newer App takes the top of the owner
         // stack or deinit hands them back to the next live App.
+        if (dev_control.enabled) try dev_control.attach(app);
+        errdefer if (dev_control.enabled) dev_control.detach(app);
         installProcessTextHooks(try g_text_hook_owners.push(app, &app.font_selector));
 
         // live resize sync render: AppKit resize tracking loop blocks pump entirely; main loop
@@ -838,6 +1003,14 @@ pub const App = struct {
         // CoreAnimation
         // stretches old frame ("canvas warps like image").
         app.win.setRenderCallback(liveResizeRender, @ptrCast(app));
+        if (comptime @hasDecl(Window, "setLiveResizeTickCallback")) app.win.setLiveResizeTickCallback(liveResizeTick, @ptrCast(app));
+        // Bounds can move underneath a frame (programmatic resize from a
+        // callback, AX size changes while nextDrawable spins the AX run loop).
+        if (comptime builtin.os.tag == .macos) app.renderer.present_size_probe = .{ .ctx = @ptrCast(app), .live_pixels = livePixelSize };
+        // A reopen with no visible window is this App's to handle, not AppKit's default.
+        if (comptime builtin.os.tag == .macos) {
+            if (config.on_reopen != null) Window.setAppReopenHandled(true);
+        }
 
         return app;
     }
@@ -954,13 +1127,21 @@ pub const App = struct {
         defer pool.pop();
         self.caret_exit.close();
         self.destroying = true;
+        if (dev_control.enabled) dev_control.beginTeardown();
+        defer if (dev_control.enabled) dev_control.endTeardown();
+        if (dev_control.enabled) dev_control.detach(self);
         if (self.config.on_destroy) |callback| callback(self);
+        if (comptime builtin.os.tag == .macos) {
+            if (self.config.on_reopen != null) Window.setAppReopenHandled(false);
+        }
         // Invalidate every native->Zig edge before releasing Cx/render state.
         // A closing window can still be inside live resize, IME composition, or
         // a drag session, so teardown order is part of the public contract.
         chrome_backend.setHitCallback(&self.win, null, null);
         self.cx.window_service = null;
         self.win.setRenderCallback(null, null);
+        if (comptime @hasDecl(Window, "setLiveResizeTickCallback")) self.win.setLiveResizeTickCallback(null, null);
+        self.renderer.present_size_probe = null;
         if (builtin.os.tag == .macos or builtin.os.tag == .windows) self.win.setTitlebarHitCallback(null, null);
         if (self.display_link_running) {
             self.win.stopDisplayLink();
@@ -1128,6 +1309,7 @@ pub const App = struct {
         // attach directly. After tree complete, commit entire portal as last child of app_root,
         // ensuring it draws above user tree.
         self.cx.popover_portal_root = portal;
+        if (dev_control.enabled) try self.cx.prepareStyleGeneration();
 
         // Components may start transitions/animations during mount: first bind this window's
         // clock (multi-window: clock is global).
@@ -1166,15 +1348,21 @@ pub const App = struct {
             g_screenshot_app = self;
             test_harness.registerScreenshotWindow(self.config.io, self, self.windowId(), captureWindowScreenshot, screenshotWindowClosing);
             test_harness.bindScreenshotWindow(self);
+            // ZENIT_E2E_MEASURE: memory/CPU/pacing runs drive input through the
+            // harness but never screenshot or gate on invariants; they skip the
+            // harness' per-frame work to see the production frame loop.
+            const measuring = @import("zenit_environment").flag("ZENIT_E2E_MEASURE");
             // Per-frame render invariant check (repeat emission count via /stats for e2e gate).
-            self.cx.paint_invariant_check = true;
+            self.cx.paint_invariant_check = !measuring;
             // Enable presented frame retained copy so /screenshot reads actual presentation, not
-            // new render.
-            self.renderer.retain_present_copy = true;
+            // new render (a full-window texture plus a copy per frame).
+            self.renderer.retain_present_copy = !measuring;
             self.renderer.setRecordingContextCallback(self, appendWindowRecordingFrame);
             test_harness.setScreenshotCallback(captureScreenshot);
             test_harness.setRecordingCallbacks(startWindowRecording, windowRecordingStatus, stopWindowRecording);
             test_harness.setFrameStatsCallback(getFrameStats);
+            if (comptime builtin.os.tag == .macos) test_harness.setCompositedCaptureCallback(macos_capture_composited_key_window);
+            test_harness.setCpuPatchCallback(cpuPatchForHarness);
             test_harness.setResetTimingCallback(resetTiming);
             test_harness.setWindowCommandCallback(windowCommandForHarness);
             test_harness.setResizeWindowCallback(resizeWindowForHarness);
@@ -1235,10 +1423,10 @@ pub const App = struct {
         // ZENIT_DEBUG_FRAMEPACE=1: frame pacing stats, one line per 120 consecutive render
         // frames with mean/min/max/stddev dt (ms). Verify vsync lock (60Hz should tight 16.67ms,
         // no 16/33ms beat pattern). Idle gaps (>100ms) excluded.
-        const pace_debug = @import("zenit_environment").has("ZENIT_DEBUG_FRAMEPACE");
+        const pace_debug = @import("zenit_environment").flag("ZENIT_DEBUG_FRAMEPACE");
         // ZENIT_DEBUG_JANK=1: per-frame probe, logs line when consecutive render dt > 20ms
         // (skip >100ms as idle gap). Pinpoint animation stutter.
-        const jank_debug = @import("zenit_environment").has("ZENIT_DEBUG_JANK");
+        const jank_debug = @import("zenit_environment").flag("ZENIT_DEBUG_JANK");
         var jank_prev: ?@import("zenit_time").Instant = null;
         var pace_prev: ?@import("zenit_time").Instant = null;
         var pace_dts: [120]f64 = undefined;
@@ -1255,7 +1443,9 @@ pub const App = struct {
             //   wake deadline (cursor blink scheduleRedrawAfterNs / deferred tasks), fallback
             //   idle_wait_ms.
             const pump_timeout: u32 = if (display_link_mode)
-                self.computeIdleTimeoutMs()
+                if (test_harness.streamNextDelayNs()) |delay| @min(self.computeIdleTimeoutMs(), streamWakeMs(delay)) else if (dev_control.active()) @min(self.computeIdleTimeoutMs(), 16) else self.computeIdleTimeoutMs()
+            else if (dev_control.active())
+                @min(self.config.pump_timeout_ms, 16)
             else
                 self.config.pump_timeout_ms;
             const pump_result = self.sdk.pump(pump_timeout) catch |err| {
@@ -1266,6 +1456,7 @@ pub const App = struct {
             // needs_redraw flip.
             if (pointer_isolation.requestsFrame(test_harness.enabled and isolateOsPointer(), test_harness.enabled and pointer_isolation.keyboardEnabled(), self.sdk.events()) or pump_result.requested_redraw) force_frame = true;
             self.processEvents();
+            if (dev_control.enabled) dev_control.drain();
             // E2E test harness: consume command queue (when test-mode=true).
             if (test_harness.enabled) {
                 if (test_harness.drainCommandsRequestFrame()) force_frame = true;
@@ -1282,10 +1473,15 @@ pub const App = struct {
             // overlay
             // entry animations stick at 0.
             _ = self.renderer.pollBackdropLuminance(self.cx);
-            if (self.shouldRenderAutomaticFrame(force_frame)) {
+            if (!self.shouldRenderAutomaticFrame(force_frame)) {
+                self.maybeTrimIdle();
+            } else {
                 force_frame = false;
                 const jank_t0 = if (jank_debug) @import("zenit_time").Instant.now(self.config.io) catch null else null;
                 try self.frameAfterChromeSync();
+                // CPU patch frames do not delay the trim; continuous typing
+                // would otherwise never see a non-rendering wakeup.
+                self.maybeTrimIdle();
                 if (test_harness.enabled) test_harness.afterFrame();
                 if (jank_debug) {
                     if (@import("zenit_time").Instant.now(self.config.io) catch null) |now| {
@@ -1340,12 +1536,36 @@ pub const App = struct {
     }
 
     /// display-link mode pump timeout: min(idle_wait_ms, distance to nearest wake deadline).
-    /// Test harness clamps to 16ms; e2e RPC commands live in files, pure event block
-    /// won't wake.
+    /// The built-in test harness clamps to 16ms: its e2e RPC commands live in
+    /// files and a pure event block won't wake. An application that disables
+    /// it (`builtin_test_harness = false`) serves its own harness and wakes the
+    /// pump itself, so its test builds keep the production wait.
+    fn builtinHarnessPolls(self: *const App) bool {
+        return test_harness.enabled and self.config.builtin_test_harness;
+    }
+
     fn computeIdleTimeoutMs(self: *App) u32 {
         var timeout_ms: u64 = self.config.idle_wait_ms;
-        if (test_harness.enabled) timeout_ms = @min(timeout_ms, 16);
+        if (self.builtinHarnessPolls()) timeout_ms = @min(timeout_ms, 16);
         const now = @import("zenit_time").monotonicTimestamp(self.cx.io);
+        // Occluded: no frame will render, so animation/caret/redraw deadlines
+        // must not keep waking the loop. Input and the occlusion notification
+        // still wake the native pump; resource maintenance, application timers
+        // and ready deferred work are scheduled.
+        if (self.occluded) {
+            if (self.cx.hasReadyWork()) timeout_ms = 1;
+            if (self.cx.nextTimerDelayNs()) |delay_ns| {
+                timeout_ms = @min(timeout_ms, @max(1, (delay_ns +| (std.time.ns_per_ms - 1)) / std.time.ns_per_ms));
+            }
+            if (self.idle_trim_due_ns) |due| {
+                const left: u64 = if (due > now) @intCast(due - now) else 0;
+                timeout_ms = @min(timeout_ms, @max(1, (left + std.time.ns_per_ms - 1) / std.time.ns_per_ms));
+            }
+            if (self.renderer.nextOffscreenMaintenanceDelayNs()) |delay_ns| {
+                timeout_ms = @min(timeout_ms, @max(1, (delay_ns +| (std.time.ns_per_ms - 1)) / std.time.ns_per_ms));
+            }
+            return @intCast(timeout_ms);
+        }
         const retry_at = @max(self.surface_retry_at_ns, if (self.caret_exit.pending) self.caret_exit.retry_at_ns else 0);
         // Expired phase/timer deadlines cannot bypass a failed surface/GPU
         // attempt. Input still wakes the native pump and interrupts this wait.
@@ -1366,6 +1586,14 @@ pub const App = struct {
         // A just-submitted backdrop measurement may finish after the last UI
         // frame. Poll it promptly without keeping GPU rendering awake.
         if (self.renderer.hasPendingBackdropLuminance()) timeout_ms = @min(timeout_ms, 16);
+        if (self.glass_refresh_due_ns) |due| {
+            const left: u64 = if (due > now) @intCast(due - now) else 0;
+            timeout_ms = @min(timeout_ms, @max(1, (left + std.time.ns_per_ms - 1) / std.time.ns_per_ms));
+        }
+        if (self.idle_trim_due_ns) |due| {
+            const left: u64 = if (due > now) @intCast(due - now) else 0;
+            timeout_ms = @min(timeout_ms, @max(1, (left + std.time.ns_per_ms - 1) / std.time.ns_per_ms));
+        }
         if (self.renderer.nextOffscreenMaintenanceDelayNs()) |delay_ns| {
             timeout_ms = @min(timeout_ms, @max(1, (delay_ns +| (std.time.ns_per_ms - 1)) / std.time.ns_per_ms));
         }
@@ -1421,15 +1649,60 @@ pub const App = struct {
     }
 
     fn interruptCaretBackoff(self: *App) bool {
-        if (!self.caret_activity.take(self.cx.input_epoch, self.resize_epoch, self.resize_frame_pending)) return false;
-        self.caret_exit.retry_at_ns = 0;
-        self.surface_retry_at_ns = 0;
-        return true;
+        return @import("caret_flip_lifecycle.zig").interruptBackoff(&self.caret_activity, self.cx.input_epoch, self.resize_epoch, self.resize_frame_pending, &self.caret_exit.retry_at_ns, &self.surface_retry_at_ns);
+    }
+
+    /// Native occlusion (or the harness override). Before the first native
+    /// notification the window counts as visible, so startup frames render as
+    /// before; background E2E and a pending fullscreen prewarm stay visible
+    /// (macos_should_render_window).
+    fn windowOccluded(self: *App) bool {
+        if (comptime test_harness.enabled) if (self.occlusion_override) |forced| return forced;
+        if (comptime builtin.os.tag != .macos or gpu.backend_kind != .metal) return false;
+        const generation = macos_window_occlusion_generation(self.win.window_ptr);
+        if (generation == self.occlusion_generation) return self.occluded;
+        self.occlusion_generation = generation;
+        return macos_should_render_window(self.win.window_ptr) == 0;
+    }
+
+    /// Track occlusion transitions. Becoming occluded stops the display link
+    /// and runs the idle trim now (drawables purged; offscreen pool, retained
+    /// copy, caret scratch, sprites and scratch storage released), repeating
+    /// on the usual idle stages. Becoming visible again requests a frame; the
+    /// released resources are recreated lazily and that frame redraws in full,
+    /// exactly as the first frame after an idle trim. Returns true while
+    /// occluded: automatic frames are skipped.
+    fn syncOcclusion(self: *App) bool {
+        const occluded = self.windowOccluded();
+        if (occluded == self.occluded) return occluded;
+        self.occluded = occluded;
+        if (occluded) {
+            if (self.display_link_running) {
+                self.win.stopDisplayLink();
+                self.display_link_running = false;
+            }
+            self.idle_streak = 0;
+            if (self.idle_trim_delay_ns != 0) {
+                self.idle_trim_stage = 0;
+                self.idle_trim_due_ns = @import("zenit_time").monotonicTimestamp(self.cx.io);
+            }
+        } else {
+            self.cx.needs_redraw = true;
+        }
+        return occluded;
     }
 
     fn shouldRenderAutomaticFrame(self: *App, forced: bool) bool {
         self.caret_tick_only = false;
         if (comptime test_harness.enabled) if (self.caret_test_hold) return false;
+        if (self.syncOcclusion()) {
+            // No frame renders while occluded, but the application keeps time: timers fire and
+            // deferred work drains as when visible. What they mark dirty shows on the first
+            // visible frame.
+            self.cx.fireDueTimers();
+            if (self.cx.hasReadyWork()) _ = self.drainDeferredTimed();
+            return false;
+        }
         // Preparation can enqueue CPU cleanup (retired payloads/node frees). Drain it
         // before deciding to exit; a task that changes UI still sets needs_redraw/dirty.
         if (self.caret_flipping or self.caret_quiet_since_ns != null) _ = self.drainDeferredTimed();
@@ -1482,7 +1755,10 @@ pub const App = struct {
                 const phase_changed = self.updateCaretPhase(now);
                 if (self.caret_flipping) {
                     if (comptime gpu.backend_kind == .metal) {
-                        if (phase_changed) macos_caret_patch_show(self.win.getNativeSurfaceHandle(), @intFromBool(self.cx.caret_visible));
+                        if (phase_changed) {
+                            macos_caret_patch_show(self.win.getNativeSurfaceHandle(), @intFromBool(self.cx.caret_visible));
+                            traceCaretFlip(self.cx.caret_visible);
+                        }
                     }
                 } else {
                     if (self.caret_quiet_since_ns == null) self.caret_quiet_since_ns = now;
@@ -1604,6 +1880,20 @@ pub const App = struct {
         try self.enterCaretFlip();
     }
 
+    pub fn testCaretScratchFailure(self: *App) !void {
+        if (comptime !test_harness.enabled) return error.TestModeRequired;
+        self.renderer.caret_test_scratch_oom = true;
+        defer self.renderer.caret_test_scratch_oom = false;
+        try self.enterCaretFlip();
+    }
+
+    pub fn testCaretIsolationFailure(self: *App, stage: u8) !void {
+        if (comptime !test_harness.enabled) return error.TestModeRequired;
+        self.renderer.caret_test_isolation_unavailable = stage;
+        defer self.renderer.caret_test_isolation_unavailable = 0;
+        try self.enterCaretFlip();
+    }
+
     /// 0: unavailable/PM attended stage, 1: actual WindowServer image, -1: write error.
     /// This path deliberately does not exit flipping or read renderer textures.
     pub fn captureCompositedWindow(self: *App, path: []const u8) !bool {
@@ -1631,6 +1921,11 @@ pub const App = struct {
         if (self.caret_flipping) self.renderer.traceCaretBoundary("caret-exit", self.cx.input_epoch);
         if (self.caret_flipping or self.caret_preparing or self.caret_exit.pending) {
             self.caret_exit.begin();
+            // The handoff replaces the caret patch inside a GPU frame's native
+            // transaction (completeCaretReplacement reads its command). A CPU
+            // patch frame has no command: every retry fails and the caret flip
+            // is abandoned for the window's lifetime.
+            if (comptime @import("cpu_patch.zig").supported) self.renderer.cpu_patch.force_gpu = true;
             self.renderer.retained_valid = false;
             self.renderer.offscreen_pool.invalidateRetainedContents();
             if (self.cx.root) |root| root.markSubtreeDirty();
@@ -1838,6 +2133,7 @@ pub const App = struct {
         if (evt != .frame_requested) self.cx.input_epoch +%= 1;
         switch (evt) {
             .quit => self.should_quit = true,
+            .app_reopen => if (self.config.on_reopen) |callback| callback(self),
             .window_close_requested => self.requestClose() catch {},
             .frame_requested, .window_resized, .system_theme_changed => self.cx.needs_redraw = true,
             .window_focused => |e| {
@@ -1856,9 +2152,12 @@ pub const App = struct {
                 }
                 // Blur cancels in-flight pointer interactions (drag, etc.): blur from polling edge,
                 // frame latency acceptable (docs/DRAG_INTERACTION_DESIGN.md section 11.2).
-                if (!e.focused) self.cx.cancelPointerInteractions(.window_blur) else self.cx.replayCursor();
+                // macOS preserves logical focus for routing while another app is active.
+                // Native activity still ends a pointer interaction, even if that logical focus remains.
+                if (!e.focused or !e.appears_active) self.cx.cancelPointerInteractions(.window_blur) else self.cx.replayCursor();
             },
             .mouse_move => |e| self.cx.handleMouseMoveEx(e.x, e.y, sdkModifiersToUi(e.modifiers)),
+            .pointer_left => self.cx.handlePointerLeave(),
             .mouse_button => |e| {
                 if (e.cancelled) {
                     self.cx.needs_redraw = true;
@@ -1879,13 +2178,13 @@ pub const App = struct {
                 // kind=4 = drag source completion receipt (cx.handleDrag defensive ignore). Debug
                 // visibility: ZENIT_DEBUG_DRAG=1 logs actual operation (0=cancelled 1=copy 2=move
                 // 4=link).
-                if (e.kind == 4 and @import("zenit_environment").has("ZENIT_DEBUG_DRAG")) {
+                if (e.kind == 4 and @import("zenit_environment").flag("ZENIT_DEBUG_DRAG")) {
                     std.debug.print("[DRAG] source-completed token={d} op={d}\n", .{ e.source_token, e.operation });
                 }
                 self.cx.handlePlatformDrag(e.x, e.y, e.kind, e.paths, e.payload_kind, e.payload_truncated, e.payload_is_untrusted);
             },
             .menu_command => |e| {
-                if (@import("zenit_environment").has("ZENIT_DEBUG_MENU")) {
+                if (@import("zenit_environment").flag("ZENIT_DEBUG_MENU")) {
                     std.debug.print("[MENU] command_id={d} window_id={d} (self={d})\n", .{ e.command_id, e.window_id, self.windowId() });
                 }
                 self.cx.handleCommand(e.command_id);
@@ -1929,8 +2228,35 @@ pub const App = struct {
         };
     }
 
+    /// Every resize-path entry (setFrameSize, ticker, final flush, main loop)
+    /// passes through here before reconfiguring or acquiring.
+    fn syncResizePresentation(self: *App) void {
+        const active = self.win.isInLiveResize();
+        if (active != self.live_resize_active) {
+            self.live_resize_active = active;
+            self.live_resize_tick_gate.reset();
+        }
+        self.renderer.setLiveResize(active);
+        if (comptime @hasDecl(Window, "setSurfaceBackground")) {
+            const color = self.renderer.config.clear_color;
+            if (self.surface_background == null or !std.meta.eql(self.surface_background.?, color)) {
+                self.surface_background = color;
+                self.win.setSurfaceBackground(color.r, color.g, color.b, color.a);
+            }
+        }
+    }
+
+    /// Exercise the exact AppKit final-resize callback path in test builds.
+    pub fn testFinalResizeFrame(self: *App) void {
+        if (!test_harness.enabled) return;
+        if (comptime builtin.os.tag == .macos) liveResizeRender(@ptrCast(self));
+    }
+
     /// Detect window size change, reconfigure surface and viewport as needed.
     pub fn maybeReconfigureSurface(self: *App) !void {
+        // Before configure: it re-applies the surface's current depth, so the
+        // pin must already be in place for the first resize step.
+        self.syncResizePresentation();
         const new_drawable = self.win.getDrawableSize();
         if (new_drawable[0] != self.current_drawable_w or new_drawable[1] != self.current_drawable_h) {
             // Stop phase flips before changing the surface's pixel grid. Keep
@@ -2058,7 +2384,94 @@ pub const App = struct {
 
     // Automatic gating has already polled chrome, even for skipped frames.
     // Keep the independent public frame entry point self-contained.
+    /// Once the window has been quiet for `idle_trim_delay_ns`, release
+    /// resources only a running frame loop needs (offscreen pool, pooled
+    /// drawables) and make scratch/atlas storage volatile. The next frame
+    /// recreates or restores them; a still-executing last frame defers the
+    /// trim. WindowServer may still hold recently presented drawables at the
+    /// first stage and hand them back to the layer pool afterwards, so the
+    /// (idempotent, frame-free) trim repeats at 3x and 10x the delay.
+    /// After CPU patches reused stale glass: once the window rendered no
+    /// frame at all for the refresh delay (animations included; an unchanged
+    /// animation frame still counts), render one GPU frame.
+    fn maybeRefreshGlass(self: *App) void {
+        const patcher = &self.renderer.cpu_patch;
+        if (!patcher.glass_stale) {
+            self.glass_refresh_due_ns = null;
+            return;
+        }
+        const now = @import("zenit_time").monotonicTimestamp(self.cx.io);
+        const frames = self.renderer.frame_count;
+        if (frames != self.glass_refresh_cpu_frames or self.glass_refresh_due_ns == null) {
+            self.glass_refresh_cpu_frames = frames;
+            self.glass_refresh_due_ns = now + glassRefreshDelayNs();
+            return;
+        }
+        if (now < self.glass_refresh_due_ns.?) return;
+        // A scheduled wake (an animation tail, a timer) is still activity.
+        if (self.cx.nextWakeDelayNs()) |delay| if (delay < 4 * @as(u64, @intCast(glassRefreshDelayNs()))) {
+            self.glass_refresh_due_ns = now + @as(i128, delay) + glassRefreshDelayNs();
+            return;
+        };
+        self.glass_refresh_due_ns = null;
+        patcher.force_gpu = true;
+        // Re-present the same paint on the GPU; dirtying the tree would
+        // restart sprite admission and produce another patch.
+        self.cx.needs_redraw = true;
+    }
+
+    fn maybeTrimIdle(self: *App) void {
+        self.maybeRefreshGlass();
+        const debug_trim = @import("zenit_environment").flag("ZENIT_DEBUG_IDLE_TRIM");
+        const due = self.idle_trim_due_ns orelse return;
+        if (self.display_link_running) {
+            if (debug_trim) std.debug.print("[idle-trim] window={d} blocked by display link\n", .{self.windowId()});
+            return;
+        }
+        const now = @import("zenit_time").monotonicTimestamp(self.cx.io);
+        if (now < due) return;
+        const trimmed = self.renderer.trimIdleResources();
+        if (@import("zenit_environment").flag("ZENIT_DEBUG_IDLE_TRIM"))
+            std.debug.print("[idle-trim] window={d} stage={d} trimmed={}\n", .{ self.windowId(), self.idle_trim_stage, trimmed });
+        if (!trimmed) {
+            self.idle_trim_due_ns = now + 50 * std.time.ns_per_ms;
+            return;
+        }
+        if (comptime builtin.os.tag == .macos) zenit_memory_idle_relief();
+        // Last stage: the driver keeps command buffer/encoder pools per queue.
+        if (comptime gpu.backend_kind == .metal) if (self.idle_trim_stage == 2 and std.c.getenv("ZENIT_IDLE_KEEP_QUEUE") == null) {
+            _ = self.queuePtr().recreate(self.devicePtr().raw_device);
+        };
+        if (self.cx.allocation_probe_enabled) {
+            const names = [_][]const u8{ "text", "world", "display_list", "property_tree", "frame_arena", "interaction", "render_cache", "text_blobs", "scene_runtime" };
+            var total: usize = 0;
+            for (self.cx.allocation_counters, names) |counter, name| {
+                total += counter.live_bytes;
+                std.debug.print("[cpu-alloc] {s}: live {d} KiB (peak {d} KiB)\n", .{ name, counter.live_bytes / 1024, counter.peak_bytes / 1024 });
+            }
+            std.debug.print("[cpu-alloc] main_paint capacity {d} KiB ({d} items) total counted {d} KiB\n", .{ self.cx.lowering.main_paint.capacity * @sizeOf(@TypeOf(self.cx.lowering.main_paint.items[0])) / 1024, self.cx.lowering.main_paint.items.len, total / 1024 });
+        }
+        const later = [_]u64{ 2, 7 };
+        self.idle_trim_due_ns = if (self.idle_trim_stage < later.len) now + later[self.idle_trim_stage] * self.idle_trim_delay_ns else null;
+        self.idle_trim_stage += 1;
+    }
+
+    fn noteFrameForIdleTrim(self: *App) void {
+        if (self.idle_trim_delay_ns == 0) return;
+        // Trimming releases GPU-side residency (drawables, scratch storage);
+        // its clock follows GPU frames. CPU patches use none of it.
+        const patcher = &self.renderer.cpu_patch;
+        if (patcher.enabled) {
+            if (patcher.gpu_frames == self.idle_trim_gpu_frames) return;
+            self.idle_trim_gpu_frames = patcher.gpu_frames;
+        }
+        self.idle_trim_stage = 0;
+        self.idle_trim_due_ns = @import("zenit_time").monotonicTimestamp(self.cx.io) + self.idle_trim_delay_ns;
+        if (@import("zenit_environment").flag("ZENIT_DEBUG_IDLE_TRIM")) std.debug.print("[idle-trim] window={d} scheduled\n", .{self.windowId()});
+    }
+
     fn frameAfterChromeSync(self: *App) !void {
+        self.noteFrameForIdleTrim();
         self.caret_admission.observe(self.cx.input_epoch, self.cx.world.mutation_epoch);
         if (!self.caret_preparing and !self.caret_tick_only) self.exitCaretFlip();
         defer self.caret_tick_only = false;
@@ -2151,9 +2564,20 @@ pub const App = struct {
                     self.cx.perf.drain_us = drain_us;
                     return;
                 },
+                // The view changed size after this frame was laid out. No
+                // backoff: the next attempt reconfigures to the live size and
+                // must follow immediately (the size gate bounds repeats).
+                error.DrawableSizeStale => {
+                    self.cx.perf.drain_us = drain_us;
+                    self.cx.needs_redraw = true;
+                    self.resize_frame_pending = true;
+                    self.cx.scheduleRedrawAfterNs(0);
+                    return;
+                },
                 else => return err,
             }
         };
+        if (dev_control.enabled and !self.in_live_resize_render) dev_control.afterLayout(self);
         // Snapshot paint invalidations before post-submit deferred tasks run:
         // their content changes still need to reset admission cooldown.
         self.caret_admission.painted(self.cx.world.mutation_epoch);
@@ -2277,6 +2701,10 @@ pub const MultiWindowApp = struct {
     allocator: Allocator,
     loop_iterations: u64 = 0,
     header_poll_opportunities: u64 = 0,
+    /// Block the shared pump until the nearest window deadline instead of
+    /// polling every `pump_timeout_ms` while all windows are idle (macOS;
+    /// `ZENIT_MULTIWINDOW_POLL=1` restores fixed polling).
+    deadline_idle_wait: bool = false,
     config: MultiWindowConfig,
     shared_gpu: ?*SharedGpu = null,
     shared_gpu_warned: bool = false,
@@ -2286,7 +2714,11 @@ pub const MultiWindowApp = struct {
     tearing_down: bool = false,
 
     pub fn init(allocator: Allocator, config: MultiWindowConfig) MultiWindowApp {
-        return .{ .allocator = allocator, .config = config };
+        return .{
+            .allocator = allocator,
+            .config = config,
+            .deadline_idle_wait = builtin.os.tag == .macos and !@import("zenit_environment").flag("ZENIT_MULTIWINDOW_POLL"),
+        };
     }
 
     pub fn deinit(self: *MultiWindowApp) void {
@@ -2480,19 +2912,67 @@ pub const MultiWindowApp = struct {
                     try app.frameAfterChromeSync();
                     if (jank_debug) jankProbe(app.config.io, &app.debug_jank_prev, t0);
                 }
+                app.maybeTrimIdle();
             }
         }
         self.applyPendingCloses();
+    }
+
+    /// How long an application-owned loop (`pump` + `frame` instead of `run`)
+    /// may block in `pump` before the next frame, timer, caret, retry, idle trim
+    /// or display-link tick is due. Occluded windows contribute no ready work,
+    /// and a window whose display link is running waits for its vsync instead
+    /// of polling. Combine with the application's own deadlines with `@min`;
+    /// never substitute 0 because some window "wants a frame" — that spins
+    /// between vsyncs and while windows are hidden.
+    pub fn pumpTimeoutMs(self: *MultiWindowApp) u32 {
+        return self.automaticPumpTimeoutMs();
+    }
+
+    fn automaticPumpTimeoutMs(self: *MultiWindowApp) u32 {
+        // A harness scroll stream is input the native queue never sees: wake
+        // when its next event is due, as App.run does and as a real wheel
+        // event would. Without it the events waited for the next vsync wake
+        // (a frame late whenever one fell just after it) or, once the display
+        // link stopped, for the 16 ms harness poll.
+        return pumpTimeoutWithStream(self.platformPumpTimeoutMs(), test_harness.streamNextDelayNs());
+    }
+
+    fn platformPumpTimeoutMs(self: *MultiWindowApp) u32 {
+        if (!self.deadline_idle_wait)
+            return if (dev_control.active()) @min(self.config.pump_timeout_ms, 16) else self.config.pump_timeout_ms;
+        var wait: render_pacing.MultiWindowIdleWait = .{ .poll_ms = self.config.pump_timeout_ms };
+        // Poll for harness files only while some window runs the built-in harness.
+        var harness_polls = false;
+        for (self.windows.items) |managed| {
+            harness_polls = harness_polls or managed.app.builtinHarnessPolls();
+            if (managed.nativeClosing()) {
+                wait.include(.{ .deadline_ms = self.config.pump_timeout_ms, .closing = true });
+                continue;
+            }
+            const app = managed.app;
+            const now = @import("zenit_time").monotonicTimestamp(app.cx.io);
+            const retry_at = @max(app.surface_retry_at_ns, if (app.caret_exit.pending) app.caret_exit.retry_at_ns else 0);
+            wait.include(.{
+                .deadline_ms = app.computeIdleTimeoutMs(),
+                .display_link = app.config.frame_pacing == .display_link,
+                .link_running = app.display_link_running,
+                .retry_pending = retry_at > now,
+                .ready_work = !app.occluded and (managed.force_frame or app.cx.needs_redraw or app.cx.hasReadyWork() or app.cx.hasPendingSceneWork()),
+            });
+        }
+        return wait.timeout(harness_polls or dev_control.active());
     }
 
     pub fn tick(self: *MultiWindowApp) !bool {
         if (self.execution_depth != 0 or self.tearing_down or self.hasActiveCalls()) return error.ReentrantWindowLoop;
         const pool = AutoreleasePool.push();
         defer pool.pop();
-        if (!try self.pump(self.config.pump_timeout_ms)) return false;
+        if (!try self.pump(self.automaticPumpTimeoutMs())) return false;
         // MultiWindowApp owns the event loop just like App.run(). Drain the
         // process-global Harness queue exactly once after platform events so
         // DevTools and other auxiliary-window apps remain automatable.
+        if (dev_control.enabled) dev_control.drain();
         if (test_harness.enabled) {
             g_harness_host = self;
             test_harness.setCommandBoundaryCallbacks(beginHarnessCommand, endHarnessCommand);
@@ -2640,6 +3120,14 @@ pub const MultiWindowApp = struct {
                 self.dispatchToWindow(target, evt);
                 return;
             },
+            .app_reopen => {
+                // Application-wide: every window's App may handle it (`Config.on_reopen`).
+                for (self.windows.items) |*managed| {
+                    if (managed.nativeClosing()) continue;
+                    _ = managed.app.processEvent(evt);
+                }
+                return;
+            },
             .frame_requested, .system_theme_changed => {
                 for (self.windows.items) |*managed| {
                     if (managed.nativeClosing()) continue;
@@ -2661,7 +3149,7 @@ pub const MultiWindowApp = struct {
         // editing/input dispatch; its App/Cx stay alive only until AppKit
         // reports close completion.
         if (managed.nativeClosing()) return;
-        if (managed.app.processEvent(evt)) managed.force_frame = true;
+        if (managed.app.processEvent(evt) and pointer_isolation.eventForcesFrame(evt)) managed.force_frame = true;
         // `App.quit()` remains meaningful when a window is managed: it closes
         // that window, while `MultiWindowApp.quit()` exits the application.
         if (managed.app.should_quit) _ = self.lifecycle.requestClose(window_id);
@@ -2798,14 +3286,15 @@ pub const MultiWindowApp = struct {
         const owner_id = self.windows.items[index].app.owner_window;
         self.detachOwner(self.windows.items[index].app);
         const managed = self.windows.orderedRemove(index);
-        _ = self.lifecycle.removed(window_id);
+        // Native closes finish asynchronously, so by now another window may
+        // already be active (e.g. a new panel opened while this one closed).
+        // Only a window that still held focus hands it on.
+        const handoff = self.lifecycle.removedFocusHandoff(window_id, owner_id);
         managed.app.deinit();
         // AppKit normally promotes a remaining window. Make the lifecycle
         // fallback explicit so first responder/IME/menu routing is never left
         // attached to the destroyed context.
-        if (!self.lifecycle.quit_requested) {
-            // A closing panel hands focus back to its owner.
-            if (owner_id) |owner| if (self.window(owner) != null) self.lifecycle.setFocused(owner, true);
+        if (handoff != null) {
             var target = self.activeWindow();
             if (comptime builtin.os.tag == .macos) {
                 if (target) |active| {
@@ -2818,7 +3307,9 @@ pub const MultiWindowApp = struct {
                     }
                 }
             }
-            if (target) |active| active.activate();
+            if (target) |active| {
+                if (comptime builtin.os.tag == .macos) active.win.restoreFocus() else active.activate();
+            }
         }
     }
 
@@ -2839,6 +3330,21 @@ pub const MultiWindowApp = struct {
 /// stretch of old frame. Native code also calls this at the final resize boundary,
 /// after live resize ends. Other programmatic setFrameSize calls use the main loop.
 fn liveResizeRender(ctx: ?*anyopaque) callconv(.c) void {
+    liveResizeStep(ctx, .resize);
+}
+
+/// Native refresh-rate ticker during live resize: renders only in display
+/// periods that have not presented a setFrameSize frame (LiveResizeTickGate).
+fn liveResizeTick(ctx: ?*anyopaque) callconv(.c) void {
+    liveResizeStep(ctx, .ticker);
+}
+
+fn livePixelSize(ctx: *anyopaque) [2]u32 {
+    const app: *App = @ptrCast(@alignCast(ctx));
+    return app.win.getDrawableSize();
+}
+
+fn liveResizeStep(ctx: ?*anyopaque, source: enum { resize, ticker }) void {
     const pool = AutoreleasePool.push();
     defer pool.pop();
     const app: *App = @ptrCast(@alignCast(ctx orelse return));
@@ -2853,13 +3359,36 @@ fn liveResizeRender(ctx: ?*anyopaque) callconv(.c) void {
         std.log.scoped(.zenit_runtime).warn("live-resize surface reconfigure failed: {s}", .{@errorName(err)});
         return;
     };
+    if (source == .ticker and !app.live_resize_tick_gate.tickerShouldRender()) return;
+    // The final callback runs after AppKit leaves tracking mode. The last
+    // tracking frame may have consumed dirtiness before dependent views adopted
+    // their committed bounds; final flush must not be gated by wantsFrame().
+    if (comptime builtin.os.tag == .macos) {
+        if (!app.win.isInLiveResize()) app.cx.needs_redraw = true;
+    }
     // Called both by setFrameSize: (size changed -> maybeReconfigureSurface sets needs_redraw)
     // and by native live-resize ticker at refresh rate (drives animation during drag hold);
     // skips redraw when static and size unchanged.
     if (!app.cx.wantsFrame()) return;
-    app.frameAfterChromeSync() catch |err| {
-        std.log.scoped(.zenit_runtime).warn("live-resize frame failed: {s}", .{@errorName(err)});
-    };
+    // A stale-size discard redraws once in place: inside AppKit's tracking
+    // loop no main-loop iteration follows, and this step's CA transaction is
+    // the one carrying the new bounds.
+    var retried = false;
+    while (true) {
+        const frames_before = app.renderer.frame_count;
+        const discards_before = app.renderer.stale_drawable_discards;
+        app.frameAfterChromeSync() catch |err| {
+            std.log.scoped(.zenit_runtime).warn("live-resize frame failed: {s}", .{@errorName(err)});
+            return;
+        };
+        if (app.renderer.last_frame_presented and app.renderer.frame_count != frames_before) {
+            if (source == .resize) app.live_resize_tick_gate.didPresentResizeFrame();
+            return;
+        }
+        if (retried or app.renderer.stale_drawable_discards == discards_before) return;
+        retried = true;
+        app.maybeReconfigureSurface() catch return;
+    }
 }
 
 /// ZENIT_DEBUG_JANK=1: logs line when consecutive render dt > 20ms (and < 100ms, longer is
@@ -3041,4 +3570,35 @@ fn sdkMouseButtonToUi(btn: system_sdk.events.MouseButton) ?ui.events.MouseButton
         .middle => .middle,
         .other => null,
     };
+}
+
+test "preview keeps the ordinary surface configuration" {
+    // Executed with and without -Ddev-preview. These are the production
+    // configure()/resize() values, not a second preview-specific implementation.
+    const actual = App.surfaceConfigFor(801, 603);
+    try std.testing.expectEqual(gpu.Backend.SurfaceConfiguration{
+        .format = .bgra8_unorm,
+        .width = 801,
+        .height = 603,
+        .usage = .color_target_and_read,
+        .present_mode = .fifo,
+        .alpha_mode = .fully_opaque,
+        .maximum_frame_latency = 2,
+    }, actual);
+    // Frame testing/retained screenshots remain exclusively controlled by
+    // test-mode. Any preview dependency in the renderer must be reviewed here.
+    try std.testing.expect(std.mem.indexOf(u8, @embedFile("renderer.zig"), "dev_preview") == null);
+    try std.testing.expect(std.mem.indexOf(u8, @embedFile("renderer.zig"), "dev_control") == null);
+    const Fields = @import("zenit_reflection").fields(AppRenderer);
+    inline for (Fields) |field| if (comptime std.mem.eql(u8, field.name, "retain_present_copy")) {
+        const default: *const bool = @ptrCast(@alignCast(field.default_value_ptr.?));
+        try std.testing.expect(!default.*);
+    };
+}
+
+/// Field-by-field copy of the renderer's stage sums into the harness mirror.
+pub fn harnessStageTotals(totals: anytype) test_harness.StageTotals {
+    var out: test_harness.StageTotals = .{};
+    inline for (@typeInfo(test_harness.StageTotals).@"struct".field_names) |name| @field(out, name) = @field(totals, name);
+    return out;
 }

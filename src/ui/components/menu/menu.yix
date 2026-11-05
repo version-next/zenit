@@ -16,6 +16,7 @@ pub fn MenuEntry(
     label: []const u8,
     index: usize,
     highlighted: usize,
+    keyboardFocus: bool = false,
     danger: bool = false,
     disabled: bool = false,
     shortcut: ?[]const u8 = null,
@@ -24,17 +25,18 @@ pub fn MenuEntry(
     onEnter: Handler(usize),
 ) View {
     const lit = computed(highlighted == index);
+    const focusVisible = computed(keyboardFocus and lit and !disabled);
     const p = parts(S.MenuRow, .{ .danger = danger, .disabled = disabled, .lit = lit });
     return (
         <row
-            style={p.root}
+            style={.{ p.root, S.virtual_focus.of(.{ .visible = focusVisible }) }}
             a11y={.{ .role = .menuitem, .label = label, .disabled = disabled, .description = shortcut }}
             onClick={if (!disabled) onPick(index)}
             onHover={if (!disabled) onEnter(index)}
         >
             <row style={S.item_left}>
                 {if (iconAsset) |asset| <icon style={p.icon} src={asset} />}
-                <text style={p.label}>{label}</text>
+                <text style={.{ S.rowText, p.label }}>{label}</text>
             </row>
             {if (shortcut) |keys| <text style={S.shortcut}>{keys}</text>}
         </row>

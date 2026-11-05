@@ -114,6 +114,13 @@ typedef struct ZenitD12BindingEntry {
 } ZenitD12BindingEntry;
 int zenit_d12_bind_group_create(ZenitD12Device *, ZenitD12PipelineLayout *, uint32_t group,
     const ZenitD12BindingEntry *, uint32_t count, ZenitD12BindGroup **out);
+/* A draw with its bind groups given as entries instead of bind-group objects:
+   group_counts[i] entries for group i, concatenated in group order. Same
+   validation and recorded result as creating the groups and calling
+   zenit_d12_render_pass_draw; draw->group_count must be 0 (groups is ignored).
+   Status 6: an entry that bind_group_create would reject. */
+int zenit_d12_render_pass_draw_entries(ZenitD12RenderPass *, ZenitD12RenderPipeline *, const ZenitD12Draw *,
+    const ZenitD12BindingEntry *entries, const uint32_t *group_counts, uint32_t group_count);
 void zenit_d12_bind_group_release(ZenitD12BindGroup *);
 int zenit_d12_compute_validate_bindings(ZenitD12ComputePipeline *, uint32_t group,
     const ZenitD12BindingEntry *, uint32_t count);

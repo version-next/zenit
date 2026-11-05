@@ -68,6 +68,19 @@ pub const CachedRenderSlice = struct {
     /// hardware (RPC screenshot path shows no issue). Stamp captures the write-frame glass
     /// parameter hash; parameter change -> MISS and re-record. maxInt = no glass.
     cached_glass_hash: u64 = std.math.maxInt(u64),
+    /// subtree_payload stamp: the cache root's linear-text (stable raster) state at write time.
+    /// text_run items bake their raster policy; the state is inherited from ancestors
+    /// (`text_stabilize_subtree`, e.g. ScrollArea toggles it on its content during bounce)
+    /// and flipping it marks no descendant dirty.
+    cached_force_linear_text: bool = false,
+    /// subtree_payload / own_payload stamp: which property-tree nodes the cache root **owns**
+    /// (its own effect and its kind, its own clip), see render_engine ownerSignature. Replaces
+    /// comparing the root's frame-local transform/effect/clip sequence ids, which shift whenever
+    /// anything painted earlier allocates one more or one fewer node (a list row rebinding at the
+    /// top missed every cache below it each frame). Item headers are rewritten to this frame's ids
+    /// by appendCachedCommands either way; what must be detected is the root gaining or losing
+    /// its own effect / clip scope.
+    cached_owner_signature: u32 = std.math.maxInt(u32),
     world_bounds: ComputedRect = ComputedRect.init(0, 0, 0, 0),
     world_transform: Transform2D = .{},
     allocator: Allocator,
@@ -150,9 +163,23 @@ fn duplicateDisplayItem(allocator: Allocator, source: DisplayItem) !DisplayItem 
         },
         .fill_path => |*path| path.geometry = try duplicatePathGeometry(allocator, source.fill_path.geometry),
         .stroke_path => |*path| path.geometry = try duplicatePathGeometry(allocator, source.stroke_path.geometry),
+        .begin_blur_layer => |*blur| {
+            const glass = try allocator.create(@TypeOf(blur.glass.*));
+            glass.* = source.begin_blur_layer.glass.*;
+            blur.glass = glass;
+        },
+        .push_clip => |*clip| clip.polygon = try duplicatePolygon(allocator, source.push_clip.polygon),
+        .border_side => |*border| border.clip_polygon = try duplicatePolygon(allocator, source.border_side.clip_polygon),
         else => {},
     }
     return out;
+}
+
+fn duplicatePolygon(allocator: Allocator, source: anytype) !@TypeOf(source) {
+    const p = source orelse return null;
+    const clone = try allocator.create(@TypeOf(p.*));
+    clone.* = p.*;
+    return clone;
 }
 
 fn duplicatePathGeometry(allocator: Allocator, source: *const types.PathGeometry) !*const types.PathGeometry {
@@ -173,6 +200,9 @@ fn freeDuplicatedDisplayItem(allocator: Allocator, item: *DisplayItem) void {
         },
         .fill_path => |*path| freeDuplicatedPathGeometry(allocator, path.geometry),
         .stroke_path => |*path| freeDuplicatedPathGeometry(allocator, path.geometry),
+        .begin_blur_layer => |*blur| allocator.destroy(@constCast(blur.glass)),
+        .push_clip => |*clip| if (clip.polygon) |p| allocator.destroy(@constCast(p)),
+        .border_side => |*border| if (border.clip_polygon) |p| allocator.destroy(@constCast(p)),
         else => {},
     }
 }

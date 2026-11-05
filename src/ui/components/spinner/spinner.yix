@@ -5,7 +5,7 @@ const S = @import("styles.yss");
 /// Rotating loading animation (Material Design circular progress style): self-drawn arc, redrawn
 /// per frame by frame clock, not drawn outside viewport.
 /// W.Spinner(.{ .size = 24 }); color defaults to theme accent.
-pub fn Spinner(size: f32 = 20, strokeWidth: f32 = 3, color: ?ui.Color = null) View {
+pub fn Spinner(size: f32 = 20, strokeWidth: f32 = 2.5, color: ?ui.Color = null) View {
     const ring = computed(S.Ring{ .size = size, .stroke_width = strokeWidth, .color = color });
-    return <canvas style={S.container.of(.{ .size = size, .stroke_width = strokeWidth })} a11y={.{ .role = .progressbar }} draw={S.drawArc} data={ring} animate />;
+    return <canvas style={S.container.of(.{ .size = size, .stroke_width = strokeWidth })} a11y={.{ .role = .progressbar }} draw={S.drawArc} data={ring} animate={ui.view.LoopPeriod{ .period_ms = S.loop_ms }} />;
 }

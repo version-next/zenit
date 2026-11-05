@@ -33,11 +33,11 @@ fn demoWidth(comptime w: f32) ui.BoxStyle {
 }
 
 fn row(cx: *ui.Cx, gap: f32) !*ui.Node {
-    return ui.box(cx, .{ .direction = .row, .gap = gap, .align_items = .center }, .{});
+    return ui.box(cx, .{ .direction = .row, .gap = gap, .align_items = .center, .no_cross_stretch = true }, .{});
 }
 
 fn col(cx: *ui.Cx, gap: f32) !*ui.Node {
-    return ui.box(cx, .{ .direction = .column, .gap = gap }, .{});
+    return ui.box(cx, .{ .direction = .column, .gap = gap, .no_cross_stretch = true }, .{});
 }
 
 /// Regression: story status row (13px primary).
@@ -65,6 +65,7 @@ const ButtonVariantSpec = struct { v: W.ButtonVariant, t: []const u8 };
 const ButtonSizeSpec = struct { s: W.ButtonSize, t: []const u8 };
 
 const button_variants = [_]ButtonVariantSpec{
+    .{ .v = .base, .t = "Base" },
     .{ .v = .primary, .t = "Primary" },
     .{ .v = .secondary, .t = "Secondary" },
     .{ .v = .ghost, .t = "Ghost" },
@@ -201,6 +202,8 @@ pub fn buildCheckbox(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
         v.attrs(.{ .test_id = "story.checkbox.checked" }, W.Checkbox(.{ .label = "Checked", .checked = true })),
         v.attrs(.{ .test_id = "story.checkbox.indeterminate" }, W.Checkbox(.{ .label = "Indeterminate", .indeterminate = true })),
         W.Checkbox(.{ .label = "Disabled", .disabled = true }),
+        W.Checkbox(.{ .label = "Disabled selected", .checked = true, .disabled = true }),
+        W.Checkbox(.{ .label = "Disabled mixed", .indeterminate = true, .disabled = true }),
         v.text(.{ .style = S.storyLabel, .test_id = "story.checkbox.status" }, v.fmt("changed → {s}", .{ui.map(last, CheckboxStory.word)})),
     }));
 }
@@ -540,7 +543,10 @@ const TagEl = @TypeOf(W.Tag(.{ .label = "" }));
 
 const TagViews = struct {
     fn colored(s: TagColorSpec) TagEl {
-        return W.Tag(.{ .label = s.t, .color = s.c });
+        return W.Tag(.{ .label = s.t, .color = s.c, .closable = true });
+    }
+    fn outlined(s: TagColorSpec) TagEl {
+        return W.Tag(.{ .label = s.t, .color = s.c, .variant = .outline, .closable = true });
     }
     fn sized(s: TagSizeSpec) TagEl {
         return W.Tag(.{ .label = s.t, .color = .accent, .size = s.s });
@@ -568,6 +574,7 @@ pub fn buildTag(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
         // -- all colors (incl info) --
         label("Colors"),
         v.row(.{ .style = S.line(8) }, v.list(&tag_colors, TagViews.colored)),
+        v.row(.{ .style = S.line(8) }, v.list(&tag_colors, TagViews.outlined)),
 
         // -- Sizes --
         label("Sizes (sm / md)"),
@@ -729,11 +736,17 @@ pub fn buildAlert(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     const a_warn = try scope.createSignal(bool, true);
     const restore = try ui.on.bind(scope, ResetPair{ .a = a_info, .b = a_ok, .c = a_warn }, ResetPair.run);
     return v.render(scope, cx, v.col(.{ .style = S.stack(12) }, .{
-        v.show(a_info, .{v.attrs(.{ .test_id = "story.alert.info" }, W.Alert(.{ .variant = .info, .title = "Info", .message = "Informational message.", .closable = true, .on_close = ui.on.set(a_info, false) }))}),
-        v.show(a_ok, .{v.attrs(.{ .test_id = "story.alert.success" }, W.Alert(.{ .variant = .success, .title = "Success", .message = "It worked.", .closable = true, .on_close = ui.on.set(a_ok, false) }))}),
-        v.show(a_warn, .{v.attrs(.{ .test_id = "story.alert.warning" }, W.Alert(.{ .variant = .warning, .title = "Warning", .message = "Be careful.", .closable = true, .on_close = ui.on.set(a_warn, false) }))}),
+        v.show(a_info, .{v.attrs(.{ .test_id = "story.alert.info" }, W.Alert(.{ .variant = .info, .title = "A new version is ready", .message = "Update when you’re ready. Your workspace will be restored.", .action_label = "View update", .action_icon_asset = ui.icons.arrow_up_right, .closable = true, .on_close = ui.on.set(a_info, false) }))}),
+        v.show(a_ok, .{v.attrs(.{ .test_id = "story.alert.success" }, W.Alert(.{ .variant = .success, .title = "All changes saved", .message = "Your project is up to date across your devices.", .closable = true, .on_close = ui.on.set(a_ok, false) }))}),
+        v.show(a_warn, .{v.attrs(.{ .test_id = "story.alert.warning" }, W.Alert(.{ .variant = .warning, .title = "You’re working offline", .message = "Changes stay on this device until you reconnect.", .action_label = "Retry connection", .action_icon_asset = ui.icons.rotate_cw, .closable = true, .on_close = ui.on.set(a_warn, false) }))}),
         // not closable: no × at all
-        W.Alert(.{ .variant = .@"error", .title = "Error", .message = "Something broke." }),
+        W.Alert(.{
+            .variant = .@"error",
+            .title = "We couldn’t save your changes",
+            .message = "Your edits are safe. Check your connection and try again.",
+            .action_label = "Try again",
+            .action_icon_asset = ui.icons.rotate_ccw,
+        }),
         // No title (message only)
         W.Alert(.{ .variant = .info, .message = "Title-less alert with just a message." }),
         v.attrs(.{ .test_id = "story.alert.restore" }, W.Button(.{ .label = "Restore", .size = .sm, .variant = .secondary, .on_click = restore })),
@@ -1031,7 +1044,7 @@ pub fn buildGlassBox(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
         const group = try W.GlassGroup(.{ .spacing = 0, .gap = 16 }).mountWithState(scope, cx);
         const card_shape: W.glass_box.GlassBoxShape = .{ .rounded = 20 };
         const card_w: f32 = 160;
-        const body_style = ui.TextStyle{ .font_size = 13, .font_weight = 450, .color = cx.tokens.tokens.color.fg_primary, .wrap = .word };
+        const body_style = ui.TextStyle{ .font_size = 13, .font_weight = 450, .color = cx.tokens.tokens.color.fg_primary, .wrap = .word_break };
         const regular = try W.GlassShape(.{ .title = "Regular", .subtitle = "adaptive, legible", .shape = card_shape, .width = card_w }).mountIn(group, scope, cx);
         try regular.body.appendChild(a, try ui.text(cx, "Functional layer content.", body_style));
         const inter = try W.GlassShape(.{ .title = "Interactive", .subtitle = "hover / press me", .shape = card_shape, .width = card_w, .interactive = true }).mountIn(group, scope, cx);
@@ -1653,14 +1666,14 @@ pub fn buildBlendLab(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
         const n = try blendAbs(cx, stage, 40 + 200 * @as(f32, @floatFromInt(j)), 620, 100, 40, white);
         const ext = try n.style.ensureExtFallible(a);
         ext.corner_radius = ui.CornerRadius.uniform(10);
-        n.style.border = .{ .width = 0, .color = ui.Color.rgba(0, 0, 0, 0), .radius = 10 };
+        n.style.border = .{ .overlay = true, .width = 0, .color = ui.Color.rgba(0, 0, 0, 0), .radius = 10 };
         ext.setShadow(.{ .color = ui.Color.rgba(0, 0, 0, @intFromFloat(@round(sv[2] * 255))), .blur = 2 * sv[0], .offset_x = 0, .offset_y = sv[1] });
     }
     // Corner edge AA and scaled image
     _ = try blendAbs(cx, stage, 0, 680, 640, 80, white);
     const edge = try blendAbs(cx, stage, 20, 700, 60, 40, black);
     (try edge.style.ensureExtFallible(a)).corner_radius = ui.CornerRadius.uniform(12);
-    edge.style.border = .{ .width = 0, .color = ui.Color.rgba(0, 0, 0, 0), .radius = 12 };
+    edge.style.border = .{ .overlay = true, .width = 0, .color = ui.Color.rgba(0, 0, 0, 0), .radius = 12 };
     if (g_blend_checker_texture) |tex| {
         for ([_][3]f32{ .{ 120, 696, 48 }, .{ 200, 712, 16 } }) |cv| {
             const img = try ui.image(cx, tex, .{ .width = .{ .px = cv[2] }, .height = .{ .px = cv[2] }, .position = .absolute });
@@ -1730,7 +1743,7 @@ pub fn buildGlassConcentric(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
             const ext = try cell.style.ensureExtFallible(a);
             ext.inset = .{ .left = .{ .px = 20 + 140 * @as(f32, @floatFromInt(ci)) }, .top = .{ .px = 20 + 140 * @as(f32, @floatFromInt(r)) } };
             ext.corner_radius = ui.CornerRadius.uniform(30);
-            cell.style.border = .{ .width = 0, .color = ui.Color.rgba(0, 0, 0, 0), .radius = 30 };
+            cell.style.border = .{ .overlay = true, .width = 0, .color = ui.Color.rgba(0, 0, 0, 0), .radius = 30 };
             try W.concentric.containerShape(cell, a, 30);
             const p = pads[ci];
             var child: *ui.Node = undefined;
@@ -1945,81 +1958,90 @@ pub fn buildGlassIosLens(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
 
 pub fn buildGlassIosBars(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     const a = cx.allocator;
-    const icons = ui.icons;
     const c = try col(cx, 10);
     try c.appendChild(a, try labelNode(cx, "iOS bars (idiom .ios): navigation bar, large title, bottom toolbar, tab bar, glass buttons — metrics from UIKit's own view hierarchy"));
+    // Gray 128: the backdrop every native measurement was taken over.
+    try c.appendChild(a, try iosBarsSet(scope, cx, "story.iosbars", ui.Color.rgba(128, 128, 128, 255)));
+    // The same set on a white page (system light, the common app background), framed so the page
+    // edge is visible against the white story panel. Glass adapts to what is behind it: the
+    // selection plate follows the platter body, so it reads much lighter here than over gray.
+    try c.appendChild(a, try labelNode(cx, "Light page (white, system light): the same bars over the common app background"));
+    const page = try ui.box(cx, .{ .direction = .column, .padding = ui.Padding.all(16), .background = ui.Color.rgba(255, 255, 255, 255), .border_width = 1, .border_color = ui.Color.rgba(220, 220, 216, 255) }, .{});
+    (try page.style.ensureExtFallible(a)).corner_radius = ui.CornerRadius.uniform(14);
+    page.meta.ownership.meta.test_id = "story.iosbars.white.page";
+    try page.appendChild(a, try iosBarsSet(scope, cx, "story.iosbars.white", ui.Color.rgba(255, 255, 255, 255)));
+    try c.appendChild(a, page);
+    return c;
+}
+
+/// One set of iOS bars over `bg`: navigation bar, large title, bottom toolbar and tab bar in a
+/// column, glass buttons beside them. Test ids are `<p>.nav`, `<p>.tab.home`, `<p>.btn.clear`, ...
+fn iosBarsSet(scope: *ui.Scope, cx: *ui.Cx, comptime p: []const u8, bg: ui.Color) !*ui.Node {
+    const a = cx.allocator;
+    const icons = ui.icons;
     const B = W.glass_bars;
     const bars_row = try ui.box(cx, .{ .direction = .row, .gap = 16, .align_items = .start }, .{});
     const left = try col(cx, 10);
 
-    const nav_strip = try iosStrip(cx, 70, "story.iosbars.nav");
-    const nav_icons = [_]B.BarIcon{ .{ .icon = icons.ellipsis, .label = "More", .test_id = "story.iosbars.nav.more" }, .{ .icon = icons.share, .label = "Share", .test_id = "story.iosbars.nav.share" } };
+    const nav_strip = try iosStripOn(cx, 70, p ++ ".nav", bg);
+    const nav_icons = [_]B.BarIcon{ .{ .icon = icons.ellipsis, .label = "More", .test_id = p ++ ".nav.more" }, .{ .icon = icons.share, .label = "Share", .test_id = p ++ ".nav.share" } };
     const nav = try W.GlassNavigationBar(.{
         .title = "Message",
         .subtitle = "2 unread",
         .back = cx.on(StoryNoop, &story_noop, StoryNoop.f),
-        .back_test_id = "story.iosbars.nav.back",
-        .trailing = &[_]B.BarGroup{ .{ .icons = &nav_icons }, .{ .prominent = .{ .title = "Done", .test_id = "story.iosbars.nav.done" } } },
+        .back_test_id = p ++ ".nav.back",
+        .trailing = &[_]B.BarGroup{ .{ .icons = &nav_icons }, .{ .prominent = .{ .title = "Done", .test_id = p ++ ".nav.done" } } },
         .width = 402,
     }).mount(scope, cx);
     nav.root.style.margin = .{ .top = 8 };
     try nav_strip.appendChild(a, nav.root);
     try left.appendChild(a, nav_strip);
 
-    const large_strip = try iosStrip(cx, 140, "story.iosbars.large");
+    const large_strip = try iosStripOn(cx, 140, p ++ ".large", bg);
     const large = try W.GlassNavigationBar(.{
         .title = "Library",
         .subtitle = "128 items",
         .large_title = true,
-        .trailing = &[_]B.BarGroup{.{ .icons = &[_]B.BarIcon{.{ .icon = icons.plus, .label = "Add", .test_id = "story.iosbars.large.add" }} }},
+        .trailing = &[_]B.BarGroup{.{ .icons = &[_]B.BarIcon{.{ .icon = icons.plus, .label = "Add", .test_id = p ++ ".large.add" }} }},
         .width = 402,
     }).mount(scope, cx);
     large.root.style.margin = .{ .top = 8 };
     try large_strip.appendChild(a, large.root);
     try left.appendChild(a, large_strip);
 
-    const tool_strip = try iosStrip(cx, 70, "story.iosbars.toolbar");
+    const tool_strip = try iosStripOn(cx, 70, p ++ ".toolbar", bg);
     const tool_icons = [_]B.BarIcon{ .{ .icon = icons.folder, .label = "Folder" }, .{ .icon = icons.trash, .label = "Trash" } };
     const tool = try W.GlassBottomToolbar(.{
-        .groups = &[_]B.BarGroup{ .{ .icons = &tool_icons }, .flexible_space, .{ .prominent = .{ .icon = icons.square_pen, .label = "Compose", .test_id = "story.iosbars.toolbar.compose" } } },
+        .groups = &[_]B.BarGroup{ .{ .icons = &tool_icons }, .flexible_space, .{ .prominent = .{ .icon = icons.square_pen, .label = "Compose", .test_id = p ++ ".toolbar.compose" } } },
         .width = 402,
     }).mount(scope, cx);
     tool.root.style.margin = .{ .top = 11 };
     try tool_strip.appendChild(a, tool.root);
     try left.appendChild(a, tool_strip);
 
-    const tab_strip = try iosStrip(cx, 84, "story.iosbars.tabbar");
-    const tabs = [_]B.TabItem{ .{ .icon = icons.house, .label = "Home", .test_id = "story.iosbars.tab.home" }, .{ .icon = icons.library, .label = "Library", .test_id = "story.iosbars.tab.library" }, .{ .icon = icons.radio, .label = "Radio", .test_id = "story.iosbars.tab.radio" } };
-    const tab = try W.GlassTabBar(.{ .tabs = &tabs, .search = .{ .icon = icons.search, .label = "Search", .test_id = "story.iosbars.tab.search" }, .width = 402, .test_id = "story.iosbars.tb" }).mount(scope, cx);
+    const tab_strip = try iosStripOn(cx, 84, p ++ ".tabbar", bg);
+    const tabs = [_]B.TabItem{ .{ .icon = icons.house, .label = "Home", .test_id = p ++ ".tab.home" }, .{ .icon = icons.library, .label = "Library", .test_id = p ++ ".tab.library" }, .{ .icon = icons.radio, .label = "Radio", .test_id = p ++ ".tab.radio" } };
+    const tab = try W.GlassTabBar(.{ .tabs = &tabs, .search = .{ .icon = icons.search, .label = "Search", .test_id = p ++ ".tab.search" }, .width = 402, .test_id = p ++ ".tb" }).mount(scope, cx);
     tab.root.style.margin = .{ .top = 11 };
     try tab_strip.appendChild(a, tab.root);
     try left.appendChild(a, tab_strip);
-    // The same tab bar over a white page (system light, the common app background): the
-    // selection plate follows the platter body, so it reads much lighter here than over gray.
-    const white_strip = try iosStripOn(cx, 84, "story.iosbars.tabbar.white", ui.Color.rgba(255, 255, 255, 255));
-    const white_tabs = [_]B.TabItem{ .{ .icon = icons.house, .label = "Home", .test_id = "story.iosbars.white.tab.home" }, .{ .icon = icons.library, .label = "Library", .test_id = "story.iosbars.white.tab.library" }, .{ .icon = icons.radio, .label = "Radio", .test_id = "story.iosbars.white.tab.radio" } };
-    const white_tab = try W.GlassTabBar(.{ .tabs = &white_tabs, .search = .{ .icon = icons.search, .label = "Search" }, .width = 402, .test_id = "story.iosbars.white.tb" }).mount(scope, cx);
-    white_tab.root.style.margin = .{ .top = 11 };
-    try white_strip.appendChild(a, white_tab.root);
-    try left.appendChild(a, white_strip);
     try bars_row.appendChild(a, left);
 
-    const btn_strip = try iosStrip(cx, 380, "story.iosbars.buttons");
+    const btn_strip = try iosStripOn(cx, 380, p ++ ".buttons", bg);
     btn_strip.style.width = .{ .px = 220 };
     btn_strip.style.align_items = .center;
     btn_strip.style.justify = .center;
     btn_strip.style.gap = 18;
     const styles = [_]struct { t: []const u8, s: B.GlassButtonStyle, id: []const u8 }{
-        .{ .t = "Glass", .s = .glass, .id = "story.iosbars.btn.glass" },
-        .{ .t = "Prominent", .s = .prominent_glass, .id = "story.iosbars.btn.prominent" },
-        .{ .t = "Clear", .s = .clear_glass, .id = "story.iosbars.btn.clear" },
-        .{ .t = "Prominent Clear", .s = .prominent_clear_glass, .id = "story.iosbars.btn.prominent_clear" },
+        .{ .t = "Glass", .s = .glass, .id = p ++ ".btn.glass" },
+        .{ .t = "Prominent", .s = .prominent_glass, .id = p ++ ".btn.prominent" },
+        .{ .t = "Clear", .s = .clear_glass, .id = p ++ ".btn.clear" },
+        .{ .t = "Prominent Clear", .s = .prominent_clear_glass, .id = p ++ ".btn.prominent_clear" },
     };
     for (styles) |st| try btn_strip.appendChild(a, (try W.GlassButton(.{ .title = st.t, .style = st.s, .test_id = st.id }).mount(scope, cx)).root);
-    try btn_strip.appendChild(a, (try W.GlassButton(.{ .icon = icons.heart, .label = "Like", .test_id = "story.iosbars.btn.icon" }).mount(scope, cx)).root);
+    try btn_strip.appendChild(a, (try W.GlassButton(.{ .icon = icons.heart, .label = "Like", .test_id = p ++ ".btn.icon" }).mount(scope, cx)).root);
     try bars_row.appendChild(a, btn_strip);
-    try c.appendChild(a, bars_row);
-    return c;
+    return bars_row;
 }
 
 const StoryNoop = struct {
@@ -2229,7 +2251,7 @@ pub fn buildGlassAdapt(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
         var hb: [48]u8 = undefined;
         try band.appendChild(a, try ui.text(cx, try std.fmt.bufPrint(&hb, "Background {d}", .{lv}), .{ .font_size = 22, .font_weight = 700, .color = ink }));
         for (0..4) |_| {
-            try band.appendChild(a, try ui.text(cx, "Liquid Glass adapts to what is behind it: small floating controls switch between light and dark, large surfaces keep their family.", .{ .font_size = 14, .color = ink, .wrap = .word }));
+            try band.appendChild(a, try ui.text(cx, "Liquid Glass adapts to what is behind it: small floating controls switch between light and dark, large surfaces keep their family.", .{ .font_size = 14, .color = ink, .wrap = .word_break }));
         }
         try sa.content.appendChild(a, band);
     }
@@ -2256,7 +2278,7 @@ pub fn buildGlassAdapt(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
 
     // Large regular panel: bottom-right corner
     const panel = try W.GlassBox(.{ .width = 220, .title = "Regular panel", .subtitle = "larger than 64 pt: keeps its family", .shape = .{ .rounded = 20 } }).mountWithState(scope, cx);
-    try panel.body.appendChild(a, try ui.text(cx, "Material still adapts: the backdrop shows through, the shadow and rim follow.", .{ .font_size = 13, .color = cx.tokens.tokens.color.fg_primary, .wrap = .word }));
+    try panel.body.appendChild(a, try ui.text(cx, "Material still adapts: the backdrop shows through, the shadow and rim follow.", .{ .font_size = 13, .color = cx.tokens.tokens.color.fg_primary, .wrap = .word_break }));
     panel.box.style.position = .absolute;
     (try panel.box.style.ensureExtFallible(a)).inset = .{ .right = .{ .px = 20 }, .bottom = .{ .px = 20 } };
     panel.box.meta.ownership.meta.test_id = "story.glassadapt.panel";
@@ -2295,7 +2317,7 @@ pub fn buildGlassPopover(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     {
         const panel = pop.chrome;
         panel.setBackground(ui.Color.rgba(0, 0, 0, 0));
-        panel.style.border = .{ .width = 0, .color = ui.Color.rgba(0, 0, 0, 0), .radius = 0 };
+        panel.style.border = .{ .overlay = true, .width = 0, .color = ui.Color.rgba(0, 0, 0, 0), .radius = 0 };
         panel.style.padding = ui.Padding.all(0);
         panel.style.overflow_hidden = false;
         const ext = panel.style.ensureExtPanic(a);
@@ -2344,7 +2366,7 @@ pub fn buildGlassPopover(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     {
         const panel = menu.chrome;
         panel.setBackground(ui.Color.rgba(0, 0, 0, 0));
-        panel.style.border = .{ .width = 0, .color = ui.Color.rgba(0, 0, 0, 0), .radius = 0 };
+        panel.style.border = .{ .overlay = true, .width = 0, .color = ui.Color.rgba(0, 0, 0, 0), .radius = 0 };
         panel.style.padding = ui.Padding.all(0);
         panel.style.overflow_hidden = false;
         const ext = panel.style.ensureExtPanic(a);
@@ -2539,6 +2561,7 @@ pub fn buildGlassIslands(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     _ = scope;
     const a = cx.allocator;
     const c = try col(cx, 12);
+    c.style.ensureExtPanic(a).align_self = .stretch;
 
     const bd = try glassBackdrop(cx, 420);
     // High-freq black/white stripe target pressed under first island left edge (islands_row
@@ -2583,7 +2606,7 @@ pub fn buildGlassIslands(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
             // contrast
             // window (96 at 37% white lifts sharp black to ~160, blur ~190, can't catch regression)
             .background = ui.Color.rgba(255, 255, 255, 40),
-            .border = .{ .width = 1, .color = ui.Color.rgba(255, 255, 255, 140), .radius = 12 },
+            .border = .{ .overlay = true, .width = 1, .color = ui.Color.rgba(255, 255, 255, 140), .radius = 12 },
             .overflow_hidden = true,
         }, .{});
         const ext = try island.style.ensureExtFallible(a);
@@ -2618,20 +2641,33 @@ pub fn buildGlassIslands(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
 }
 
 // ── Stack (VStack / HStack) ──
+const LayoutPreviewS = struct {
+    fn chip(t: *const ui.theme.Values) ui.BoxStyle {
+        return .{ .background = t.tokens.color.bg_secondary, .padding = ui.Padding.symmetric(t.tokens.space.space100, t.tokens.space.space200), .corner_radius = t.tokens.radius.md };
+    }
+    fn text(t: *const ui.theme.Values) ui.TextStyle {
+        return .{ .font_size = t.tokens.font_size.sm, .line_height = 1.4, .color = t.tokens.color.fg_primary };
+    }
+    fn cell(t: *const ui.theme.Values) ui.BoxStyle {
+        // COMPONENTS.json Grid: 52px cells separated by 8px.
+        return .{ .width = .fixed(52), .height = .fixed(52), .background = t.tokens.color.bg_secondary, .border = .{ .overlay = true, .width = 1, .color = t.tokens.color.border, .radius = t.tokens.radius.md } };
+    }
+};
+const layout_chip_props = .{ .style = LayoutPreviewS.chip };
+const layout_text_props = .{ .style = LayoutPreviewS.text };
+fn layoutChip(text: []const u8) @TypeOf(v.box(layout_chip_props, v.text(layout_text_props, text))) {
+    return v.box(layout_chip_props, v.text(layout_text_props, text));
+}
 
 pub fn buildStack(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     return v.render(scope, cx, v.col(.{ .style = S.stack(16) }, .{
         label("HStack gap=8"),
         v.with(W.HStack(.{ .gap = 8 }), .{
-            W.Button(.{ .label = "A", .variant = .secondary }),
-            W.Button(.{ .label = "B", .variant = .secondary }),
-            W.Button(.{ .label = "C", .variant = .secondary }),
+            layoutChip("One"), layoutChip("Two"), layoutChip("Three"),
         }),
         label("VStack gap=8"),
-        v.with(W.VStack(.{ .gap = 8 }), .{
-            W.Tag(.{ .label = "First" }),
-            W.Tag(.{ .label = "Second" }),
-            W.Tag(.{ .label = "Third" }),
+        v.with(W.VStack(.{ .gap = 8, .align_items = .start }), .{
+            layoutChip("One"), layoutChip("Two"), layoutChip("Three"),
         }),
         label("justify: start / center / space_between (width 320)"),
         v.with(W.VStack(.{ .gap = 6 }), .{
@@ -2686,7 +2722,7 @@ const LayoutS = struct {
             .gap = 4,
             .padding = Padding.all(14),
             .background = layout_col.surface,
-            .border = .{ .width = 1, .color = layout_col.line, .radius = 8 },
+            .border = .{ .overlay = true, .width = 1, .color = layout_col.line, .radius = 8 },
         };
     }
     fn coverageTitle(t: *const ui.theme.Values) ui.TextStyle {
@@ -2708,7 +2744,7 @@ const LayoutS = struct {
             .position = .relative,
             .padding = padding,
             .background = layout_col.padding,
-            .border = .{ .width = 1, .color = layout_col.line, .radius = 8 },
+            .border = .{ .overlay = true, .width = 1, .color = layout_col.line, .radius = 8 },
             .overflow_hidden = true,
         };
     }
@@ -2720,7 +2756,7 @@ const LayoutS = struct {
             .justify = .center,
             .align_items = .center,
             .background = layout_col.content,
-            .border = .{ .width = 1, .color = ui.Color.rgba(96, 165, 250, 255), .radius = 4 },
+            .border = .{ .overlay = true, .width = 1, .color = ui.Color.rgba(96, 165, 250, 255), .radius = 4 },
         };
     }
     fn contentGuideText(_: *const ui.theme.Values) ui.TextStyle {
@@ -2760,7 +2796,7 @@ const LayoutS = struct {
             .gap = 10,
             .padding = Padding.all(20),
             .background = layout_col.content,
-            .border = .{ .width = 1, .color = layout_col.line, .radius = 8 },
+            .border = .{ .overlay = true, .width = 1, .color = layout_col.line, .radius = 8 },
         };
     }
     fn grow(_: *const ui.theme.Values) ui.BoxStyle {
@@ -2824,7 +2860,7 @@ fn layoutGridPanel(_: *const ui.theme.Values) ui.BoxStyle {
         .height = .{ .px = 170 },
         .padding = Padding.all(20),
         .background = layout_col.padding,
-        .border = .{ .width = 1, .color = layout_col.line, .radius = 8 },
+        .border = .{ .overlay = true, .width = 1, .color = layout_col.line, .radius = 8 },
         .align_items = .center,
     };
 }
@@ -2850,7 +2886,7 @@ fn justifySampleView(spec: JustifySpec, scope: *ui.Scope, cx: *ui.Cx) !*ui.Node 
             .gap = 8,
             .padding = Padding.all(12),
             .background = layout_col.content,
-            .border = .{ .width = 1, .color = layout_col.line, .radius = 8 },
+            .border = .{ .overlay = true, .width = 1, .color = layout_col.line, .radius = 8 },
         } }, .{
             layoutBadge("1", 36, 30, layout_col.flow),
             layoutBadge("2", 36, 30, layout_col.flow_alt),
@@ -2877,7 +2913,7 @@ fn overflowSampleView(spec: OverflowSpec, scope: *ui.Scope, cx: *ui.Cx) !*ui.Nod
             .position = .relative,
             .padding = Padding.all(12),
             .background = layout_col.surface,
-            .border = .{ .width = 1, .color = layout_col.line, .radius = 8 },
+            .border = .{ .overlay = true, .width = 1, .color = layout_col.line, .radius = 8 },
             .overflow_hidden = spec.clipped,
         } }, v.attrs(.{ .style = LayoutS.absAt(.{ .left = .{ .px = 280 }, .top = .{ .px = 55 } }) }, layoutBadge("100 × 60", 100, 60, layout_col.absolute))),
     }));
@@ -3205,7 +3241,7 @@ pub fn buildSteps(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     const step = try scope.createSignal(usize, 1);
     return v.render(scope, cx, v.col(.{ .style = S.stack(24) }, .{
         v.text(.{ .style = S.storyLabel }, v.fmt("Horizontal (step {d} active)", .{ui.map(step, StepsStory.humanIndex)})),
-        W.Steps(.{ .items = &step_items, .current = step, .check_icon_asset = icons.check }),
+        v.attrs(.{ .style = ui.BoxStyle{ .width = .{ .px = 420 } } }, W.Steps(.{ .items = &step_items, .current = step, .check_icon_asset = icons.check })),
         v.row(.{ .style = S.stack(8) }, .{
             v.attrs(.{ .test_id = "story.steps.back" }, W.Button(.{
                 .label = "Back",
@@ -3267,7 +3303,7 @@ const tree_multi_nodes = [_]W.TreeNodeData{
 
 pub fn buildTree(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     return v.render(scope, cx, v.col(.{ .style = S.stack(16) }, .{
-        v.attrs(.{ .test_id = "story.tree.single" }, W.Tree(.{ .label_text = "Single tree", .nodes = &tree_nodes, .expanded = @as([]const []const u8, &.{"src"}) })),
+        v.attrs(.{ .test_id = "story.tree.single" }, W.Tree(.{ .label_text = "Single tree", .nodes = &tree_nodes, .selected = @as([]const []const u8, &.{"main"}), .expanded = @as([]const []const u8, &.{"src"}) })),
         v.attrs(.{ .test_id = "story.tree.multi" }, W.Tree(.{ .label_text = "Multi tree", .nodes = &tree_multi_nodes, .selection_mode = .multi })),
     }));
 }
@@ -3326,31 +3362,58 @@ const table_cols = [_]W.ColumnDef{
     .{ .id = "age", .header = "Age", .width = 80, .sortable = true },
 };
 
+/// Virtual-body cell (> 50 rows): the name carries the row number so recycled slots are visible.
+fn tableVirtualCell(row_i: usize, col_i: usize, scope: *ui.Scope, cx: *ui.Cx) !*ui.Node {
+    const i = row_i % TABLE_NAMES.len;
+    if (col_i == 0) return v.render(scope, cx, v.text(table_cell_props, v.fmt("{s} #{d}", .{ TABLE_NAMES[i], row_i })));
+    return v.render(scope, cx, v.text(table_cell_props, TableSortStory.key(col_i, i)));
+}
+
 pub fn buildTable(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     // header clicks commit the sort; the rows reorder through data_version
     const sort = try scope.createSignal(?W.table.TableSort, null);
-    return v.render(scope, cx, W.Table(.{
-        .columns = &table_cols,
-        .row_count = 8,
-        .striped = true,
-        .sort = sort,
-        .data_version = ui.map(sort, TableSortStory.version),
-    }).cells(sort, tableCell));
+    return v.render(scope, cx, v.col(.{ .style = S.stack(12) }, .{
+        W.Table(.{
+            .columns = &table_cols,
+            .row_count = 8,
+            .striped = true,
+            .sort = sort,
+            .data_version = ui.map(sort, TableSortStory.version),
+        }).cells(sort, tableCell),
+        // Above 50 rows the body is virtualized (pooled slots); rows hover exactly like above.
+        v.text(label_props, "Virtual body · 1,000 rows"),
+        v.attrs(.{ .test_id = "story.table.virtual" }, W.Table(.{
+            .columns = &table_cols,
+            .row_count = 1000,
+            .striped = true,
+            .table_height = 232,
+        }).cells({}, tableVirtualCell)),
+    }));
 }
 
 // ── Calendar ──
 pub fn buildCalendar(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
-    return v.render(scope, cx, W.Calendar(.{ .month = W.calendar.YearMonth{ .year = 2026, .month = 5 }, .value = @as(?W.calendar.SimpleDate, .{ .year = 2026, .month = 5, .day = 14 }) }));
+    return v.render(scope, cx, W.Calendar(.{ .month = W.calendar.YearMonth{ .year = 2026, .month = 10 }, .value = @as(?W.calendar.SimpleDate, .{ .year = 2026, .month = 10, .day = 16 }) }));
 }
 
 // ── DatePicker ──
 pub fn buildDatePicker(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
-    return v.render(scope, cx, W.DatePicker(.{ .placeholder = "Pick a date" }));
+    return v.render(scope, cx, v.col(.{ .style = S.stack(12) }, .{
+        v.attrs(.{ .test_id = "story.datepicker.empty" }, W.DatePicker(.{ .placeholder = "Pick a date" })),
+        W.DatePicker(.{ .open = true, .test_id = "story.datepicker.open", .value = @as(?W.calendar.SimpleDate, .{ .year = 2026, .month = 10, .day = 16 }) }),
+    }));
+}
+
+pub fn buildDateTimePicker(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
+    return v.render(scope, cx, W.date_picker.DateTimePicker(.{ .open = true, .datetime_value = @as(?W.date_picker.DateTime, .{ .date = .{ .year = 2026, .month = 10, .day = 16 }, .time = .{ .hour = 14, .minute = 30 } }) }));
 }
 
 // ── DateRangePicker ──
 pub fn buildDateRangePicker(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
-    return v.render(scope, cx, W.DateRangePicker(.{}));
+    return v.render(scope, cx, v.col(.{ .style = S.stack(12) }, .{
+        v.attrs(.{ .test_id = "story.daterange.empty" }, W.DateRangePicker(.{})),
+        W.DateRangePicker(.{ .confirm_selection = true, .open = true, .value = @as(?W.date_range_picker.DateRange, .{ .start = .{ .year = 2026, .month = 10, .day = 12 }, .end = .{ .year = 2026, .month = 10, .day = 18 } }) }),
+    }));
 }
 
 // ── Tooltip ──
@@ -3410,6 +3473,15 @@ pub fn buildSheet(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
 
 // ── Popover ──
 const PopS = struct {
+    fn content(t: *const ui.theme.Values) ui.BoxStyle {
+        return .{ .width = .fixed(220), .padding = ui.Padding.all(t.tokens.space.space400), .gap = t.tokens.space.space200 };
+    }
+    fn title(t: *const ui.theme.Values) ui.TextStyle {
+        return .{ .font_size = t.tokens.font_size.md, .font_weight = 600, .line_height = 1.4, .color = t.tokens.color.fg_primary };
+    }
+    fn caption(t: *const ui.theme.Values) ui.TextStyle {
+        return .{ .font_size = t.tokens.font_size.sm, .line_height = 1.4, .color = t.tokens.color.fg_secondary };
+    }
     /// Body text in popup (13px primary color)
     fn body(t: *const ui.theme.Values) ui.TextStyle {
         return .{ .font_size = 13, .color = t.tokens.color.fg_primary };
@@ -3429,7 +3501,7 @@ const PopS = struct {
             .width = .{ .px = 220 },
             .height = .{ .px = 80 },
             .background = t.tokens.color.bg_secondary,
-            .border = .{ .radius = 10, .width = 1, .color = t.tokens.color.border },
+            .border = .{ .overlay = true, .radius = 10, .width = 1, .color = t.tokens.color.border },
             .overflow_hidden = true,
             .clip_shape = .{ .rounded_rect = 10 },
             .shadows = ui.ShadowList.of(&.{
@@ -3474,7 +3546,7 @@ fn blockChrome(_: *const ui.theme.Values) ui.BoxStyle {
         .padding = ui.Padding.symmetric(4, 4),
         .height = .{ .fit = .{} },
         .background = ui.Color.rgba(255, 255, 255, 255),
-        .border = .{ .radius = 10, .width = 1, .color = ui.Color.rgba(224, 224, 228, 255) },
+        .border = .{ .overlay = true, .radius = 10, .width = 1, .color = ui.Color.rgba(224, 224, 228, 255) },
         .overflow_hidden = false,
         .z_index = 82, // Same as downstream editor floats: overrides popover-assigned z-layer
         .shadows = ui.ShadowList.of(&.{
@@ -3525,7 +3597,10 @@ fn storyGradientSlab(w: f32, h: f32) v.Box(SlabProps, void, null) {
 
 pub fn buildPopover(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     return v.render(scope, cx, v.col(.{ .style = S.stack(12) }, .{
-        v.with(W.Popover(.{ .position = .bottom_start, .trigger = .click }), v.text(pop_text_props, "Popover content!"))
+        v.with(W.Popover(.{ .position = .bottom_start, .trigger = .click }), v.col(.{ .style = PopS.content }, .{
+            v.text(.{ .style = PopS.title }, "Popover content"),
+            v.text(.{ .style = PopS.caption }, "Contextual content"),
+        }))
             .trigger(W.Button(.{ .label = "Toggle Popover" })),
 
         // -- Other positions + hover trigger --
@@ -3782,7 +3857,7 @@ pub fn buildInput(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     return v.render(scope, cx, v.col(.{ .style = S.stack(12) }, .{
         // -- Types --
         label("Types"),
-        v.attrs(.{ .test_id = "story.input.name" }, W.Input(.{ .label_text = "Name", .placeholder = "Your name", .width = 320 })),
+        v.attrs(.{ .test_id = "story.input.name", .parts = .{ .input_container = "story.input.name.input" } }, W.Input(.{ .label_text = "Name", .placeholder = "Your name", .width = 320 })),
         v.attrs(.{ .test_id = "story.input.email" }, W.Input(.{ .label_text = "Email", .input_type = .email, .placeholder = "you@example.com", .width = 320 })),
         W.Input(.{ .label_text = "Password", .input_type = .password, .placeholder = "••••••••", .width = 320 }),
 
@@ -3814,6 +3889,11 @@ pub fn buildTextarea(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
         W.Textarea(.{ .label_text = "With helper", .placeholder = "Bio", .helper = "Max 500 characters", .rows = 3, .width = 420 }),
         W.Textarea(.{ .label_text = "With error", .value = "too short", .error_msg = "Please write more", .rows = 3, .width = 420 }),
         W.Textarea(.{ .label_text = "Disabled", .placeholder = "Cannot edit", .disabled = true, .rows = 3, .width = 420 }),
+        label("Field sizes / minimum two rows"),
+        W.Textarea(.{ .size = .xs, .placeholder = "XS / 44px", .rows = 2, .width = 320 }),
+        W.Textarea(.{ .size = .sm, .placeholder = "SM / 52px", .rows = 2, .width = 320 }),
+        W.Textarea(.{ .size = .md, .placeholder = "MD / 72px", .rows = 2, .width = 320 }),
+        W.Textarea(.{ .size = .lg, .placeholder = "LG / 88px", .rows = 2, .width = 320 }),
     }));
 }
 
@@ -3828,7 +3908,7 @@ const ListRowS = struct {
         return .{ .width = .{ .grow = .{} }, .padding = ui.Padding.all(8) };
     }
     fn dynText(t: *const ui.theme.Values) ui.TextStyle {
-        return .{ .font_size = 13, .color = t.tokens.color.fg_primary, .wrap = .word };
+        return .{ .font_size = 13, .color = t.tokens.color.fg_primary, .wrap = .word_break };
     }
 };
 
@@ -3910,14 +3990,22 @@ fn gridCell(r: usize, col_: usize) v.Text(@TypeOf(grid_cell_props), v.Fmt("{d},{
 }
 const grid_widths = [_]f32{ 90, 90, 90, 90 };
 pub fn buildGrid(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
-    return v.render(scope, cx, W.Grid(.{
-        .col_count = 4,
-        .row_count = 12,
-        .col_widths = &grid_widths,
-        .cell_height = 30,
-        .width = 380,
-        .height = 320,
-    }).cells({}, gridCell));
+    return v.render(scope, cx, v.col(.{ .style = S.stack(16) }, .{
+        label("Grid: 52px cells / 8px gap"),
+        v.col(.{ .style = S.stack(8) }, .{
+            v.row(.{ .style = S.line(8) }, .{ v.box(.{ .style = LayoutPreviewS.cell }, {}), v.box(.{ .style = LayoutPreviewS.cell }, {}), v.box(.{ .style = LayoutPreviewS.cell }, {}) }),
+            v.row(.{ .style = S.line(8) }, .{ v.box(.{ .style = LayoutPreviewS.cell }, {}), v.box(.{ .style = LayoutPreviewS.cell }, {}), v.box(.{ .style = LayoutPreviewS.cell }, {}) }),
+        }),
+        label("Virtualized data grid"),
+        W.Grid(.{
+            .col_count = 4,
+            .row_count = 12,
+            .col_widths = &grid_widths,
+            .cell_height = 30,
+            .width = 380,
+            .height = 320,
+        }).cells({}, gridCell),
+    }));
 }
 
 // ── Select · Pencil puQEf component family ──
@@ -3940,7 +4028,7 @@ fn groupRow(scope: *ui.Scope, cx: *ui.Cx, orientation: W.group.GroupOrientation,
         const b = try W.Button(.{ .label = l, .variant = .secondary }).mount(scope, cx);
         if (i == 0) b.meta.ownership.meta.test_id = prefix ++ ".first";
         const pos: W.group.GroupItemPosition = if (labels.len == 1) .only else if (i == 0) .first else if (i == labels.len - 1) .last else .between;
-        try W.addGroupItem(g.container, a, b, pos, 8);
+        try W.addGroupItem(g.container, a, b, pos, cx.tokens.tokens.radius.control);
     }
     return g.container;
 }
@@ -3956,9 +4044,9 @@ pub fn buildGroup(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     const g = try W.Group(.{}).mount(scope, cx);
     g.container.meta.ownership.meta.test_id = "story.group.input";
     const input = try W.Input(.{ .value = "zenit.dev/docs", .width = 220, .leading_icon_asset = ui.assets.common.link }).mountResult(scope, cx);
-    try W.addGroupItem(g.container, a, input.node, .first, 8);
+    try W.addGroupItem(g.container, a, input.node, .first, cx.tokens.tokens.radius.control);
     const copy = try W.Button(.{ .label = "Copy", .variant = .secondary }).mount(scope, cx);
-    try W.addGroupItem(g.container, a, copy, .last, 8);
+    try W.addGroupItem(g.container, a, copy, .last, cx.tokens.tokens.radius.control);
     try c.appendChild(a, g.container);
     try c.appendChild(a, try storyLabelNode(cx, "Vertical"));
     try c.appendChild(a, try groupRow(scope, cx, .vertical, &.{ "Top", "Middle", "Bottom" }, "story.group.v"));
@@ -3972,8 +4060,8 @@ pub fn buildEditableText(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     const title = try scope.createText("Quarterly roadmap", .{});
     const note = try scope.createText("Click any line to edit it in place; the text reflows as you type.", .{});
     return v.render(scope, cx, v.col(.{ .style = demoWidth(420) }, .{
-        v.attrs(.{ .test_id = "story.editabletext.title" }, W.EditableText(.{ .value = title, .font_size = 22, .width = 420, .activation = .click })),
-        v.attrs(.{ .test_id = "story.editabletext.note" }, W.EditableText(.{ .value = note, .font_size = 14, .wrap_width = 420, .activation = .click })),
+        v.attrs(.{ .test_id = "story.editabletext.title" }, W.EditableText(.{ .value = title, .font_size = 20, .font_weight = 600, .width = 420, .activation = .click, .field_chrome = true })),
+        v.attrs(.{ .test_id = "story.editabletext.note" }, W.EditableText(.{ .value = note, .font_size = 13, .wrap_width = 420, .activation = .click, .field_chrome = true })),
         v.text(.{ .style = S.storyLabel, .test_id = "story.editabletext.status" }, v.fmt("title → {s}", .{title})),
     }));
 }
@@ -3981,7 +4069,7 @@ pub fn buildEditableText(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
 pub fn buildNumberStepper(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     return v.render(scope, cx, v.col(.{ .style = S.stack(12) }, .{
         label("0–10, step 1"),
-        v.attrs(.{ .test_id = "story.stepper.basic" }, W.NumberStepper(.{ .value = 5, .min = 0, .max = 10 })),
+        v.attrs(.{ .test_id = "story.stepper.basic", .parts = .{ .increment_button = "story.stepper.increase", .decrement_button = "story.stepper.decrease" } }, W.NumberStepper(.{ .value = 5, .min = 0, .max = 10 })),
         label("step 0.25, clamped to 0–1"),
         W.NumberStepper(.{ .value = 0.25, .step = 0.25, .min = 0, .max = 1, .width = 160 }),
         label("At the maximum"),
@@ -3994,11 +4082,12 @@ pub fn buildNumberStepper(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
 // ── TagsInput ──
 pub fn buildTagsInput(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     return v.render(scope, cx, v.col(.{ .style = S.stack(12) }, .{
-        v.attrs(.{ .test_id = "story.tags.wrapper", .parts = .{ .input = "story.tags.input" } }, W.TagsInput(.{
-            .tags = &[_][]const u8{ "zig", "metal" },
-            .width = 380,
+        v.attrs(.{ .test_id = "story.tags.wrapper", .parts = .{ .input = "story.tags.input", .add_button = "story.tags.add" } }, W.TagsInput(.{
+            .tags = &[_][]const u8{ "Zig", "UI" },
+            .width = 360,
+            .placeholder = "Add tag…",
         })),
-        label("Return, a trailing comma or Add commits a tag."),
+        label("Return or a trailing comma commits a tag."),
     }));
 }
 
@@ -4021,8 +4110,10 @@ pub fn buildFileUpload(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     const story = try scope.createState(FileUploadStory, .{ .upload = undefined });
     return v.render(scope, cx, v.col(.{ .style = S.stack(12) }, .{
         // Drag drop zone: e2e uses dragAt to inject entered/dropped into this rectangle
-        v.attrs(.{ .test_id = "story.upload.wrapper", .parts = .{ .drop_zone = "story.upload.dropzone" } }, v.capture(&story.upload, W.FileUpload(.{
-            .width = 380,
+        v.attrs(.{ .test_id = "story.upload.wrapper", .parts = .{ .drop_zone = "story.upload.dropzone", .browse_button = "story.upload.choose" } }, v.capture(&story.upload, W.FileUpload(.{
+            .width = 320,
+            .hint = "Attachment",
+            .files = &[_][]const u8{"/tmp/design-system.pdf"},
             .on_browse = ui.on.call(story, FileUploadStory.browse),
         }))),
     }));
@@ -4078,6 +4169,8 @@ pub fn buildComboBox(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
             .width = 260,
             .on_change = ui.on.assignAs(?[]const u8, selected),
         })),
+        label("Open / selected / unavailable"),
+        W.ComboBox(.{ .options = &combo_options, .value = "ba", .open = true, .width = 260 }),
     }));
 }
 
@@ -4164,16 +4257,22 @@ const GALLERY_ICONS = [_]GalleryIcon{
 
 const GalleryS = struct {
     fn cell(_: *const ui.theme.Values) ui.BoxStyle {
-        return .{ .gap = 6, .align_items = .center, .width = .{ .px = 92 }, .padding = Padding.all(8) };
+        return .{ .gap = 6, .align_items = .center, .justify = .center, .width = .{ .px = 72 }, .height = .{ .px = 72 }, .corner_radius = 4 };
+    }
+    fn hover(t: *const ui.theme.Values) ui.BoxStyle {
+        return .{ .background = t.tokens.color.bg_hover };
     }
     fn icon(_: *const ui.theme.Values) ui.BoxStyle {
-        return .{ .width = .{ .px = 24 }, .height = .{ .px = 24 } };
+        return .{ .width = .{ .px = 20 }, .height = .{ .px = 20 } };
     }
     fn iconTint(t: *const ui.theme.Values) ui.Color {
         return t.tokens.color.fg_primary;
     }
     fn name(t: *const ui.theme.Values) ui.TextStyle {
-        return .{ .font_size = 11, .color = t.tokens.color.fg_tertiary };
+        return .{ .font_size = t.tokens.font_size.xs, .color = t.tokens.color.fg_tertiary };
+    }
+    fn dangerTint(t: *const ui.theme.Values) ui.Color {
+        return t.tokens.color.danger;
     }
     fn demoTint(t: *const ui.theme.Values) ui.Color {
         return t.tokens.color.fg_secondary;
@@ -4187,11 +4286,11 @@ const GalleryS = struct {
     }
 };
 
-const gallery_cell_props = .{ .style = GalleryS.cell };
+const gallery_cell_props = .{ .style = .{ GalleryS.cell, v.hover(GalleryS.hover) } };
 const gallery_icon_props = .{ .style = GalleryS.icon, .tint = GalleryS.iconTint };
 const gallery_name_props = .{ .style = GalleryS.name };
 const GalleryCellKids = @Tuple(&.{ v.Icon(@TypeOf(gallery_icon_props)), v.Text(@TypeOf(gallery_name_props), []const u8) });
-const gallery_row_props = .{ .style = S.line(8) };
+const gallery_row_props = .{ .style = S.line(0) };
 
 fn galleryCell(spec: GalleryIcon) v.Box(@TypeOf(gallery_cell_props), GalleryCellKids, .column) {
     return v.col(gallery_cell_props, GalleryCellKids{
@@ -4203,20 +4302,18 @@ fn galleryCell(spec: GalleryIcon) v.Box(@TypeOf(gallery_cell_props), GalleryCell
 pub fn buildIconGallery(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     const icons = &GALLERY_ICONS;
     return v.render(scope, cx, v.col(.{ .style = S.stack(12) }, .{
-        // Wrap into multi-line grid: 6 per row.
-        v.row(gallery_row_props, v.list(icons[0..6], galleryCell)),
-        v.row(gallery_row_props, v.list(icons[6..12], galleryCell)),
-        v.row(gallery_row_props, v.list(icons[12..18], galleryCell)),
-        v.row(gallery_row_props, v.list(icons[18..20], galleryCell)),
+        // YZt6y: 20px glyphs in 72px cells, ten per row.
+        v.row(gallery_row_props, v.list(icons[0..10], galleryCell)),
+        v.row(gallery_row_props, v.list(icons[10..20], galleryCell)),
 
         // Size + tint demo row
         label("Sizes & tints"),
         v.row(.{ .style = S.line(16) }, .{
+            v.icon(.{ .style = GalleryS.sized(12), .tint = GalleryS.demoTint }, ui.system_icons.alert),
             v.icon(.{ .style = GalleryS.sized(16), .tint = GalleryS.demoTint }, ui.system_icons.alert),
-            v.icon(.{ .style = GalleryS.sized(24), .tint = GalleryS.demoTint }, ui.system_icons.alert),
-            v.icon(.{ .style = GalleryS.sized(32), .tint = GalleryS.demoTint }, ui.system_icons.alert),
-            v.icon(.{ .style = GalleryS.sized(48), .tint = GalleryS.demoTint }, ui.system_icons.alert),
-            v.icon(.{ .style = GalleryS.sized(32), .tint = ui.Color{ .r = 220, .g = 40, .b = 60, .a = 255 } }, ui.system_icons.heart),
+            v.icon(.{ .style = GalleryS.sized(20), .tint = GalleryS.demoTint }, ui.system_icons.alert),
+            v.icon(.{ .style = GalleryS.sized(28), .tint = GalleryS.demoTint }, ui.system_icons.alert),
+            v.icon(.{ .style = GalleryS.sized(32), .tint = GalleryS.dangerTint }, ui.system_icons.heart),
         }),
     }));
 }
@@ -4544,6 +4641,7 @@ pub fn buildGlassMotion(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     const morph_group = try W.GlassGroup(.{ .spacing = 0 }).mountWithState(scope, cx);
     morph_group.container.style.width = .{ .grow = .{} };
     morph_group.container.style.height = .{ .grow = .{} };
+    morph_group.container.style.ensureExtPanic(a).align_self = .stretch;
     const gm = try W.GlassShape(.{ .title = "Morph", .width = 150, .height = 84, .id = "morph", .transition = .matched_geometry }).mountIn(morph_group, scope, cx);
     gm.node.style.position = .absolute;
     (try gm.node.style.ensureExtFallible(a)).inset = .{ .left = .{ .px = 12 }, .top = .{ .px = 12 } };
@@ -5680,7 +5778,7 @@ pub fn buildCleanup(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     });
     return v.render(scope, cx, v.col(.{ .style = S.stack(12) }, .{
         label("on_cleanup count: unmounting a subtree with a cleanup hook must add exactly 1 (double-fire adds 2)"),
-        v.col(.{ .style = S.stack(8) }, .{
+        v.col(.{ .style = .{ S.stack(8), .{ .no_cross_stretch = false } } }, .{
             v.show(sig, .{
                 v.setup(v.box(.{ .style = CleanupS.child, .test_id = "story.cleanup.child" }, .{
                     v.text(.{ .style = regBody }, "cleanup child mounted"),
@@ -5705,7 +5803,7 @@ const HeavyTextS = struct {
         return .{ .position = .absolute, .width = .{ .px = 980 } };
     }
     fn text(t: *const ui.theme.Values) ui.TextStyle {
-        return .{ .font_size = 10, .color = t.tokens.color.fg_primary, .wrap = .word };
+        return .{ .font_size = 10, .color = t.tokens.color.fg_primary, .wrap = .word_break };
     }
 };
 
@@ -5987,12 +6085,22 @@ pub fn buildTeardownStress(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
             })),
         }),
         v.text(.{ .style = regBody, .test_id = "story.teardownstress.status" }, story.status),
-        v.col(.{ .style = S.stack(8) }, .{
+        v.col(.{ .style = .{ S.stack(8), .{ .no_cross_stretch = false } } }, .{
             v.show(visible, .{
-                v.attrs(.{ .test_id = "story.teardownstress.grid" }, v.component(buildGrid, {})),
+                v.attrs(.{ .test_id = "story.teardownstress.grid", .style = .{ .no_cross_stretch = false } }, v.component(buildGrid, {})),
             }),
         }),
     }));
 }
 
 pub const buildInteractionLifecycle = @import("interaction_lifecycle.zig").build;
+
+// Lazy aliases: the registry resolves these only when their story is selected.
+pub const buildFormComposition = @import("form_composition.zig").build;
+pub const buildScrolling = @import("scrolling_story.zig").build;
+pub const buildViewDsl = @import("view_dsl_story.zig").build;
+pub const buildComponentWall = @import("component_wall.zig").build;
+pub const buildControls = @import("controls/mod.zig").build;
+pub const buildCornerClip = @import("corner_clip/mod.zig").build;
+pub const buildPopoverText = @import("popover_text/mod.zig").build;
+pub const buildCjkWeights = @import("cjk_weights/mod.zig").build;

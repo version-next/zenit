@@ -1,0 +1,51 @@
+//! Chip: filter / category tag built on ControlShell (icon slot = leading icon, content = label,
+//! append = close). Read-only by default; with readonly=false it hovers, focuses and clicks.
+const ui = @import("../../ui.zig");
+const core = @import("../../core.zig");
+const S = @import("styles.yss");
+const ControlShell = @import("../control_shell/mod.zig").ControlShell;
+
+pub const ChipSize = S.ChipSize;
+pub const ChipVariant = S.ChipVariant;
+pub const ChipLook = S.ChipLook;
+
+pub fn Chip(
+    label: Text = "",
+    size: ChipSize = .sm,
+    variant: ChipVariant = .default,
+    selected: bool = false,
+    disabled: bool = false,
+    iconAsset: ?ui.SvgAsset = null,
+    closable: bool = false,
+    readonly: bool = true,
+    onClick: ?Handler(void) = null,
+    onClose: ?Handler(void) = null,
+) View {
+    const look = computed(S.lookOf(variant, selected, disabled));
+    const interactive = computed(!readonly and !disabled);
+    const tone = computed(S.shellVariant(look));
+    const shellSize = computed(S.controlSize(size));
+    const role = computed(if (readonly) core.A11yRole.listitem else core.A11yRole.button);
+    const cursor = computed(if (readonly) core.CursorShape.default else core.CursorShape.pointer);
+    return (
+        <ControlShell
+            variant={tone}
+            size={shellSize}
+            leadingIcon={iconAsset != null}
+            disabled={disabled}
+            focusable={interactive}
+            focusRing={@as(?ui.FocusRingConfig, if (readonly) null else .{})}
+            cursor={cursor}
+            onClick={if (!readonly) onClick}
+            contentStyle={.{ .width = .{ .fit = .{} } }}
+            style={.{ S.Chip.slot(.root, .{ .look = look, .interactive = interactive }), S.geometry.of(.{ .size = size }) }}
+            a11y={.{ .role = role, .selected = selected, .disabled = disabled, .label = label }}
+            icon={if (iconAsset != null) <icon style={.{ S.glyph_size.of(.{ .size = size }), S.Chip.slot(.glyph, .{ .look = look }) }} src={iconAsset} />}
+            content={<text style={.{ S.label, S.Chip.slot(.label, .{ .look = look }) }}>{label}</text>}
+            append={if (closable)
+                <box style={S.close.of(.{ .size = size })} a11y={.{ .role = .button, .label = "Remove" }} onClick={if (!readonly and !disabled) onClose}>
+                    <icon style={.{ S.close.of(.{ .size = size }), S.Chip.slot(.glyph, .{ .look = look }) }} src={ui.assets.common.x_close} />
+                </box>}
+        />
+    );
+}

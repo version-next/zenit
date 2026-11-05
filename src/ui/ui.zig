@@ -171,7 +171,7 @@ pub const a11y = struct {
     pub const AXId = @import("a11y/tree.zig").AXId;
     pub const macos_bridge = @import("a11y/macos_bridge.zig");
     /// System accessibility display preferences (reduce motion, lower transparency...).
-    /// Components read via `cx.a11yPreferencesSignal(scope)`; platform runtime injects
+    /// Components read via `cx.a11yPreferencesSignal()`; platform runtime injects
     /// read function here.
     pub const preferences = @import("a11y/preferences.zig");
 };
@@ -213,6 +213,12 @@ pub const LineInfo = core.text_layout.LineInfo;
 /// cursor/hit/selection must use this formula (same source as drawing); else cursor
 /// misaligns with glyphs on centered text.
 pub const textAlignLineOffset = core.text_layout.alignLineOffset;
+/// Baseline of a text's first line, relative to the top of its line box
+/// (`font_size * line_height`): CSS half-leading over the resolved face's
+/// pixel-rounded ascent/descent, the one formula layout and paint share. Hosts
+/// that draw their own text beside text nodes (editor gutters, sticky headers,
+/// row labels) must use it to land on the same baseline as the node's glyphs.
+pub const textFirstBaseline = core.layout_engine.firstTextBaseline;
 /// Accessibility bridge, wires nodes' `a11y` props to the platform.
 
 // ============================================================================
@@ -242,11 +248,14 @@ pub const Margin = core.Margin;
 pub const Border = core.Border;
 pub const Outline = core.Outline;
 pub const Sizing = core.Sizing;
+pub const FlexBasis = core.FlexBasis;
 pub const Size = core.Size;
 pub const Point = core.Point;
 pub const Direction = core.Direction;
 pub const FlexWrap = core.FlexWrap;
 pub const TextWrap = core.TextWrap;
+pub const OverflowWrap = core.OverflowWrap;
+pub const WordBreak = core.WordBreak;
 pub const TextAlign = core.TextAlign;
 pub const CursorShape = core.CursorShape;
 pub const CursorRegion = core.CursorRegion;
@@ -296,6 +305,10 @@ pub const recipe = core.recipe;
 /// See docs/STYLING.md.
 pub const css = @import("css.zig").css;
 pub const cva = @import("css.zig").cva;
+pub const previewCss = @import("css.zig").previewCss;
+pub const previewCva = @import("css.zig").previewCva;
+pub const template_reload = if (@import("zenit_environment").dev_preview) @import("template_reload.zig") else struct {};
+pub const style_reload = if (@import("zenit_environment").dev_preview) @import("style_reload.zig") else struct {};
 pub const sva = @import("css.zig").sva;
 /// Parameterized styling (.yss `style name($p: T) { ... }` output): put
 /// `S.name.of(.{ .p = source })` into style; hand-written Zig uses
@@ -533,20 +546,24 @@ test "公共命名空间不泄漏渲染引擎内部（发布后删 pub 是 break
     @setEvalBranchQuota(4000);
     const allowed_namespaces = [_][]const u8{
         // Components and effects.
-        "widgets",      "fx",                "interaction", "select_headless",
+        "widgets",      "fx",                "interaction",     "select_headless",
         // Resources.
         "icons",        "system_icons",      "assets",
         // Capability domains.
-             "theme",
-        "reactive",     "control_flow",      "actions",     "focus",
+                 "theme",
+        "reactive",     "control_flow",      "actions",         "focus",
         // Declarative view tree and event composer: app author main UI entry
         // (docs/VIEW_DSL.md).
-        "view",         "on",                "hit",         "path",
-        "a11y",         "recipe",            "styles",      "arb",
-        "text_shaping", "platform_services", "gesture",     "input",
+        "view",         "on",                "hit",             "path",
+        "a11y",         "recipe",            "styles",          "arb",
+        "text_shaping", "platform_services", "gesture",         "input",
+        // Preview protocol bridge for zenit_app and custom UI-thread hosts only.
+        // Unstable development capability; both namespaces are empty without dev-preview.
+        "style_reload", "theme_reload",      "template_reload",
         // Tools and diagnostics.
-        "devtools",     "console",           "frame",       "router",
-        "animation",    "hooks",             "events",      "math",
+        "devtools",
+        "console",      "frame",             "router",          "animation",
+        "hooks",        "events",            "math",
     };
     inline for (@typeInfo(@This()).@"struct".decl_names) |name| {
         const T = @TypeOf(@field(@This(), name));
@@ -608,6 +625,7 @@ pub const CornerRadii = core.paint_table.CornerRadii;
 pub const DrawContext = core.DrawContext;
 pub const IconProps = core.IconProps;
 pub const AlignItems = core.AlignItems;
+pub const AlignContent = core.AlignContent;
 pub const JustifyContent = core.JustifyContent;
 /// Frame clock **read-only** view.
 ///
@@ -639,3 +657,21 @@ pub const frame = struct {
         return core.render_engine.estimateTimeMs();
     }
 };
+
+/// Token parsing and transaction storage are unreachable in release builds.
+pub const theme_reload = if (@import("zenit_environment").dev_preview) @import("theme_reload.zig") else struct {};
+
+test {
+    const environment = @import("zenit_environment");
+    if (environment.lp3_gate) {
+        _ = @import("template.zig");
+        _ = @import("template_equivalence_tests.zig");
+    }
+    if (environment.lp4_gate) {
+        _ = @import("template_reload_tests.zig");
+    }
+    if (environment.lp2_gate) {
+        _ = @import("style_reload_tests.zig");
+        _ = @import("style_reload_manifest.zig");
+    }
+}

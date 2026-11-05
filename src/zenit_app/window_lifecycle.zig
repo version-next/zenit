@@ -116,6 +116,19 @@ pub const State = struct {
         return true;
     }
 
+    /// Commit teardown and decide where focus goes. Only a window that still
+    /// held focus hands it on: a closing panel returns it to its owner,
+    /// otherwise the `removed` fallback stands. When focus had already moved
+    /// on (closes can finish frames later, after another window was
+    /// activated), the active window is left alone and null is returned.
+    pub fn removedFocusHandoff(self: *State, window_id: WindowId, owner: ?WindowId) ?WindowId {
+        const held_focus = self.active_window_id == window_id;
+        if (!self.removed(window_id)) return null;
+        if (!held_focus or self.quit_requested) return null;
+        if (owner) |owner_id| self.setFocused(owner_id, true);
+        return self.active_window_id;
+    }
+
     pub fn requestQuit(self: *State) void {
         self.quit_source = .explicit;
         self.quit_requested = true;
@@ -154,6 +167,60 @@ test "multi-window lifecycle closes one window without quitting peers" {
     try std.testing.expectEqual(@as(usize, 1), state.count());
     try std.testing.expectEqual(@as(?WindowId, 20), state.active_window_id);
     try std.testing.expect(!state.quit_requested);
+}
+
+test "a panel that finishes closing after focus moved on does not take it back" {
+    var state = State{};
+    try state.add(1); // editor
+    try state.add(2); // panel owned by 1
+    state.setFocused(2, true);
+    // The panel's close is requested; focus returns to the editor, then a new
+    // panel opens before the first one's native close completes.
+    try std.testing.expect(state.requestClose(2));
+    state.setFocused(1, true);
+    try state.add(3);
+    try std.testing.expectEqual(@as(?WindowId, null), state.removedFocusHandoff(2, 1));
+    try std.testing.expectEqual(@as(?WindowId, 3), state.active_window_id);
+
+    // A panel that still holds focus hands it back to its owner.
+    try std.testing.expectEqual(@as(?WindowId, 1), state.removedFocusHandoff(3, 1));
+    try std.testing.expectEqual(@as(?WindowId, 1), state.active_window_id);
+}
+
+test "focus handoff tolerates owner teardown and duplicate close completion" {
+    var state = State{};
+    try state.add(1); // owner
+    try state.add(2); // panel
+    try state.add(3); // surviving peer
+    state.setFocused(2, true);
+    try std.testing.expectEqual(@as(?WindowId, null), state.removedFocusHandoff(1, null));
+    // A dead owner cannot be reactivated; the deterministic live peer wins.
+    try std.testing.expectEqual(@as(?WindowId, 3), state.removedFocusHandoff(2, 1));
+    try state.add(4); // a replacement opened after the close completed
+    try std.testing.expectEqual(@as(?WindowId, null), state.removedFocusHandoff(2, 1));
+    state.setFocused(2, true); // late native event for the destroyed panel
+    try std.testing.expectEqual(@as(?WindowId, 4), state.active_window_id);
+    try std.testing.expectEqual(@as(usize, 2), state.count());
+}
+
+test "focus handoff is suppressed during quit and last-close replacement stays active" {
+    var state = State{};
+    try state.add(1);
+    try state.add(2);
+    state.requestQuit();
+    try std.testing.expectEqual(@as(?WindowId, null), state.removedFocusHandoff(2, 1));
+    try std.testing.expect(state.quit_requested);
+    try std.testing.expectEqual(@as(?WindowId, null), state.removedFocusHandoff(1, null));
+    try state.add(3);
+    try std.testing.expect(state.quit_requested); // explicit quit remains sticky
+
+    var replacement = State{};
+    try replacement.add(1);
+    try std.testing.expectEqual(@as(?WindowId, null), replacement.removedFocusHandoff(1, null));
+    try std.testing.expect(replacement.quit_requested);
+    try replacement.add(2); // on_destroy opens a replacement window
+    try std.testing.expect(!replacement.quit_requested);
+    try std.testing.expectEqual(@as(?WindowId, 2), replacement.active_window_id);
 }
 
 test "multi-window lifecycle exits only after the last window teardown" {

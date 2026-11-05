@@ -20,12 +20,12 @@ style root(
   $dash_gap: f32,
 ) {
   when $kind in (solid, patterned) & $orientation = horizontal { width: grow; height: $thickness; margin: {$spacing.value()} 0; }
-  when $kind in (solid, patterned) & $orientation = vertical { width: $thickness; height: grow; margin: 0 {$spacing.value()}; }
+  when $kind in (solid, patterned) & $orientation = vertical { width: $thickness; height: grow; align-self: stretch; margin: 0 {$spacing.value()}; }
   when $kind = solid { background: $color ?? border-strong; }
   when $kind = patterned { align-items: center; gap: $dash_gap; overflow-hidden: true; }
   when $kind = patterned & $orientation = horizontal { direction: row; }
   when $kind = patterned & $orientation = vertical { direction: column; }
-  when $kind in (label_left, label_center, label_right) { width: grow; direction: row; align-items: center; gap: 12; padding: {$spacing.value()} 0; }
+  when $kind in (label_left, label_center, label_right) { width: grow; direction: row; align-items: center; gap: space300; padding: {$spacing.value()} 0; }
 }
 
 /// Dashed / dotted segment (dotted uses circles with side=weight); doesn't flex-shrink or
@@ -43,7 +43,7 @@ style dash($orientation: mod.DividerOrientation, $variant: mod.DividerVariant, $
 /// Line segments on label sides, split remaining width equally
 style label_line($thickness: f32, $color: ?ui.Color) { width: grow; height: $thickness; background: $color ?? border-strong; flex: 1; }
 
-style label_text { color: fg-secondary; font-size: 12; }
+style label_text { color: fg-secondary; font-size: sm; }
 
 /// Dashed segment count: enough to cover common widths, excess clipped by container
 pub const dash_count = 128;

@@ -31,9 +31,10 @@ pub fn syncChromeWithBackend(self: anytype, comptime backend: type) void {
     if (self.cx.window_header_node) |header| backend.headerBackground(&self.win, header.getBackground());
     var header_lock = self.cx.window_header_reveal_leases > 0 or self.cx.windowHeaderOwns(self.cx.focused_node) or self.cx.windowHeaderOwns(self.cx.pressed_node);
     var header_overlay_open = false;
-    for (self.cx.overlay_stack.layers) |slot| {
+    for (self.cx.overlay_stack.layers.items) |slot| {
         if (slot) |layer| {
-            if (!layer.suspended and self.cx.windowHeaderOwns(layer.trigger_node)) {
+            // Generation-checked: the trigger may have been freed while its layer stays stacked.
+            if (!layer.suspended and self.cx.windowHeaderOwns(self.cx.overlay_stack.resolveTrigger(&layer))) {
                 header_lock = true;
                 if (layer.state != .exiting) header_overlay_open = true;
             }
@@ -78,9 +79,14 @@ pub fn syncChromeWithBackend(self: anytype, comptime backend: type) void {
     // platform radius and clear to transparent so the corners show the desktop.
     const root_id: ?u32 = if (self.cx.root) |root| root.element_id_raw else null;
     if (state.corner_radius != self.chrome.applied_corner_radius or (state.corner_radius > 0 and root_id != self.chrome.applied_corner_root)) {
-        if (self.cx.root) |root| {
+        apply: {
+            const root = self.cx.root orelse break :apply;
             const r = state.corner_radius;
-            root.setStyleInline(self.cx.allocator, .{ .corner_radii = .{ .each = .{ r, r, r, r } }, .overflow_hidden = r > 0 });
+            // OOM leaves the root as it was and the radius unrecorded: the next sync retries
+            root.setStyleInlineFallible(self.cx.allocator, .{ .corner_radii = .{ .each = .{ r, r, r, r } }, .overflow_hidden = r > 0 }) catch {
+                self.cx.needs_redraw = true;
+                break :apply;
+            };
             // The Windows painter composes through DWM and has no GPU clear color.
             // Wayland composites premultiplied: a transparent corner must clear to
             // (0,0,0,0), not to the opaque background color with alpha 0.

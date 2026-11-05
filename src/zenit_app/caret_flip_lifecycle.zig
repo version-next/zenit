@@ -194,6 +194,36 @@ pub const Activity = struct {
     }
 };
 
+/// Fresh input or a resize cuts a running caret-exit or surface retry backoff short. Only an
+/// interrupted backoff asks for a frame (the retry runs now): input that waits on no backoff
+/// requests frames through what it changes, never through this. A wheel against a pinned end
+/// changes nothing and must render nothing.
+pub fn interruptBackoff(activity: *Activity, input: u64, resize: u64, resize_pending: bool, caret_retry_at_ns: *i128, surface_retry_at_ns: *i128) bool {
+    if (!activity.take(input, resize, resize_pending)) return false;
+    const backed_off = caret_retry_at_ns.* != 0 or surface_retry_at_ns.* != 0;
+    caret_retry_at_ns.* = 0;
+    surface_retry_at_ns.* = 0;
+    return backed_off;
+}
+
+test "input interrupts a running backoff, and asks for no frame when none runs" {
+    var activity: Activity = .{};
+    var caret: i128 = 0;
+    var surface: i128 = 0;
+    // No backoff: fresh input is consumed but requests nothing.
+    try std.testing.expect(!interruptBackoff(&activity, 1, 0, false, &caret, &surface));
+    // A caret-exit retry waiting: the next input cuts it short and asks for the retry frame.
+    caret = 500;
+    try std.testing.expect(interruptBackoff(&activity, 2, 0, false, &caret, &surface));
+    try std.testing.expectEqual(@as(i128, 0), caret);
+    // Each input generation interrupts once.
+    surface = 900;
+    try std.testing.expect(!interruptBackoff(&activity, 2, 0, false, &caret, &surface));
+    try std.testing.expectEqual(@as(i128, 900), surface);
+    try std.testing.expect(interruptBackoff(&activity, 3, 0, false, &caret, &surface));
+    try std.testing.expectEqual(@as(i128, 0), surface);
+}
+
 test "input and resize interrupt backoff once while passive retries do not" {
     var activity: Activity = .{};
     var exit: Exit = .{};

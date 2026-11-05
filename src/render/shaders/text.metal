@@ -15,20 +15,27 @@ struct Uniforms {
     float scale_factor; // DPI scale factor
     uint clip_shape_kind;
     float4 clip_rect;
-    float clip_radius;
+    float4 clip_radii; // TL, TR, BR, BL (logical px)
     uint clip_fill_rule;
     uint clip_point_count;
     uint clip_contour_count;
+    uint clip_pad; // keeps the polygon arrays 16-byte aligned (cbuffer register)
     uint clip_polygon_end_points[8];
     float2 clip_polygon_points[32];
+    // Second shape clip (shape_clip_pair.zig): kind 0 none, 1 rounded rect, 2 ellipse;
+    // logical px like clip_rect. Coverage multiplies the primary shape clip's.
+    float4 clip2_rect;
+    float4 clip2_radii; // TL, TR, BR, BL
+    uint clip2_shape_kind;
 };
 
 /// glyph instance data
 struct GlyphInstance {
     packed_float2 position; // glyph bottom-left position (pixels)
     packed_float2 size; // glyph size (pixels)
-    // UV compression: exact integer texels on a 4096 grid, decoded with 1/4096.
-    packed_ushort4 uv_rect; // texel coords (u_min, v_min, u_max, v_max); UV = texel / 4096
+    // UV compression: fixed 4096 normalized-UV grid, decoded with 1/4096.
+    // 2048 physical pages use even grid coordinates; wire layout is unchanged.
+    packed_ushort4 uv_rect; // grid coords (u_min, v_min, u_max, v_max); UV = grid / 4096
     packed_float4 color; // glyph color RGBA
     packed_float4 rect_clip; // x, y, w, h (logical pixels); 0-size = disabled
     float skew_x; // synthetic italic x offset (logical pixels)
@@ -49,6 +56,13 @@ struct VertexOutput {
 float sdf_rounded_rect_text(float2 p, float2 size, float radius) {
     float2 d = abs(p) - size + radius;
     return min(max(d.x, d.y), 0.0) + length(max(d, float2(0.0))) - radius;
+}
+
+/// Overflow clip with per-corner radii (TL, TR, BR, BL): the quadrant picks the corner, so a
+/// uniform radius evaluates exactly as the single-radius distance.
+float sdf_rounded_rect_corners_text(float2 p, float2 size, float4 radii) {
+    const float r = (p.x < 0.0) ? ((p.y < 0.0) ? radii.x : radii.w) : ((p.y < 0.0) ? radii.y : radii.z);
+    return sdf_rounded_rect_text(p, size, r);
 }
 
 float sdf_ellipse_text(float2 p, float2 radius_xy) {
@@ -126,7 +140,7 @@ float rect_clip_alpha_text(float2 screen_pos, float4 rect_clip, float scale_fact
     return smoothstep(clip_aa, -clip_aa, clip_sdf);
 }
 
-float shape_clip_alpha_text(float2 screen_pos, constant Uniforms& uniforms) {
+float primary_shape_clip_alpha_text(float2 screen_pos, constant Uniforms& uniforms) {
     if (uniforms.clip_shape_kind == 0u) {
         return 1.0;
     }
@@ -135,8 +149,8 @@ float shape_clip_alpha_text(float2 screen_pos, constant Uniforms& uniforms) {
     const float2 clip_size = uniforms.clip_rect.zw * uniforms.scale_factor * 0.5;
     float clip_sdf = 1.0;
     if (uniforms.clip_shape_kind == 1u) {
-        const float clip_radius = uniforms.clip_radius * uniforms.scale_factor;
-        clip_sdf = sdf_rounded_rect_text(screen_pos - clip_center, clip_size, clip_radius);
+        const float4 clip_radii = uniforms.clip_radii * uniforms.scale_factor;
+        clip_sdf = sdf_rounded_rect_corners_text(screen_pos - clip_center, clip_size, clip_radii);
     } else if (uniforms.clip_shape_kind == 2u) {
         clip_sdf = sdf_ellipse_text(screen_pos - clip_center, clip_size);
     } else if (uniforms.clip_shape_kind == 3u) {
@@ -169,6 +183,23 @@ float shape_clip_alpha_text(float2 screen_pos, constant Uniforms& uniforms) {
     }
     const float clip_aa = max(fwidth(clip_sdf) * 0.5, 0.5);
     return smoothstep(clip_aa, -clip_aa, clip_sdf);
+}
+
+float partner_shape_clip_alpha_text(float2 screen_pos, constant Uniforms& uniforms) {
+    if (uniforms.clip2_shape_kind == 0u) {
+        return 1.0;
+    }
+    const float2 clip_center = (uniforms.clip2_rect.xy + uniforms.clip2_rect.zw * 0.5) * uniforms.scale_factor;
+    const float2 clip_size = uniforms.clip2_rect.zw * uniforms.scale_factor * 0.5;
+    const float clip_sdf = uniforms.clip2_shape_kind == 2u
+        ? sdf_ellipse_text(screen_pos - clip_center, clip_size)
+        : sdf_rounded_rect_corners_text(screen_pos - clip_center, clip_size, uniforms.clip2_radii * uniforms.scale_factor);
+    const float clip_aa = max(fwidth(clip_sdf) * 0.5, 0.5);
+    return smoothstep(clip_aa, -clip_aa, clip_sdf);
+}
+
+float shape_clip_alpha_text(float2 screen_pos, constant Uniforms& uniforms) {
+    return primary_shape_clip_alpha_text(screen_pos, uniforms) * partner_shape_clip_alpha_text(screen_pos, uniforms);
 }
 
 float clip_alpha_text(float2 screen_pos, float4 rect_clip, constant Uniforms& uniforms) {
@@ -222,7 +253,7 @@ vertex VertexOutput text_vertex_main(
     out.position = float4(ndc, 0.0, 1.0);
 
     // compute UV
-    // Decode compressed UV texels back to normalized UV; texel/4096 is exact (float4 decode, no rounding).
+    // Decode fixed-grid UV, not physical page texels; exact for2048 and4096 pages.
     constexpr float kAtlasSizeInv = 1.0f / 4096.0f;
     const float4 uv_rect = float4(inst.uv_rect) * kAtlasSizeInv;
     out.uv = mix(uv_rect.xy, uv_rect.zw, corner);

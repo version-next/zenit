@@ -63,7 +63,20 @@ pub const Mapper = struct {
         const twin = try m.dir.readFileAlloc(m.io, twin_path, m.a, .limited(64 * 1024 * 1024));
         const start = compiler.twinOutputStart(twin) orelse return null;
         const source = try m.dir.readFileAlloc(m.io, source_path, m.a, .limited(16 * 1024 * 1024));
-        const r = try compiler.compileMappedSource(m.a, source_path, source);
+        // Generation stores checkout-relative descriptor paths, independent of whether
+        // Zig printed a relative path or an absolute path in this diagnostic.
+        const base = try m.dir.realPathFileAlloc(m.io, ".", m.a);
+        const absolute = try std.fs.path.resolve(m.a, &.{ base, source_path });
+        const stable_path = try std.fs.path.relativeAlloc(m.a, base, null, base, absolute);
+        if (comptime @import("builtin").os.tag == .windows) for (stable_path) |*ch| {
+            if (ch.* == '\\') ch.* = '/';
+        };
+        // Legacy off-tree translations remain supported alongside preview twins.
+        const preview_twin = std.mem.indexOf(u8, twin, "ui.previewCss(") != null or std.mem.indexOf(u8, twin, "ui.previewCva(") != null;
+        const r = if (!preview_twin and std.mem.endsWith(u8, source_path, ".yss"))
+            try compiler.style.compileMapped(m.a, source)
+        else
+            try compiler.compileMappedSource(m.a, stable_path, source);
         switch (r) {
             .diagnostic => return null, // Source file now doesn't compile: no segment table available.
             .mapped => |mp| {

@@ -30,7 +30,7 @@ const Styles = struct {
             .gap = 14,
             .padding = ui.Padding.all(18),
             .background = t.tokens.color.bg_primary,
-            .border = .{ .width = 1, .color = t.tokens.color.border, .radius = t.tokens.radius.lg },
+            .border = .{ .overlay = true, .width = 1, .color = t.tokens.color.border, .radius = t.tokens.radius.lg },
         };
     }
     fn tileTitle(t: *const ui.theme.Values) ui.TextStyle {

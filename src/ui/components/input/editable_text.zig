@@ -27,12 +27,15 @@ const editable_block = @import("../editable_block/mod.zig");
 const TextInputState = state_mod.TextInputState;
 
 pub const EditableTextProps = struct {
+    /// Optional r4MT7 field chrome. Canvas editors keep the shell-free default.
+    field_chrome: bool = false,
     /// Text value. A literal is the component-owned initial text; a
     /// `*Signal([]const u8)` from `scope.createText` is the value source edits
     /// write to; `ui.split` lets the parent accept, transform or reject each
     /// edit. Same rules as Input.
     value: Model([]const u8) = .{ .local = "" },
     font_size: f32 = 14,
+    font_weight: u16 = 400,
     /// Line-height multiplier.
     line_height: f32 = 1.25,
     /// null means grow to the width offered by the parent.
@@ -112,7 +115,7 @@ pub const EditableTextResult = struct {
         if (state.multiline) {
             state.syncMultilineAutoHeight();
         } else {
-            self.node.setStyle(null, .height, .{ .px = line_height_px });
+            self.node.setStyle(null, .height, .{ .px = line_height_px + state.padding_v * 2 });
         }
         state.updateScrollX();
         state.resetBlink();
@@ -194,7 +197,7 @@ pub const EditableTextBuilder = struct {
         const line_height_px = font_size * line_height_ratio;
         const multiline = props.wrap_width != null;
         const wrap_width = @max(props.wrap_width orelse 0, 1);
-        const measured = cx.text.measureTextWidth("M", font_size, 400, false);
+        const measured = cx.text.measureTextWidth("M", font_size, props.font_weight, false);
         const measured_char_width = if (measured > 0) measured else font_size * 0.6;
 
         const state = try my_scope.allocator.create(TextInputState);
@@ -233,7 +236,7 @@ pub const EditableTextBuilder = struct {
             wrap.char_width = measured_char_width;
             wrap.precise_wrap = true;
             wrap.font_size = font_size;
-            wrap.font_weight = 400;
+            wrap.font_weight = props.font_weight;
             try my_scope.adoptResource(@ptrCast(wrap), struct {
                 fn destroy(ptr: *anyopaque, alloc: std.mem.Allocator) void {
                     const typed: *state_mod.TextareaWrapMap = @ptrCast(@alignCast(ptr));
@@ -311,11 +314,12 @@ pub const EditableTextBuilder = struct {
             view.capture(&parts.text, view.setup(view.box(.{ .style = core.BoxStyle{
                 .width = if (multiline) .{ .grow = .{} } else .{ .fit = .{} },
                 .height = .{ .fit = .{} },
-                .align_self = .start,
+                .align_self = if (multiline) .stretch else .start,
             } }, {}), core.TextProps{
                 .content = state.getText(),
                 .color = cx.tokens.tokens.color.fg_primary,
                 .font_size = font_size,
+                .font_weight = props.font_weight,
                 .line_height = line_height_ratio,
                 .wrap = if (multiline) .word else .none,
                 .spans = state.text_spans_buf[0..0],
@@ -348,6 +352,7 @@ pub const EditableTextBuilder = struct {
             cx,
             cx.tokens,
         );
+        state.font_weight = props.font_weight;
         state.multiline_auto_height = multiline;
         state.input_container_node = node;
         state.textarea_overlay_node = parts.underlay;
@@ -388,6 +393,25 @@ pub const EditableTextBuilder = struct {
         state.updateScrollX();
         // value is Model: external write via effect into buffer (first run same as initial value,
         // short-circuit)
+        if (props.field_chrome) {
+            const t = cx.tokens;
+            const pad_y = @max(@as(f32, 0), (t.tokens.size.control_md - line_height_px) / 2);
+            state.padding_h = t.tokens.space.space300;
+            state.padding_v = pad_y;
+            node.setStyle(cx.allocator, .height, .{ .px = node.style.height.px + pad_y * 2 });
+            node.setStyle(cx.allocator, .padding, .{ .top = pad_y, .bottom = pad_y });
+            node.setStyle(cx.allocator, .overflow_hidden, false);
+            const hovered = try @import("../../hooks.zig").useHover(my_scope, node);
+            const focused = try @import("../../hooks.zig").useFocusState(my_scope, cx, node);
+            try my_scope.createEffect(.{ .node = node, .cx = cx, .hovered = hovered, .focused = focused.focused }, struct {
+                // first run is part of the mount: all or nothing, its error fails it
+                fn update(c: anytype) error{OutOfMemory}!void {
+                    const visual = @import("styles.zig").editableChrome(c.cx.tokens).resolve(.{ .is_hovered = c.hovered.get(), .is_focused = c.focused.get() });
+                    try c.node.setStyleInlineFallible(c.cx.allocator, visual);
+                }
+            }.update);
+            try @import("../../hooks.zig").useFocusRing(my_scope, cx, node, .{ .width = t.tokens.border_width.focus, .offset = t.tokens.size.focus_offset, .color = t.tokens.color.focus_ring });
+        }
         try my_scope.createEffect(binding, Binding.valueEffect);
         return .{ .node = node, .state = state, .value = value.asSignal(), .binding = binding };
     }
@@ -461,6 +485,22 @@ fn clickEditingEventHandler(event: core.Event, context: ?*anyopaque) core.EventR
         else => {},
     }
     return events_mod.inputEventHandler(event, context);
+}
+
+// Reference-checked OOM sweep (components/oom_sweep.zig): the field chrome is applied by the
+// chrome effect's first run, part of the mount. A mount that reports success must carry it.
+test "EditableText(field_chrome): mount 成功即外观完整，任意分配点失败不假成功（sweep）" {
+    const sw = @import("../oom_sweep.zig");
+    try sw.sweepMountVerified("editable_text(field_chrome)", struct {
+        fn m(scope: *Scope, cx: *Cx) anyerror!?*Node {
+            return (try EditableText(.{ .value = "hello", .font_size = 12, .field_chrome = true }).mountResult(scope, cx)).node;
+        }
+    }.m, struct {
+        fn check(root: *Node) anyerror!void {
+            try std.testing.expectEqual(@as(f32, 1), root.style.border.width);
+            try std.testing.expect(root.style.effectiveRadii()[0] > 0);
+        }
+    }.check);
 }
 
 test "EditableText starts passive and updates runtime metrics" {
@@ -817,7 +857,7 @@ test "EditableText renders text typed after a hard newline" {
     try std.testing.expect(laid_out_second_line);
     var painted_second_line = false;
     for (cx.text_blob_store.blobs.items) |blob| {
-        for (blob.lines[0..blob.line_count]) |line| {
+        for (cx.text_blob_store.lines(blob)) |line| {
             if (line.byte_end > "first line\n".len and line.width > 0) painted_second_line = true;
         }
     }

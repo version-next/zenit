@@ -209,7 +209,7 @@ int macos_caret_native_ready(void *window_ptr) {
     WindowWrapper *wrapper = (__bridge WindowWrapper *)window_ptr;
     unsigned reason = (!wrapper.metalView.layer ? 1 : 0) | (wrapper.chromeFullscreenTransition ? 2 : 0) |
         (wrapper.fullscreenHeader.pendingFullscreen ? 4 : 0) | (wrapper.fullscreenHeader.exiting ? 8 : 0) |
-        (wrapper.window.visible && !wrapper.window.onActiveSpace ? 16 : 0) |
+        (wrapper.window.visible && !zenitWindowOnActiveSpace(wrapper) ? 16 : 0) |
         (zenitCaretLayerMoving(wrapper.metalView.layer) ? 32 : 0) |
         (zenitCaretLayerMoving(wrapper.fullscreenHeader.header.layer) ? 64 : 0);
     static unsigned logged = ~0u;
@@ -235,7 +235,7 @@ uint64_t macos_caret_native_signature(void *window_ptr) {
             (uintptr_t)screen, zenitCaretColorSignature(screen.colorSpace.CGColorSpace),
             zenitCaretColorSignature(layer.colorspace), window.effectiveAppearance.name.hash,
             NSApp.effectiveAppearance.name.hash, wrapper.chromeFullscreenTransition,
-            window.onActiveSpace, (uintptr_t)layer, (uintptr_t)layer.superlayer,
+            zenitWindowOnActiveSpace(wrapper), (uintptr_t)layer, (uintptr_t)layer.superlayer,
             (uint64_t)llround(layer.drawableSize.width), (uint64_t)llround(layer.drawableSize.height),
             (uint64_t)llround(layer.contentsScale * 1024), (uintptr_t)header, (uintptr_t)header.window,
             header.hiddenOrHasHiddenAncestor, header.layer.hidden,
@@ -269,7 +269,8 @@ void macos_caret_drawable_info(void *layer_ptr, void *drawable_ptr, uint64_t *ou
     IOSurfaceRef surface = texture.iosurface;
     out[0] = surface ? IOSurfaceGetID(surface) : 0;
     out[1] = (uintptr_t)(__bridge void *)texture;
-    out[2] = drawable.drawableID;
+    out[2] = 0;
+    if (@available(macOS 10.15.4, *)) out[2] = drawable.drawableID;
     out[3] = host.maximumDrawableCount;
 }
 

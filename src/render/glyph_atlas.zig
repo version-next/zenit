@@ -4,6 +4,7 @@
 /// Uses Shelf Packing for texture space allocation.
 /// Multi-page atlas + frame-level GC avoids resetAtlas stalls.
 const std = @import("std");
+const idle_storage = @import("idle_storage.zig");
 const gpu = @import("gpu");
 const text = @import("text");
 const Font = text.Font;
@@ -82,7 +83,30 @@ pub const GlyphAtlas = struct {
     /// See RetiredTexture / drainRetired.
     retired: [MAX_RETIRED]?RetiredTexture = @as([MAX_RETIRED]?RetiredTexture, @splat(null)),
 
+    page_size: u32 = ATLAS_SIZE,
+
+    /// Largest physical page and the fixed UV wire grid. Glyphs too big for a
+    /// default page still get a lazily allocated page of this size.
     pub const ATLAS_SIZE: u32 = 4096;
+    /// Default physical page on every backend: 4 MiB gray instead of 16 MiB.
+    /// Metal's packed UVs encode 2048 texels as even coordinates on the 4096
+    /// grid; the other backends carry float UVs normalized by each page's own
+    /// width, and no shader assumes a page size.
+    pub const SMALL_ATLAS_SIZE: u32 = 2048;
+
+    /// First page of each format at the default page size: a window's glyphs
+    /// rarely fill more than a few percent of a 2048 page (300k-line sqlite
+    /// editor on Windows: at most 13% of the rows, about half of a 1024 page),
+    /// and every window keeps its pages for its lifetime: 1 MiB gray + 4 MiB
+    /// ClearType instead of 4 + 16 MiB. A window whose glyphs outgrow it adds
+    /// default-size pages as before.
+    pub const FIRST_PAGE_SIZE: u32 = 1024;
+
+    /// `ZENIT_GLYPH_ATLAS_4096=1` restores 4096 default pages.
+    pub fn selectedPageSize(force_large: ?[]const u8) u32 {
+        return if (std.mem.eql(u8, force_large orelse "", "1")) ATLAS_SIZE else SMALL_ATLAS_SIZE;
+    }
+
     pub const MAX_PAGES: u32 = 32;
     /// Pages idle for this many frames before becoming collectable (~30 sec at 60fps).
     pub const EVICT_THRESHOLD: u64 = 1800;
@@ -117,6 +141,13 @@ pub const GlyphAtlas = struct {
     }
 
     pub fn init(allocator: std.mem.Allocator, device: *gpu.Backend.Device) !GlyphAtlas {
+        var buf: [64]u8 = undefined;
+        return initWithPageSize(allocator, device, selectedPageSize(@import("zenit_environment").getInto("ZENIT_GLYPH_ATLAS_4096", &buf)));
+    }
+
+    /// Preferred size is immutable. Oversized glyphs retain 4096-page fallback.
+    pub fn initWithPageSize(allocator: std.mem.Allocator, device: *gpu.Backend.Device, page_size: u32) !GlyphAtlas {
+        if (page_size != ATLAS_SIZE and page_size != SMALL_ATLAS_SIZE) return error.UnsupportedAtlasSize;
         // Create sampler, Linear smooths scaling, reduces stroke weight jitter.
         var sampler_linear = device.createSampler(allocator, .{
             .label = "Zenit.Text.GlyphAtlas.Linear",
@@ -141,6 +172,7 @@ pub const GlyphAtlas = struct {
         var self = GlyphAtlas{
             .allocator = allocator,
             .device = device,
+            .page_size = page_size,
             .sampler_nearest = sampler_nearest,
             .sampler_linear = sampler_linear,
             .pages = @as([MAX_PAGES]?AtlasPage, @splat(null)),
@@ -152,10 +184,10 @@ pub const GlyphAtlas = struct {
         errdefer self.deinit();
 
         // Create first page (grayscale, most text uses this; color pages created lazily on-demand).
-        try self.addNewPage(.gray);
+        try self.addNewPage(.gray, self.newPageSize(.gray, 0, 0));
 
         if (ATLAS_LOG_ENABLED) {
-            std.log.info("[GlyphAtlas] Created multi-page atlas (page 0: {d}x{d})", .{ ATLAS_SIZE, ATLAS_SIZE });
+            std.log.info("[GlyphAtlas] Created multi-page atlas (page 0: {d}x{d})", .{ self.page_size, self.page_size });
         }
 
         return self;
@@ -185,7 +217,7 @@ pub const GlyphAtlas = struct {
 
     /// Add new atlas page. No full zero-fill (avoid 16MB memset cost), RectPacker padding ensures
     /// safety.
-    fn addNewPage(self: *GlyphAtlas, format: PageFormat) !void {
+    fn addNewPage(self: *GlyphAtlas, format: PageFormat, physical_size: u32) !void {
         // Hit page limit -> evict oldest to make room (subpixel-reduced this branch rarely
         // triggers).
         // Eviction failure (all pages used this frame) must error: continuing to write
@@ -201,7 +233,7 @@ pub const GlyphAtlas = struct {
                 .cleartype => "Zenit.Text.GlyphAtlas.ClearType",
                 .color => "Zenit.Text.GlyphAtlas.Color",
             },
-            .size = .{ .width = ATLAS_SIZE, .height = ATLAS_SIZE },
+            .size = .{ .width = physical_size, .height = physical_size },
             .format = switch (format) {
                 .gray => .r8_unorm,
                 .cleartype => .rgba8_unorm,
@@ -216,6 +248,10 @@ pub const GlyphAtlas = struct {
             },
             .usage = .{ .texture_binding = true, .copy_dst = true },
             .memory = .host_upload,
+            // Gray pages are read on the CPU by the flat CPU rasterizer
+            // (native/macos/cpu_flat.inc getBytes); color/ClearType pages are
+            // upload-only and may be write-combined.
+            .host_access = if (format == .gray) .read_write else .write_only,
         }) catch return error.TextureCreationFailed;
 
         // Note: no full zero-fill. Under Metal Shared storage, new texture content is undefined,
@@ -225,7 +261,7 @@ pub const GlyphAtlas = struct {
         const page_idx = self.page_count;
         self.pages[page_idx] = AtlasPage{
             .texture = texture,
-            .packer = RectPacker.init(ATLAS_SIZE, ATLAS_SIZE),
+            .packer = RectPacker.init(physical_size, physical_size),
             .last_used_frame = self.current_frame,
             .format = format,
         };
@@ -236,6 +272,15 @@ pub const GlyphAtlas = struct {
         }
     }
 
+    /// ZENIT_DEBUG_ATLAS_FILL: each page's format, size, used rows and glyph count.
+    pub fn debugPrintFill(self: *const GlyphAtlas) void {
+        for (self.pages[0..self.page_count], 0..) |maybe_page, index| {
+            const page = maybe_page orelse continue;
+            const used = page.packer.current_y + page.packer.current_row_height;
+            std.debug.print("[atlas-fill] page={d} format={s} size={d} used_rows={d} fill={d:.1}% glyphs={d}\n", .{ index, @tagName(page.format), page.packer.width, used, @as(f64, @floatFromInt(used)) * 100 / @as(f64, @floatFromInt(page.packer.height)), self.cache.count() });
+        }
+    }
+
     /// Current byte usage (diagnostics/budget check). Color pages are BGRA8, 4 bytes/pixel,
     /// must weight by format; otherwise GC budget treats 64 MiB color page as 16 MiB,
     /// creating 4x hidden overspend.
@@ -243,7 +288,7 @@ pub const GlyphAtlas = struct {
         var total: u64 = 0;
         for (self.pages[0..self.page_count]) |maybe_page| {
             const page = maybe_page orelse continue;
-            total += PAGE_BYTES * page.format.bytesPerPixel();
+            total += @as(u64, page.texture.size.width) * page.texture.size.height * page.format.bytesPerPixel();
         }
         return total;
     }
@@ -345,6 +390,31 @@ pub const GlyphAtlas = struct {
     }
 
     /// Release retired textures past safe window. Driven by maybeCollect (each beginFrame).
+    /// Idle storage policy (see idle_storage). Call only when no submitted
+    /// command can still sample a page. Going volatile also frees retired
+    /// pages early: the GPU has finished with them. If waking finds any page
+    /// discarded, every cached region is forgotten and all pages are repacked,
+    /// so glyphs re-rasterize on demand and render caches see a new generation.
+    pub fn setStorageVolatile(self: *GlyphAtlas, make_volatile: bool) void {
+        if (make_volatile) {
+            for (&self.retired) |*slot| {
+                if (slot.*) |*entry| entry.texture.destroy();
+                slot.* = null;
+            }
+        }
+        var lost = false;
+        for (self.pages[0..self.page_count]) |*maybe_page| {
+            const page = if (maybe_page.*) |*value| value else continue;
+            if (idle_storage.setTextureVolatile(&page.texture, make_volatile)) lost = true;
+        }
+        if (!lost) return;
+        self.invalidateRaster();
+        for (self.pages[0..self.page_count]) |*maybe_page| {
+            const page = if (maybe_page.*) |*value| value else continue;
+            page.packer = RectPacker.init(page.texture.size.width, page.texture.size.height);
+        }
+    }
+
     fn drainRetired(self: *GlyphAtlas) void {
         for (&self.retired) |*slot| {
             const entry = if (slot.*) |*value| value else continue;
@@ -392,6 +462,20 @@ pub const GlyphAtlas = struct {
         }
     }
 
+    /// Physical size of the next page of `format` that must hold a `w`x`h`
+    /// glyph: the 4096 fallback for glyphs larger than a default page, the
+    /// small first page while the format has none (default 2048 pages only),
+    /// else the default page.
+    fn newPageSize(self: *const GlyphAtlas, format: PageFormat, w: u32, h: u32) u32 {
+        if (w > self.page_size - 2 or h > self.page_size - 2) return ATLAS_SIZE;
+        if (self.page_size != SMALL_ATLAS_SIZE) return self.page_size;
+        if (w > FIRST_PAGE_SIZE - 2 or h > FIRST_PAGE_SIZE - 2) return self.page_size;
+        for (self.pages[0..self.page_count]) |maybe_page| {
+            if (maybe_page) |page| if (page.format == format) return self.page_size;
+        }
+        return FIRST_PAGE_SIZE;
+    }
+
     /// Allocate space in current or new page.
     fn allocateInPages(self: *GlyphAtlas, w: u32, h: u32, format: PageFormat) ?struct { rect: RectPacker.Rect, page_idx: u8 } {
         // Search back for hottest page of **same format**. Gray and color pages mix in one array;
@@ -414,7 +498,7 @@ pub const GlyphAtlas = struct {
         }
 
         // No available same-format page -> create new.
-        self.addNewPage(format) catch {
+        self.addNewPage(format, self.newPageSize(format, w, h)) catch {
             // Texture creation failed (typical: VRAM/memory pressure) -> return null, caller skips
             // glyph.
             //
@@ -437,6 +521,21 @@ pub const GlyphAtlas = struct {
             page.last_used_frame = self.current_frame;
             return .{ .rect = rect, .page_idx = @intCast(new_page_idx) };
         }
+        return null;
+    }
+
+    /// The region getOrInsert would return without rasterizing anything: null
+    /// when the glyph is not resident (a later insert may rasterize it, or a
+    /// remembered failure may expire). Touches no page or cache state.
+    pub fn peek(self: *const GlyphAtlas, font: *Font, glyph_index: u32) ?AtlasRegion {
+        return self.cache.get(.{ .font_ptr = @intFromPtr(font), .glyph_index = glyph_index, .scale_q = rasterKey(font) });
+    }
+
+    /// The region getOrInsertSubpixel would return, without rasterizing (see peek).
+    pub fn peekSubpixel(self: *const GlyphAtlas, font: *Font, glyph_index: u32, subpixel_bin_packed: u32) ?AtlasRegion {
+        if (self.cache.get(.{ .font_ptr = @intFromPtr(font), .glyph_index = glyph_index, .subpixel_bin = subpixel_bin_packed, .scale_q = rasterKey(font) })) |region| return region;
+        // Color glyphs share the unshifted entry (getOrInsertSubpixel).
+        if (font.hasColorGlyphs()) return self.peek(font, glyph_index);
         return null;
     }
 
@@ -529,12 +628,12 @@ pub const GlyphAtlas = struct {
         // Calculate UV coordinates.
         const region = AtlasRegion{
             .uv_min = .{
-                @as(f32, @floatFromInt(alloc_result.rect.x)) / @as(f32, @floatFromInt(ATLAS_SIZE)),
-                @as(f32, @floatFromInt(alloc_result.rect.y)) / @as(f32, @floatFromInt(ATLAS_SIZE)),
+                @as(f32, @floatFromInt(alloc_result.rect.x)) / @as(f32, @floatFromInt(self.pages[alloc_result.page_idx].?.texture.size.width)),
+                @as(f32, @floatFromInt(alloc_result.rect.y)) / @as(f32, @floatFromInt(self.pages[alloc_result.page_idx].?.texture.size.width)),
             },
             .uv_max = .{
-                @as(f32, @floatFromInt(alloc_result.rect.x + bitmap.width)) / @as(f32, @floatFromInt(ATLAS_SIZE)),
-                @as(f32, @floatFromInt(alloc_result.rect.y + bitmap.height)) / @as(f32, @floatFromInt(ATLAS_SIZE)),
+                @as(f32, @floatFromInt(alloc_result.rect.x + bitmap.width)) / @as(f32, @floatFromInt(self.pages[alloc_result.page_idx].?.texture.size.width)),
+                @as(f32, @floatFromInt(alloc_result.rect.y + bitmap.height)) / @as(f32, @floatFromInt(self.pages[alloc_result.page_idx].?.texture.size.width)),
             },
             .bearing_x = bitmap.bearing_x,
             .bearing_y = bitmap.bearing_y,
@@ -657,12 +756,12 @@ pub const GlyphAtlas = struct {
 
         const region = AtlasRegion{
             .uv_min = .{
-                @as(f32, @floatFromInt(alloc_result.rect.x)) / @as(f32, @floatFromInt(ATLAS_SIZE)),
-                @as(f32, @floatFromInt(alloc_result.rect.y)) / @as(f32, @floatFromInt(ATLAS_SIZE)),
+                @as(f32, @floatFromInt(alloc_result.rect.x)) / @as(f32, @floatFromInt(self.pages[alloc_result.page_idx].?.texture.size.width)),
+                @as(f32, @floatFromInt(alloc_result.rect.y)) / @as(f32, @floatFromInt(self.pages[alloc_result.page_idx].?.texture.size.width)),
             },
             .uv_max = .{
-                @as(f32, @floatFromInt(alloc_result.rect.x + bitmap.width)) / @as(f32, @floatFromInt(ATLAS_SIZE)),
-                @as(f32, @floatFromInt(alloc_result.rect.y + bitmap.height)) / @as(f32, @floatFromInt(ATLAS_SIZE)),
+                @as(f32, @floatFromInt(alloc_result.rect.x + bitmap.width)) / @as(f32, @floatFromInt(self.pages[alloc_result.page_idx].?.texture.size.width)),
+                @as(f32, @floatFromInt(alloc_result.rect.y + bitmap.height)) / @as(f32, @floatFromInt(self.pages[alloc_result.page_idx].?.texture.size.width)),
             },
             .bearing_x = bitmap.bearing_x,
             .bearing_y = bitmap.bearing_y,
@@ -1235,4 +1334,11 @@ test "transient raster failure expires at the next frame's prewarm" {
     atlas.resetFrameStats();
     try std.testing.expect(!atlas.had_transient_failure);
     try std.testing.expectEqual(@as(u32, 0), atlas.frame_insert_count);
+}
+
+test "small atlas pages are the default with an exact 4096 override" {
+    try std.testing.expectEqual(@as(u32, 4096), GlyphAtlas.selectedPageSize("1"));
+    for ([_]?[]const u8{ null, "", "0", "true", "2" }) |value| {
+        try std.testing.expectEqual(@as(u32, 2048), GlyphAtlas.selectedPageSize(value));
+    }
 }

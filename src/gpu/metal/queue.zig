@@ -13,6 +13,16 @@ pub const Queue = struct {
         }
     }
 
+    /// Replace the command queue with a fresh one, dropping the pools the
+    /// driver keeps per queue (idle trim). Submitted command buffers retain
+    /// the old queue until they complete.
+    pub fn recreate(self: *Queue, raw_device: *mtl.MTLDevice) bool {
+        const fresh = mtl.metal_device_new_command_queue(raw_device) orelse return false;
+        mtl.release(self.raw);
+        self.raw = fresh;
+        return true;
+    }
+
     pub fn deinit(self: *Queue) void {
         mtl.release(self.raw);
     }

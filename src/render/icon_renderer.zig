@@ -1,5 +1,8 @@
 const std = @import("std");
+const idle_storage = @import("idle_storage.zig");
+const SlotBuffer = @import("slot_buffer.zig").SlotBuffer;
 const gpu = @import("gpu");
+const shape_clip_pair = @import("shape_clip_pair.zig");
 const svg = @import("svg");
 const icon_ir = @import("icon_ir");
 
@@ -12,13 +15,27 @@ const Uniforms = extern struct {
     scale_factor: f32,
     clip_shape_kind: u32 = 0,
     clip_rect: [4]f32 = .{ 0, 0, 0, 0 },
-    clip_radius: f32 = 0,
+    clip_radii: [4]f32 = .{ 0, 0, 0, 0 },
     clip_fill_rule: u32 = 0,
     clip_point_count: u32 = 0,
     clip_contour_count: u32 = 0,
+    /// Keeps the polygon arrays on a 16-byte (cbuffer register) boundary after `clip_radii`.
+    _clip_pad: u32 = 0,
     clip_polygon_end_points: [MAX_CLIP_POLYGON_CONTOURS]u32 = @as([MAX_CLIP_POLYGON_CONTOURS]u32, @splat(0)),
     clip_polygon_points: [MAX_CLIP_POLYGON_POINTS][2]f32 = @as([MAX_CLIP_POLYGON_POINTS][2]f32, @splat(.{ 0, 0 })),
+    /// Second shape clip (shape_clip_pair.zig); zero-sized off Metal.
+    clip2: shape_clip_pair.Field = shape_clip_pair.none,
 };
+
+// Shared clip header ABI (Metal struct / HLSL cbuffer / GLSL std140): per-corner radii sit on their own
+// 16-byte register and the polygon arrays start at the next one.
+comptime {
+    std.debug.assert(@offsetOf(Uniforms, "clip_rect") == 16);
+    std.debug.assert(@offsetOf(Uniforms, "clip_radii") == 32);
+    std.debug.assert(@offsetOf(Uniforms, "clip_fill_rule") == 48);
+    std.debug.assert(@offsetOf(Uniforms, "clip_polygon_end_points") == 64);
+    std.debug.assert(@offsetOf(Uniforms, "clip_polygon_points") == 96);
+}
 
 pub const IconInstance = extern struct {
     rect: [4]f32,
@@ -61,7 +78,8 @@ pub const Stats = struct {
     eviction_count: u64 = 0,
 };
 
-const MAX_INSTANCES = 4096;
+/// Starting per-slot instance capacity; slots grow with the frame's demand.
+const MIN_INSTANCE_BYTES = @sizeOf(IconInstance) * 256;
 const MAX_CACHE_ENTRIES = 4096;
 const MAX_TEXTURES = 4096;
 const MAX_UNIFORM_UPDATES = 256;
@@ -96,44 +114,38 @@ pub const IconRenderer = struct {
     uniform_write_offset: usize = 0,
     /// single-frame uniform slot overflow count (diagnostic)
     uniform_overflow_count: u64 = 0,
-    instance_buffers: [BUFFER_COUNT]gpu.Backend.Buffer,
+    /// Per-slot instance storage sized by demand (see SlotBuffer).
+    instance_buffers: SlotBuffer(BUFFER_COUNT) = .init("Zenit.Icon.InstanceBuffer", MIN_INSTANCE_BYTES),
     current_buffer: usize = 0,
 
-    /// instance buffer overflow (one slot per frame, grows-and-retains). Old impl at MAX_INSTANCES
-    /// exhaustion would createBuffer + destroy every batch, causing repeated driver allocations per
-    /// heavy frame. Changed to hold one growable buffer per frame slot: reuse if capacity
-    /// sufficient, rebuild only once if exceeded. Slots rotate with current_buffer, never
-    /// overwriting GPU in-flight frame data. Same pattern as sdf_renderer's retained pool.
     /// uniform buffer overflow (one slot per frame, grows-and-retains). Same as text_renderer: no
     /// longer drops batches on exhaustion (when dropping, instances not cleared, next batch carries
     /// stale instances and fails to draw); instead switch to growable-on-demand,
     /// cross-frame-retained overflow buffer.
-    uniform_overflow_buffers: [BUFFER_COUNT]?gpu.Backend.Buffer = @as([BUFFER_COUNT]?gpu.Backend.Buffer, @splat(null)),
-    uniform_overflow_capacities: [BUFFER_COUNT]usize = @as([BUFFER_COUNT]usize, @splat(0)),
+    uniform_overflow: SlotBuffer(BUFFER_COUNT) = .init("Zenit.Icon.OverflowUniforms", UNIFORM_STRIDE * 64),
     uniform_overflow_used: usize = 0,
-    overflow_buffers: [BUFFER_COUNT]?gpu.Backend.Buffer = @as([BUFFER_COUNT]?gpu.Backend.Buffer, @splat(null)),
-    overflow_capacities: [BUFFER_COUNT]usize = @as([BUFFER_COUNT]usize, @splat(0)),
-    /// write cursor in bytes within frame slot overflow buffer; ensures multiple batches this frame
-    /// don't overwrite each other
-    overflow_write_offset: usize = 0,
     sampler: ?gpu.Backend.Sampler,
 
-    textures: [MAX_TEXTURES]?TextureSlot,
-    texture_count: u32,
+    /// Mask texture slots, grown on demand up to MAX_TEXTURES (an inline
+    /// 4096-slot table kept ~220 KiB resident in every renderer).
+    textures: std.ArrayList(?TextureSlot) = .empty,
     cache: std.AutoHashMap(IconMaskKey, CacheEntry),
     cache_bytes: usize = 0,
     frame_index: u64 = 0,
     stats: Stats = .{},
 
     instances: std.ArrayList(IconInstance),
+    /// Advances whenever the pending instances are dropped (see TextRenderer.pending_generation).
+    pending_generation: u64 = 0,
     instance_texture_ids: std.ArrayList(u32),
 
     viewport_width: f32,
     viewport_height: f32,
     scale_factor: f32,
     clip_rect: [4]f32 = .{ 0, 0, 0, 0 },
-    clip_radius: f32 = 0,
+    clip_radii: [4]f32 = .{ 0, 0, 0, 0 },
     clip_shape_kind: u32 = 0,
+    clip2: shape_clip_pair.Uniform = .{},
     clip_fill_rule: u32 = 0,
     clip_point_count: u32 = 0,
     clip_contour_count: u32 = 0,
@@ -147,18 +159,16 @@ pub const IconRenderer = struct {
         self.uniform_write_offset = 0;
         self.uniform_overflow_count = 0;
         self.current_buffer = 0;
-        @memset(&self.uniform_overflow_buffers, null);
-        @memset(&self.uniform_overflow_capacities, 0);
+        self.uniform_overflow = .init("Zenit.Icon.OverflowUniforms", UNIFORM_STRIDE * 64);
         self.uniform_overflow_used = 0;
-        @memset(&self.overflow_buffers, null);
-        @memset(&self.overflow_capacities, 0);
-        self.overflow_write_offset = 0;
+        self.instance_buffers = .init("Zenit.Icon.InstanceBuffer", MIN_INSTANCE_BYTES);
         self.cache_bytes = 0;
         self.frame_index = 0;
         self.stats = .{};
         self.clip_rect = .{ 0, 0, 0, 0 };
-        self.clip_radius = 0;
+        self.clip_radii = .{ 0, 0, 0, 0 };
         self.clip_shape_kind = 0;
+        self.clip2 = .{};
         self.clip_fill_rule = 0;
         self.clip_point_count = 0;
         self.clip_contour_count = 0;
@@ -205,20 +215,6 @@ pub const IconRenderer = struct {
             uniform_created += 1;
         }
 
-        var instance_buffers: [BUFFER_COUNT]gpu.Backend.Buffer = undefined;
-        var instance_created: usize = 0;
-        errdefer for (instance_buffers[0..instance_created]) |*ib| ib.destroy();
-        for (&instance_buffers, 0..) |*buf, i| {
-            const label = try std.fmt.allocPrint(allocator, "Zenit.Icon.InstanceBuffer[{d}]", .{i});
-            defer allocator.free(label);
-            buf.* = try device.createBuffer(allocator, .{
-                .label = label,
-                .size = @sizeOf(IconInstance) * MAX_INSTANCES,
-                .usage = .{ .vertex = true, .map_write = true },
-            });
-            instance_created += 1;
-        }
-
         const sampler = try device.createSampler(allocator, .{
             .label = "Zenit.Icon.LinearSampler",
             .min_filter = .linear,
@@ -229,10 +225,8 @@ pub const IconRenderer = struct {
         self.device = device;
         self.pipeline = pipeline;
         self.uniform_buffers = uniform_buffers;
-        self.instance_buffers = instance_buffers;
         self.sampler = sampler;
-        @memset(&self.textures, null);
-        self.texture_count = 0;
+        self.textures = .empty;
         self.cache = std.AutoHashMap(IconMaskKey, CacheEntry).init(allocator);
         self.instances = .empty;
         self.instance_texture_ids = .empty;
@@ -241,46 +235,68 @@ pub const IconRenderer = struct {
         self.scale_factor = 1.0;
     }
 
+    /// Per-slot scratch storage is rewritten every frame; see idle_storage.
+    pub fn setScratchVolatile(self: *IconRenderer, make_volatile: bool) void {
+        idle_storage.setBuffersVolatile(&self.uniform_buffers, make_volatile);
+        self.instance_buffers.setVolatile(make_volatile);
+        self.uniform_overflow.setVolatile(make_volatile);
+    }
+
+    /// Drop demand-sized scratch so the next frame regrows it to what it
+    /// draws. Only while no submitted frame is executing.
+    pub fn releaseScratch(self: *IconRenderer) void {
+        self.instance_buffers.release();
+        self.uniform_overflow.release();
+    }
+
     pub fn deinit(self: *IconRenderer) void {
         var cache_it = self.cache.iterator();
         while (cache_it.next()) |_| {}
         self.cache.deinit();
-        for (&self.textures) |*slot| {
+        for (self.textures.items) |*slot| {
             if (slot.*) |owned| {
                 var texture = owned.texture;
                 texture.destroy();
                 slot.* = null;
             }
         }
+        self.textures.deinit(self.allocator);
         if (self.sampler) |*sampler| sampler.destroy();
         self.instances.deinit(self.allocator);
         self.instance_texture_ids.deinit(self.allocator);
-        for (&self.instance_buffers) |*buf| buf.destroy();
+        self.instance_buffers.deinit(self.allocator);
         for (&self.uniform_buffers) |*ubuf| ubuf.destroy();
-        for (&self.overflow_buffers) |*maybe_buf| {
-            if (maybe_buf.*) |*buf| buf.destroy();
-        }
-        for (&self.uniform_overflow_buffers) |*maybe_buf| {
-            if (maybe_buf.*) |*buf| buf.destroy();
-        }
+        self.uniform_overflow.deinit(self.allocator);
         self.pipeline.deinit();
     }
 
+    /// Start a GPU frame.
     pub fn beginFrame(self: *IconRenderer, width: f32, height: f32, scale: f32) void {
+        self.beginFrameFor(width, height, scale, true);
+    }
+
+    /// `gpu_frame` false: a CPU patch encode (cpu_flat), which reads only the
+    /// CPU-side batches: the triple-buffered GPU slots keep rotating with GPU
+    /// frames alone, so a slot an in-flight frame reads is never reused.
+    pub fn beginFrameFor(self: *IconRenderer, width: f32, height: f32, scale: f32, gpu_frame: bool) void {
         self.instances.clearRetainingCapacity();
+        self.pending_generation +%= 1;
         self.instance_texture_ids.clearRetainingCapacity();
         self.buffer_write_offset = 0;
-        self.current_buffer = (self.current_buffer + 1) % BUFFER_COUNT;
+        if (gpu_frame) {
+            self.current_buffer = (self.current_buffer + 1) % BUFFER_COUNT;
+            self.instance_buffers.beginSlot(self.current_buffer);
+            self.uniform_overflow.beginSlot(self.current_buffer);
+        }
         self.uniform_write_offset = 0;
         self.uniform_overflow_used = 0;
-        // new slot overflow buffer starts at zero (slot last used BUFFER_COUNT frames ago)
-        self.overflow_write_offset = 0;
         self.viewport_width = width * scale;
         self.viewport_height = height * scale;
         self.scale_factor = scale;
         self.clip_rect = .{ 0, 0, 0, 0 };
-        self.clip_radius = 0;
+        self.clip_radii = .{ 0, 0, 0, 0 };
         self.clip_shape_kind = 0;
+        self.clip2 = .{};
         self.clip_fill_rule = 0;
         self.clip_point_count = 0;
         self.clip_contour_count = 0;
@@ -296,10 +312,15 @@ pub const IconRenderer = struct {
         self.scale_factor = scale;
     }
 
-    pub fn setClipMask(self: *IconRenderer, shape_kind: u32, rect: ?[4]f32, radius: f32, fill_rule: u32, point_count: u32, contour_count: u32, contour_end_points: [MAX_CLIP_POLYGON_CONTOURS]u8, polygon_points: [MAX_CLIP_POLYGON_POINTS][2]f32) void {
+    /// Second shape clip intersected with the primary one (shape_clip_pair.zig).
+    pub fn setPartnerClip(self: *IconRenderer, clip: shape_clip_pair.Uniform) void {
+        self.clip2 = clip;
+    }
+
+    pub fn setClipMask(self: *IconRenderer, shape_kind: u32, rect: ?[4]f32, radii: [4]f32, fill_rule: u32, point_count: u32, contour_count: u32, contour_end_points: [MAX_CLIP_POLYGON_CONTOURS]u8, polygon_points: [MAX_CLIP_POLYGON_POINTS][2]f32) void {
         if (rect) |mask_rect| {
             self.clip_rect = mask_rect;
-            self.clip_radius = radius;
+            self.clip_radii = radii;
             self.clip_shape_kind = shape_kind;
             self.clip_fill_rule = fill_rule;
             self.clip_point_count = point_count;
@@ -308,8 +329,9 @@ pub const IconRenderer = struct {
             self.clip_polygon_points = polygon_points;
         } else {
             self.clip_rect = .{ 0, 0, 0, 0 };
-            self.clip_radius = 0;
+            self.clip_radii = .{ 0, 0, 0, 0 };
             self.clip_shape_kind = 0;
+            self.clip2 = .{};
             self.clip_fill_rule = 0;
             self.clip_point_count = 0;
             self.clip_contour_count = 0;
@@ -428,26 +450,28 @@ pub const IconRenderer = struct {
             .size = .{ .width = width, .height = height },
             .format = .r8_unorm,
             .usage = .{ .copy_dst = true, .texture_binding = true },
+            // Stays CPU-cached (read_write): the flat CPU rasterizer reads
+            // masks back with getBytes (native/macos/cpu_flat.inc).
             .memory = .host_upload,
         });
         errdefer texture.destroy();
         try texture.writeRegion(0, 0, 0, width, height, alpha_data, width);
 
-        var id: u32 = self.texture_count;
-        for (self.textures[0..self.texture_count], 0..) |slot, i| {
+        var id: u32 = @intCast(self.textures.items.len);
+        for (self.textures.items, 0..) |slot, i| {
             if (slot == null) {
                 id = @intCast(i);
                 break;
             }
         }
-        if (id == self.texture_count) {
-            if (self.texture_count >= MAX_TEXTURES) {
+        if (id == self.textures.items.len) {
+            if (self.textures.items.len >= MAX_TEXTURES) {
                 return error.TooManyTextures;
             }
-            self.texture_count += 1;
+            try self.textures.append(self.allocator, null);
         }
 
-        self.textures[id] = .{
+        self.textures.items[id] = .{
             .texture = texture,
             .width = width,
             .height = height,
@@ -457,31 +481,17 @@ pub const IconRenderer = struct {
     }
 
     fn destroyTextureSlot(self: *IconRenderer, slot_id: u32) void {
-        if (slot_id >= MAX_TEXTURES) return;
-        if (self.textures[slot_id]) |slot| {
+        if (slot_id >= self.textures.items.len) return;
+        if (self.textures.items[slot_id]) |slot| {
             var texture = slot.texture;
             texture.destroy();
-            self.textures[slot_id] = null;
+            self.textures.items[slot_id] = null;
         }
     }
 
     /// ensure frame slot overflow uniform buffer can fit at least `slots` Uniforms
     fn ensureUniformOverflowCapacity(self: *IconRenderer, slots: usize) !*gpu.Backend.Buffer {
-        const needed = slots * UNIFORM_STRIDE;
-        if (self.uniform_overflow_capacities[self.current_buffer] < needed) {
-            var new_capacity = @max(self.uniform_overflow_capacities[self.current_buffer], UNIFORM_STRIDE * 64);
-            while (new_capacity < needed) new_capacity *= 2;
-            // Preserve the owned buffer if replacement allocation fails.
-            const replacement = try self.device.createBuffer(self.allocator, .{
-                .label = "Zenit.Icon.OverflowUniforms",
-                .size = new_capacity,
-                .usage = .{ .vertex = true, .map_write = true },
-            });
-            if (self.uniform_overflow_buffers[self.current_buffer]) |*old| old.destroy();
-            self.uniform_overflow_buffers[self.current_buffer] = replacement;
-            self.uniform_overflow_capacities[self.current_buffer] = new_capacity;
-        }
-        return &self.uniform_overflow_buffers[self.current_buffer].?;
+        return (try self.uniform_overflow.ensure(self.allocator, self.device, self.current_buffer, slots * UNIFORM_STRIDE)).buffer;
     }
 
     pub fn render(self: *IconRenderer, render_pass: *gpu.Backend.RenderPass) !void {
@@ -506,8 +516,9 @@ pub const IconRenderer = struct {
             .viewport_size = .{ self.viewport_width, self.viewport_height },
             .scale_factor = self.scale_factor,
             .clip_shape_kind = self.clip_shape_kind,
+            .clip2 = shape_clip_pair.field(self.clip2),
             .clip_rect = self.clip_rect,
-            .clip_radius = self.clip_radius,
+            .clip_radii = self.clip_radii,
             .clip_fill_rule = self.clip_fill_rule,
             .clip_point_count = self.clip_point_count,
             .clip_contour_count = self.clip_contour_count,
@@ -530,44 +541,15 @@ pub const IconRenderer = struct {
         self.instance_high_water_mark = @max(self.instance_high_water_mark, total);
         var global_offset: usize = 0;
         while (global_offset < total) {
-            const remaining_total = total - global_offset;
-            const remaining_capacity = MAX_INSTANCES - self.buffer_write_offset;
-            const chunk_count = if (remaining_capacity == 0)
-                remaining_total
-            else
-                @min(remaining_total, remaining_capacity);
+            const chunk_count = total - global_offset;
             const chunk_size = @sizeOf(IconInstance) * chunk_count;
-            if (remaining_capacity == 0) {
-                // reuse frame slot overflow buffer; rebuild only if capacity insufficient
-                // (geometric growth to avoid thrashing)
-                const needed = self.overflow_write_offset + chunk_size;
-                if (self.overflow_capacities[self.current_buffer] < needed) {
-                    var new_capacity = @max(self.overflow_capacities[self.current_buffer], chunk_size);
-                    while (new_capacity < needed) new_capacity *= 2;
-                    // Preserve the owned buffer if replacement allocation fails.
-                    const replacement = try self.device.createBuffer(self.allocator, .{
-                        .label = "Zenit.Icon.OverflowInstanceBuffer",
-                        .size = new_capacity,
-                        .usage = .{ .vertex = true, .map_write = true },
-                    });
-                    if (self.overflow_buffers[self.current_buffer]) |*old| old.destroy();
-                    self.overflow_buffers[self.current_buffer] = replacement;
-                    self.overflow_capacities[self.current_buffer] = new_capacity;
-                }
-                const overflow_buffer = &self.overflow_buffers[self.current_buffer].?;
-                const overflow_data = try overflow_buffer.getMappedRange(self.overflow_write_offset, chunk_size);
-                @memcpy(overflow_data, std.mem.sliceAsBytes(self.instances.items[global_offset .. global_offset + chunk_count]));
-                render_pass.setVertexBuffer(1, overflow_buffer, @intCast(self.overflow_write_offset));
-                render_pass.setFragmentBuffer(1, overflow_buffer, @intCast(self.overflow_write_offset));
-                self.overflow_write_offset += chunk_size;
-            } else {
-                const byte_offset = self.buffer_write_offset * @sizeOf(IconInstance);
-                const chunk_data = try self.instance_buffers[self.current_buffer].getMappedRange(byte_offset, chunk_size);
-                @memcpy(chunk_data, std.mem.sliceAsBytes(self.instances.items[global_offset .. global_offset + chunk_count]));
-                render_pass.setVertexBuffer(1, &self.instance_buffers[self.current_buffer], @intCast(byte_offset));
-                render_pass.setFragmentBuffer(1, &self.instance_buffers[self.current_buffer], @intCast(byte_offset));
-                self.buffer_write_offset += chunk_count;
-            }
+            const byte_offset = self.buffer_write_offset * @sizeOf(IconInstance);
+            const storage = try self.instance_buffers.ensure(self.allocator, self.device, self.current_buffer, byte_offset + chunk_size);
+            const chunk_data = try storage.buffer.getMappedRange(byte_offset, chunk_size);
+            @memcpy(chunk_data, std.mem.sliceAsBytes(self.instances.items[global_offset .. global_offset + chunk_count]));
+            render_pass.setVertexBuffer(1, storage.buffer, @intCast(byte_offset));
+            render_pass.setFragmentBuffer(1, storage.buffer, @intCast(byte_offset));
+            self.buffer_write_offset += chunk_count;
 
             var i: usize = 0;
             while (i < chunk_count) {
@@ -576,8 +558,8 @@ pub const IconRenderer = struct {
                 while (batch_end < chunk_count and self.instance_texture_ids.items[global_offset + batch_end] == current_tex_id) {
                     batch_end += 1;
                 }
-                if (current_tex_id < MAX_TEXTURES) {
-                    if (self.textures[current_tex_id]) |slot| {
+                if (current_tex_id < self.textures.items.len) {
+                    if (self.textures.items[current_tex_id]) |slot| {
                         render_pass.setFragmentTexture(0, &slot.texture);
                     }
                 }
@@ -594,6 +576,7 @@ pub const IconRenderer = struct {
         try self.render(render_pass);
         self.instances.clearRetainingCapacity();
         self.instance_texture_ids.clearRetainingCapacity();
+        self.pending_generation +%= 1;
     }
 };
 
@@ -629,7 +612,7 @@ test "evictToFit 不驱逐本帧在用的 mask（待 flush 实例仍按 slot 引
     try r.evictToFit(MAX_CACHE_BYTES);
     try std.testing.expect(r.cache.contains(hot_key));
     try std.testing.expect(!r.cache.contains(cold_key));
-    try std.testing.expect(r.textures[hot_slot] != null);
+    try std.testing.expect(r.textures.items[hot_slot] != null);
     // new mask cannot reuse hot mask's slot
     const new_slot = try r.createMaskTexture(4, 4, &pixels);
     try std.testing.expect(new_slot != hot_slot);

@@ -26,10 +26,13 @@ const Handler = core.Handler;
 const hooks = @import("../../hooks.zig");
 const popover_mod = @import("../popover/mod.zig");
 const Popover = popover_mod.Popover;
+const Button = @import("../button/mod.zig").Button;
 const calendar_mod = @import("../calendar/mod.zig");
 const SimpleDate = calendar_mod.SimpleDate;
 const svg_assets = @import("../../svg_assets.zig");
 const styles = @import("styles.zig");
+/// Trigger look is shared with DatePicker (one definition).
+const trigger_styles = @import("../date_picker/styles.zig");
 const view = @import("../../view.zig");
 
 /// closed interval [start, end], start <= end
@@ -44,6 +47,8 @@ pub const DateRangePickerProps = struct {
     /// selected range: `?DateRange` uncontrolled initial; `*Signal(?DateRange)` controlled
     /// (interaction writes directly); `ui.split` intercepts
     value: Model(?DateRange) = .{ .local = null },
+    /// Opt into an Apply/Cancel footer; default retains immediate commit.
+    confirm_selection: bool = false,
     width: f32 = 320,
     /// control size (same ControlSize as Button / Input / Select, default md)
     size: control_shell.ControlSize = .md,
@@ -52,6 +57,8 @@ pub const DateRangePickerProps = struct {
     /// popover toggle
     open: Model(bool) = .{ .local = false },
     on_open_change: ?Handler(bool) = null,
+    /// Validation state; error border takes precedence over open/focus.
+    invalid: Source(bool) = .{ .value = false },
     /// call after user selects complete range and settled (settled value)
     on_change: ?Handler(DateRange) = null,
     calendar_icon_asset: ?svg_assets.Asset = null,
@@ -64,6 +71,10 @@ pub const DateRangePickerState = struct {
     value: reactive.Bound(?DateRange),
     /// data source value applied to view (effect checks if data source changed)
     applied: ?DateRange = null,
+    confirm_selection: bool = false,
+    apply_disabled: ?*reactive.Signal(bool) = null,
+    footer_summary: ?*Node = null,
+    footer_buf: [80]u8 = undefined,
     /// current displayed range: data source value, or draft in progress (start-only)
     start_date: ?SimpleDate,
     end_date: ?SimpleDate,
@@ -88,9 +99,11 @@ pub const DateRangePickerState = struct {
     close: Handler(void),
     toggle: Handler(void),
     disabled: Source(bool),
+    invalid: Source(bool) = .{ .value = false },
     shown_open: bool = false,
     shown_disabled: bool = false,
-    shell_config: control_shell.ControlShellConfig,
+    /// Trigger look the frame and icon tints follow (styleBy / tintBy); syncTriggerVisual writes it.
+    trigger_look: *Signal(trigger_styles.TriggerLook),
     on_change: ?Handler(DateRange),
     placeholder_start: []const u8,
     placeholder_end: []const u8,
@@ -114,7 +127,7 @@ pub const DateRangePickerState = struct {
         self.start_date = if (v) |r| r.start else null;
         self.end_date = if (v) |r| r.end else null;
         self.preview_end_date = null;
-        updateDisplayLabel(self);
+        updateDisplayLabelOrLog(self);
         self.rebuildOrLog();
     }
 
@@ -127,8 +140,12 @@ pub const DateRangePickerState = struct {
     fn viewEffect(self: *DateRangePickerState) void {
         const v = self.value.readAs(true);
         const open = self.open.read(true);
+        _ = self.invalid.read(true);
         const disabled = self.disabled.read(true);
-        if (disabled != self.shown_disabled) self.applyDisabled(disabled);
+        if (disabled != self.shown_disabled) {
+            self.applyDisabled(disabled);
+            updateDisplayLabelOrLog(self);
+        }
         // every open (click / external write open): reset draft and visible month to data source
         // value
         if (open and !self.shown_open) {
@@ -148,9 +165,7 @@ pub const DateRangePickerState = struct {
     /// dynamic disable: per recipe disable state changes frame, click entry gated by disabled
     fn applyDisabled(self: *DateRangePickerState, disabled: bool) void {
         self.shown_disabled = disabled;
-        const resolved = self.shell_config.resolvedConditionalStyle(self.cx.tokens).resolve(.{ .is_disabled = disabled });
-        if (resolved.background) |bg| self.trigger_node.setBackground(if (disabled) bg else self.cx.tokens.tokens.color.bg_primary);
-        self.trigger_node.style.cursor = if (disabled) .not_allowed else .pointer;
+        // Frame and cursor: the trigger shell (disabled parameter) and its look (syncTriggerVisual).
         if (self.trigger_node.behavior.interaction.a11y) |*a| a.disabled = disabled;
         self.trigger_node.markRenderDirty();
     }
@@ -162,6 +177,7 @@ pub const DateRangePickerState = struct {
     }
 
     fn rebuildOrLog(self: *DateRangePickerState) void {
+        self.syncFooter();
         rebuildPanels(self) catch |err| log.err("panel rebuild failed: {}", .{err});
     }
 
@@ -181,7 +197,7 @@ pub const DateRangePickerState = struct {
             // first click: only record draft start, no proposal
             self.start_date = date;
             self.end_date = null;
-            updateDisplayLabel(self);
+            updateDisplayLabelOrLog(self);
             syncTriggerVisual(self, self.open.peek());
             self.rebuildOrLog();
             return;
@@ -191,6 +207,46 @@ pub const DateRangePickerState = struct {
         const cmp = compareDate(date, start);
         if (cmp == 0) return;
         const range: DateRange = if (cmp < 0) .{ .start = date, .end = start } else .{ .start = start, .end = date };
+        if (self.confirm_selection) {
+            self.start_date = range.start;
+            self.end_date = range.end;
+            updateDisplayLabelOrLog(self);
+            self.rebuildOrLog();
+            return;
+        }
+        self.commitRange(range);
+    }
+
+    fn syncFooter(self: *DateRangePickerState) void {
+        if (self.apply_disabled) |disabled| disabled.set(self.start_date == null or self.end_date == null);
+        if (self.footer_summary) |label| {
+            const content = if (self.start_date) |start| if (self.end_date) |end|
+                std.fmt.bufPrint(&self.footer_buf, "{d}-{d:0>2}-{d:0>2} – {d}-{d:0>2}-{d:0>2}", .{ start.year, start.month, start.day, end.year, end.month, end.day }) catch ""
+            else
+                "Select end date" else "Select start date";
+            if (label.getText()) |old| {
+                var text = old;
+                text.content = content;
+                label.setText(text);
+            }
+        }
+    }
+
+    fn cancel(ptr: *anyopaque) void {
+        const self: *DateRangePickerState = @ptrCast(@alignCast(ptr));
+        self.applyValue(self.value.peek());
+        self.close.invoke();
+    }
+
+    fn apply(ptr: *anyopaque) void {
+        const self: *DateRangePickerState = @ptrCast(@alignCast(ptr));
+        if (self.disabled.peek()) return;
+        const start = self.start_date orelse return;
+        const end = self.end_date orelse return;
+        self.commitRange(.{ .start = start, .end = end });
+    }
+
+    fn commitRange(self: *DateRangePickerState, range: DateRange) void {
         const on_change = self.on_change;
         const landed = self.value.commit(range);
         // parent rejects (or same as original) so view effect does not run: discard draft with
@@ -264,7 +320,7 @@ pub const DateRangePickerBuilder = struct {
             .trigger = .manual,
             .open = p.open,
             .on_open_change = p.on_open_change,
-            .offset = .{ .static = 8 },
+            .offset = .{ .static = 4 },
             .flip = false,
             .close_on_outside_click = true,
             .close_on_escape = true,
@@ -300,37 +356,22 @@ pub const DateRangePickerBuilder = struct {
         const cm = control_shell.metrics(t, p.size);
         // same ControlShell as Input / Select / DatePicker (.field): icon_slot = calendar icon,
         // content_slot = start-end text (grow, can shrink clip), append_slot = chevron.
-        const shell_config = control_shell.ControlShellConfig{ .size = p.size, .variant = .field };
+        const trigger_look = try my_scope.createSignal(trigger_styles.TriggerLook, .{ .size = p.size, .width = p.width, .has_value = has_any_value, .invalid = p.invalid.peek(), .disabled = disabled0 });
         const icon_size: core.Sizing = .{ .px = cm.icon_size };
         const range_text = styles.rangeTextStyle(t, cm);
         // start-end text content and color managed by updateDisplayLabel
         const TriggerParts = struct { calendar: *Node = undefined, start: *Node = undefined, dash: *Node = undefined, end: *Node = undefined, chevron: *Node = undefined };
         var tparts: TriggerParts = .{};
-        var shell: control_shell.ControlShellResult = undefined;
-        try view.mount(my_scope, cx, pop_result.trigger, view.capture(&shell, control_shell.ControlShell(.{
-            .size = p.size,
+        var shell: core.ViewParts = undefined;
+        // The trigger is a ControlShell (structure, slots, cursor, disabled); the shared picker
+        // look stacks on it as an overlay following trigger_look.
+        try view.mount(my_scope, cx, pop_result.trigger, view.attrs(.{ .style = view.styleBy(trigger_look, trigger_styles.triggerFrame) }, view.with(control_shell.ControlShell(.{
             .variant = .field,
-            .disabled = static_disabled,
+            .size = p.size,
+            .disabled = p.disabled,
             .leading_icon = true,
             .tag = .button,
-            .style = .{
-                .width = .{ .px = p.width },
-                .background = t.tokens.color.bg_primary,
-                .border = .{ .width = 1, .color = styles.triggerBorderColor(false, has_any_value, t), .radius = cm.radius },
-            },
-            .interactive = false,
-            .focus_ring = false,
-            .cursor = if (disabled0) .not_allowed else .pointer,
-        }, .{
-            .icon = view.capture(&tparts.calendar, view.icon(.{
-                .style = .{ .width = icon_size, .height = icon_size },
-                .tint = styles.leadingIconTint(has_any_value, t),
-            }, p.calendar_icon_asset orelse svg_assets.common.calendar)),
-            .content = .{
-                view.capture(&tparts.start, view.text(.{ .style = range_text }, p.placeholder_start)),
-                view.capture(&tparts.dash, view.text(.{ .style = range_text }, "–")),
-                view.capture(&tparts.end, view.text(.{ .style = range_text }, p.placeholder_end)),
-            },
+            .cursor = .pointer,
             .content_style = core.BoxStyle{
                 .width = .{ .grow = .{ .min = 0 } },
                 .flex_shrink = 1,
@@ -338,12 +379,22 @@ pub const DateRangePickerBuilder = struct {
                 .gap = cm.gap,
                 .min_width = 0,
             },
+        }), .{}).capture(&shell).slots(.{
+            .icon = view.capture(&tparts.calendar, view.icon(.{
+                .style = .{ .width = icon_size, .height = icon_size },
+                .tint = view.tintBy(trigger_look, trigger_styles.triggerLeadingTint),
+            }, p.calendar_icon_asset orelse svg_assets.common.calendar)),
+            .content = .{
+                view.capture(&tparts.start, view.text(.{ .style = range_text }, p.placeholder_start)),
+                view.capture(&tparts.dash, view.text(.{ .style = range_text }, "–")),
+                view.capture(&tparts.end, view.text(.{ .style = range_text }, p.placeholder_end)),
+            },
             .append = view.capture(&tparts.chevron, view.icon(.{
                 .style = .{ .width = icon_size, .height = icon_size },
-                .tint = styles.chevronTint(false, t),
+                .tint = view.tintBy(trigger_look, trigger_styles.triggerChevronTint),
             }, svg_assets.common.chevron_down)),
         })));
-        const trigger = shell.node;
+        const trigger = shell.root.?;
         // a11y: combobox + dialog popup; expanded/value_text updated by
         // syncTriggerVisual / updateDisplayLabel following interaction.
         trigger.behavior.interaction.a11y = .{
@@ -376,9 +427,10 @@ pub const DateRangePickerBuilder = struct {
             .hit_shape = .{ .rounded_rect = styles.panel_radius },
             .clip_shape = .{ .rounded_rect = styles.panel_radius },
         } } }, .{
-            view.capture(&left_month.container, view.component(monthSection, MonthSectionProps{ .refs = &left_month, .show_prev = true, .show_next = false, .prev_icon = prev_icon, .next_icon = next_icon })),
-            view.box(.{ .style = styles.panelDividerStyle(t) }, {}),
-            view.capture(&right_month.container, view.component(monthSection, MonthSectionProps{ .refs = &right_month, .show_prev = false, .show_next = true, .prev_icon = prev_icon, .next_icon = next_icon })),
+            view.row(.{ .style = styles.monthsStyle }, .{
+                view.capture(&left_month.container, view.component(monthSection, MonthSectionProps{ .refs = &left_month, .show_prev = true, .show_next = false, .prev_icon = prev_icon, .next_icon = next_icon })),
+                view.capture(&right_month.container, view.component(monthSection, MonthSectionProps{ .refs = &right_month, .show_prev = false, .show_next = true, .prev_icon = prev_icon, .next_icon = next_icon })),
+            }),
         })));
         panel.meta.ownership.meta.component_name = "DateRangePickerPanel";
         try assignTestId(allocator, panel, p.test_id, ".panel");
@@ -389,6 +441,7 @@ pub const DateRangePickerBuilder = struct {
         state.* = .{
             .value = value,
             .applied = initial_value,
+            .confirm_selection = p.confirm_selection,
             .start_date = if (initial_value) |r| r.start else null,
             .end_date = if (initial_value) |r| r.end else null,
             .preview_end_date = null,
@@ -410,8 +463,9 @@ pub const DateRangePickerBuilder = struct {
             .close = pop_result.close,
             .toggle = pop_result.toggle,
             .disabled = p.disabled,
+            .invalid = p.invalid,
             .shown_disabled = disabled0,
-            .shell_config = shell_config,
+            .trigger_look = trigger_look,
             .on_change = p.on_change,
             .placeholder_start = p.placeholder_start,
             .placeholder_end = p.placeholder_end,
@@ -426,6 +480,15 @@ pub const DateRangePickerBuilder = struct {
                 alloc.destroy(s);
             }
         }.cleanup);
+        if (p.confirm_selection) {
+            state.apply_disabled = try my_scope.createSignal(bool, initial_value == null);
+            try view.mount(my_scope, cx, panel, view.row(.{ .style = styles.footerStyle }, .{
+                view.attrs(.{ .style = styles.footerSummaryStyle }, view.capture(&state.footer_summary, view.text(.{ .style = styles.footerTextStyle }, @as([]const u8, "")))),
+                Button(.{ .label = "Cancel", .variant = .secondary, .base_style = styles.footerButtonStyle(t), .on_click = Cx.simpleHandler(DateRangePickerState.cancel, state) }),
+                Button(.{ .label = "Apply", .disabled = state.apply_disabled.?, .base_style = styles.footerButtonStyle(t), .on_click = Cx.simpleHandler(DateRangePickerState.apply, state) }),
+            }));
+            state.syncFooter();
+        }
         // static disable completely lazy (no click attached); dynamic disable still attached, entry
         // gated by disabled
         if (!static_disabled) pop_result.trigger.behavior.events.on_click = core.Cx.simpleHandler(DateRangePickerState.onTriggerClick, state);
@@ -439,10 +502,8 @@ pub const DateRangePickerBuilder = struct {
                 alloc.destroy(@as(*NavClickCtx, @ptrCast(@alignCast(ptr))));
             }
         }.cleanup);
-        const nav_anim = styles.iconBtnAnimColors(t);
         if (left_month.nav_btn) |prev_btn| {
             prev_btn.behavior.events.on_click = core.Cx.simpleHandler(navClickHandler, @ptrCast(prev_ctx));
-            _ = try hooks.useAnimatedBackground(my_scope, cx, prev_btn, .{ .normal = nav_anim.normal, .hover = nav_anim.hover });
             try assignTestId(allocator, prev_btn, p.test_id, ".prev");
         }
 
@@ -455,11 +516,10 @@ pub const DateRangePickerBuilder = struct {
         }.cleanup);
         if (right_month.nav_btn) |next_btn| {
             next_btn.behavior.events.on_click = core.Cx.simpleHandler(navClickHandler, @ptrCast(next_ctx));
-            _ = try hooks.useAnimatedBackground(my_scope, cx, next_btn, .{ .normal = nav_anim.normal, .hover = nav_anim.hover });
             try assignTestId(allocator, next_btn, p.test_id, ".next");
         }
 
-        updateDisplayLabel(state);
+        try updateDisplayLabel(state);
         syncTriggerVisual(state, false);
         try rebuildPanels(state);
         // view = f(value, open): data source change overrides draft; toggle drives trigger visual
@@ -545,7 +605,7 @@ var preview_trace_enabled_cache: ?bool = null;
 
 fn previewTraceEnabled() bool {
     if (preview_trace_enabled_cache) |enabled| return enabled;
-    const raw = std.c.getenv("ZENIT_DRP_PREVIEW_TRACE");
+    const raw = @import("zenit_environment").getNative("ZENIT_DRP_PREVIEW_TRACE");
     if (raw == null) {
         preview_trace_enabled_cache = false;
         return false;
@@ -683,7 +743,8 @@ fn dayLeaveHandler(ctx_ptr: *anyopaque) void {
 fn panelLeaveHandler(ctx_ptr: *anyopaque) void {
     const state: *DateRangePickerState = @ptrCast(@alignCast(ctx_ptr));
     const rect = state.panel_node.rectFromWorldOrFallback();
-    if (state.cx.mouse_x >= rect.x and state.cx.mouse_x <= rect.x + rect.w and
+    // A pointer that left the window (or went under another window) keeps its last position.
+    if (state.cx.pointerLive() and state.cx.mouse_x >= rect.x and state.cx.mouse_x <= rect.x + rect.w and
         state.cx.mouse_y >= rect.y and state.cx.mouse_y <= rect.y + rect.h)
     {
         return;
@@ -706,7 +767,7 @@ const MonthSectionProps = struct {
 fn monthSection(props: MonthSectionProps, scope: *Scope, cx: *Cx) !*Node {
     const t = cx.tokens;
     const refs = props.refs;
-    const weekdays = [_][]const u8{ "S", "M", "T", "W", "T", "F", "S" };
+    const weekdays = [_][]const u8{ "Su", "Mo", "Tu", "We", "Th", "Fr", "Sa" };
     var grid_wrap: *Node = undefined;
     const container = try view.render(scope, cx, view.box(.{ .style = styles.monthSectionStyle(t) }, .{
         view.box(.{ .style = styles.monthHeaderStyle(t) }, .{
@@ -738,14 +799,12 @@ fn monthSection(props: MonthSectionProps, scope: *Scope, cx: *Cx) !*Node {
     return container;
 }
 
-const IconButtonProps = struct { style: core.BoxStyle };
+const IconButtonProps = struct { style: @TypeOf(styles.navButton) };
 const IconProps = struct { style: core.BoxStyle, tint: Color };
 
 fn iconButton(t: *const theme.ThemeTokens, icon_asset: svg_assets.Asset) view.Box(IconButtonProps, view.Icon(IconProps), null) {
     const icon_size: core.Sizing = .{ .px = styles.nav_icon_size };
-    var btn_style = styles.iconBtnStyle(t);
-    btn_style.cursor = .pointer;
-    return view.box(IconButtonProps{ .style = btn_style }, view.icon(IconProps{
+    return view.box(IconButtonProps{ .style = styles.navButton }, view.icon(IconProps{
         .style = .{ .width = icon_size, .height = icon_size },
         .tint = t.tokens.color.fg_secondary,
     }, icon_asset));
@@ -909,39 +968,25 @@ fn buildMonthGrid(state: *DateRangePickerState, grid: *Node, year: u16, month: u
     }
 }
 
-fn updateDisplayLabel(state: *DateRangePickerState) void {
+/// Trigger labels, dash and a11y value from the current dates. Both labels are copied before
+/// either node changes: `error.OutOfMemory` leaves the trigger as it was (mount propagates it;
+/// later updates log it and the next date change writes the labels again).
+fn updateDisplayLabel(state: *DateRangePickerState) error{OutOfMemory}!void {
     const t = state.cx.tokens;
-
-    {
-        var buf: [24]u8 = undefined;
-        const label = if (state.start_date) |date| formatDisplayDate(date, &buf) else state.placeholder_start;
-        // allocating write: inline buffer only 16 bytes, caller's placeholder truncated.
-        state.start_display.setTextContent(state.cx.allocator, label) catch {};
-        if (state.start_display.getText()) |old| {
-            var txt = old;
-            txt.color = styles.valueTextColor(state.start_date != null, t);
-            state.start_display.setText(txt);
-        }
-    }
-    state.start_display.markRenderDirty();
-
-    {
-        var buf: [24]u8 = undefined;
-        const label = if (state.end_date) |date| formatDisplayDate(date, &buf) else state.placeholder_end;
-        // allocating write: inline buffer only 16 bytes, caller's placeholder truncated.
-        state.end_display.setTextContent(state.cx.allocator, label) catch {};
-        if (state.end_display.getText()) |old| {
-            var txt = old;
-            txt.color = styles.valueTextColor(state.end_date != null, t);
-            state.end_display.setText(txt);
-        }
-    }
-    state.end_display.markRenderDirty();
+    const alloc = state.cx.allocator;
+    var start_buf: [24]u8 = undefined;
+    var end_buf: [24]u8 = undefined;
+    // allocating writes: the inline buffer only holds 16 bytes, a caller's placeholder would be cut
+    const start_label = try alloc.dupe(u8, if (state.start_date) |date| formatDisplayDate(date, &start_buf) else state.placeholder_start);
+    errdefer alloc.free(start_label);
+    const end_label = try alloc.dupe(u8, if (state.end_date) |date| formatDisplayDate(date, &end_buf) else state.placeholder_end);
+    writeDisplayLabel(state.start_display, start_label, styles.triggerForeground(state.start_date != null, state.disabled.peek(), t));
+    writeDisplayLabel(state.end_display, end_label, styles.triggerForeground(state.end_date != null, state.disabled.peek(), t));
 
     if (state.dash_display.getText()) |old| {
         var txt = old;
         txt.setInlineContent("–") catch unreachable; // 3-byte literal
-        txt.color = styles.dashColor(state.start_date != null or state.end_date != null, t);
+        txt.color = styles.dashColor(state.start_date != null or state.end_date != null, state.disabled.peek(), t);
         state.dash_display.setText(txt);
     }
     state.dash_display.markRenderDirty();
@@ -963,17 +1008,36 @@ fn updateDisplayLabel(state: *DateRangePickerState) void {
     }
 }
 
+/// Owned label content and its color in one write (cannot fail).
+fn writeDisplayLabel(node: *Node, owned: []u8, color: Color) void {
+    var txt = node.getText() orelse core.TextProps{};
+    const changed = !std.mem.eql(u8, txt.content, owned);
+    txt.content = owned;
+    txt.owned = true;
+    txt.inline_len = 0;
+    txt.color = color;
+    node.setText(txt);
+    if (changed) node.markSizingDirty();
+    node.markRenderDirty();
+}
+
+fn updateDisplayLabelOrLog(state: *DateRangePickerState) void {
+    updateDisplayLabel(state) catch |err| log.warn("trigger label update failed: {}; the trigger keeps its previous dates", .{err});
+}
+
 fn syncTriggerVisual(state: *DateRangePickerState, open: bool) void {
     // a11y: expanded follows toggle (form_field 'state follows interaction' mode)
     if (state.trigger_node.behavior.interaction.a11y) |*a| a.expanded = open;
     state.trigger_node.markRenderDirty();
 
-    const t = state.cx.tokens;
-    const has_value = state.start_date != null or state.end_date != null;
-    state.trigger_node.setBorderColor(styles.triggerBorderColor(open, has_value, t));
-
-    _ = state.leading_icon_node.setTint(styles.leadingIconTint(has_value, t));
-    _ = state.chevron_node.setTint(styles.chevronTint(open, t));
+    var look = state.trigger_look.peek();
+    look.open = open;
+    look.has_value = state.start_date != null or state.end_date != null;
+    look.invalid = state.invalid.peek();
+    look.disabled = state.disabled.peek();
+    state.trigger_look.set(look);
+    if (state.trigger_node.behavior.interaction.a11y) |*a| a.invalid = look.invalid;
+    state.chevron_node.setRotate(state.cx.allocator, if (open) std.math.pi else 0);
 }
 
 fn assignTestId(allocator: Allocator, node: *Node, base: ?[]const u8, suffix: []const u8) !void {
@@ -1096,7 +1160,7 @@ fn daysInMonth(year: u16, month: u8) u8 {
     };
 }
 
-fn dayOfWeek(year: u16, month: u8, day: u8) u8 {
+pub fn dayOfWeek(year: u16, month: u8, day: u8) u8 {
     var y: i32 = @intCast(year);
     var m: i32 = @intCast(month);
     const d: i32 = @intCast(day);
@@ -1220,6 +1284,30 @@ test "a11y: DateRangePicker expanded/value 跟随范围选择且可撤回" {
     );
 }
 
+test "DateRangePicker: the range preview ends when the pointer leaves the window, even over the panel" {
+    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer ctx.deinit();
+    ctx.setViewport(900, 700);
+    const root = try box(ctx, .{ .width = .{ .px = 900 }, .height = .{ .px = 700 } }, .{});
+    ctx.root = root;
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const result = try DateRangePicker(.{}).mount(scope, ctx);
+    try root.appendChild(std.testing.allocator, result.wrapper);
+    const state = stateOf(result);
+    state.start_date = .{ .year = 2026, .month = 3, .day = 10 };
+    state.preview_end_date = .{ .year = 2026, .month = 3, .day = 14 };
+    // A live pointer still over the panel when it gets on_leave (moved onto a child): keep it.
+    const rect = state.panel_node.rectFromWorldOrFallback();
+    ctx.handleMouseMove(rect.x, rect.y);
+    panelLeaveHandler(@ptrCast(state));
+    try std.testing.expect(state.preview_end_date != null);
+    // Platform pointer_left (left the window or covered) at the same last position: preview ends.
+    ctx.hover_sync.pointer_over_content = false;
+    panelLeaveHandler(@ptrCast(state));
+    try std.testing.expect(state.preview_end_date == null);
+}
+
 test "DateRangePicker: with initial range" {
     var ctx = try Cx.init(std.testing.allocator, std.testing.io);
     defer ctx.deinit();
@@ -1327,8 +1415,12 @@ test "DateRangePicker: hover preview marks pending range when only start selecte
     try std.testing.expect(after_ref != null);
 
     try std.testing.expect(Color.eql(start_ref.?.cell_node.getBackground(), ctx.tokens.tokens.color.accent));
-    try std.testing.expect(Color.eql(middle_ref.?.cell_node.getBackground(), ctx.tokens.tokens.color.accent_subtle));
-    try std.testing.expect(Color.eql(end_ref.?.cell_node.getBackground(), ctx.tokens.tokens.color.accent));
+    // Ph7UE / Q9ZBB: range interior uses selection_bg.
+    try std.testing.expect(Color.eql(middle_ref.?.cell_node.getBackground(), ctx.tokens.tokens.color.selection_bg));
+    // RxE0k: hover preview is a light selection with an accent outline.
+    try std.testing.expect(Color.eql(end_ref.?.cell_node.getBackground(), ctx.tokens.tokens.color.selection_bg));
+    try std.testing.expectEqual(@as(f32, 1), end_ref.?.cell_node.style.border.width);
+    try std.testing.expect(Color.eql(end_ref.?.cell_node.style.border.color, ctx.tokens.tokens.color.accent));
     try std.testing.expect(Color.eql(after_ref.?.cell_node.getBackground(), Color.TRANSPARENT));
 
     setPreviewEndDate(stateOf(result), null);
@@ -1713,4 +1805,56 @@ test "DateRangePicker: disabled 来自 signal —— 禁用时点击不开合；
     result.open.?.set(true);
     try std.testing.expectEqual(@as(u8, 6), st.view_month);
     try std.testing.expectEqual(@as(u8, 2), st.start_date.?.day);
+}
+
+test "DateRangePicker: confirmation holds draft, cancel discards, apply commits" {
+    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer ctx.deinit();
+    const root = try box(ctx, .{ .width = .{ .px = 900 }, .height = .{ .px = 700 } }, .{});
+    ctx.root = root;
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const r = try DateRangePicker(.{ .confirm_selection = true }).mount(scope, ctx);
+    try root.appendChild(std.testing.allocator, r.wrapper);
+    const state = stateOf(r);
+    r.open.?.set(true);
+    state.selectDate(.{ .year = 2026, .month = 10, .day = 12 });
+    try std.testing.expect(state.apply_disabled.?.peek());
+    state.selectDate(.{ .year = 2026, .month = 10, .day = 18 });
+    try std.testing.expect(!state.apply_disabled.?.peek());
+    try std.testing.expect(r.open.?.peek());
+    try std.testing.expect(r.value.?.peek() == null);
+    DateRangePickerState.cancel(state);
+    try std.testing.expect(!r.open.?.peek());
+    try std.testing.expect(state.start_date == null);
+    r.open.?.set(true);
+    state.selectDate(.{ .year = 2026, .month = 10, .day = 18 });
+    state.selectDate(.{ .year = 2026, .month = 10, .day = 12 });
+    DateRangePickerState.apply(state);
+    try std.testing.expect(!r.open.?.peek());
+    try std.testing.expectEqual(@as(u8, 12), r.value.?.peek().?.start.day);
+    try std.testing.expectEqual(@as(u8, 18), r.value.?.peek().?.end.day);
+}
+
+test "DateRangePicker: dynamic disabled recolors both dates and separator" {
+    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer ctx.deinit();
+    const root = try box(ctx, .{ .width = .{ .px = 900 }, .height = .{ .px = 700 } }, .{});
+    ctx.root = root;
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const disabled = try scope.createSignal(bool, false);
+    const r = try DateRangePicker(.{ .disabled = disabled, .value = DateRange{ .start = .{ .year = 2026, .month = 10, .day = 12 }, .end = .{ .year = 2026, .month = 10, .day = 18 } } }).mount(scope, ctx);
+    try root.appendChild(std.testing.allocator, r.wrapper);
+    const state = stateOf(r);
+    disabled.set(true);
+    for ([_]*Node{ state.start_display, state.end_display, state.dash_display }) |node| {
+        try std.testing.expect(node.getText().?.color.eql(ctx.tokens.tokens.color.fg_disabled));
+    }
+    // The frame eases to its disabled background (transition target).
+    const bg_slot = state.trigger_node.frame_state.frame_local.runtime.transitions.?.find(.background).?;
+    try std.testing.expect((if (bg_slot.active) bg_slot.to_color else state.trigger_node.getBackground()).eql(ctx.tokens.tokens.color.disabled_bg));
+    disabled.set(false);
+    try std.testing.expect(state.start_display.getText().?.color.eql(ctx.tokens.tokens.color.fg_primary));
+    try std.testing.expect(state.end_display.getText().?.color.eql(ctx.tokens.tokens.color.fg_primary));
 }

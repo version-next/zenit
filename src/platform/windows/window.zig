@@ -42,6 +42,7 @@ pub const WindowsWindow = struct {
         return zenit_windows_menu_consume(self.native) != 0;
     }
     extern fn zenit_windows_pump_timeout(timeout_ms: u32) void;
+    extern fn zenit_windows_pump_timeout_precise(timeout_us: u32) void;
     extern fn zenit_windows_post_empty_event() void;
     extern fn zenit_windows_begin_close(window: *anyopaque) c_int;
     extern fn zenit_windows_closed(window: *anyopaque) c_int;
@@ -252,6 +253,9 @@ pub const WindowsWindow = struct {
         dx: f32,
         dy: f32,
         modifiers: Modifiers,
+        /// WM_MOUSELEAVE marker in the ordered move stream: the pointer left the client area
+        /// (x/y repeat the last position). The backend reports it as `pointer_left`.
+        left: bool = false,
     };
 
     pub const InputQueueMetrics = struct {
@@ -489,12 +493,14 @@ pub const WindowsWindow = struct {
     }
 
     pub const hasOrderedMouseMoveEvents = true;
-    extern fn zenit_windows_move(*anyopaque, *f32, *f32, *f32, *f32, *u32, *u64) c_int;
+    extern fn zenit_windows_move(*anyopaque, *f32, *f32, *f32, *f32, *u32, *u64, *c_int) c_int;
     extern fn zenit_windows_input_metrics(*u64) void;
     pub fn getMouseMoveEvent(self: *WindowsWindow) ?MouseMoveEvent {
         var event: MouseMoveEvent = .{ .sequence = 0, .x = 0, .y = 0, .dx = 0, .dy = 0, .modifiers = .{} };
         var raw: u32 = 0;
-        if (zenit_windows_move(self.native, &event.x, &event.y, &event.dx, &event.dy, &raw, &event.sequence) == 0) return null;
+        var left: c_int = 0;
+        if (zenit_windows_move(self.native, &event.x, &event.y, &event.dx, &event.dy, &raw, &event.sequence, &left) == 0) return null;
+        event.left = left != 0;
         event.modifiers = Modifiers.fromRaw(raw);
         return event;
     }
@@ -586,6 +592,16 @@ pub const WindowsWindow = struct {
     extern fn zenit_windows_set_owner(window: *anyopaque, owner: *anyopaque) c_int;
     extern fn zenit_windows_clear_owner(window: *anyopaque) void;
     extern fn zenit_windows_owner_geometry(window: *anyopaque, owner: *anyopaque, out: *[10]f64) c_int;
+    extern fn zenit_windows_logical_geometry(window: *anyopaque, screen: u64, out: *[9]f64) c_int;
+    extern fn zenit_windows_restore_logical_frame(window: *anyopaque, frame: *const [4]f64) void;
+    pub fn previewGeometry(self: *WindowsWindow, screen: u64) ?[9]f64 {
+        var out: [9]f64 = undefined;
+        if (zenit_windows_logical_geometry(self.native, screen, &out) == 0) return null;
+        return out;
+    }
+    pub fn restorePreviewFrame(self: *WindowsWindow, frame: [4]f64) void {
+        zenit_windows_restore_logical_frame(self.native, &frame);
+    }
     extern fn zenit_windows_set_origin(window: *anyopaque, x: f64, y: f64) void;
     extern fn zenit_windows_take_focus_loss(window: *anyopaque) c_int;
 
@@ -750,6 +766,12 @@ pub const WindowsWindow = struct {
 
     pub fn pumpAppEventsTimeout(timeout_ms: u32) void {
         zenit_windows_pump_timeout(timeout_ms);
+    }
+
+    /// As pumpAppEventsTimeout, but wakes at the deadline instead of the next
+    /// system timer tick after it (see zenit_windows_pump_timeout_precise).
+    pub fn pumpAppEventsTimeoutPrecise(timeout_us: u32) void {
+        zenit_windows_pump_timeout_precise(timeout_us);
     }
 
     /// Wake a pump blocked in pumpAppEventsTimeout from any thread.

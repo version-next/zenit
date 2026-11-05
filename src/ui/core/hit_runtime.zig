@@ -1,4 +1,5 @@
 const std = @import("std");
+const corner_radii = @import("zenit_corner_radii");
 const id_hash = @import("id_hash.zig");
 const node_dirty_gen = @import("node_dirty.zig");
 
@@ -67,6 +68,23 @@ pub const PerfCounters = struct {
     /// element's transform (downstream app layers ghost: key draws to row left).
     subtree_payload_absent_node_drop_count: u32 = 0,
     subtree_payload_cache_write_count: u32 = 0,
+    /// Simple subtrees prebuilt at the paint cursor after the paint-order prefix broke
+    /// (fresh record or cross-frame splice), see tryResumePrebuildAtPaintCursor.
+    subtree_payload_paint_resume_count: u32 = 0,
+    /// Cross-frame own-content cache (a clean node on a re-recorded path): replays / writes.
+    own_payload_cache_hit_count: u32 = 0,
+    own_payload_cache_write_count: u32 = 0,
+    /// Scroll clip scopes closed with nothing inside: push dropped instead of pop appended
+    /// (render_engine elideEmptyScrollClipScope).
+    empty_clip_scope_elided_count: u32 = 0,
+    /// Subtree payload caches dropped because the paint pass re-recorded their subtree fresh.
+    subtree_payload_rerecord_drop_count: u32 = 0,
+    /// Promoted / legacy overflow caches dropped because the inherited text raster state
+    /// (subtree_force_linear_text) differs from the one they were recorded under.
+    raster_state_cache_drop_count: u32 = 0,
+    /// ZENIT_VERIFY_INCREMENTAL: lowered items that differ between the cached path and the
+    /// reference full path this frame (0 = equivalent).
+    incremental_verify_mismatch_count: u32 = 0,
     descendant_scoped_promoted_rebuild_count: u32 = 0,
     descendant_scoped_promoted_cache_splice_count: u32 = 0,
     descendant_scoped_promoted_self_replay_count: u32 = 0,
@@ -82,9 +100,60 @@ pub const PerfCounters = struct {
     layout_us: u64 = 0,
     inner_layout_us: u64 = 0,
     render_node_us: u64 = 0,
+    /// Cx.layout split (renderer layout_us): layout engine + table sync, and the interaction /
+    /// order index rebuild; whether each ran this frame.
+    frame_layout_engine_us: u64 = 0,
+    frame_interaction_index_us: u64 = 0,
+    frame_layout_ran: u8 = 0,
+    frame_index_rebuild_ran: u8 = 0,
+    /// Thread-CPU time (preemption excluded) of Cx.render as a whole and of its before-render
+    /// tick; the renderer's render_us / before_render_us are wall-clock.
+    render_cpu_us: u64 = 0,
+    before_render_cpu_us: u64 = 0,
+    /// renderNode stages (ZENIT_PERF_TRACE, thread-CPU time): retained scene / property tree
+    /// build, layer plan + promoted sync, cache-boundary index, prebuild pass, paint pass.
+    rn_retained_us: u64 = 0,
+    rn_layer_plan_us: u64 = 0,
+    rn_boundary_index_us: u64 = 0,
+    rn_prebuild_us: u64 = 0,
+    rn_paint_us: u64 = 0,
+    /// ZENIT_PERF_TRACE: the same render stages (and the before-render tick, inner layout,
+    /// lowering and end-of-render sync) in thousands of retired instructions.
+    rni_retained_k: u64 = 0,
+    rni_layer_plan_k: u64 = 0,
+    rni_boundary_k: u64 = 0,
+    rni_prebuild_k: u64 = 0,
+    rni_paint_k: u64 = 0,
+    ri_before_render_k: u64 = 0,
+    ri_layout_k: u64 = 0,
+    ri_render_node_k: u64 = 0,
+    ri_lowering_k: u64 = 0,
+    ri_sync_k: u64 = 0,
+    /// Nodes visited by buildRetainedSubtree / given a scene runtime record this frame.
+    rn_retained_nodes: u32 = 0,
+    /// renderNodeTransform calls in the paint pass.
+    rn_paint_nodes: u32 = 0,
+    /// Paint-pass outcomes per visited node: culled (no scene record / offscreen), promoted or
+    /// legacy-overflow cache replay, subtree replay of a payload prebuilt or spliced this frame,
+    /// rebuild (records own content and visits children).
+    rn_paint_culled: u32 = 0,
+    rn_paint_cache_replays: u32 = 0,
+    rn_paint_subtree_replays: u32 = 0,
+    rn_paint_rebuilds: u32 = 0,
+    /// Of the subtree replays: spliced subtrees that skipped the execution state / plan.
+    rn_paint_splice_fast: u32 = 0,
+    /// Retained subtree memo (render_engine/retained_memo.zig): subtrees replayed, scene records
+    /// they covered, memos recorded.
+    rn_memo_replays: u32 = 0,
+    rn_memo_replay_nodes: u32 = 0,
+    rn_memo_records: u32 = 0,
+    /// Paint-pass execution states that reused the retained build's content state.
+    content_state_reuses: u32 = 0,
     render_us: u64 = 0,
     before_render_us: u64 = 0,
     tick_nodes: u32 = 0,
+    /// Subtrees the before-render tick skipped as quiet (tick.zig quiet-subtree skip).
+    tick_quiet_skips: u32 = 0,
     tick_hooks: u32 = 0,
     slow_hook_us: u64 = 0,
     slow_hook_name: [64]u8 = @as([64]u8, @splat(0)),
@@ -167,9 +236,48 @@ pub const PerfCounters = struct {
 
     pub fn resetFrame(self: *PerfCounters) void {
         const carry_redraw = self.continuous_redraw_frames;
+        // Written by Cx.layout, which runs before Cx.render resets the counters.
+        const carry_layout = .{ self.frame_layout_engine_us, self.frame_interaction_index_us, self.frame_layout_ran, self.frame_index_rebuild_ran };
         self.* = .{};
         self.continuous_redraw_frames = carry_redraw;
+        self.frame_layout_engine_us = carry_layout[0];
+        self.frame_interaction_index_us = carry_layout[1];
+        self.frame_layout_ran = carry_layout[2];
+        self.frame_index_rebuild_ran = carry_layout[3];
     }
+};
+
+/// Input-side work between two traced frames (ZENIT_PERF_TRACE). Unlike PerfCounters these are
+/// not reset at render start: wheel/pointer events land between frames, so the host resets them
+/// right after emitting the frame's trace line.
+pub const InputPerfCounters = struct {
+    /// handleScroll calls (wheel / gesture / momentum events).
+    in_scroll_events: u32 = 0,
+    /// of those, latched gesture / momentum events dispatched without a hit test.
+    in_scroll_latched: u32 = 0,
+    /// handleMouseMove calls.
+    in_pointer_moves: u32 = 0,
+    /// ensureHitTestSceneFresh calls that found pending scene work.
+    in_hit_refresh_dirty: u32 = 0,
+    /// forceTickAndRebuildForHitTest runs (event-time scene refreshes).
+    in_hit_refresh_forced: u32 = 0,
+    in_hit_refresh_us: u64 = 0,
+    /// Split of in_hit_refresh_us: zero-dt before-render tick, layout passes, index rebuild.
+    in_hit_refresh_tick_us: u64 = 0,
+    in_hit_refresh_layout_us: u64 = 0,
+    in_hit_refresh_index_us: u64 = 0,
+    in_hit_refresh_tick_nodes: u32 = 0,
+    in_hit_refresh_layouts: u32 = 0,
+    /// Hit index nodes visited / proxies emitted by buildRecursive (frame + event refreshes).
+    in_hit_build_nodes: u32 = 0,
+    in_hit_build_proxies: u32 = 0,
+    in_hit_build_nodes_event: u32 = 0,
+    /// Hit-layer children rebuilt / kept unchanged (HitBlock) by layer node builds.
+    in_hit_build_blocks: u32 = 0,
+    in_hit_reused_blocks: u32 = 0,
+    in_hit_partial_rebuilds: u32 = 0,
+    in_hit_full_rebuilds: u32 = 0,
+    in_hit_queries: u32 = 0,
 };
 
 const RegistryEntry = struct {
@@ -186,6 +294,10 @@ pub const NodeRegistry = struct {
     allocator: Allocator,
     entries: id_hash.U32HashMap(RegistryEntry),
     generations: id_hash.U32HashMap(GenerationEntry),
+    /// Node ids are never reused; removals of freed nodes would otherwise
+    /// accumulate tombstones until every lookup scans the whole table.
+    entry_removals: id_hash.TombstoneBudget = .{},
+    generation_removals: id_hash.TombstoneBudget = .{},
 
     pub fn init(allocator: Allocator) NodeRegistry {
         return .{
@@ -202,6 +314,12 @@ pub const NodeRegistry = struct {
 
     pub fn clear(self: *NodeRegistry) void {
         self.entries.clearRetainingCapacity();
+        self.entry_removals.reset();
+    }
+
+    fn removeEntry(self: *NodeRegistry, node_id: u32) void {
+        if (self.entries.remove(node_id) and self.entry_removals.noteRemoval(self.entries.count(), self.entries.capacity()))
+            self.entries.rehash();
     }
 
     pub fn rebuild(self: *NodeRegistry, root: ?*Node) !void {
@@ -218,13 +336,13 @@ pub const NodeRegistry = struct {
     }
 
     pub fn unregisterSubtree(self: *NodeRegistry, root: *Node) void {
-        _ = self.entries.remove(root.id);
+        self.removeEntry(root.id);
         if (self.generations.getPtr(root.id)) |entry| entry.last_ptr = null;
         for (root.children.items) |child| self.unregisterSubtree(child);
     }
 
     pub fn detachSubtree(self: *NodeRegistry, root: *Node) void {
-        _ = self.entries.remove(root.id);
+        self.removeEntry(root.id);
         for (root.children.items) |child| self.detachSubtree(child);
     }
 
@@ -235,8 +353,9 @@ pub const NodeRegistry = struct {
     /// reappears,
     /// no need to preserve generation to distinguish 'next node of same id'.
     pub fn noteNodeFreed(self: *NodeRegistry, node_id: u32) void {
-        _ = self.entries.remove(node_id);
-        _ = self.generations.remove(node_id);
+        self.removeEntry(node_id);
+        if (self.generations.remove(node_id) and self.generation_removals.noteRemoval(self.generations.count(), self.generations.capacity()))
+            self.generations.rehash();
     }
 
     pub fn handleFor(self: *const NodeRegistry, node: *Node) NodeHandle {
@@ -288,6 +407,7 @@ pub const HitShapeKind = enum {
     none,
     rect,
     rounded_rect,
+    rounded_corners,
     circle,
     ellipse,
     ring_arc,
@@ -316,18 +436,21 @@ pub const HitQueryCache = struct {
     mouse_down_result: ?HitResult = null,
     scroll_session_owner: ?HitResult = null,
     scroll_momentum_owner: ?HitResult = null,
-    recent_candidate_window: ?ComputedRect = null,
 };
 
 const ShapeRecord = struct {
     kind: HitShapeKind,
     radius: f32 = 0,
+    /// rounded_corners: [TL, TR, BR, BL]
+    radii: [4]f32 = .{ 0, 0, 0, 0 },
     ring_arc: RingArcHitSpec = .{},
     path_fill_rule: PathFillRule = .evenodd,
 };
 
 const ClipChainEntry = struct {
     parent_id: ?u32,
+    /// Hit space the geometry below is stored in (see HitLayer).
+    layer: u32 = root_layer,
     handle: NodeHandle,
     local_rect: ComputedRect,
     shape_id: u32,
@@ -335,9 +458,11 @@ const ClipChainEntry = struct {
     inverse_world_transform: Transform2D,
 };
 
-const HitFlags = packed struct(u2) {
+const HitFlags = packed struct(u3) {
     alive: bool = true,
     imprecise_shape: bool = false,
+    /// In `HitRuntime.blocks[block].proxies` (HitBlock).
+    listed: bool = false,
 };
 
 pub const HitProxy = struct {
@@ -345,7 +470,15 @@ pub const HitProxy = struct {
     node_id: u32,
     /// only basis for hit priority: paint order bitwise consistent with render (DFS preorder from
     /// paint_order.zig three-band traversal). z_index only affects sibling order, no global layer.
+    /// Local to `block` (see HitBlock); `HitRuntime.proxySortsAbove` composes the full order.
     paint_order: u64,
+    /// Numbering scope of `paint_order` (HitBlock id, 0 = root block).
+    block: u32 = root_block,
+    /// Layer whose blocks `block` belongs to. Equal to `layer` except for a hit-layer node's own
+    /// proxies: they are stored in the node's own space but painted in its parent's order.
+    order_layer: u32 = root_layer,
+    /// Hit space true_aabb/fat_aabb are stored in (see HitLayer).
+    layer: u32 = root_layer,
     local_rect: ComputedRect,
     true_aabb: ComputedRect,
     fat_aabb: ComputedRect,
@@ -358,6 +491,78 @@ pub const HitProxy = struct {
 };
 
 const INVALID_INDEX = std.math.maxInt(u32);
+
+/// Hit space of nodes outside every hit layer: world coordinates.
+pub const root_layer: u32 = 0;
+
+/// A hit layer is the subtree of a node flagged `behavior.interaction.hit_layer` (a scroll
+/// container's content). Its proxies and clip entries are stored in the layer node's own local
+/// space instead of world space, and a query maps the world point into that space with the layer
+/// node's *current* world transform. Moving the layer node (scroll offset = translate, or any
+/// other change of its own transform or of its ancestors) therefore leaves the stored geometry
+/// valid: scrolling is a transform read at query time, not an index rebuild. Anything that
+/// changes geometry *inside* the layer (layout, mount/unmount, semantics) is still a rebuild of
+/// the affected subtree, exactly as in world space.
+const HitLayer = struct {
+    handle: NodeHandle,
+    tree: DynamicAabbTree,
+    /// world -> layer mapping cached for one query (`HitRuntime.query_serial`).
+    cached_serial: u64 = 0,
+    cached_to_layer: Transform2D = .{},
+    cached_mappable: bool = false,
+    /// Paint position of the whole layer subtree in the enclosing order: the slot the layer node
+    /// reserves right after its own proxies (`anchor_order` in block `anchor_block` of layer
+    /// `parent_layer`). `depth` = nesting depth (root layer 0).
+    parent_layer: u32 = root_layer,
+    depth: u32 = 1,
+    anchor_block: u32 = root_block,
+    anchor_order: u64 = 0,
+    /// Blocks of the layer node's children, in paint order.
+    child_blocks: std.ArrayList(u32) = .empty,
+
+    fn deinit(self: *HitLayer, allocator: Allocator) void {
+        self.tree.deinit();
+        self.child_blocks.deinit(allocator);
+    }
+};
+
+/// Paint-order numbering scope (`root_block` numbers everything outside hit layers densely in
+/// DFS preorder). Every child of a hit-layer node roots a block of its own: its subtree is
+/// numbered from 0 within the block, and the blocks of one layer are ordered by `key`, relabelled
+/// from the layer node's paint-ordered children. A layer node reserves one slot in its own
+/// numbering for its entire subtree (`HitLayer.anchor_*`). So a row of a scrolled list can be
+/// re-bound, grow, shrink, move or be re-ordered without renumbering anything else: rebuilding it
+/// costs its own subtree, and siblings whose inputs are unchanged keep their proxies (see
+/// `blockReusable`).
+pub const root_block: u32 = 0;
+
+const HitBlock = struct {
+    root_id: u32,
+    layer_node_id: u32,
+    key: u64 = 0,
+    /// Proxies numbered in this block since it was last rebuilt (dead ids are skipped). Kills the
+    /// proxies of nodes that left the block without a rebuild reaching them (freed rows).
+    proxies: std.ArrayList(u32) = .empty,
+    /// Layers opened by nodes numbered in this block (their child blocks die with this block).
+    nested_layers: std.ArrayList(u32) = .empty,
+    visit: u32 = 0,
+    /// Inputs of the last build of the block. While they are unchanged and nothing inside the
+    /// block is dirty (that is a partial root of its own, see cx_runtime_index), the stored
+    /// geometry is exact: the block root's layer-local transform and size, the clip entry and the
+    /// inspect flag it inherited, and the layer it was built into.
+    built: bool = false,
+    layer: u32 = root_layer,
+    matrix: Transform2D = .{},
+    w: f32 = 0,
+    h: f32 = 0,
+    parent_clip: ?u32 = null,
+    inspect_pick_disabled: bool = false,
+
+    fn deinit(self: *HitBlock, allocator: Allocator) void {
+        self.proxies.deinit(allocator);
+        self.nested_layers.deinit(allocator);
+    }
+};
 
 const DynamicAabbTree = struct {
     const TreeNode = struct {
@@ -633,6 +838,32 @@ pub const HitRuntime = struct {
     /// before those append-only backing arrays turn per-frame work into O(age).
     live_proxy_count: usize = 0,
     query_cache: HitQueryCache = .{},
+    /// Hit layers (ids 1..), root layer 0 is `proxy_aabb_tree`. Append-only between full rebuilds
+    /// (a layer whose node left the tree keeps an empty tree until the next compaction).
+    layers: std.ArrayList(HitLayer) = .empty,
+    /// Dead proxy slots for reuse (popFreeProxy).
+    free_proxies: std.ArrayList(u32) = .empty,
+    /// Blocks (ids 1..; `root_block` 0 is implicit). Append-only between full rebuilds.
+    blocks: std.ArrayList(HitBlock) = .empty,
+    /// Blocks swept (their root left the layer); a full rebuild compacts them.
+    dead_blocks: usize = 0,
+    block_visit: u32 = 0,
+    /// Advanced per query; keys the per-layer world -> layer mapping cache.
+    query_serial: u64 = 0,
+    /// Advances on every mutation of the hit scene (clear, full rebuild, partial subtree
+    /// rebuild). Proxies bake world geometry at build time, so any change in what a fixed world
+    /// point resolves to (scroll offset, layout, transform, mount/unmount, hit semantics) is a
+    /// rebuild and bumps this. Consumers that cache a query result keyed on the scene (the
+    /// stationary-pointer hover in cx_hover.zig) compare epochs instead of re-querying each frame.
+    scene_epoch: u64 = 0,
+    /// Work counters for ZENIT_PERF_TRACE (cumulative; the tracer reads and resets them).
+    stat_build_nodes: u32 = 0,
+    stat_build_proxies: u32 = 0,
+    /// Blocks rebuilt / reused unchanged by a layer node's build.
+    stat_build_blocks: u32 = 0,
+    stat_reused_blocks: u32 = 0,
+    /// Why the last rebuildSubtree (or caller) fell back to a full rebuild (ZENIT_HIT_SCENE_DEBUG).
+    fallback_reason: []const u8 = "?",
 
     pub fn init(allocator: Allocator) HitRuntime {
         return .{
@@ -647,14 +878,32 @@ pub const HitRuntime = struct {
 
     pub fn deinit(self: *HitRuntime) void {
         self.proxy_aabb_tree.deinit();
+        for (self.layers.items) |*layer| layer.deinit(self.allocator);
+        self.layers.deinit(self.allocator);
+        for (self.blocks.items) |*block| block.deinit(self.allocator);
+        self.blocks.deinit(self.allocator);
+        self.free_proxies.deinit(self.allocator);
         self.proxies.deinit(self.allocator);
         self.proxy_tree_nodes.deinit(self.allocator);
         self.shapes.deinit(self.allocator);
         self.clip_chain.deinit(self.allocator);
     }
 
+    /// Scene identity for cached query results: advances on every rebuild and on every hit-layer
+    /// move (what a fixed world point resolves to may have changed).
+    pub fn sceneEpoch(self: *const HitRuntime) u64 {
+        return self.scene_epoch +% node_dirty_gen.g_hit_layer_motion_gen;
+    }
+
     pub fn clear(self: *HitRuntime) void {
+        self.scene_epoch +%= 1;
         self.proxy_aabb_tree.clear();
+        for (self.layers.items) |*layer| layer.deinit(self.allocator);
+        self.layers.clearRetainingCapacity();
+        for (self.blocks.items) |*block| block.deinit(self.allocator);
+        self.blocks.clearRetainingCapacity();
+        self.dead_blocks = 0;
+        self.free_proxies.clearRetainingCapacity();
         self.proxies.clearRetainingCapacity();
         self.proxy_tree_nodes.clearRetainingCapacity();
         self.shapes.clearRetainingCapacity();
@@ -672,8 +921,8 @@ pub const HitRuntime = struct {
         const r = root orelse return;
         clearNodeRangesRecursive(r);
         var paint_cursor: u64 = 0;
-        try assignPaintOrderRecursive(self.allocator, r, &paint_cursor);
-        try self.buildRecursive(r, registry, Transform2D.identity(), null, false);
+        try assignPaintOrderRecursive(self.allocator, r, &paint_cursor, root_block);
+        try self.buildRecursive(r, registry, Transform2D.identity(), null, false, root_layer);
     }
 
     /// Before a partial rebuild, flush all baked clip entry cached geometry.
@@ -688,6 +937,9 @@ pub const HitRuntime = struct {
     fn refreshClipEntriesFromLayout(self: *HitRuntime, registry: *const NodeRegistry) void {
         for (self.clip_chain.items) |*entry| {
             const node = registry.resolve(entry.handle, null) orelse continue;
+            // The node's stored matrix is in its hit space; an entry baked in another space
+            // (the node has since moved into or out of a layer) is replaced by the rebuild.
+            if (node.frame_state.frame_local.spatial.hit.layer != entry.layer) continue;
             const r = node.rectFromWorldOrFallback();
             entry.local_rect = ComputedRect.init(0, 0, r.w, r.h);
             entry.world_aabb = node.frame_state.frame_local.spatial.world.matrix.transformRect(entry.local_rect);
@@ -696,24 +948,82 @@ pub const HitRuntime = struct {
     }
 
     pub fn rebuildSubtree(self: *HitRuntime, root: *Node, registry: *const NodeRegistry) !bool {
+        // Bumped even when this returns false: the caller then full-rebuilds (bumps again).
+        self.scene_epoch +%= 1;
         const stale_proxy_count = self.proxies.items.len -| self.live_proxy_count;
         // A full rebuild is the compaction operation for all append-only hit
-        // metadata (proxies, shapes and clip chains). Without this bound, a
+        // metadata (proxies, shapes, clip chains and blocks). Without this bound, a
         // scrolling clipped subtree adds another generation every frame and
         // refreshClipEntriesFromLayout becomes linearly slower with gesture
         // length. Returning false asks the existing caller to full-rebuild.
-        if (stale_proxy_count > @max(self.live_proxy_count, 256)) return false;
+        if (stale_proxy_count > @max(self.live_proxy_count, 256) or
+            self.dead_blocks > @max(self.blocks.items.len / 2, 256))
+        {
+            self.fallback_reason = "compaction";
+            return false;
+        }
         self.refreshClipEntriesFromLayout(registry);
+
+        // A block root renumbers its own block from 0: any change of its proxy count is local.
+        if (blockLayerNode(root)) |layer_node| return self.rebuildBlockRoot(root, layer_node, registry);
+
+        // Below a block root (or in the root block): renumber in place. The numbering is dense,
+        // so a changed proxy count falls back to the enclosing block root, which is local to the
+        // enclosing layer; only the root block falls back to a full rebuild.
+        const block_root = enclosingBlockRoot(root);
+        const block: u32 = if (block_root) |br| (self.validBlockOf(br) orelse return self.rebuildBlockRootOf(br, registry)) else root_block;
+        if (root.frame_state.frame_local.spatial.hit.block != block) {
+            // Numbered in another scope at the last build (moved since): only its block root
+            // can place it.
+            if (block_root) |br| return self.rebuildBlockRootOf(br, registry);
+            self.fallback_reason = "block_moved";
+            return false;
+        }
         const previous_count = rangeCount(root.frame_state.frame_local.spatial.paint.subtree_min, root.frame_state.frame_local.spatial.paint.subtree_max);
-        removeProxyRangeRecursive(self, root);
+        self.removeProxyRangeRecursive(root);
 
         var paint_cursor = root.frame_state.frame_local.spatial.paint.subtree_min;
-        try assignPaintOrderRecursive(self.allocator, root, &paint_cursor);
+        try assignPaintOrderRecursive(self.allocator, root, &paint_cursor, block);
         const rebuilt_count = rangeCount(root.frame_state.frame_local.spatial.paint.subtree_min, root.frame_state.frame_local.spatial.paint.subtree_max);
-        if (previous_count != rebuilt_count) return false;
+        if (previous_count != rebuilt_count) {
+            if (block_root) |br| return self.rebuildBlockRootOf(br, registry);
+            if (@import("debug_env.zig").hitSceneDebugEnabled()) std.debug.print("[hit-scene]   count {d} -> {d}\n", .{ previous_count, rebuilt_count });
+            self.fallback_reason = "range_count_changed";
+            return false;
+        }
 
         const parent_state = computeParentBuildState(root.parent);
-        try self.buildRecursive(root, registry, parent_state.transform, parent_state.clip_chain_id, parent_state.inspect_pick_disabled);
+        // The enclosing layer must be the one the index holds for that node; otherwise the
+        // subtree cannot be placed in a consistent space and the caller full-rebuilds.
+        if (parent_state.layer != root_layer) {
+            self.fallback_reason = "layer_mismatch";
+            const layer_node = parent_state.layer_node orelse return false;
+            if (!self.layerMatches(parent_state.layer, layer_node, registry)) return false;
+        }
+        try self.buildRecursive(root, registry, parent_state.transform, parent_state.clip_chain_id, parent_state.inspect_pick_disabled, parent_state.layer);
+        return true;
+    }
+
+    fn rebuildBlockRootOf(self: *HitRuntime, block_root: *Node, registry: *const NodeRegistry) !bool {
+        return self.rebuildBlockRoot(block_root, block_root.parent.?, registry);
+    }
+
+    /// Rebuild one child of a hit-layer node as its own block. Siblings are untouched: their
+    /// block keys are relabelled (the child may be new or have moved among them), nothing else.
+    fn rebuildBlockRoot(self: *HitRuntime, child: *Node, layer_node: *Node, registry: *const NodeRegistry) !bool {
+        const layer = layer_node.frame_state.frame_local.spatial.hit.own_layer;
+        if (!self.layerMatches(layer, layer_node, registry)) {
+            self.fallback_reason = "block_layer_unindexed";
+            return false;
+        }
+        try self.relabelLayerChildren(layer_node, layer);
+        const block = self.validBlockOf(child) orelse {
+            // Not painted (display none / hidden from hit testing): relabel swept its block.
+            clearNodeRangesRecursive(child);
+            return true;
+        };
+        const parent_state = computeParentBuildState(layer_node);
+        try self.rebuildBlock(block, child, registry, parent_state.clip_chain_id, parent_state.inspect_pick_disabled, layer);
         return true;
     }
 
@@ -728,6 +1038,7 @@ pub const HitRuntime = struct {
 
     pub fn hitTestQuery(self: *HitRuntime, query: HitQuery, registry: ?*const NodeRegistry, perf: ?*PerfCounters) ?HitResult {
         if (perf) |p| p.hit_test_count += 1;
+        self.query_serial +%= 1;
 
         if (query.capture_override) |capture| {
             if (registry) |reg| {
@@ -740,9 +1051,278 @@ pub const HitRuntime = struct {
         }
 
         if (registry) |reg| {
-            if (self.queryBestInLayer(&self.proxy_aabb_tree, query, reg)) |hit| return hit;
+            var best = self.queryBestInLayer(&self.proxy_aabb_tree, root_layer, query, reg, null);
+            for (self.layers.items, 0..) |*layer, i| {
+                if (layer.tree.root == INVALID_INDEX) continue;
+                const layer_id: u32 = @intCast(i + 1);
+                const point = self.layerPoint(layer_id, query.world_x, query.world_y, reg) orelse continue;
+                if (!layer.tree.nodes.items[layer.tree.root].aabb.contains(point.x, point.y)) continue;
+                best = self.queryBestInLayer(&layer.tree, layer_id, query, reg, best);
+            }
+            return best;
         }
         return null;
+    }
+
+    fn layerTree(self: *HitRuntime, layer: u32) *DynamicAabbTree {
+        return if (layer == root_layer) &self.proxy_aabb_tree else &self.layers.items[layer - 1].tree;
+    }
+
+    fn layerMatches(self: *const HitRuntime, layer: u32, node: *Node, registry: *const NodeRegistry) bool {
+        if (layer == root_layer or layer > self.layers.items.len) return false;
+        const handle = self.layers.items[layer - 1].handle;
+        return registry.isCurrentIdentity(handle, node);
+    }
+
+    /// World point in the given hit space, through the layer node's current world transform.
+    /// Null when the layer node is gone or its transform is singular (nothing in it is visible).
+    fn layerPoint(self: *HitRuntime, layer_id: u32, world_x: f32, world_y: f32, registry: *const NodeRegistry) ?Point {
+        if (layer_id == root_layer) return .{ .x = world_x, .y = world_y };
+        if (layer_id > self.layers.items.len) return null;
+        const layer = &self.layers.items[layer_id - 1];
+        if (layer.cached_serial != self.query_serial) {
+            layer.cached_serial = self.query_serial;
+            layer.cached_mappable = false;
+            if (registry.resolve(layer.handle, null)) |node| {
+                const world = retained_scene.buildAncestorWorldTransform(node, .{ .include_rotation = true });
+                if (@abs(world.a * world.d - world.b * world.c) >= 0.000001) {
+                    layer.cached_to_layer = world.invert();
+                    layer.cached_mappable = true;
+                }
+            }
+        }
+        if (!layer.cached_mappable) return null;
+        return layer.cached_to_layer.applyPoint(world_x, world_y);
+    }
+
+    /// Layer for a hit-layer node: the one it already owns when the index still holds it (a
+    /// partial rebuild of a subtree containing it), else a new one.
+    fn layerForNode(self: *HitRuntime, node: *Node, registry: *const NodeRegistry) !u32 {
+        const previous = node.frame_state.frame_local.spatial.hit.own_layer;
+        if (previous != root_layer and self.layerMatches(previous, node, registry)) return previous;
+        try self.layers.append(self.allocator, .{ .handle = registry.handleFor(node), .tree = DynamicAabbTree.init(self.allocator) });
+        const id: u32 = @intCast(self.layers.items.len);
+        node.frame_state.frame_local.spatial.hit.own_layer = id;
+        return id;
+    }
+
+    // ---- Blocks (HitBlock) ----
+
+    fn blockPtr(self: *HitRuntime, id: u32) *HitBlock {
+        return &self.blocks.items[id - 1];
+    }
+
+    fn blockKey(self: *const HitRuntime, id: u32) u64 {
+        if (id == root_block or id > self.blocks.items.len) return 0;
+        return self.blocks.items[id - 1].key;
+    }
+
+    /// The block `node` roots in the current index, if any (it is a child of a hit-layer node and
+    /// was given a block there).
+    fn validBlockOf(self: *const HitRuntime, node: *const Node) ?u32 {
+        const id = node.frame_state.frame_local.spatial.hit.block;
+        if (id == root_block or id > self.blocks.items.len) return null;
+        const parent = node.parent orelse return null;
+        const block = self.blocks.items[id - 1];
+        if (block.root_id != node.id or block.layer_node_id != parent.id) return null;
+        return id;
+    }
+
+    /// The layer node's index entry when it still holds `node` (ids are never reused).
+    fn indexedOwnLayer(self: *const HitRuntime, node: *const Node) ?u32 {
+        const own = node.frame_state.frame_local.spatial.hit.own_layer;
+        if (own == root_layer or own > self.layers.items.len) return null;
+        if (self.layers.items[own - 1].handle.id != node.id) return null;
+        return own;
+    }
+
+    fn killProxy(self: *HitRuntime, proxy_id: u32) void {
+        if (proxy_id >= self.proxies.items.len) return;
+        const proxy = &self.proxies.items[proxy_id];
+        if (!proxy.flags.alive) return;
+        self.layerTree(proxy.layer).remove(self.proxy_tree_nodes.items[proxy_id]);
+        proxy.flags.alive = false;
+        self.live_proxy_count -|= 1;
+        // Best effort: without the slot the next proxy is appended instead.
+        self.free_proxies.append(self.allocator, proxy_id) catch {};
+    }
+
+    /// Drop everything a block holds: its proxies and, through the layers opened inside it, the
+    /// blocks nested below. The block entry stays (unbuilt) for its root to rebuild into.
+    fn killBlock(self: *HitRuntime, id: u32) void {
+        if (id == root_block or id > self.blocks.items.len) return;
+        {
+            const block = self.blockPtr(id);
+            for (block.proxies.items) |proxy_id| {
+                // A dead slot may since have been taken by a proxy of another block.
+                const proxy = &self.proxies.items[proxy_id];
+                if (proxy.block != id) continue;
+                proxy.flags.listed = false;
+                self.killProxy(proxy_id);
+            }
+            block.proxies.clearRetainingCapacity();
+            block.built = false;
+        }
+        var i: usize = 0;
+        while (i < self.blockPtr(id).nested_layers.items.len) : (i += 1) {
+            const layer = self.blockPtr(id).nested_layers.items[i];
+            if (layer == root_layer or layer > self.layers.items.len) continue;
+            var j: usize = 0;
+            while (j < self.layers.items[layer - 1].child_blocks.items.len) : (j += 1) {
+                self.killBlock(self.layers.items[layer - 1].child_blocks.items[j]);
+            }
+        }
+        self.blockPtr(id).nested_layers.clearRetainingCapacity();
+    }
+
+    fn killLayerBlocks(self: *HitRuntime, layer: u32) void {
+        var j: usize = 0;
+        while (j < self.layers.items[layer - 1].child_blocks.items.len) : (j += 1) {
+            const id = self.layers.items[layer - 1].child_blocks.items[j];
+            self.killBlock(id);
+            self.blockPtr(id).root_id = std.math.maxInt(u32);
+            self.dead_blocks += 1;
+        }
+        self.layers.items[layer - 1].child_blocks.clearRetainingCapacity();
+    }
+
+    fn noteNestedLayer(self: *HitRuntime, block: u32, layer: u32) !void {
+        if (block == root_block or block > self.blocks.items.len) return;
+        const list = &self.blockPtr(block).nested_layers;
+        if (std.mem.indexOfScalar(u32, list.items, layer) != null) return;
+        try list.append(self.allocator, layer);
+    }
+
+    /// Give every painted child of `layer_node` a block keyed by its paint position; sweep the
+    /// blocks of children that left. O(children): no child subtree is visited.
+    fn relabelLayerChildren(self: *HitRuntime, layer_node: *Node, layer: u32) !void {
+        self.block_visit +%= 1;
+        const stamp = self.block_visit;
+        const ordered = try paintOrderedChildren(self.allocator, layer_node);
+        defer ordered.deinit(self.allocator);
+        var list: std.ArrayList(u32) = .empty;
+        errdefer list.deinit(self.allocator);
+        try list.ensureTotalCapacity(self.allocator, ordered.items.len);
+        var key: u64 = 0;
+        for (paint_order.bands) |band| {
+            for (ordered.items) |child| {
+                if (paint_order.paintBand(child) != band) continue;
+                if (!interaction_semantics.nodeParticipatesInHitTest(child)) continue;
+                key += 1;
+                const id = self.validBlockOf(child) orelse blk: {
+                    try self.blocks.append(self.allocator, .{ .root_id = child.id, .layer_node_id = layer_node.id });
+                    const new_id: u32 = @intCast(self.blocks.items.len);
+                    child.frame_state.frame_local.spatial.hit.block = new_id;
+                    break :blk new_id;
+                };
+                const block = self.blockPtr(id);
+                block.key = key;
+                block.visit = stamp;
+                list.appendAssumeCapacity(id);
+            }
+        }
+        const info = &self.layers.items[layer - 1];
+        for (info.child_blocks.items) |old| {
+            if (self.blockPtr(old).visit == stamp) continue;
+            self.killBlock(old);
+            self.blockPtr(old).root_id = std.math.maxInt(u32);
+            self.dead_blocks += 1;
+        }
+        info.child_blocks.deinit(self.allocator);
+        info.child_blocks = list;
+    }
+
+    /// Whether the stored geometry of block `id` is still exact without visiting it: its inputs
+    /// are those of its last build. Changes inside the block are partial roots of their own.
+    fn blockReusable(self: *HitRuntime, id: u32, child: *Node, parent_clip: ?u32, inspect_pick_disabled: bool, layer: u32) bool {
+        const block = self.blockPtr(id);
+        if (!block.built or block.layer != layer or block.inspect_pick_disabled != inspect_pick_disabled) return false;
+        if (!std.meta.eql(block.parent_clip, parent_clip)) return false;
+        const r = child.rectFromWorldOrFallback();
+        // An empty block stays empty wherever it moves: a childless zero-area node emits neither
+        // proxies nor a clip entry (a parked list slot).
+        if (block.proxies.items.len == 0 and block.w * block.h == 0 and r.w * r.h == 0 and
+            child.children.items.len == 0 and child.meta.per_frame.custom_hooks.hit_proxy == null) return true;
+        if (block.w != r.w or block.h != r.h) return false;
+        return std.meta.eql(block.matrix, retained_scene.buildNodeLocalTransform(child, .{ .include_rotation = true }));
+    }
+
+    fn rebuildBlock(self: *HitRuntime, id: u32, child: *Node, registry: *const NodeRegistry, parent_clip: ?u32, inspect_pick_disabled: bool, layer: u32) anyerror!void {
+        self.killBlock(id);
+        // Proxies emitted before the node rooted this block (it was numbered elsewhere).
+        self.removeProxyRangeRecursive(child);
+        var cursor: u64 = 0;
+        try assignPaintOrderRecursive(self.allocator, child, &cursor, id);
+        try self.buildRecursive(child, registry, Transform2D.identity(), parent_clip, inspect_pick_disabled, layer);
+        self.stat_build_blocks +%= 1;
+        const r = child.rectFromWorldOrFallback();
+        const block = self.blockPtr(id);
+        block.built = true;
+        block.layer = layer;
+        block.matrix = retained_scene.buildNodeLocalTransform(child, .{ .include_rotation = true });
+        block.w = r.w;
+        block.h = r.h;
+        block.parent_clip = parent_clip;
+        block.inspect_pick_disabled = inspect_pick_disabled;
+    }
+
+    /// Children of a hit-layer node: one block each, rebuilt only when its inputs changed.
+    fn buildLayerChildren(self: *HitRuntime, layer_node: *Node, registry: *const NodeRegistry, clip_chain_id: ?u32, inspect_pick_disabled: bool, layer: u32) !void {
+        try self.relabelLayerChildren(layer_node, layer);
+        const ordered = try paintOrderedChildren(self.allocator, layer_node);
+        defer ordered.deinit(self.allocator);
+        for (paint_order.bands) |band| {
+            for (ordered.items) |child| {
+                if (paint_order.paintBand(child) != band) continue;
+                if (!interaction_semantics.nodeParticipatesInHitTest(child)) {
+                    clearNodeRangesRecursive(child);
+                    continue;
+                }
+                const id = self.validBlockOf(child) orelse unreachable;
+                if (self.blockReusable(id, child, clip_chain_id, inspect_pick_disabled, layer)) {
+                    self.stat_reused_blocks +%= 1;
+                    continue;
+                }
+                if (@import("debug_env.zig").hitSceneDebugEnabled()) {
+                    const blk = self.blockPtr(id);
+                    const r = child.rectFromWorldOrFallback();
+                    std.debug.print("[hit-scene]   block rebuild node={d} built={} layer={} clip={} size={} matrix={}\n", .{ child.id, blk.built, blk.layer == layer, std.meta.eql(blk.parent_clip, clip_chain_id), blk.w == r.w and blk.h == r.h, std.meta.eql(blk.matrix, retained_scene.buildNodeLocalTransform(child, .{ .include_rotation = true })) });
+                }
+                try self.rebuildBlock(id, child, registry, clip_chain_id, inspect_pick_disabled, layer);
+            }
+        }
+    }
+
+    /// Remove the proxies the index holds for `node`'s subtree, found through the nodes'
+    /// ranges. Stops at an indexed hit-layer node: its children's proxies live in their blocks,
+    /// which the layer node's build reuses or rebuilds. `deep` also drops those blocks (the
+    /// subtree leaves the index).
+    fn removeProxyRangeRecursive(self: *HitRuntime, node: *Node) void {
+        self.removeProxyRangeRecursiveEx(node, false);
+    }
+
+    fn removeProxyRangeRecursiveEx(self: *HitRuntime, node: *Node, deep: bool) void {
+        const hit = &node.frame_state.frame_local.spatial.hit;
+        if (hit.proxy_len > 0) {
+            const start: usize = hit.proxy_start;
+            const len: usize = hit.proxy_len;
+            var i: usize = 0;
+            while (i < len) : (i += 1) {
+                const proxy_id = start + i;
+                if (proxy_id >= self.proxies.items.len) continue;
+                // Ranges of a node outside the index (detached across a full rebuild) may point
+                // at other nodes' proxies.
+                if (self.proxies.items[proxy_id].node_id != node.id) continue;
+                self.killProxy(@intCast(proxy_id));
+            }
+        }
+        // clip_chain_id is kept: a rebuild of this node updates its own clip entry in place.
+        hit.proxy_len = 0;
+        if (self.indexedOwnLayer(node)) |layer| {
+            if (!deep) return;
+            self.killLayerBlocks(layer);
+        }
+        for (node.children.items) |child| self.removeProxyRangeRecursiveEx(child, deep);
     }
 
     pub fn setHoveredResult(self: *HitRuntime, result: ?HitResult) void {
@@ -788,20 +1368,21 @@ pub const HitRuntime = struct {
         return null;
     }
 
-    fn queryBestInLayer(self: *HitRuntime, tree: *DynamicAabbTree, query: HitQuery, registry: *const NodeRegistry) ?HitResult {
-        if (tree.root == INVALID_INDEX) return null;
+    fn queryBestInLayer(self: *HitRuntime, tree: *DynamicAabbTree, layer: u32, query: HitQuery, registry: *const NodeRegistry, current_best: ?HitResult) ?HitResult {
+        if (tree.root == INVALID_INDEX) return current_best;
+        const point = self.layerPoint(layer, query.world_x, query.world_y, registry) orelse return current_best;
 
         var stack: [256]u32 = undefined;
         var sp: usize = 0;
         stack[sp] = tree.root;
         sp += 1;
 
-        var best: ?HitResult = null;
+        var best: ?HitResult = current_best;
         while (sp > 0) {
             sp -= 1;
             const node_id = stack[sp];
             const tree_node = tree.nodes.items[node_id];
-            if (!tree_node.aabb.contains(query.world_x, query.world_y)) continue;
+            if (!tree_node.aabb.contains(point.x, point.y)) continue;
 
             if (tree_node.isLeaf()) {
                 if (self.validateProxy(tree_node.proxy_id, query, registry)) |candidate| {
@@ -817,18 +1398,13 @@ pub const HitRuntime = struct {
                 stack[sp + 1] = tree_node.right;
                 sp += 2;
             } else {
-                if (self.linearProbeSubtree(tree, node_id, query, registry, best)) |candidate| best = candidate;
+                if (self.linearProbeSubtree(tree, node_id, point, query, registry, best)) |candidate| best = candidate;
             }
         }
-
-        if (best) |result| {
-            self.query_cache.recent_candidate_window = self.proxies.items[result.proxy_id].true_aabb;
-            return result;
-        }
-        return null;
+        return best;
     }
 
-    fn linearProbeSubtree(self: *HitRuntime, tree: *DynamicAabbTree, node_id: u32, query: HitQuery, registry: *const NodeRegistry, current_best: ?HitResult) ?HitResult {
+    fn linearProbeSubtree(self: *HitRuntime, tree: *DynamicAabbTree, node_id: u32, point: Point, query: HitQuery, registry: *const NodeRegistry, current_best: ?HitResult) ?HitResult {
         var best = current_best;
         var stack: [256]u32 = undefined;
         var sp: usize = 0;
@@ -837,7 +1413,7 @@ pub const HitRuntime = struct {
         while (sp > 0) {
             sp -= 1;
             const current = tree.nodes.items[stack[sp]];
-            if (!current.aabb.contains(query.world_x, query.world_y)) continue;
+            if (!current.aabb.contains(point.x, point.y)) continue;
             if (current.isLeaf()) {
                 if (self.validateProxy(current.proxy_id, query, registry)) |candidate| {
                     if (best == null or self.proxySortsAbove(candidate.proxy_id, best.?.proxy_id)) {
@@ -860,7 +1436,8 @@ pub const HitRuntime = struct {
 
         if (!roleAllowsQuery(proxy.roles, query.kind)) return null;
         if (query.kind != .inspect and query.kind != .window_chrome and !behaviorAllowsQuery(proxy.behavior)) return null;
-        if (!proxy.true_aabb.contains(query.world_x, query.world_y)) return null;
+        const point = self.layerPoint(proxy.layer, query.world_x, query.world_y, registry) orelse return null;
+        if (!proxy.true_aabb.contains(point.x, point.y)) return null;
         if (!self.clipChainContains(proxy.clip_chain_id, query.world_x, query.world_y, registry)) return null;
 
         const node = registry.resolve(proxy.handle, null) orelse return null;
@@ -869,7 +1446,8 @@ pub const HitRuntime = struct {
                 if (!behaviorAllowsQuery(explicit)) return null;
             }
         }
-        const local = node.frame_state.frame_local.spatial.world.inverse.applyPoint(query.world_x, query.world_y);
+        // The node's stored inverse maps its hit space (the proxy's layer) to node-local.
+        const local = node.frame_state.frame_local.spatial.world.inverse.applyPoint(point.x, point.y);
         if (!self.shapeContains(proxy.shape_id, node, proxy.local_rect, local.x, local.y)) return null;
 
         return .{
@@ -882,12 +1460,14 @@ pub const HitRuntime = struct {
         };
     }
 
-    fn clipChainContains(self: *const HitRuntime, chain_id: ?u32, world_x: f32, world_y: f32, registry: *const NodeRegistry) bool {
+    fn clipChainContains(self: *HitRuntime, chain_id: ?u32, world_x: f32, world_y: f32, registry: *const NodeRegistry) bool {
         var current = chain_id;
         while (current) |clip_id| {
             const entry = self.clip_chain.items[clip_id];
-            if (!entry.world_aabb.contains(world_x, world_y)) return false;
-            const local = entry.inverse_world_transform.applyPoint(world_x, world_y);
+            // world_aabb / inverse_world_transform are in the entry's hit space.
+            const point = self.layerPoint(entry.layer, world_x, world_y, registry) orelse return false;
+            if (!entry.world_aabb.contains(point.x, point.y)) return false;
+            const local = entry.inverse_world_transform.applyPoint(point.x, point.y);
             const node = registry.resolve(entry.handle, null) orelse return false;
             if (!shapeContainsRecord(self.shapes.items[entry.shape_id], node, entry.local_rect, local.x, local.y)) return false;
             current = entry.parent_id;
@@ -900,17 +1480,45 @@ pub const HitRuntime = struct {
         return shapeContainsRecord(self.shapes.items[shape_id], node, local_rect, local_x, local_y);
     }
 
-    fn buildRecursive(self: *HitRuntime, node: *Node, registry: *const NodeRegistry, parent_transform: Transform2D, parent_clip_chain: ?u32, inherited_inspect_pick_disabled: bool) !void {
+    fn buildRecursive(self: *HitRuntime, node: *Node, registry: *const NodeRegistry, parent_transform: Transform2D, parent_clip_chain: ?u32, inherited_inspect_pick_disabled: bool, parent_layer: u32) !void {
         node.frame_state.frame_local.spatial.hit.proxy_start = 0;
         node.frame_state.frame_local.spatial.hit.proxy_len = 0;
+        self.stat_build_nodes +%= 1;
 
         if (!interaction_semantics.nodeParticipatesInHitTest(node)) {
+            // The subtree leaves the index, including the blocks of layers inside it.
+            self.removeProxyRangeRecursiveEx(node, true);
             clearNodeRangesRecursive(node);
             return;
         }
 
-        const local_transform = retained_scene.buildNodeLocalTransform(node, .{ .include_rotation = true });
-        node.frame_state.frame_local.spatial.world.matrix = parent_transform.mul(local_transform);
+        // A hit-layer node opens its own space: its matrix there is the identity and everything
+        // below is stored relative to it (see HitLayer).
+        const is_layer = node.behavior.interaction.hit_layer;
+        if (!is_layer) {
+            // Was a layer at the last build: its children's blocks go (they are rebuilt below).
+            if (self.indexedOwnLayer(node)) |old_layer| {
+                self.killLayerBlocks(old_layer);
+                node.frame_state.frame_local.spatial.hit.own_layer = root_layer;
+            }
+        }
+        const layer = if (is_layer) try self.layerForNode(node, registry) else parent_layer;
+        node.frame_state.frame_local.spatial.hit.layer = layer;
+        if (is_layer) {
+            const block = node.frame_state.frame_local.spatial.hit.block;
+            const info = &self.layers.items[layer - 1];
+            info.parent_layer = parent_layer;
+            info.depth = self.layerDepth(parent_layer) + 1;
+            info.anchor_block = block;
+            info.anchor_order = node.frame_state.frame_local.spatial.paint.subtree_max;
+            try self.noteNestedLayer(block, layer);
+        }
+        if (layer != parent_layer) {
+            node.frame_state.frame_local.spatial.world.matrix = Transform2D.identity();
+        } else {
+            const local_transform = retained_scene.buildNodeLocalTransform(node, .{ .include_rotation = true });
+            node.frame_state.frame_local.spatial.world.matrix = parent_transform.mul(local_transform);
+        }
         // global hook reads rect.
         const r = node.rectFromWorldOrFallback();
         const world_rect = node.frame_state.frame_local.spatial.world.matrix.transformRect(ComputedRect.init(0, 0, r.w, r.h));
@@ -927,35 +1535,57 @@ pub const HitRuntime = struct {
         // via paintOrderedChildren;
         // descendants always paint after ancestor (DFS preorder).
         var clip_chain_id = parent_clip_chain;
+        const previous_clip = node.frame_state.frame_local.spatial.hit.clip_chain_id;
         if (node.style.overflow_hidden and world_rect.w > 0 and world_rect.h > 0) {
-            const clip_shape_id = try self.appendClipShape(node, interaction_semantics.nodeHitClipShape(node));
-            const entry_id: u32 = @intCast(self.clip_chain.items.len);
-            try self.clip_chain.append(self.allocator, .{
+            const reused_entry: ?u32 = self.ownClipEntryCandidate(previous_clip, registry.handleFor(node), layer, clip_chain_id);
+            const clip_shape_id = try self.appendClipShape(node, interaction_semantics.nodeHitClipShape(node), if (reused_entry) |id| self.clip_chain.items[id].shape_id else null);
+            const entry: ClipChainEntry = .{
                 .parent_id = clip_chain_id,
+                .layer = layer,
                 .handle = registry.handleFor(node),
                 .local_rect = ComputedRect.init(0, 0, r.w, r.h),
                 .shape_id = clip_shape_id,
                 .world_aabb = world_rect,
                 .inverse_world_transform = node.frame_state.frame_local.spatial.world.inverse,
-            });
-            clip_chain_id = entry_id;
+            };
+            // Rebuilding a clip node keeps its entry id: descendants left in place (reused blocks
+            // of a layer below) keep referring to it, and it now carries the current geometry.
+            if (reused_entry) |entry_id| {
+                self.clip_chain.items[entry_id] = entry;
+                clip_chain_id = entry_id;
+            } else {
+                const entry_id: u32 = @intCast(self.clip_chain.items.len);
+                try self.clip_chain.append(self.allocator, entry);
+                clip_chain_id = entry_id;
+            }
         }
         node.frame_state.frame_local.spatial.hit.clip_chain_id = clip_chain_id;
 
         const inspect_pick_disabled = inherited_inspect_pick_disabled or node.frame_state.state_bits.flags.inspect_pick_disabled;
-        try self.appendNodeProxies(node, registry, clip_chain_id, inspect_pick_disabled);
+        try self.appendNodeProxies(node, registry, clip_chain_id, inspect_pick_disabled, layer, parent_layer);
+
+        if (is_layer) {
+            try self.buildLayerChildren(node, registry, clip_chain_id, inspect_pick_disabled, layer);
+            return;
+        }
 
         const ordered = try paintOrderedChildren(self.allocator, node);
         defer ordered.deinit(self.allocator);
         for (paint_order.bands) |band| {
             for (ordered.items) |child| {
                 if (paint_order.paintBand(child) != band) continue;
-                try self.buildRecursive(child, registry, node.frame_state.frame_local.spatial.world.matrix, clip_chain_id, inspect_pick_disabled);
+                try self.buildRecursive(child, registry, node.frame_state.frame_local.spatial.world.matrix, clip_chain_id, inspect_pick_disabled, layer);
             }
         }
     }
 
     fn appendHitShape(self: *HitRuntime, node: *Node, spec: HitShapeSpec) !u32 {
+        return self.writeHitShape(node, spec, null);
+    }
+
+    /// Hit shape record for `spec`, written into `slot` (a recycled proxy's own record) or
+    /// appended.
+    fn writeHitShape(self: *HitRuntime, node: *Node, spec: HitShapeSpec, slot: ?u32) !u32 {
         if (spec == .custom) {
             try node.ensureCustomClipGeometry(self.allocator);
         }
@@ -969,6 +1599,10 @@ pub const HitRuntime = struct {
             .rounded_rect => |radius| {
                 record.kind = .rounded_rect;
                 record.radius = radius;
+            },
+            .rounded_corners => |radii| {
+                record.kind = .rounded_corners;
+                record.radii = radii;
             },
             .circle => record.kind = .circle,
             .ellipse => record.kind = .ellipse,
@@ -994,11 +1628,17 @@ pub const HitRuntime = struct {
             },
             .auto => unreachable,
         }
+        if (slot) |id| {
+            if (id < self.shapes.items.len) {
+                self.shapes.items[id] = record;
+                return id;
+            }
+        }
         try self.shapes.append(self.allocator, record);
         return shape_id;
     }
 
-    fn appendClipShape(self: *HitRuntime, node: *Node, spec: ClipShapeSpec) !u32 {
+    fn appendClipShape(self: *HitRuntime, node: *Node, spec: ClipShapeSpec, slot: ?u32) !u32 {
         if (spec == .custom) {
             try node.ensureCustomClipGeometry(self.allocator);
         }
@@ -1012,6 +1652,10 @@ pub const HitRuntime = struct {
             .rounded_rect => |radius| {
                 record.kind = .rounded_rect;
                 record.radius = radius;
+            },
+            .rounded_corners => |radii| {
+                record.kind = .rounded_corners;
+                record.radii = radii;
             },
             .ellipse => record.kind = .ellipse,
             .path => |path| {
@@ -1032,21 +1676,53 @@ pub const HitRuntime = struct {
             },
             .auto => unreachable,
         }
+        if (slot) |id| {
+            if (id < self.shapes.items.len) {
+                self.shapes.items[id] = record;
+                return id;
+            }
+        }
         try self.shapes.append(self.allocator, record);
         return shape_id;
     }
 
-    fn appendNodeProxies(self: *HitRuntime, node: *Node, registry: *const NodeRegistry, clip_chain_id: ?u32, inspect_pick_disabled: bool) !void {
+    /// The clip entry `node` emitted at its last build when it can be updated in place: same node
+    /// (ids are never reused), same hit space and same parent entry.
+    fn ownClipEntryCandidate(self: *const HitRuntime, previous: ?u32, handle: NodeHandle, layer: u32, parent_id: ?u32) ?u32 {
+        const id = previous orelse return null;
+        if (id >= self.clip_chain.items.len) return null;
+        const old = self.clip_chain.items[id];
+        if (old.handle.id != handle.id or old.handle.generation != handle.generation) return null;
+        if (old.layer != layer or !std.meta.eql(old.parent_id, parent_id)) return null;
+        return id;
+    }
+
+    fn appendNodeProxies(self: *HitRuntime, node: *Node, registry: *const NodeRegistry, clip_chain_id: ?u32, inspect_pick_disabled: bool, layer: u32, order_layer: u32) !void {
         var specs_buf: [max_node_hit_proxies]HitProxySpec = undefined;
         const proxy_specs = collectNodeProxySpecs(node, specs_buf[0..]);
         if (proxy_specs.len == 0) return;
 
         const handle = registry.handleFor(node);
         const paint_base = node.frame_state.frame_local.spatial.paint.order;
-        const start_proxy: u32 = @intCast(self.proxies.items.len);
+        const block = node.frame_state.frame_local.spatial.hit.block;
+
+        var roles_buf: [max_node_hit_proxies]HitRoles = undefined;
+        var emit_count: usize = 0;
+        for (proxy_specs, 0..) |spec, i| {
+            var roles = spec.roles orelse interaction_semantics.nodeHitRoles(node);
+            if (inspect_pick_disabled) roles.inspect = false;
+            roles_buf[i] = roles;
+            if (spec.local_rect.w > 0 and spec.local_rect.h > 0 and roles.any()) emit_count += 1;
+        }
+        if (emit_count == 0) return;
+        // A single proxy (nearly every node) takes a dead slot back, with the slot's shape record,
+        // so rebuilding unchanged nodes leaves no garbage behind (no compaction while scrolling).
+        const recycled: ?u32 = if (emit_count == 1) self.popFreeProxy() else null;
+        const start_proxy: u32 = recycled orelse @intCast(self.proxies.items.len);
 
         for (proxy_specs, 0..) |spec, i| {
-            if (spec.local_rect.w <= 0 or spec.local_rect.h <= 0) continue;
+            const roles = roles_buf[i];
+            if (spec.local_rect.w <= 0 or spec.local_rect.h <= 0 or !roles.any()) continue;
 
             const world_rect = transformRect(node.frame_state.frame_local.spatial.world.matrix, spec.local_rect);
             const fat_rect = fattenRect(world_rect, 2);
@@ -1054,16 +1730,14 @@ pub const HitRuntime = struct {
                 .auto => interaction_semantics.nodeHitShape(node),
                 else => spec.shape,
             };
-            const shape_id = try self.appendHitShape(node, shape_spec);
-            var roles = spec.roles orelse interaction_semantics.nodeHitRoles(node);
-            if (inspect_pick_disabled) roles.inspect = false;
-            if (!roles.any()) continue;
-
-            const proxy_id: u32 = @intCast(self.proxies.items.len);
-            try self.proxies.append(self.allocator, .{
+            const shape_id = try self.writeHitShape(node, shape_spec, if (recycled) |id| self.proxies.items[id].shape_id else null);
+            const proxy: HitProxy = .{
                 .handle = handle,
                 .node_id = node.id,
                 .paint_order = paint_base + i,
+                .block = block,
+                .order_layer = order_layer,
+                .layer = layer,
                 .local_rect = spec.local_rect,
                 .true_aabb = world_rect,
                 .fat_aabb = fat_rect,
@@ -1072,33 +1746,88 @@ pub const HitRuntime = struct {
                 .roles = roles,
                 .behavior = spec.behavior orelse interaction_semantics.nodeHitBehavior(node),
                 .epoch = node.frame_state.frame_local.spatial.hit.epoch + 1,
-            });
-
-            const tree_node = try self.proxy_aabb_tree.insert(proxy_id, fat_rect);
-            try self.proxy_tree_nodes.append(self.allocator, tree_node);
+            };
+            if (recycled) |proxy_id| {
+                const listed = self.proxies.items[proxy_id].flags.listed and self.proxies.items[proxy_id].block == block;
+                self.proxies.items[proxy_id] = proxy;
+                self.proxies.items[proxy_id].flags.listed = listed;
+                self.proxy_tree_nodes.items[proxy_id] = try self.layerTree(layer).insert(proxy_id, fat_rect);
+                try self.listProxyInBlock(proxy_id, block);
+            } else {
+                const proxy_id: u32 = @intCast(self.proxies.items.len);
+                try self.proxies.append(self.allocator, proxy);
+                const tree_node = try self.layerTree(layer).insert(proxy_id, fat_rect);
+                try self.proxy_tree_nodes.append(self.allocator, tree_node);
+                try self.listProxyInBlock(proxy_id, block);
+            }
         }
 
-        const emitted = self.proxies.items.len - start_proxy;
-        if (emitted == 0) return;
-        self.live_proxy_count += emitted;
+        self.stat_build_proxies +%= @intCast(emit_count);
+        self.live_proxy_count += emit_count;
         node.frame_state.frame_local.spatial.hit.proxy_start = start_proxy;
-        node.frame_state.frame_local.spatial.hit.proxy_len = @intCast(emitted);
+        node.frame_state.frame_local.spatial.hit.proxy_len = @intCast(emit_count);
         node.frame_state.frame_local.spatial.hit.epoch +%= 1;
     }
 
+    fn listProxyInBlock(self: *HitRuntime, proxy_id: u32, block: u32) !void {
+        if (block == root_block) return;
+        const proxy = &self.proxies.items[proxy_id];
+        if (proxy.flags.listed) return;
+        try self.blockPtr(block).proxies.append(self.allocator, proxy_id);
+        proxy.flags.listed = true;
+    }
+
+    /// A dead proxy slot that nothing indexes any more (its tree leaf was removed when it died).
+    fn popFreeProxy(self: *HitRuntime) ?u32 {
+        while (self.free_proxies.pop()) |id| {
+            if (id < self.proxies.items.len and !self.proxies.items[id].flags.alive) return id;
+        }
+        return null;
+    }
+
+    fn layerDepth(self: *const HitRuntime, layer: u32) u32 {
+        if (layer == root_layer or layer > self.layers.items.len) return 0;
+        return self.layers.items[layer - 1].depth;
+    }
+
+    const PaintPos = struct { layer: u32, block: u32, order: u64 };
+
+    /// The position of a layer's whole subtree in its enclosing layer's order.
+    fn liftPaintPos(self: *const HitRuntime, pos: PaintPos) PaintPos {
+        if (pos.layer == root_layer or pos.layer > self.layers.items.len) return .{ .layer = root_layer, .block = root_block, .order = pos.order };
+        const info = self.layers.items[pos.layer - 1];
+        return .{ .layer = info.parent_layer, .block = info.anchor_block, .order = info.anchor_order };
+    }
+
+    /// Paint order (DFS preorder over paint-ordered children, as rendered) of two proxies: lift
+    /// both to the innermost layer holding them, then compare block keys and in-block order.
     fn proxySortsAbove(self: *const HitRuntime, candidate_proxy_id: u32, current_proxy_id: u32) bool {
         const candidate = self.proxies.items[candidate_proxy_id];
         const current = self.proxies.items[current_proxy_id];
-        return candidate.paint_order > current.paint_order;
+        var a: PaintPos = .{ .layer = candidate.order_layer, .block = candidate.block, .order = candidate.paint_order };
+        var b: PaintPos = .{ .layer = current.order_layer, .block = current.block, .order = current.paint_order };
+        while (a.layer != b.layer) {
+            const da = self.layerDepth(a.layer);
+            const db = self.layerDepth(b.layer);
+            if (da >= db) a = self.liftPaintPos(a);
+            if (db >= da) b = self.liftPaintPos(b);
+        }
+        const ka = self.blockKey(a.block);
+        const kb = self.blockKey(b.block);
+        if (ka != kb) return ka > kb;
+        return a.order > b.order;
     }
 };
 
 pub const InteractionIndex = HitRuntime;
 
 const ParentBuildState = struct {
+    /// In the hit space `layer` (world for the root layer).
     transform: Transform2D = .{},
     clip_chain_id: ?u32 = null,
     inspect_pick_disabled: bool = false,
+    layer: u32 = root_layer,
+    layer_node: ?*Node = null,
 };
 
 fn computeParentBuildState(node_opt: ?*Node) ParentBuildState {
@@ -1116,7 +1845,14 @@ fn computeParentBuildState(node_opt: ?*Node) ParentBuildState {
     while (i > 0) {
         i -= 1;
         const node = lineage[i];
-        state.transform = state.transform.mul(retained_scene.buildNodeLocalTransform(node, .{ .include_rotation = true }));
+        if (node.behavior.interaction.hit_layer and interaction_semantics.nodeParticipatesInHitTest(node)) {
+            // Same space buildRecursive gives this subtree: relative to the innermost layer node.
+            state.transform = Transform2D.identity();
+            state.layer = node.frame_state.frame_local.spatial.hit.own_layer;
+            state.layer_node = node;
+        } else {
+            state.transform = state.transform.mul(retained_scene.buildNodeLocalTransform(node, .{ .include_rotation = true }));
+        }
         if (node.frame_state.frame_local.spatial.hit.clip_chain_id) |clip_chain_id| {
             state.clip_chain_id = clip_chain_id;
         }
@@ -1365,7 +2101,7 @@ fn shapeContainsRecord(shape: ShapeRecord, node: ?*const Node, local_rect: Compu
         .rect => return shape_x >= 0 and shape_x < shape_w and shape_y >= 0 and shape_y < shape_h,
         .rounded_rect => {
             if (shape_x < 0 or shape_x >= shape_w or shape_y < 0 or shape_y >= shape_h) return false;
-            const radius = std.math.clamp(shape.radius, 0.0, @min(shape_w, shape_h) / 2.0);
+            const radius = corner_radii.normalize(@splat(shape.radius), shape_w, shape_h)[0];
             if (radius <= 0.01) return true;
 
             const left = radius;
@@ -1376,6 +2112,23 @@ fn shapeContainsRecord(shape: ShapeRecord, node: ?*const Node, local_rect: Compu
 
             const cx = if (shape_x < left) left else right;
             const cy = if (shape_y < top) top else bottom;
+            const dx = shape_x - cx;
+            const dy = shape_y - cy;
+            return dx * dx + dy * dy <= radius * radius;
+        },
+        .rounded_corners => {
+            if (shape_x < 0 or shape_x >= shape_w or shape_y < 0 or shape_y >= shape_h) return false;
+            // The quadrant picks the corner; outside that corner's square the rect is solid.
+            const left_half = shape_x < shape_w / 2.0;
+            const top_half = shape_y < shape_h / 2.0;
+            const corner: usize = if (top_half) (if (left_half) 0 else 1) else (if (left_half) 3 else 2);
+            const radius = corner_radii.normalize(shape.radii, shape_w, shape_h)[corner];
+            if (radius <= 0.01) return true;
+            const cx = if (left_half) radius else shape_w - radius;
+            const cy = if (top_half) radius else shape_h - radius;
+            const outside_x = if (left_half) shape_x < cx else shape_x > cx;
+            const outside_y = if (top_half) shape_y < cy else shape_y > cy;
+            if (!(outside_x and outside_y)) return true;
             const dx = shape_x - cx;
             const dy = shape_y - cy;
             return dx * dx + dy * dy <= radius * radius;
@@ -1463,7 +2216,11 @@ fn paintOrderedChildren(allocator: std.mem.Allocator, node: *const Node) !Ordere
     return .{ .items = sorted, .sorted = sorted };
 }
 
-fn assignPaintOrderRecursive(allocator: std.mem.Allocator, node: *Node, cursor: *u64) !void {
+/// Number `node`'s subtree in `block` from `cursor`. A hit-layer node takes its own proxies plus
+/// one reserved slot (`paint.subtree_max`, the anchor of its whole subtree); its children are
+/// numbered in their own blocks when the layer node is built (HitRuntime.buildLayerChildren).
+fn assignPaintOrderRecursive(allocator: std.mem.Allocator, node: *Node, cursor: *u64, block: u32) !void {
+    node.frame_state.frame_local.spatial.hit.block = block;
     node.frame_state.frame_local.spatial.paint.subtree_min = cursor.*;
     if (!interaction_semantics.nodeParticipatesInHitTest(node)) {
         node.frame_state.frame_local.spatial.hit.proxy_len = 0;
@@ -1477,16 +2234,37 @@ fn assignPaintOrderRecursive(allocator: std.mem.Allocator, node: *Node, cursor: 
         cursor.* += proxy_count;
     }
 
-    const ordered = try paintOrderedChildren(allocator, node);
-    defer ordered.deinit(allocator);
-    for (paint_order.bands) |band| {
-        for (ordered.items) |child| {
-            if (paint_order.paintBand(child) != band) continue;
-            try assignPaintOrderRecursive(allocator, child, cursor);
+    if (node.behavior.interaction.hit_layer) {
+        cursor.* += 1;
+    } else {
+        const ordered = try paintOrderedChildren(allocator, node);
+        defer ordered.deinit(allocator);
+        for (paint_order.bands) |band| {
+            for (ordered.items) |child| {
+                if (paint_order.paintBand(child) != band) continue;
+                try assignPaintOrderRecursive(allocator, child, cursor, block);
+            }
         }
     }
 
     node.frame_state.frame_local.spatial.paint.subtree_max = if (cursor.* == 0) 0 else cursor.* - 1;
+}
+
+/// The hit-layer node whose block `node` roots: its participating hit-layer parent.
+fn blockLayerNode(node: *const Node) ?*Node {
+    const parent = node.parent orelse return null;
+    if (!parent.behavior.interaction.hit_layer) return null;
+    if (!interaction_semantics.nodeParticipatesInHitTest(parent)) return null;
+    return parent;
+}
+
+/// Nearest ancestor-or-self of `node` that roots a block (null: `node` is in the root block).
+fn enclosingBlockRoot(node: *Node) ?*Node {
+    var current: ?*Node = node;
+    while (current) |n| : (current = n.parent) {
+        if (blockLayerNode(n) != null) return n;
+    }
+    return null;
 }
 
 fn plannedProxyCount(node: *const Node) u64 {
@@ -1499,27 +2277,6 @@ fn clearNodeRangesRecursive(node: *Node) void {
     node.frame_state.frame_local.spatial.hit.proxy_len = 0;
     node.frame_state.frame_local.spatial.hit.clip_chain_id = null;
     for (node.children.items) |child| clearNodeRangesRecursive(child);
-}
-
-fn removeProxyRangeRecursive(runtime: *HitRuntime, node: *Node) void {
-    if (node.frame_state.frame_local.spatial.hit.proxy_len > 0) {
-        const start: usize = node.frame_state.frame_local.spatial.hit.proxy_start;
-        const len: usize = node.frame_state.frame_local.spatial.hit.proxy_len;
-        var i: usize = 0;
-        while (i < len) : (i += 1) {
-            const proxy_id = start + i;
-            if (proxy_id >= runtime.proxies.items.len) continue;
-            if (!runtime.proxies.items[proxy_id].flags.alive) continue;
-
-            const tree_node = runtime.proxy_tree_nodes.items[proxy_id];
-            runtime.proxy_aabb_tree.remove(tree_node);
-            runtime.proxies.items[proxy_id].flags.alive = false;
-            runtime.live_proxy_count -|= 1;
-        }
-    }
-    node.frame_state.frame_local.spatial.hit.proxy_len = 0;
-    node.frame_state.frame_local.spatial.hit.clip_chain_id = null;
-    for (node.children.items) |child| removeProxyRangeRecursive(runtime, child);
 }
 
 fn rangeCount(min_order: u64, max_order: u64) u64 {
@@ -1539,6 +2296,32 @@ fn testMultiProxyProvider(node: *const Node, _: ?*anyopaque, out: []HitProxySpec
         .behavior = .self_only,
     };
     return 2;
+}
+
+test "NodeRegistry: freed node ids do not accumulate tombstones" {
+    var registry = NodeRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    // Node ids are monotonic: pages of nodes come and go next to long-lived ones.
+    for (1..301) |id| {
+        try registry.entries.put(@intCast(id), .{ .ptr = undefined, .generation = 1 });
+        try registry.generations.put(@intCast(id), .{});
+    }
+    var next: u32 = 1000;
+    for (0..200) |_| {
+        const first = next;
+        for (0..80) |_| {
+            try registry.entries.put(next, .{ .ptr = undefined, .generation = 1 });
+            try registry.generations.put(next, .{});
+            next += 1;
+        }
+        for (first..next) |id| {
+            registry.noteNodeFreed(@intCast(id));
+            try id_hash.expectFewTombstones(&registry.entries);
+            try id_hash.expectFewTombstones(&registry.generations);
+        }
+    }
+    try std.testing.expectEqual(@as(u32, 300), registry.entries.count());
+    try std.testing.expectEqual(@as(u32, 300), registry.generations.count());
 }
 
 test "HitRuntime: positive z does not escape clip for hit testing" {
@@ -1841,6 +2624,121 @@ test "HitRuntime: rounded rect corner misses" {
 
     try std.testing.expect(runtime.hitTestQuery(.{ .kind = .pointer, .world_x = 2, .world_y = 2 }, &registry, null) == null);
     try std.testing.expect(runtime.hitTestQuery(.{ .kind = .pointer, .world_x = 20, .world_y = 20 }, &registry, null) != null);
+}
+
+test "HitRuntime: an explicit hit shape with an invalid radius hits where the renderer draws (acceptance)" {
+    // The renderer fits every radius with corner_radii.normalize: NaN and negative radii draw a
+    // square corner, +inf and oversized radii draw a half-side arc. The hit shape must agree
+    // corner by corner, or a visible corner is unclickable (NaN) or vice versa.
+    const allocator = std.testing.allocator;
+    const nan = std.math.nan(f32);
+    const inf = std.math.inf(f32);
+    const Case = struct { shape: types.HitShapeSpec, corner_hits: [4]bool };
+    // 40 x 40 button at the origin; probe 1 pt inside each corner (TL, TR, BR, BL).
+    const cases = [_]Case{
+        .{ .shape = .{ .rounded_rect = nan }, .corner_hits = .{ true, true, true, true } },
+        .{ .shape = .{ .rounded_rect = -6 }, .corner_hits = .{ true, true, true, true } },
+        .{ .shape = .{ .rounded_rect = inf }, .corner_hits = .{ false, false, false, false } },
+        .{ .shape = .{ .rounded_rect = 9999 }, .corner_hits = .{ false, false, false, false } },
+        .{ .shape = .{ .rounded_corners = .{ nan, 12, -3, inf } }, .corner_hits = .{ true, false, true, false } },
+    };
+    const probes = [_][2]f32{ .{ 1, 1 }, .{ 39, 1 }, .{ 39, 39 }, .{ 1, 39 } };
+    for (cases) |case| {
+        var registry = NodeRegistry.init(allocator);
+        defer registry.deinit();
+        var runtime = HitRuntime.init(allocator);
+        defer runtime.deinit();
+        const root = try Node.create(allocator, 1, .box, .{ .width = .{ .px = 100 }, .height = .{ .px = 100 } });
+        defer root.destroy(allocator);
+        const button = try Node.create(allocator, 2, .button, .{ .width = .{ .px = 40 }, .height = .{ .px = 40 } });
+        button.behavior.interaction.focusable = true;
+        (try button.style.ensureExtFallible(allocator)).hit_shape = case.shape;
+        try root.appendChild(allocator, button);
+        root.setLayoutRect(.{ .x = 0, .y = 0, .w = 100, .h = 100 });
+        button.setLayoutRect(.{ .x = 0, .y = 0, .w = 40, .h = 40 });
+        try registry.rebuild(root);
+        try runtime.rebuild(root, &registry);
+        for (probes, case.corner_hits) |p, want| {
+            const got = runtime.hitTestQuery(.{ .kind = .pointer, .world_x = p[0], .world_y = p[1] }, &registry, null) != null;
+            if (got != want) std.debug.print("shape={any} probe=({d},{d}) want={} got={}\n", .{ case.shape, p[0], p[1], want, got });
+            try std.testing.expectEqual(want, got);
+        }
+        // The middle always hits.
+        try std.testing.expect(runtime.hitTestQuery(.{ .kind = .pointer, .world_x = 20, .world_y = 20 }, &registry, null) != null);
+    }
+}
+
+test "HitRuntime: per-corner radii hit each corner by its own radius; clip uses the same corners" {
+    const allocator = std.testing.allocator;
+    var registry = NodeRegistry.init(allocator);
+    defer registry.deinit();
+    var runtime = HitRuntime.init(allocator);
+    defer runtime.deinit();
+
+    const root = try Node.create(allocator, 1, .box, .{ .width = .{ .px = 200 }, .height = .{ .px = 100 } });
+    defer root.destroy(allocator);
+    // Group-first shape: rounded left corners, square right corners.
+    const first = try Node.create(allocator, 2, .button, .{ .width = .{ .px = 100 }, .height = .{ .px = 32 } });
+    first.behavior.interaction.focusable = true;
+    first.style.border.radius = 8;
+    (try first.style.ensureExtFallible(allocator)).corner_radius = .{ .each = .{ 8, 0, 0, 8 } };
+    try root.appendChild(allocator, first);
+
+    root.setLayoutRect(.{ .x = 0, .y = 0, .w = 200, .h = 100 });
+    first.setLayoutRect(.{ .x = 0, .y = 0, .w = 100, .h = 32 });
+
+    try registry.rebuild(root);
+    try runtime.rebuild(root, &registry);
+
+    const hit = struct {
+        fn at(rt: *HitRuntime, reg: *const NodeRegistry, x: f32, y: f32) bool {
+            return rt.hitTestQuery(.{ .kind = .pointer, .world_x = x, .world_y = y }, reg, null) != null;
+        }
+    }.at;
+    try std.testing.expect(!hit(&runtime, &registry, 1, 1)); // rounded TL corner
+    try std.testing.expect(!hit(&runtime, &registry, 1, 31)); // rounded BL corner
+    try std.testing.expect(hit(&runtime, &registry, 99, 0.5)); // square TR corner
+    try std.testing.expect(hit(&runtime, &registry, 99, 31.5)); // square BR corner
+    try std.testing.expect(hit(&runtime, &registry, 4, 16)); // left edge mid
+    // The overflow clip follows the same per-corner shape as the hit shape.
+    try std.testing.expectEqual(ClipShapeSpec{ .rounded_corners = .{ 8, 0, 0, 8 } }, interaction_semantics.nodeClipShape(first));
+}
+
+test "HitRuntime: per-corner overflow clip trims descendants at rounded corners only" {
+    const allocator = std.testing.allocator;
+    var registry = NodeRegistry.init(allocator);
+    defer registry.deinit();
+    var runtime = HitRuntime.init(allocator);
+    defer runtime.deinit();
+
+    const root = try Node.create(allocator, 1, .box, .{ .width = .{ .px = 200 }, .height = .{ .px = 100 } });
+    defer root.destroy(allocator);
+    // Clip owner (not itself a hit target) rounded TL/BR, square TR/BL; the child fills it.
+    const owner = try Node.create(allocator, 2, .box, .{ .width = .{ .px = 100 }, .height = .{ .px = 40 } });
+    owner.style.overflow_hidden = true;
+    (try owner.style.ensureExtFallible(allocator)).corner_radius = .{ .each = .{ 12, 0, 12, 0 } };
+    try root.appendChild(allocator, owner);
+    const child = try Node.create(allocator, 3, .button, .{ .width = .{ .px = 100 }, .height = .{ .px = 40 } });
+    child.behavior.interaction.focusable = true;
+    try owner.appendChild(allocator, child);
+
+    root.setLayoutRect(.{ .x = 0, .y = 0, .w = 200, .h = 100 });
+    owner.setLayoutRect(.{ .x = 0, .y = 0, .w = 100, .h = 40 });
+    child.setLayoutRect(.{ .x = 0, .y = 0, .w = 100, .h = 40 });
+
+    try registry.rebuild(root);
+    try runtime.rebuild(root, &registry);
+
+    const hits = struct {
+        fn at(rt: *HitRuntime, reg: *const NodeRegistry, x: f32, y: f32) bool {
+            return rt.hitTestQuery(.{ .kind = .pointer, .world_x = x, .world_y = y }, reg, null) != null;
+        }
+    }.at;
+    try std.testing.expect(!hits(&runtime, &registry, 1, 1)); // clipped: rounded TL
+    try std.testing.expect(!hits(&runtime, &registry, 99, 39)); // clipped: rounded BR
+    try std.testing.expect(hits(&runtime, &registry, 99, 0.5)); // kept: square TR
+    try std.testing.expect(hits(&runtime, &registry, 0.5, 39)); // kept: square BL
+    try std.testing.expect(hits(&runtime, &registry, 50, 20)); // interior
 }
 
 test "HitRuntime: explicit multi proxy extends thumb hit slop" {
@@ -2429,7 +3327,7 @@ test "HitRuntime: partial rebuild 刷新祖先 clip 条目的陈旧尺寸（Show
     try std.testing.expect(hit_stale == null or hit_stale.?.node_id != 4);
 }
 
-test "HitRuntime: repeated partial rebuilds compact append-only hit metadata" {
+test "HitRuntime: repeated partial rebuilds of an unchanged node leave no garbage" {
     const allocator = std.testing.allocator;
     var registry = NodeRegistry.init(allocator);
     defer registry.deinit();
@@ -2441,6 +3339,38 @@ test "HitRuntime: repeated partial rebuilds compact append-only hit metadata" {
     root.frame_state.state_bits.flags.inspectable = false;
 
     const button = try Node.create(allocator, 2, .button, .{ .width = .{ .px = 80 }, .height = .{ .px = 30 } });
+    try root.appendChild(allocator, button);
+    root.setLayoutRect(.{ .x = 0, .y = 0, .w = 200, .h = 100 });
+    button.setLayoutRect(.{ .x = 10, .y = 10, .w = 80, .h = 30 });
+
+    try registry.rebuild(root);
+    try runtime.rebuild(root, &registry);
+    const proxies_after_build = runtime.proxies.items.len;
+    const shapes_after_build = runtime.shapes.items.len;
+
+    // A single-proxy node takes its dead slot (and shape record) back on every rebuild.
+    for (0..600) |_| try std.testing.expect(try runtime.rebuildSubtree(button, &registry));
+    try std.testing.expectEqual(proxies_after_build, runtime.proxies.items.len);
+    try std.testing.expectEqual(shapes_after_build, runtime.shapes.items.len);
+    const hit = runtime.hitTestQuery(.{ .kind = .pointer, .world_x = 20, .world_y = 20 }, &registry, null);
+    try std.testing.expect(hit != null);
+    try std.testing.expectEqual(@as(u64, 2), hit.?.node_id);
+}
+
+test "HitRuntime: repeated partial rebuilds compact append-only hit metadata" {
+    const allocator = std.testing.allocator;
+    var registry = NodeRegistry.init(allocator);
+    defer registry.deinit();
+    var runtime = HitRuntime.init(allocator);
+    defer runtime.deinit();
+
+    const root = try Node.create(allocator, 1, .box, .{ .width = .{ .px = 200 }, .height = .{ .px = 100 } });
+    defer root.destroy(allocator);
+    root.frame_state.state_bits.flags.inspectable = false;
+
+    // Multi-proxy nodes append their contiguous range on every rebuild.
+    const button = try Node.create(allocator, 2, .button, .{ .width = .{ .px = 80 }, .height = .{ .px = 30 } });
+    button.setHitProxyProvider(testMultiProxyProvider, null);
     try root.appendChild(allocator, button);
     root.setLayoutRect(.{ .x = 0, .y = 0, .w = 200, .h = 100 });
     button.setLayoutRect(.{ .x = 10, .y = 10, .w = 80, .h = 30 });

@@ -29,9 +29,9 @@ pub fn Checkbox(
             onClick={if (!disabled) checked = !checked}
         >
             <box style={S.CheckboxParts.slot(.box, .{ .on = on, .disabled = disabled })}>
-                <icon style={S.CheckboxParts.slot(.check, .{ .shown = checked })} src={checkIconAsset orelse ui.icons.check} />
+                <icon style={S.CheckboxParts.slot(.check, .{ .shown = checked, .disabled = disabled })} src={checkIconAsset orelse ui.assets.common.checkbox_check} />
                 <box style={S.CheckboxParts.slot(.indet, .{ .shown = mixed })}>
-                    <icon style={S.CheckboxParts.slot(.check, .{ .shown = true })} src={ui.icons.minus} />
+                    <icon style={S.CheckboxParts.slot(.check, .{ .shown = true, .disabled = disabled })} src={ui.assets.common.checkbox_mixed} />
                 </box>
             </box>
             {if (label.len != 0) <text style={S.CheckboxParts.slot(.label, .{ .disabled = disabled })}>{label}</text>}

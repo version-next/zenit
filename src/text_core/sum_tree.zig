@@ -41,6 +41,10 @@ pub fn SumTree(comptime Item: type, comptime Summary: type) type {
         const InternalData = struct {
             children: [BRANCHING_FACTOR]*Node = undefined,
             summaries: [BRANCHING_FACTOR]Summary = undefined,
+            /// Item count of each child subtree, kept beside `summaries` so
+            /// index descent reads one cached value per level instead of
+            /// recounting whole subtrees (which made every indexed operation O(N)).
+            counts: [BRANCHING_FACTOR]usize = undefined,
             len: usize = 0,
 
             fn totalSummary(self: *const InternalData) Summary {
@@ -74,17 +78,51 @@ pub fn SumTree(comptime Item: type, comptime Summary: type) type {
             };
         }
 
+        /// O(BRANCHING_FACTOR): sums the cached per-child counts.
         fn subtreeCount(node: *const Node) usize {
             return switch (node.data) {
                 .internal => |*n| blk: {
                     var total: usize = 0;
-                    for (0..n.len) |i| {
-                        total += subtreeCount(n.children[i]);
-                    }
+                    for (n.counts[0..n.len]) |c| total += c;
                     break :blk total;
                 },
                 .leaf => |*n| n.len,
             };
+        }
+
+        /// Refresh the cached summary and count of `parent.children[i]`.
+        fn refreshChild(parent: *InternalData, i: usize) void {
+            parent.summaries[i] = nodeSummary(parent.children[i]);
+            parent.counts[i] = subtreeCount(parent.children[i]);
+        }
+
+        /// Test oracle: recount every subtree and compare it with the caches.
+        fn validateNode(node: *const Node) !usize {
+            switch (node.data) {
+                .leaf => |*leaf| return leaf.len,
+                .internal => |*internal| {
+                    var total: usize = 0;
+                    for (0..internal.len) |i| {
+                        const actual = try validateNode(internal.children[i]);
+                        if (actual != internal.counts[i]) return error.StaleSubtreeCount;
+                        if (!std.meta.eql(nodeSummary(internal.children[i]), internal.summaries[i])) return error.StaleSubtreeSummary;
+                        total += actual;
+                    }
+                    return total;
+                },
+            }
+        }
+
+        fn validate(self: *const Self) !void {
+            const actual = if (self.root) |root| try validateNode(root) else 0;
+            if (actual != self.item_count) return error.StaleItemCount;
+        }
+
+        /// Copy child slot `from` to slot `to` within or across internal nodes.
+        fn moveSlot(dst: *InternalData, to: usize, src: *const InternalData, from: usize) void {
+            dst.children[to] = src.children[from];
+            dst.summaries[to] = src.summaries[from];
+            dst.counts[to] = src.counts[from];
         }
 
         fn retain(node: *Node) void {
@@ -251,9 +289,9 @@ pub fn SumTree(comptime Item: type, comptime Summary: type) type {
                 // root node split
                 const new_root = try self.createInternal(self.root.?.height + 1);
                 new_root.data.internal.children[0] = self.root.?;
-                new_root.data.internal.summaries[0] = nodeSummary(self.root.?);
                 new_root.data.internal.children[1] = split_node;
-                new_root.data.internal.summaries[1] = nodeSummary(split_node);
+                refreshChild(&new_root.data.internal, 0);
+                refreshChild(&new_root.data.internal, 1);
                 new_root.data.internal.len = 2;
                 self.root = new_root;
             }
@@ -389,7 +427,7 @@ pub fn SumTree(comptime Item: type, comptime Summary: type) type {
                             return;
                         }
                         acc += dim_val;
-                        child_base += subtreeCount(internal.children[i]);
+                        child_base += internal.counts[i];
                     }
                     result.index = child_base;
                     result.preceding += acc;
@@ -536,7 +574,7 @@ pub fn SumTree(comptime Item: type, comptime Summary: type) type {
                     var acc: usize = 0;
                     var child_idx: usize = 0;
                     while (child_idx < internal.len) : (child_idx += 1) {
-                        const child_count = subtreeCount(internal.children[child_idx]);
+                        const child_count = internal.counts[child_idx];
                         if (acc + child_count >= index or child_idx == internal.len - 1) {
                             break;
                         }
@@ -548,18 +586,17 @@ pub fn SumTree(comptime Item: type, comptime Summary: type) type {
                     const result = try self.insertInNode(internal.children[child_idx], index - acc, item);
 
                     // Update summary
-                    internal.summaries[child_idx] = nodeSummary(internal.children[child_idx]);
+                    refreshChild(internal, child_idx);
 
                     if (result.split) |split_child| {
                         if (internal.len < BRANCHING_FACTOR) {
                             // Space available, insert split child at child_idx+1
                             var i = internal.len;
                             while (i > child_idx + 1) : (i -= 1) {
-                                internal.children[i] = internal.children[i - 1];
-                                internal.summaries[i] = internal.summaries[i - 1];
+                                moveSlot(internal, i, internal, i - 1);
                             }
                             internal.children[child_idx + 1] = split_child;
-                            internal.summaries[child_idx + 1] = nodeSummary(split_child);
+                            refreshChild(internal, child_idx + 1);
                             internal.len += 1;
                             return .{};
                         } else {
@@ -607,20 +644,24 @@ pub fn SumTree(comptime Item: type, comptime Summary: type) type {
             // Collect all children (including new), total BRANCHING_FACTOR + 1
             var all_children: [BRANCHING_FACTOR + 1]*Node = undefined;
             var all_summaries: [BRANCHING_FACTOR + 1]Summary = undefined;
+            var all_counts: [BRANCHING_FACTOR + 1]usize = undefined;
             var pos: usize = 0;
             for (0..internal.len) |i| {
                 if (i == insert_idx) {
                     all_children[pos] = new_child;
                     all_summaries[pos] = nodeSummary(new_child);
+                    all_counts[pos] = subtreeCount(new_child);
                     pos += 1;
                 }
                 all_children[pos] = internal.children[i];
                 all_summaries[pos] = internal.summaries[i];
+                all_counts[pos] = internal.counts[i];
                 pos += 1;
             }
             if (insert_idx == internal.len) {
                 all_children[pos] = new_child;
                 all_summaries[pos] = nodeSummary(new_child);
+                all_counts[pos] = subtreeCount(new_child);
                 pos += 1;
             }
             std.debug.assert(pos == BRANCHING_FACTOR + 1);
@@ -630,10 +671,12 @@ pub fn SumTree(comptime Item: type, comptime Summary: type) type {
             internal.len = SPLIT_AT;
             @memcpy(internal.children[0..SPLIT_AT], all_children[0..SPLIT_AT]);
             @memcpy(internal.summaries[0..SPLIT_AT], all_summaries[0..SPLIT_AT]);
+            @memcpy(internal.counts[0..SPLIT_AT], all_counts[0..SPLIT_AT]);
 
             const right_count = pos - SPLIT_AT;
             @memcpy(new_internal.data.internal.children[0..right_count], all_children[SPLIT_AT..pos]);
             @memcpy(new_internal.data.internal.summaries[0..right_count], all_summaries[SPLIT_AT..pos]);
+            @memcpy(new_internal.data.internal.counts[0..right_count], all_counts[SPLIT_AT..pos]);
             new_internal.data.internal.len = right_count;
 
             return .{ .split = new_internal };
@@ -655,7 +698,7 @@ pub fn SumTree(comptime Item: type, comptime Summary: type) type {
                     var acc: usize = 0;
                     var child_idx: usize = 0;
                     while (child_idx < internal.len) : (child_idx += 1) {
-                        const child_count = subtreeCount(internal.children[child_idx]);
+                        const child_count = internal.counts[child_idx];
                         if (acc + child_count > index) {
                             break;
                         }
@@ -667,7 +710,7 @@ pub fn SumTree(comptime Item: type, comptime Summary: type) type {
                     try self.removeInNode(internal.children[child_idx], index - acc);
 
                     // Update summary
-                    internal.summaries[child_idx] = nodeSummary(internal.children[child_idx]);
+                    refreshChild(internal, child_idx);
 
                     // Check if merge needed (child too sparse)
                     const child_len = switch (internal.children[child_idx].data) {
@@ -738,19 +781,17 @@ pub fn SumTree(comptime Item: type, comptime Summary: type) type {
                 },
                 .internal => |*left_int| {
                     const right_int = &right.data.internal;
-                    left_int.children[left_int.len] = right_int.children[0];
-                    left_int.summaries[left_int.len] = right_int.summaries[0];
+                    moveSlot(left_int, left_int.len, right_int, 0);
                     left_int.len += 1;
                     var i: usize = 0;
                     while (i + 1 < right_int.len) : (i += 1) {
-                        right_int.children[i] = right_int.children[i + 1];
-                        right_int.summaries[i] = right_int.summaries[i + 1];
+                        moveSlot(right_int, i, right_int, i + 1);
                     }
                     right_int.len -= 1;
                 },
             }
-            parent.summaries[child_idx] = nodeSummary(left);
-            parent.summaries[child_idx + 1] = nodeSummary(right);
+            refreshChild(parent, child_idx);
+            refreshChild(parent, child_idx + 1);
         }
 
         fn borrowFromLeft(self: *Self, parent: *InternalData, child_idx: usize) !void {
@@ -774,17 +815,15 @@ pub fn SumTree(comptime Item: type, comptime Summary: type) type {
                     const left_int = &left.data.internal;
                     var i = right_int.len;
                     while (i > 0) : (i -= 1) {
-                        right_int.children[i] = right_int.children[i - 1];
-                        right_int.summaries[i] = right_int.summaries[i - 1];
+                        moveSlot(right_int, i, right_int, i - 1);
                     }
-                    right_int.children[0] = left_int.children[left_int.len - 1];
-                    right_int.summaries[0] = left_int.summaries[left_int.len - 1];
+                    moveSlot(right_int, 0, left_int, left_int.len - 1);
                     right_int.len += 1;
                     left_int.len -= 1;
                 },
             }
-            parent.summaries[child_idx - 1] = nodeSummary(left);
-            parent.summaries[child_idx] = nodeSummary(right_node);
+            refreshChild(parent, child_idx - 1);
+            refreshChild(parent, child_idx);
         }
 
         fn mergeChildren(self: *Self, parent: *InternalData, left_idx: usize) !void {
@@ -801,12 +840,13 @@ pub fn SumTree(comptime Item: type, comptime Summary: type) type {
                     const right_int = &right.data.internal;
                     @memcpy(left_int.children[left_int.len..][0..right_int.len], right_int.children[0..right_int.len]);
                     @memcpy(left_int.summaries[left_int.len..][0..right_int.len], right_int.summaries[0..right_int.len]);
+                    @memcpy(left_int.counts[left_int.len..][0..right_int.len], right_int.counts[0..right_int.len]);
                     left_int.len += right_int.len;
                 },
             }
 
             // Update summary
-            parent.summaries[left_idx] = nodeSummary(left);
+            refreshChild(parent, left_idx);
 
             // Release right node (children already merged to left, no recursive free)
             switch (right.data) {
@@ -822,8 +862,7 @@ pub fn SumTree(comptime Item: type, comptime Summary: type) type {
             // Remove right node from parent
             var i = left_idx + 1;
             while (i + 1 < parent.len) : (i += 1) {
-                parent.children[i] = parent.children[i + 1];
-                parent.summaries[i] = parent.summaries[i + 1];
+                moveSlot(parent, i, parent, i + 1);
             }
             parent.len -= 1;
         }
@@ -837,7 +876,7 @@ pub fn SumTree(comptime Item: type, comptime Summary: type) type {
                 .internal => |*internal| {
                     var acc: usize = 0;
                     for (0..internal.len) |i| {
-                        const child_count = subtreeCount(internal.children[i]);
+                        const child_count = internal.counts[i];
                         if (acc + child_count > index) {
                             return self.getInNode(internal.children[i], index - acc);
                         }
@@ -858,7 +897,7 @@ pub fn SumTree(comptime Item: type, comptime Summary: type) type {
                     var acc: usize = 0;
                     var child_idx: usize = 0;
                     while (child_idx < internal.len) : (child_idx += 1) {
-                        const child_count = subtreeCount(internal.children[child_idx]);
+                        const child_count = internal.counts[child_idx];
                         if (acc + child_count > index) {
                             break;
                         }
@@ -1312,6 +1351,55 @@ test "SumTree: fuzzy insert/remove vs ArrayList reference" {
     }
 }
 
+test "SumTree cached subtree counts survive splits, borrows, merges and snapshots" {
+    var tree = TextSumTree.init(std.testing.allocator);
+    defer tree.deinit();
+    var ref = @as(std.ArrayList(TextChunk), .empty);
+    defer ref.deinit(std.testing.allocator);
+    var snapshots: [4]?TextSumTree = .{ null, null, null, null };
+    defer for (&snapshots) |*snap| if (snap.*) |*t| t.deinit();
+    var seed: u64 = 0x5eed;
+    const next = struct {
+        fn f(s: *u64) u64 {
+            s.* = s.* *% 6364136223846793005 +% 1442695040888963407;
+            return s.* >> 17;
+        }
+    }.f;
+    // Grow to several levels, then drain so every rebalance path runs.
+    for (0..12_000) |step| {
+        const grow = step < 7_000;
+        const insert = ref.items.len == 0 or (if (grow) next(&seed) % 4 != 0 else next(&seed) % 4 == 0);
+        if (insert) {
+            const idx = next(&seed) % (ref.items.len + 1);
+            const chunk = TextChunk{ .start = step, .len = next(&seed) % 9 + 1, .newline_count = next(&seed) % 2 };
+            try tree.insert(idx, chunk);
+            try ref.insert(std.testing.allocator, idx, chunk);
+        } else {
+            const idx = next(&seed) % ref.items.len;
+            try tree.remove(idx);
+            _ = ref.orderedRemove(idx);
+        }
+        if (step % 1_500 == 0) {
+            const slot = (step / 1_500) % snapshots.len;
+            if (snapshots[slot]) |*old| old.deinit();
+            snapshots[slot] = tree.snapshot();
+        }
+        if (step % 97 == 0) {
+            try tree.validate();
+            try std.testing.expectEqual(ref.items.len, tree.count());
+            for (ref.items, 0..) |expected, j| try std.testing.expectEqual(expected.start, tree.get(j).?.start);
+            // Index reported by a dimension seek agrees with the reference prefix.
+            var bytes: usize = 0;
+            for (ref.items, 0..) |chunk, j| {
+                if (j % 13 == 0) try std.testing.expectEqual(j, tree.seek(ByteDim, bytes).index);
+                bytes += chunk.len;
+            }
+        }
+    }
+    try tree.validate();
+    for (&snapshots) |*snap| if (snap.*) |*t| try t.validate();
+}
+
 fn checkMutationFailureAtomicity(comptime operation: enum { insert, remove, replace }, item_count: usize) !void {
     var fail_at: usize = 0;
     while (fail_at < 100) : (fail_at += 1) {
@@ -1329,6 +1417,10 @@ fn checkMutationFailureAtomicity(comptime operation: enum { insert, remove, repl
             .remove => tree.remove(index),
             .replace => tree.replace(index, .{ .start = 999, .len = 42, .newline_count = 1 }),
         };
+        // Cached subtree counts must be coherent on both successful edits and
+        // rollback at every allocation failure, including snapshots.
+        try tree.validate();
+        try original.validate();
         // Readers holding an existing snapshot never see even a successful edit.
         try std.testing.expectEqualDeep(summary_before, original.summary());
         for (0..item_count) |i| try std.testing.expectEqual(i, original.get(i).?.start);
@@ -1375,6 +1467,7 @@ test "SumTree batch rolls back successful edits before a later failure" {
         failing.fail_index = failing.alloc_index;
         try std.testing.expectError(error.OutOfMemory, tree.insert(36, .{ .start = 36, .len = 1, .newline_count = 0 }));
     }
+    try tree.validate();
     try std.testing.expectEqual(@as(usize, 36), tree.count());
     try std.testing.expectEqual(@as(usize, 36), tree.summary().bytes);
     for (0..36) |i| try std.testing.expectEqual(i, tree.get(i).?.start);

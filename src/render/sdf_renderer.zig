@@ -4,7 +4,11 @@
 /// - Hollow rounded borders (single draw call)
 /// - Rounded rects / circles / lines
 const std = @import("std");
+const idle_storage = @import("idle_storage.zig");
+const SlotBuffer = @import("slot_buffer.zig").SlotBuffer;
 const gpu = @import("gpu");
+const shape_clip_pair = @import("shape_clip_pair.zig");
+const corner_radii = @import("zenit_corner_radii");
 
 const MAX_CLIP_POLYGON_POINTS = 32;
 const MAX_CLIP_POLYGON_CONTOURS = 8;
@@ -18,16 +22,30 @@ const Uniforms = extern struct {
     scale_factor: f32,
     clip_shape_kind: u32 = 0,
     clip_rect: [4]f32 = .{ 0, 0, 0, 0 },
-    clip_radius: f32 = 0,
+    clip_radii: [4]f32 = .{ 0, 0, 0, 0 },
     clip_fill_rule: u32 = 0,
     clip_point_count: u32 = 0,
     clip_contour_count: u32 = 0,
+    /// Keeps the polygon arrays on a 16-byte (cbuffer register) boundary after `clip_radii`.
+    _clip_pad: u32 = 0,
     clip_polygon_end_points: [MAX_CLIP_POLYGON_CONTOURS]u32 = @as([MAX_CLIP_POLYGON_CONTOURS]u32, @splat(0)),
     clip_polygon_points: [MAX_CLIP_POLYGON_POINTS][2]f32 = @as([MAX_CLIP_POLYGON_POINTS][2]f32, @splat(.{ 0, 0 })),
     /// Per-frame seed increment; supplies film_grain shader with per-frame noise variation.
     frame_seed: u32 = 0,
     raster_clip_pos: u32 = 0,
+    /// Second shape clip (shape_clip_pair.zig); zero-sized off Metal.
+    clip2: shape_clip_pair.Field = shape_clip_pair.none,
 };
+
+// Shared clip header ABI (Metal struct / HLSL cbuffer / GLSL std140): per-corner radii sit on their own
+// 16-byte register and the polygon arrays start at the next one.
+comptime {
+    std.debug.assert(@offsetOf(Uniforms, "clip_rect") == 16);
+    std.debug.assert(@offsetOf(Uniforms, "clip_radii") == 32);
+    std.debug.assert(@offsetOf(Uniforms, "clip_fill_rule") == 48);
+    std.debug.assert(@offsetOf(Uniforms, "clip_polygon_end_points") == 64);
+    std.debug.assert(@offsetOf(Uniforms, "clip_polygon_points") == 96);
+}
 
 /// SDF instance data, aligned with sdf_primitives.metal InstanceData (176 bytes).
 pub const SDFInstance = extern struct {
@@ -175,8 +193,8 @@ pub const ShadowParam = extern struct {
     }
 };
 
-/// Max instances (bumped from 2048 to 8192, fewer batches for complex UI)
-const MAX_INSTANCES = 8192;
+/// Starting per-slot instance capacity; slots grow with the frame's demand.
+const MIN_INSTANCE_BYTES = @sizeOf(SDFInstance) * 512;
 const MAX_UNIFORM_UPDATES = 256;
 // D3D12 CBV addresses require 256-byte alignment (append aligned slots so
 // normal shared draws can bind the retained frame buffer without snapshots);
@@ -189,10 +207,13 @@ const TRANSPARENT: [4]f32 = .{ 0, 0, 0, 0 };
 /// Triple-buffering constant, eliminate CPU/GPU buffer contention (ref Zed 120fps approach)
 const BUFFER_COUNT = 3;
 
-/// Max gradient stops per frame (8192 instances * avg 4 stops)
+/// Max gradient stops per frame (indices are u32 but the cap bounds a runaway
+/// frame); storage grows from a small start.
 const MAX_GRADIENT_STOPS = 32768;
-/// Max second shadows per frame
+/// Max second shadows per frame.
 const MAX_SHADOW2 = 8192;
+const MIN_STOP_BYTES = @sizeOf(GradientStop) * 256;
+const MIN_SHADOW2_BYTES = @sizeOf(ShadowParam) * 128;
 
 /// Metal SDF Renderer
 /// Module-level cumulative GPU draw count (FrameStats takes delta per frame)
@@ -235,16 +256,16 @@ pub const SdfRenderer = struct {
     /// output; returning an error is also wrong since opacity_layer / encoder.flush `try` it and
     /// >256 flushes in one frame would crash App.run.
     uniform_overflow_count: u64 = 0,
-    uniform_overflow_buffers: [BUFFER_COUNT]?gpu.Backend.Buffer = @as([BUFFER_COUNT]?gpu.Backend.Buffer, @splat(null)),
-    uniform_overflow_capacities: [BUFFER_COUNT]usize = @as([BUFFER_COUNT]usize, @splat(0)),
+    uniform_overflow: SlotBuffer(BUFFER_COUNT) = .init("Zenit.SDF.OverflowUniforms", UNIFORM_STRIDE * 64),
     /// Overflow uniform slots used this frame.
     uniform_overflow_used: usize = 0,
-    /// Triple-buffered instance buffers; rotate per frame, no CPU/GPU contention.
-    instance_buffers: [BUFFER_COUNT]gpu.Backend.Buffer,
-    /// Triple-buffered GradientStop buffers (slot 2).
-    stop_buffers: [BUFFER_COUNT]gpu.Backend.Buffer,
-    /// Triple-buffered ShadowParam buffers (slot 3).
-    shadow2_buffers: [BUFFER_COUNT]gpu.Backend.Buffer,
+    /// Triple-buffered instance storage sized by demand; rotate per frame, no
+    /// CPU/GPU contention.
+    instance_buffers: SlotBuffer(BUFFER_COUNT) = .init("Zenit.SDF.InstanceBuffer", MIN_INSTANCE_BYTES),
+    /// Triple-buffered GradientStop storage (slot 2).
+    stop_buffers: SlotBuffer(BUFFER_COUNT) = .init("Zenit.SDF.StopBuffer", MIN_STOP_BYTES),
+    /// Triple-buffered ShadowParam storage (slot 3).
+    shadow2_buffers: SlotBuffer(BUFFER_COUNT) = .init("Zenit.SDF.Shadow2Buffer", MIN_SHADOW2_BYTES),
     current_buffer: usize = 0,
     /// Count of entries uploaded to current stop/shadow2 buffer this frame. Stops grow
     /// only within frame with stable byte positions; flush appends tail only (old impl
@@ -253,6 +274,8 @@ pub const SdfRenderer = struct {
     shadow2_uploaded: usize = 0,
 
     instances: std.ArrayList(SDFInstance),
+    /// Scratch of scheduleMetalRuns (kept across flushes).
+    run_scratch: RunScratch = .{},
     /// GradientStop array accumulated this frame.
     grad_stops: std.ArrayList(GradientStop),
     /// ShadowParam array accumulated this frame.
@@ -261,8 +284,9 @@ pub const SdfRenderer = struct {
     viewport_height: f32,
     scale_factor: f32,
     clip_rect: [4]f32 = .{ 0, 0, 0, 0 },
-    clip_radius: f32 = 0,
+    clip_radii: [4]f32 = .{ 0, 0, 0, 0 },
     clip_shape_kind: u32 = 0,
+    clip2: shape_clip_pair.Uniform = .{},
     clip_fill_rule: u32 = 0,
     clip_point_count: u32 = 0,
     clip_contour_count: u32 = 0,
@@ -282,18 +306,6 @@ pub const SdfRenderer = struct {
     frame_seed: u32 = 0,
     /// Flush offset: append across multiple flushes in same frame.
     buffer_write_offset: usize = 0,
-
-    /// Overflow instance buffer (one per frame slot, grows on demand and is **retained**).
-    ///
-    /// Recreating a buffer for **each batch** beyond MAX_INSTANCES is a CPU hotspot and causes
-    /// unbounded RSS growth (a canvas with 20k objects does >1000 iterations per frame, each a
-    /// driver alloc + page_allocator mmap; Metal does not immediately return GPU-referenced
-    /// allocations). Hold one growing buffer per slot: reuse when capacity suffices, rebuild
-    /// once otherwise. Slots rotate with current_buffer, so GPU in-flight data stays intact.
-    overflow_buffers: [BUFFER_COUNT]?gpu.Backend.Buffer = @as([BUFFER_COUNT]?gpu.Backend.Buffer, @splat(null)),
-    overflow_capacities: [BUFFER_COUNT]usize = @as([BUFFER_COUNT]usize, @splat(0)),
-    /// Write cursor within frame slot's overflow buffer (bytes), no same-frame overwrites.
-    overflow_write_offset: usize = 0,
 
     /// Initialize
     pub fn init(allocator: std.mem.Allocator, device: *gpu.Backend.Device) !SdfRenderer {
@@ -350,7 +362,7 @@ pub const SdfRenderer = struct {
         // Diagnostic switch: ZENIT_SDF_GENERAL_ONLY disables Metal specializations, all
         // use general pipeline (A/B test).
         if (comptime gpu.backend_kind == .metal) metal: {
-            if (@import("zenit_environment").has("ZENIT_SDF_GENERAL_ONLY")) break :metal;
+            if (@import("zenit_environment").flag("ZENIT_SDF_GENERAL_ONLY")) break :metal;
             const names = [_][]const u8{ "sdf_fill_fragment_main", "sdf_bordered_fragment_main", "sdf_shadow_only_fragment_main" };
             for (names, &specialized_shape_pipelines) |name, *slot| {
                 // Specialization is acceleration only: missing entry or pipeline failure -> drop
@@ -407,7 +419,7 @@ pub const SdfRenderer = struct {
         // core UI initialization; the general SDF pipeline implements all cases.
         var optimized_ready = false;
         optimized: {
-            if (gpu.is_direct3d and @import("zenit_environment").has("ZENIT_D3D12_SDF_GENERAL_ONLY")) break :optimized;
+            if (gpu.is_direct3d and @import("zenit_environment").flag("ZENIT_D3D12_SDF_GENERAL_ONLY")) break :optimized;
             if (gpu.is_direct3d) {
                 if (device.supportsVertexViewportIndex()) {
                     var region_vertex = shader.getFunction("sdf_region_vertex_main") catch break :optimized;
@@ -515,51 +527,6 @@ pub const SdfRenderer = struct {
             uniform_created += 1;
         }
 
-        // Create triple-buffered instance buffers.
-        var instance_buffers: [BUFFER_COUNT]gpu.Backend.Buffer = undefined;
-        var instance_created: usize = 0;
-        errdefer for (instance_buffers[0..instance_created]) |*b| b.destroy();
-        for (&instance_buffers, 0..) |*buf, i| {
-            const label = try std.fmt.allocPrint(allocator, "Zenit.SDF.InstanceBuffer[{d}]", .{i});
-            defer allocator.free(label);
-            buf.* = try device.createBuffer(allocator, .{
-                .label = label,
-                .size = @sizeOf(SDFInstance) * MAX_INSTANCES,
-                .usage = .{ .vertex = true, .map_write = true },
-            });
-            instance_created += 1;
-        }
-
-        // Create triple-buffered GradientStop buffers (slot 2).
-        var stop_buffers: [BUFFER_COUNT]gpu.Backend.Buffer = undefined;
-        var stop_created: usize = 0;
-        errdefer for (stop_buffers[0..stop_created]) |*b| b.destroy();
-        for (&stop_buffers, 0..) |*buf, i| {
-            const label = try std.fmt.allocPrint(allocator, "Zenit.SDF.StopBuffer[{d}]", .{i});
-            defer allocator.free(label);
-            buf.* = try device.createBuffer(allocator, .{
-                .label = label,
-                .size = @sizeOf(GradientStop) * MAX_GRADIENT_STOPS,
-                .usage = .{ .vertex = true, .map_write = true },
-            });
-            stop_created += 1;
-        }
-
-        // Create triple-buffered ShadowParam buffers (slot 3).
-        var shadow2_buffers: [BUFFER_COUNT]gpu.Backend.Buffer = undefined;
-        var shadow2_created: usize = 0;
-        errdefer for (shadow2_buffers[0..shadow2_created]) |*b| b.destroy();
-        for (&shadow2_buffers, 0..) |*buf, i| {
-            const label = try std.fmt.allocPrint(allocator, "Zenit.SDF.Shadow2Buffer[{d}]", .{i});
-            defer allocator.free(label);
-            buf.* = try device.createBuffer(allocator, .{
-                .label = label,
-                .size = @sizeOf(ShadowParam) * MAX_SHADOW2,
-                .usage = .{ .vertex = true, .map_write = true },
-            });
-            shadow2_created += 1;
-        }
-
         std.log.info("[SdfRenderer] Initialized (triple-buffered SDF pipeline)", .{});
 
         return SdfRenderer{
@@ -578,11 +545,8 @@ pub const SdfRenderer = struct {
             .shadow_ring_pipeline = shadow_ring_pipeline,
             .layer_pipelines = layer_pipelines,
             .dual_shadow_pipeline = dual_shadow_pipeline,
-            .trace_materials = gpu.is_direct3d and @import("zenit_environment").has("ZENIT_WINDOWS_SDF_MATERIAL_TRACE"),
+            .trace_materials = gpu.is_direct3d and @import("zenit_environment").flag("ZENIT_WINDOWS_SDF_MATERIAL_TRACE"),
             .uniform_buffers = uniform_buffers,
-            .instance_buffers = instance_buffers,
-            .stop_buffers = stop_buffers,
-            .shadow2_buffers = shadow2_buffers,
             .instances = .empty,
             .grad_stops = .empty,
             .shadow2_params = .empty,
@@ -596,6 +560,102 @@ pub const SdfRenderer = struct {
 
     /// Pick Metal specialization. Select only if deleted branches have false runtime
     /// conditions already; output per-pixel identical to general pipeline (sdf_fragment_impl).
+    /// Scratch storage of scheduleMetalRuns.
+    pub const RunScratch = struct {
+        reordered: std.ArrayList(SDFInstance) = .empty,
+        run_of: std.ArrayList(u16) = .empty,
+        quads: std.ArrayList([4]f32) = .empty,
+
+        fn deinit(self: *RunScratch, allocator: std.mem.Allocator) void {
+            self.reordered.deinit(allocator);
+            self.run_of.deinit(allocator);
+            self.quads.deinit(allocator);
+        }
+    };
+
+    /// The pixels an instance's vertex quad can cover (logical x0, y0, x1, y1), as
+    /// sdf_vertex_impl expands it: shadow blur and offset, positive spread, a second shadow.
+    /// Padded by one logical pixel; the clip clamp only shrinks it.
+    pub fn instanceQuad(item: *const SDFInstance, shadow2: []const ShadowParam) [4]f32 {
+        var expand: f32 = if (item.shape_type == 3) 0 else item.shadow_blur * 2 + @abs(item.shadow_offset_x) + @abs(item.shadow_offset_y);
+        if (item.packed_flags & shadow_spread_flag != 0) expand += @max(item.noise_scale, 0);
+        if (item.packed_flags & (1 << 25) != 0) {
+            if (item.shadow2_index < shadow2.len) {
+                const s2 = shadow2[item.shadow2_index];
+                expand = @max(expand, s2.blur * 2 + @abs(s2.offset_x) + @abs(s2.offset_y));
+            } else expand = std.math.inf(f32);
+        }
+        const r = item.rect;
+        return .{ r[0] - expand - 1, r[1] - expand - 1, r[0] + r[2] + expand + 1, r[1] + r[3] + expand + 1 };
+    }
+
+    /// Group the batch by Metal pipeline kind, moving an instance earlier only past instances
+    /// whose quads it does not touch (so every pixel blends in the same order): each instance
+    /// joins the first run of its kind after the last run it overlaps, or opens a new run.
+    /// A label grid (shadow, fill, border per control) otherwise splits into one draw per
+    /// instance. Leaves the batch as is when it cannot allocate or has too many runs.
+    pub fn scheduleMetalRuns(items: []SDFInstance, shadow2: []const ShadowParam, scratch: *RunScratch, allocator: std.mem.Allocator) void {
+        if (items.len < 3) return;
+        const max_runs = 64;
+        scratch.run_of.resize(allocator, items.len) catch return;
+        scratch.quads.resize(allocator, items.len) catch return;
+        scratch.reordered.resize(allocator, items.len) catch return;
+        var run_kind: [max_runs]MetalKind = undefined;
+        var run_bounds: [max_runs][4]f32 = undefined;
+        var run_len: [max_runs]usize = @splat(0);
+        var runs: usize = 0;
+        var changed = false;
+        for (items, 0..) |*item, i| {
+            const q = instanceQuad(item, shadow2);
+            scratch.quads.items[i] = q;
+            const kind = metalKind(item.*);
+            // Last run this instance must stay above.
+            var floor: usize = 0;
+            var r = runs;
+            outer: while (r > 0) {
+                r -= 1;
+                const b = run_bounds[r];
+                if (!(q[0] < b[2] and b[0] < q[2] and q[1] < b[3] and b[1] < q[3])) continue;
+                for (scratch.quads.items[0..i], scratch.run_of.items[0..i]) |m, mr| {
+                    if (mr == r and q[0] < m[2] and m[0] < q[2] and q[1] < m[3] and m[1] < q[3]) {
+                        floor = r;
+                        break :outer;
+                    }
+                }
+            }
+            var target: ?usize = null;
+            for (floor..runs) |k| if (run_kind[k] == kind) {
+                target = k;
+                break;
+            };
+            const t = target orelse blk: {
+                if (runs == max_runs) return;
+                run_kind[runs] = kind;
+                run_bounds[runs] = q;
+                runs += 1;
+                break :blk runs - 1;
+            };
+            // Joining an earlier run is the only way the order changes.
+            if (t != runs - 1) changed = true;
+            const b = run_bounds[t];
+            run_bounds[t] = .{ @min(b[0], q[0]), @min(b[1], q[1]), @max(b[2], q[2]), @max(b[3], q[3]) };
+            run_len[t] += 1;
+            scratch.run_of.items[i] = @intCast(t);
+        }
+        if (!changed) return;
+        var start: [max_runs]usize = undefined;
+        var acc: usize = 0;
+        for (0..runs) |k| {
+            start[k] = acc;
+            acc += run_len[k];
+        }
+        for (items, scratch.run_of.items) |item, rk| {
+            scratch.reordered.items[start[rk]] = item;
+            start[rk] += 1;
+        }
+        @memcpy(items, scratch.reordered.items);
+    }
+
     pub fn metalKind(item: SDFInstance) MetalKind {
         if (item.shape_type != 0) return .general;
         const per_side = item.border_widths[0] != 0 or item.border_widths[1] != 0 or
@@ -710,6 +770,8 @@ pub const SdfRenderer = struct {
             }
         }
         if (!solidEligible(item)) return .general;
+        // Specialized pipelines evaluate one shape clip at most.
+        if (self.clip2.kind != 0) return .general;
         if (item.shape_type != 0) return .solid;
         if (self.clip_shape_kind != 0 or item.border_width != 0) return .solid_rect;
         for (item.corner_radii) |radius| if (radius != 0) return .solid_rect;
@@ -718,20 +780,34 @@ pub const SdfRenderer = struct {
     }
 
     /// Destroy
+    /// Per-slot scratch storage is rewritten every frame; see idle_storage.
+    pub fn setScratchVolatile(self: *SdfRenderer, make_volatile: bool) void {
+        idle_storage.setBuffersVolatile(&self.uniform_buffers, make_volatile);
+        self.uniform_overflow.setVolatile(make_volatile);
+        self.instance_buffers.setVolatile(make_volatile);
+        self.stop_buffers.setVolatile(make_volatile);
+        self.shadow2_buffers.setVolatile(make_volatile);
+    }
+
+    /// Drop demand-sized scratch so the next frame regrows it to what it
+    /// draws. Only while no submitted frame is executing.
+    pub fn releaseScratch(self: *SdfRenderer) void {
+        self.uniform_overflow.release();
+        self.instance_buffers.release();
+        self.stop_buffers.release();
+        self.shadow2_buffers.release();
+    }
+
     pub fn deinit(self: *SdfRenderer) void {
         self.instances.deinit(self.allocator);
+        self.run_scratch.deinit(self.allocator);
         self.grad_stops.deinit(self.allocator);
         self.shadow2_params.deinit(self.allocator);
-        for (&self.instance_buffers) |*buf| buf.destroy();
-        for (&self.stop_buffers) |*buf| buf.destroy();
-        for (&self.shadow2_buffers) |*buf| buf.destroy();
+        self.instance_buffers.deinit(self.allocator);
+        self.stop_buffers.deinit(self.allocator);
+        self.shadow2_buffers.deinit(self.allocator);
         for (&self.uniform_buffers) |*buf| buf.destroy();
-        for (&self.overflow_buffers) |*maybe_buf| {
-            if (maybe_buf.*) |*buf| buf.destroy();
-        }
-        for (&self.uniform_overflow_buffers) |*maybe_buf| {
-            if (maybe_buf.*) |*buf| buf.destroy();
-        }
+        self.uniform_overflow.deinit(self.allocator);
         self.pipeline.deinit();
         if (self.solid_pipeline) |*value| value.deinit();
         for (&self.specialized_shape_pipelines) |*slot| if (slot.*) |*value| value.deinit();
@@ -749,32 +825,21 @@ pub const SdfRenderer = struct {
     }
 
     /// Ensure frame slot's overflow uniform buffer holds at least `slots` Uniforms.
-    /// Geometric growth, retained across frames; rebuild only when insufficient (old data
-    /// held by in-flight command buffer, earlier batches unaffected).
     fn ensureUniformOverflowCapacity(self: *SdfRenderer, slots: usize) !*gpu.Backend.Buffer {
-        const needed = slots * UNIFORM_STRIDE;
-        if (self.uniform_overflow_capacities[self.current_buffer] < needed) {
-            var new_capacity = @max(
-                self.uniform_overflow_capacities[self.current_buffer],
-                UNIFORM_STRIDE * 64,
-            );
-            while (new_capacity < needed) new_capacity *= 2;
-            // Preserve the owned buffer if replacement allocation fails.
-            const replacement = try self.device.createBuffer(self.allocator, .{
-                .label = "Zenit.SDF.OverflowUniforms",
-                .size = new_capacity,
-                .usage = .{ .vertex = true, .map_write = true },
-            });
-            if (self.uniform_overflow_buffers[self.current_buffer]) |*old| old.destroy();
-            self.uniform_overflow_buffers[self.current_buffer] = replacement;
-            self.uniform_overflow_capacities[self.current_buffer] = new_capacity;
-        }
-        return &self.uniform_overflow_buffers[self.current_buffer].?;
+        return (try self.uniform_overflow.ensure(self.allocator, self.device, self.current_buffer, slots * UNIFORM_STRIDE)).buffer;
     }
 
     /// Begin new frame
     /// width/height: logical pixels; scale: DPI scale factor (Retina=2.0)
+    /// Start a GPU frame.
     pub fn beginFrame(self: *SdfRenderer, width: f32, height: f32, scale: f32, frame_seed: u32) void {
+        self.beginFrameFor(width, height, scale, frame_seed, true);
+    }
+
+    /// `gpu_frame` false: a CPU patch encode (cpu_flat), which reads only the
+    /// CPU-side batches: the triple-buffered GPU slots keep rotating with GPU
+    /// frames alone, so a slot an in-flight frame reads is never reused.
+    pub fn beginFrameFor(self: *SdfRenderer, width: f32, height: f32, scale: f32, frame_seed: u32, gpu_frame: bool) void {
         self.instances.clearRetainingCapacity();
         self.grad_stops.clearRetainingCapacity();
         self.shadow2_params.clearRetainingCapacity();
@@ -782,18 +847,23 @@ pub const SdfRenderer = struct {
         self.shadow2_uploaded = 0;
         self.buffer_write_offset = 0;
         // Rotate to next buffer (triple buffering, no CPU/GPU contention).
-        self.current_buffer = (self.current_buffer + 1) % BUFFER_COUNT;
+        if (gpu_frame) {
+            self.current_buffer = (self.current_buffer + 1) % BUFFER_COUNT;
+            self.uniform_overflow.beginSlot(self.current_buffer);
+            self.instance_buffers.beginSlot(self.current_buffer);
+            self.stop_buffers.beginSlot(self.current_buffer);
+            self.shadow2_buffers.beginSlot(self.current_buffer);
+        }
         self.uniform_write_offset = 0;
         self.uniform_overflow_used = 0;
-        // New slot's overflow buffer starts fresh (was unused BUFFER_COUNT frames ago).
-        self.overflow_write_offset = 0;
         // Pass viewport_size in physical pixels to shader.
         self.viewport_width = width * scale;
         self.viewport_height = height * scale;
         self.scale_factor = scale;
         self.clip_rect = .{ 0, 0, 0, 0 };
-        self.clip_radius = 0;
+        self.clip_radii = .{ 0, 0, 0, 0 };
         self.clip_shape_kind = 0;
+        self.clip2 = .{};
         self.clip_fill_rule = 0;
         self.clip_point_count = 0;
         self.clip_contour_count = 0;
@@ -812,10 +882,15 @@ pub const SdfRenderer = struct {
         self.scale_factor = scale;
     }
 
-    pub fn setClipMask(self: *SdfRenderer, shape_kind: u32, rect: ?[4]f32, radius: f32, fill_rule: u32, point_count: u32, contour_count: u32, contour_end_points: [MAX_CLIP_POLYGON_CONTOURS]u8, polygon_points: [MAX_CLIP_POLYGON_POINTS][2]f32) void {
+    /// Second shape clip intersected with the primary one (shape_clip_pair.zig).
+    pub fn setPartnerClip(self: *SdfRenderer, clip: shape_clip_pair.Uniform) void {
+        self.clip2 = clip;
+    }
+
+    pub fn setClipMask(self: *SdfRenderer, shape_kind: u32, rect: ?[4]f32, radii: [4]f32, fill_rule: u32, point_count: u32, contour_count: u32, contour_end_points: [MAX_CLIP_POLYGON_CONTOURS]u8, polygon_points: [MAX_CLIP_POLYGON_POINTS][2]f32) void {
         if (rect) |mask_rect| {
             self.clip_rect = mask_rect;
-            self.clip_radius = radius;
+            self.clip_radii = radii;
             self.clip_shape_kind = shape_kind;
             self.clip_fill_rule = fill_rule;
             self.clip_point_count = point_count;
@@ -824,8 +899,9 @@ pub const SdfRenderer = struct {
             self.clip_polygon_points = polygon_points;
         } else {
             self.clip_rect = .{ 0, 0, 0, 0 };
-            self.clip_radius = 0;
+            self.clip_radii = .{ 0, 0, 0, 0 };
             self.clip_shape_kind = 0;
+            self.clip2 = .{};
             self.clip_fill_rule = 0;
             self.clip_point_count = 0;
             self.clip_contour_count = 0;
@@ -838,10 +914,10 @@ pub const SdfRenderer = struct {
         self.current_rect_clip = rect orelse .{ 0, 0, -1, -1 };
     }
 
-    /// Clamp corner radii to min(w,h)/2, prevent huge radii causing full SDF discard.
+    /// Clamp corner radii to min(w,h)/2, prevent huge radii causing full SDF discard. Same
+    /// normalisation as every clip / composite mask (corner_radii.zig), so outlines match.
     inline fn clampRadii(radii: [4]f32, w: f32, h: f32) [4]f32 {
-        const max_r = @min(w, h) / 2;
-        return .{ @min(radii[0], max_r), @min(radii[1], max_r), @min(radii[2], max_r), @min(radii[3], max_r) };
+        return corner_radii.normalize(radii, w, h);
     }
 
     /// Add rounded rect (simplified API).
@@ -1385,8 +1461,9 @@ pub const SdfRenderer = struct {
             .viewport_size = .{ self.viewport_width, self.viewport_height },
             .scale_factor = self.scale_factor,
             .clip_shape_kind = self.clip_shape_kind,
+            .clip2 = shape_clip_pair.field(self.clip2),
             .clip_rect = self.clip_rect,
-            .clip_radius = self.clip_radius,
+            .clip_radii = self.clip_radii,
             .clip_fill_rule = self.clip_fill_rule,
             .clip_point_count = self.clip_point_count,
             .clip_contour_count = self.clip_contour_count,
@@ -1410,8 +1487,11 @@ pub const SdfRenderer = struct {
 
         // Upload GradientStop data to slot 2 (append: tail only).
         {
-            const stop_buf = &self.stop_buffers[self.current_buffer];
             const stop_count = self.grad_stops.items.len;
+            const stops = try self.stop_buffers.ensure(self.allocator, self.device, self.current_buffer, @sizeOf(GradientStop) * @max(@as(usize, 1), stop_count));
+            // Earlier draws keep the retired buffer; this one starts empty.
+            if (stops.replaced) self.grad_stops_uploaded = 0;
+            const stop_buf = stops.buffer;
             if (stop_count > self.grad_stops_uploaded) {
                 const byte_off = @sizeOf(GradientStop) * self.grad_stops_uploaded;
                 const new_bytes = @sizeOf(GradientStop) * (stop_count - self.grad_stops_uploaded);
@@ -1426,8 +1506,10 @@ pub const SdfRenderer = struct {
 
         // Upload ShadowParam data to slot 3 (append: tail only).
         {
-            const s2_buf = &self.shadow2_buffers[self.current_buffer];
             const s2_count = self.shadow2_params.items.len;
+            const shadows = try self.shadow2_buffers.ensure(self.allocator, self.device, self.current_buffer, @sizeOf(ShadowParam) * @max(@as(usize, 1), s2_count));
+            if (shadows.replaced) self.shadow2_uploaded = 0;
+            const s2_buf = shadows.buffer;
             if (s2_count > self.shadow2_uploaded) {
                 const byte_off = @sizeOf(ShadowParam) * self.shadow2_uploaded;
                 const new_bytes = @sizeOf(ShadowParam) * (s2_count - self.shadow2_uploaded);
@@ -1442,15 +1524,14 @@ pub const SdfRenderer = struct {
             gpu.setVertexBufferRange(render_pass, 3, s2_buf, 0, s2_bytes);
         }
 
-        // Batch render: each batch within remaining buffer capacity.
+        // Batch render: batches split only where the pipeline changes. The
+        // slot's storage grows to hold the whole frame (never wraps: deferred
+        // execution would read overwritten ranges).
+        if (self.specialized_shape_pipelines[0] != null)
+            scheduleMetalRuns(self.instances.items, self.shadow2_params.items, &self.run_scratch, self.allocator);
         var offset: usize = 0;
         while (offset < self.instances.items.len) {
-            const remaining_total = self.instances.items.len - offset;
-            const remaining_capacity = MAX_INSTANCES - self.buffer_write_offset;
-            var batch_count = if (remaining_capacity == 0)
-                remaining_total
-            else
-                @min(remaining_total, remaining_capacity);
+            var batch_count = self.instances.items.len - offset;
             var vertex_count: u32 = 6;
             var edge_hole: ?[4]u32 = null;
             const original_item = self.instances.items[offset];
@@ -1543,41 +1624,17 @@ pub const SdfRenderer = struct {
             }
             const instance_size = @sizeOf(SDFInstance) * batch_count;
 
-            if (remaining_capacity == 0) {
-                // Reuse frame slot's overflow buffer; rebuild only if insufficient (geometric
-                // growth, avoid jitter).
-                const needed = self.overflow_write_offset + instance_size;
-                if (self.overflow_capacities[self.current_buffer] < needed) {
-                    var new_capacity = @max(self.overflow_capacities[self.current_buffer], instance_size);
-                    while (new_capacity < needed) new_capacity *= 2;
-                    // Preserve the owned buffer if replacement allocation fails.
-                    const replacement = try self.device.createBuffer(self.allocator, .{
-                        .label = "Zenit.SDF.OverflowInstanceBuffer",
-                        .size = new_capacity,
-                        .usage = .{ .vertex = true, .map_write = true },
-                    });
-                    if (self.overflow_buffers[self.current_buffer]) |*old| old.destroy();
-                    self.overflow_buffers[self.current_buffer] = replacement;
-                    self.overflow_capacities[self.current_buffer] = new_capacity;
-                }
-                const overflow_buffer = &self.overflow_buffers[self.current_buffer].?;
-                const overflow_data = try overflow_buffer.getMappedRange(self.overflow_write_offset, instance_size);
-                @memcpy(overflow_data, std.mem.sliceAsBytes(self.instances.items[offset .. offset + batch_count]));
-                gpu.setVertexBufferRange(render_pass, 1, overflow_buffer, @intCast(self.overflow_write_offset), @intCast(instance_size));
-                gpu.setFragmentBufferRange(render_pass, 1, overflow_buffer, @intCast(self.overflow_write_offset), @intCast(instance_size));
-                self.overflow_write_offset += instance_size;
-            } else {
-                const byte_offset = self.buffer_write_offset * @sizeOf(SDFInstance);
-                const instance_data = try self.instance_buffers[self.current_buffer].getMappedRange(byte_offset, instance_size);
-                @memcpy(instance_data, std.mem.sliceAsBytes(self.instances.items[offset .. offset + batch_count]));
-                gpu.setVertexBufferRange(render_pass, 1, &self.instance_buffers[self.current_buffer], @intCast(byte_offset), @intCast(instance_size));
-                gpu.setFragmentBufferRange(render_pass, 1, &self.instance_buffers[self.current_buffer], @intCast(byte_offset), @intCast(instance_size));
-                self.buffer_write_offset += batch_count;
-            }
+            const byte_offset = self.buffer_write_offset * @sizeOf(SDFInstance);
+            const slot = try self.instance_buffers.ensure(self.allocator, self.device, self.current_buffer, byte_offset + instance_size);
+            const instance_data = try slot.buffer.getMappedRange(byte_offset, instance_size);
+            @memcpy(instance_data, std.mem.sliceAsBytes(self.instances.items[offset .. offset + batch_count]));
+            gpu.setVertexBufferRange(render_pass, 1, slot.buffer, @intCast(byte_offset), @intCast(instance_size));
+            gpu.setFragmentBufferRange(render_pass, 1, slot.buffer, @intCast(byte_offset), @intCast(instance_size));
+            self.buffer_write_offset += batch_count;
 
             if (self.trace_materials) {
                 const item = self.instances.items[offset];
-                std.log.info("[sdf-material] kind={s} vertices={d} target={any} count={d} shape={d} flags={x} rect={any} fill={d} shadow={d} blur={d} offset={any} mask={d} mask_rect={any} mask_radius={d} clip={any}", .{ @tagName(self.pipelineKind(item)), vertex_count, [2]f32{ self.viewport_width, self.viewport_height }, batch_count, item.shape_type, item.packed_flags, item.rect, item.fill_color[3], item.shadow_color[3], item.shadow_blur, [2]f32{ item.shadow_offset_x, item.shadow_offset_y }, self.clip_shape_kind, self.clip_rect, self.clip_radius, item.rect_clip });
+                std.log.info("[sdf-material] kind={s} vertices={d} target={any} count={d} shape={d} flags={x} rect={any} fill={d} shadow={d} blur={d} offset={any} mask={d} mask_rect={any} mask_radii={any} clip={any}", .{ @tagName(self.pipelineKind(item)), vertex_count, [2]f32{ self.viewport_width, self.viewport_height }, batch_count, item.shape_type, item.packed_flags, item.rect, item.fill_color[3], item.shadow_color[3], item.shadow_blur, [2]f32{ item.shadow_offset_x, item.shadow_offset_y }, self.clip_shape_kind, self.clip_rect, self.clip_radii, item.rect_clip });
             }
             if (comptime gpu.is_direct3d) {
                 if (edge_hole) |hole| {
@@ -1624,8 +1681,10 @@ pub const SdfRenderer = struct {
     }
 
     fn tileMaskEligible(self: *const SdfRenderer) bool {
+        if (self.clip2.kind != 0) return false;
         if (self.clip_shape_kind == 0) return true;
-        if (self.clip_shape_kind != 1 or !std.math.isFinite(self.clip_radius) or self.clip_radius < 0) return false;
+        if (self.clip_shape_kind != 1) return false;
+        for (self.clip_radii) |r| if (!std.math.isFinite(r) or r < 0) return false;
         for (self.clip_rect) |v| if (!std.math.isFinite(v)) return false;
         return self.clip_rect[2] > 0 and self.clip_rect[3] > 0;
     }
@@ -1662,7 +1721,9 @@ pub const SdfRenderer = struct {
                 hi = @min(hi, (item.rect_clip[axis] + item.rect_clip[axis + 2]) * self.scale_factor - 3);
             }
             if (self.clip_shape_kind == 1) {
-                const mask_inset = self.clip_radius * self.scale_factor + 3;
+                // Conservative: the largest corner bounds every corner's excluded square.
+                const mask_radius = @max(@max(self.clip_radii[0], self.clip_radii[1]), @max(self.clip_radii[2], self.clip_radii[3]));
+                const mask_inset = mask_radius * self.scale_factor + 3;
                 lo = @max(lo, self.clip_rect[axis] * self.scale_factor + mask_inset);
                 hi = @min(hi, (self.clip_rect[axis] + self.clip_rect[axis + 2]) * self.scale_factor - mask_inset);
             }
@@ -1785,7 +1846,7 @@ test "uniform 槽位用尽后继续画（溢出 buffer），不再返回 Uniform
             }
         }
         try std.testing.expectEqual(@as(usize, 40), r.uniform_overflow_used);
-        try std.testing.expect(r.uniform_overflow_buffers[r.current_buffer] != null);
+        try std.testing.expect(r.uniform_overflow.capacity(r.current_buffer) != 0);
         pass.end();
     }
     // deinit must release overflow uniform buffer (Null backend count balance).
@@ -1796,6 +1857,7 @@ test "uniform 槽位用尽后继续画（溢出 buffer），不再返回 Uniform
 }
 
 test "static SDF uniforms stay identical across clocks while film grain preserves its seed" {
+    // SKIP-REASON: drives the null backend's fake GPU objects; real backends cover this path in their own suites.
     if (gpu.backend_kind != .null_backend) return error.SkipZigTest;
     var device = gpu.Backend.Device{};
     var queue = gpu.Backend.Queue{};
@@ -1827,4 +1889,82 @@ test "static SDF uniforms stay identical across clocks while film grain preserve
             try std.testing.expectEqual(if (mode == .film_grain) seed else @as(u32, 0), observed.frame_seed);
         }
     }
+}
+
+fn runTestInstance(x: f32, y: f32, w: f32, h: f32, shadow_blur: f32, tag: f32) SDFInstance {
+    return .{
+        .rect = .{ x, y, w, h },
+        // Shadow-only instances are transparent; fills carry the tag in their color.
+        .fill_color = if (shadow_blur > 0) .{ 0, 0, 0, 0 } else .{ tag, 0, 0, 1 },
+        .border_color = .{ 0, 0, 0, 0 },
+        .shadow_color = if (shadow_blur > 0) .{ tag, 0, 0, 0.3 } else .{ 0, 0, 0, 0 },
+        .gradient_to_color = .{ 0, 0, 0, 0 },
+        .corner_radii = .{ 0, 0, 0, 0 },
+        .border_width = 0,
+        .shadow_blur = shadow_blur,
+        .shadow_offset_x = 0,
+        .shadow_offset_y = 0,
+        .shape_type = 0,
+    };
+}
+
+fn runTag(item: SDFInstance) f32 {
+    return if (item.shadow_blur > 0) item.shadow_color[0] else item.fill_color[0];
+}
+
+test "SDF runs: a grid of shadowed controls draws as one shadow run and one fill run" {
+    var scratch: SdfRenderer.RunScratch = .{};
+    defer scratch.deinit(std.testing.allocator);
+    var items: [8]SDFInstance = undefined;
+    for (0..4) |i| {
+        const x: f32 = @floatFromInt(i * 100);
+        items[i * 2] = runTestInstance(x, 0, 40, 20, 3, @floatFromInt(i * 2));
+        items[i * 2 + 1] = runTestInstance(x, 0, 40, 20, 0, @floatFromInt(i * 2 + 1));
+    }
+    SdfRenderer.scheduleMetalRuns(&items, &.{}, &scratch, std.testing.allocator);
+    const expected = [_]f32{ 0, 2, 4, 6, 1, 3, 5, 7 };
+    for (items, expected) |item, tag| try std.testing.expectEqual(tag, runTag(item));
+}
+
+test "SDF runs: every overlapping pair keeps its order, the batch stays a permutation" {
+    var scratch: SdfRenderer.RunScratch = .{};
+    defer scratch.deinit(std.testing.allocator);
+    var prng = std.Random.DefaultPrng.init(0x5d);
+    const random = prng.random();
+    for (0..200) |_| {
+        var items: [24]SDFInstance = undefined;
+        var original: [24]SDFInstance = undefined;
+        for (&items, 0..) |*item, i| {
+            const shadow: f32 = if (random.boolean()) 1 + random.float(f32) * 6 else 0;
+            item.* = runTestInstance(random.float(f32) * 300, random.float(f32) * 300, 5 + random.float(f32) * 60, 5 + random.float(f32) * 60, shadow, @floatFromInt(i));
+        }
+        original = items;
+        SdfRenderer.scheduleMetalRuns(&items, &.{}, &scratch, std.testing.allocator);
+        var position: [24]usize = undefined;
+        var seen: [24]bool = @splat(false);
+        for (items, 0..) |item, p| {
+            const tag: usize = @intFromFloat(runTag(item));
+            try std.testing.expect(!seen[tag]);
+            seen[tag] = true;
+            position[tag] = p;
+        }
+        for (0..24) |a| for (a + 1..24) |b| {
+            const qa = SdfRenderer.instanceQuad(&original[a], &.{});
+            const qb = SdfRenderer.instanceQuad(&original[b], &.{});
+            const overlap = qa[0] < qb[2] and qb[0] < qa[2] and qa[1] < qb[3] and qb[1] < qa[3];
+            if (overlap) try std.testing.expect(position[a] < position[b]);
+        };
+    }
+}
+
+test "SDF runs: the quad covers shadow reach, spread and a second shadow" {
+    var item = runTestInstance(10, 20, 30, 40, 2, 0);
+    item.shadow_offset_x = 3;
+    try std.testing.expectEqual([4]f32{ 2, 12, 48, 68 }, SdfRenderer.instanceQuad(&item, &.{}));
+    item.packed_flags = SdfRenderer.shadow_spread_flag;
+    item.noise_scale = 5;
+    try std.testing.expectEqual([4]f32{ -3, 7, 53, 73 }, SdfRenderer.instanceQuad(&item, &.{}));
+    item.packed_flags = 1 << 25;
+    const second = [_]ShadowParam{.{ .color = .{ 0, 0, 0, 1 }, .blur = 10, .offset_x = 0, .offset_y = 4 }};
+    try std.testing.expectEqual([4]f32{ -15, -5, 65, 85 }, SdfRenderer.instanceQuad(&item, &second));
 }

@@ -18,7 +18,7 @@ const WorkResult = core.WorkResult;
 const box = core.box;
 
 fn snapshotLayerDebugEnabled() bool {
-    return @import("zenit_environment").has("ZENIT_SNAPSHOT_DEBUG");
+    return @import("zenit_environment").flag("ZENIT_SNAPSHOT_DEBUG");
 }
 
 pub const BackdropConfig = struct {

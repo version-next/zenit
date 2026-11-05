@@ -250,6 +250,16 @@ export interface FrameStats {
   frame_count: number;
   backdrop_luminance_milli: number;
   /** Paint invariant: cumulative duplicate solid-rect count (same node, frame, identical fill emitted twice). Must be 0 */
+  /** Hovered path's nearest test_id and stationary-pointer hover re-resolution counters. */
+  hover: {
+    test_id: string | null;
+    reconcile_hit_tests: number;
+    reconcile_changes: number;
+    /** Platform presence: false after `pointer_left` until the next pointer event. */
+    pointer_over_content: boolean;
+    /** Stationary re-resolution may run: presence, inside the content, no OS drag session. */
+    pointer_live: boolean;
+  } | null;
   paint_duplicate_fills: number;
   /** Most recent double-emit node id (debug; 0 = never) */
   paint_duplicate_node: number;
@@ -436,6 +446,16 @@ export async function mouseUp(x: number, y: number): Promise<{ ok: boolean }> {
   return request("POST", "/mouse_up", { x, y });
 }
 
+/** The platform's `pointer_left` (the pointer left the window or another window covers it). */
+export async function pointerLeave(): Promise<{ ok: boolean }> {
+  return request("POST", "/pointer_leave", {});
+}
+
+/** The platform's window activation appearance (test-mode apps otherwise stay active). */
+export async function setWindowActive(active: boolean): Promise<{ ok: boolean }> {
+  return request("POST", "/window_active", { active });
+}
+
 export async function key(name: string, mods?: { shift?: boolean; ctrl?: boolean; alt?: boolean; cmd?: boolean }): Promise<{ ok: boolean }> {
   const body: any = { key: name };
   if (mods?.shift) body.shift = true;
@@ -484,6 +504,9 @@ export interface InputState {
   cursor_affinity?: "upstream" | "downstream";
   /** Textarea-only visual geometry, populated after a render pass. */
   display_line_count?: number;
+  line_height?: number;
+  padding_h?: number;
+  padding_v?: number;
   cursor_rect?: { x: number; y: number; w: number; h: number } | null;
   selection_rects?: Array<{ x: number; y: number; w: number; h: number }>;
   ime_preedit_len: number;

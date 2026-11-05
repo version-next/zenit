@@ -18,6 +18,8 @@ const JsonWriter = @import("json_writer.zig").JsonWriter;
 // Bounded observation on the UI thread. Keep IDs, never pointers to removable nodes.
 const FrameSample = struct { ms: f64, x: f32, y: f32, w: f32, h: f32, opacity: f32, effective_opacity: f32 };
 var frame_target: ?command_queue.TestIdPayload = null;
+/// Active /scroll_stream: next event index and due time.
+var stream: ?struct { spec: command_queue.ScrollStream, sent: u32 = 0, next_ns: i128 } = null;
 var frame_samples: [128]FrameSample = undefined;
 var frame_count: usize = 0;
 var frame_missing: usize = 0;
@@ -132,6 +134,40 @@ pub const CaretRejections = struct {
     other: u64 = 0,
 };
 
+/// Per-stage sums since the last timing reset (renderer.StageTotals mirror;
+/// field names match so the app copies them generically). Divide by frames.
+pub const StageTotals = struct {
+    frames: u64 = 0,
+    layout_us: u64 = 0,
+    render_gen_us: u64 = 0,
+    gpu_encode_us: u64 = 0,
+    wait_for_frame_us: u64 = 0,
+    acquire_texture_us: u64 = 0,
+    cpu_frame_us: u64 = 0,
+    total_frame_us: u64 = 0,
+    encode_us: u64 = 0,
+    flush_us: u64 = 0,
+    submit_us: u64 = 0,
+    present_us: u64 = 0,
+    prep_us: u64 = 0,
+    setup_us: u64 = 0,
+    teardown_us: u64 = 0,
+    thread_kcycles_period: u64 = 0,
+    thread_kcycles_frame: u64 = 0,
+    thread_kcycles_present: u64 = 0,
+    glass_us: u64 = 0,
+    pass_native_us: u64 = 0,
+    render_passes: u64 = 0,
+    draw_calls: u64 = 0,
+    backend_draws: u64 = 0,
+    backend_draw_us: u64 = 0,
+    backend_bind_us: u64 = 0,
+    backend_native_draw_us: u64 = 0,
+    backend_uniform_snapshots: u64 = 0,
+    backend_texture_views: u64 = 0,
+    backend_bind_groups: u64 = 0,
+    gpu_execute_us: u64 = 0,
+};
 pub const FrameStatsSnapshot = struct {
     renderer_backend: ?[]const u8 = null,
     gpu_validation_errors: ?u32 = null,
@@ -170,6 +206,8 @@ pub const FrameStatsSnapshot = struct {
     caret_admission_next_ns: i128 = 0,
     caret_flips: u64 = 0,
     caret_last_flip_ms: i64 = 0,
+    /// Frames dropped because the drawable no longer matched the live view size.
+    stale_drawable_discards: u64 = 0,
     /// Backdrop brightness auto-adapt measured value; -1 = absent (disabled/no glass).
     backdrop_luminance: f32 = -1,
     /// Render invariant: cumulative repeated fill rect count (same node one frame emits identical
@@ -177,6 +215,8 @@ pub const FrameStatsSnapshot = struct {
     paint_duplicate_fills: u64 = 0,
     /// Last double-emit node id (0 = never).
     paint_duplicate_node: u32 = 0,
+    /// ZENIT_VERIFY_INCREMENTAL: cumulative cached-vs-full lowered item mismatches (0 = equal).
+    incremental_verify_mismatches: u64 = 0,
 
     // -- Timing (microseconds) --
     // These fields were absent: real GPU time always in renderer.FrameStats, never projected to
@@ -205,6 +245,7 @@ pub const FrameStatsSnapshot = struct {
     pass_native_us: u64 = 0,
     /// Previous frame total time.
     total_frame_us: u64 = 0,
+    stage_totals: ?StageTotals = null,
 
     // **Cross-frame P95** (gate assertion anti-noise statistic; ~120 recent render frames):
     gpu_p95_us: u64 = 0,
@@ -277,6 +318,29 @@ pub fn recordingStatus() RecordingState {
 }
 pub fn stopRecording() RecordingState {
     return if (g_stop_recording_fn) |f| f() else .{};
+}
+
+/// CPU patch control: mode 0 query, 1 enable, 2 disable; false = unsupported.
+pub const CpuPatchStatus = struct {
+    enabled: bool = false,
+    cpu_frames: u64 = 0,
+    gpu_frames: u64 = 0,
+    shown: u32 = 0,
+    unchanged_frames: u64 = 0,
+    rects: [24][4]u32 = undefined,
+    rect_count: usize = 0,
+};
+pub const CpuPatchFn = *const fn (mode: u8, out: *CpuPatchStatus) bool;
+var g_cpu_patch_fn: ?CpuPatchFn = null;
+pub fn setCpuPatchFn(f: CpuPatchFn) void {
+    g_cpu_patch_fn = f;
+}
+
+/// Writes the WindowServer image of the key window to a PNG; 1 = written.
+pub const CompositedCaptureFn = *const fn (path: [*:0]const u8) callconv(.c) c_int;
+var g_composited_capture_fn: ?CompositedCaptureFn = null;
+pub fn setCompositedCaptureFn(f: CompositedCaptureFn) void {
+    g_composited_capture_fn = f;
 }
 
 pub fn setGetFrameStatsFn(f: GetFrameStatsFn) void {
@@ -434,7 +498,43 @@ pub fn drainCommands(queue: *CommandQueue) void {
 
 /// Returns a one-shot submission request for the commands consumed in this
 /// batch. Polling/query wakes alone must not add another animation drawable.
+/// Time until the next scroll stream event is due (0: due now); null when no
+/// stream runs. The run loop sleeps until then, as it would until a real
+/// wheel event arrived.
+pub fn streamNextDelayNs(io: anytype) ?u64 {
+    const s = stream orelse return null;
+    const now = @import("zenit_time").monotonicTimestamp(io);
+    return if (s.next_ns <= now) 0 else @intCast(s.next_ns - now);
+}
+
+/// Inject every stream event due by now (a high-rate wheel coalesced per
+/// loop iteration, as AppKit delivers it).
+fn pumpStream(queue: *CommandQueue) void {
+    const s = &(stream orelse return);
+    const now = @import("zenit_time").monotonicTimestamp(queue.io);
+    const ctx = getCtx() orelse {
+        stream = null;
+        return;
+    };
+    while (s.sent < s.spec.count and now >= s.next_ns) {
+        const span = @max(s.spec.span, 1);
+        const forward = (s.sent / span) % 2 == 0;
+        const in_span = s.sent % span;
+        const phase: ui.events.ScrollPhase = if (!s.spec.phased) .none else if (in_span == 0) .began else .changed;
+        ctx.handleScroll(.{ .x = s.spec.x, .y = s.spec.y, .dx = 0, .dy = if (forward) s.spec.step else -s.spec.step, .phase = phase });
+        if (s.spec.phased and (in_span + 1 == span or s.sent + 1 == s.spec.count)) {
+            ctx.handleScroll(.{ .x = s.spec.x, .y = s.spec.y, .dx = 0, .dy = 0, .phase = .ended });
+        }
+        s.sent += 1;
+        s.next_ns += @intFromFloat(s.spec.interval_ms * std.time.ns_per_ms);
+    }
+    if (s.sent >= s.spec.count) stream = null;
+}
+
 pub fn drainCommandsRequestFrame(queue: *CommandQueue) bool {
+    // Injected wheel events request frames as platform wheel events do: through what they
+    // change (Cx.handleScroll), never by themselves.
+    pumpStream(queue);
     var request_frame = false;
     while (queue.dequeue()) |cmd| {
         request_frame = commandRequestsFrame(cmd) or request_frame;
@@ -469,6 +569,9 @@ fn commandRequestsFrame(cmd: TestCommand) bool {
         .console_query,
         .quit_app,
         => false,
+        // A wheel event requests a frame through what it changes (Cx.handleScroll), as a
+        // platform wheel event does: a wheel against a pinned end renders nothing.
+        .scroll => false,
         // Input, resize, screenshots and recording/control mutations request
         // one immediate frame. Custom routes have no readonly declaration, so
         // they conservatively follow the same contract, even with an empty body.
@@ -481,6 +584,12 @@ fn commandRequestsFrame(cmd: TestCommand) bool {
 pub const AppRouteFn = *const fn (path: []const u8, body: []const u8, out: []u8) ?[]const u8;
 var g_app_route_fn: ?AppRouteFn = null;
 
+/// Runtime-owned routes (e.g. the Windows /perf/ switches), tried before the
+/// application's handler so neither replaces the other.
+var g_runtime_route_fn: ?AppRouteFn = null;
+pub fn setRuntimeRouteFn(f: ?AppRouteFn) void {
+    g_runtime_route_fn = f;
+}
 pub fn setAppRouteFn(f: AppRouteFn) void {
     g_app_route_fn = f;
 }
@@ -588,6 +697,13 @@ fn executeCommand(queue: *CommandQueue, cmd_in: TestCommand) bool {
             return true;
         },
         .app_route => |c| {
+            if (g_runtime_route_fn) |runtime| {
+                var runtime_buf: [command_queue.AppRoutePayload.BODY_CAP * 2]u8 = undefined;
+                if (runtime(c.getPath(), c.getBody(), &runtime_buf)) |written| {
+                    queue.result.setJson(written);
+                    return true;
+                }
+            }
             const handler = g_app_route_fn orelse {
                 queue.result.setError("no app route handler");
                 return true;
@@ -620,6 +736,25 @@ fn executeCommand(queue: *CommandQueue, cmd_in: TestCommand) bool {
             }
             return true;
         },
+        .pointer_leave => {
+            if (getCtx()) |ctx| {
+                ctx.handlePointerLeave();
+                queue.result.setJson("{\"ok\":true}");
+            } else queue.result.setError("no context");
+            return true;
+        },
+        .window_active => |active| {
+            if (getCtx()) |ctx| {
+                if (ctx.window_active != active) {
+                    ctx.window_active = active;
+                    // Same follow-up as the runtimes: inactive glass material re-resolves.
+                    if (ctx.root) |root| root.markSubtreeBeforeRenderHook();
+                }
+                ctx.needs_redraw = true;
+                queue.result.setJson("{\"ok\":true}");
+            } else queue.result.setError("no context");
+            return true;
+        },
         .mouse_up => |c| {
             if (getCtx()) |ctx| {
                 // Must use Ex with modifiers: handleMouseUp hardcodes `.{}`, e2e can never cover
@@ -646,6 +781,15 @@ fn executeCommand(queue: *CommandQueue, cmd_in: TestCommand) bool {
                 queue.result.setJson("{\"ok\":true}");
             } else {
                 queue.result.setError("no context");
+            }
+            return true;
+        },
+        .scroll_stream => |c| {
+            if (getCtx() != null and c.count > 0 and c.interval_ms >= 1) {
+                stream = .{ .spec = c, .next_ns = @import("zenit_time").monotonicTimestamp(queue.io) };
+                queue.result.setJson("{\"ok\":true}");
+            } else {
+                queue.result.setError("invalid scroll stream");
             }
             return true;
         },
@@ -767,7 +911,7 @@ fn executeCommand(queue: *CommandQueue, cmd_in: TestCommand) bool {
                 const st = f();
                 // 16 numeric fields, 512B insufficient (JsonWriter silent truncate produces invalid
                 // JSON, client sees parse error not clear failure).
-                var buf: [2048]u8 = undefined;
+                var buf: [8192]u8 = undefined;
                 var jw = JsonWriter.init(&buf);
                 jw.beginObject();
                 jw.key("retained_hits");
@@ -788,7 +932,7 @@ fn executeCommand(queue: *CommandQueue, cmd_in: TestCommand) bool {
                 jw.booleanValue(st.caret_flipping);
                 jw.key("caret_visible");
                 jw.booleanValue(st.caret_visible);
-                inline for (.{ "graphics_footprint_bytes", "caret_rect_count", "caret_entries", "caret_flips", "caret_last_flip_ms", "caret_attempts", "caret_gate_blocked", "caret_admission_failures", "caret_admission_next_ns" }) |field| {
+                inline for (.{ "graphics_footprint_bytes", "caret_rect_count", "caret_entries", "caret_flips", "caret_last_flip_ms", "caret_attempts", "caret_gate_blocked", "caret_admission_failures", "caret_admission_next_ns", "stale_drawable_discards" }) |field| {
                     jw.key(field);
                     jw.numberValue(@intCast(@field(st, field)));
                 }
@@ -830,12 +974,40 @@ fn executeCommand(queue: *CommandQueue, cmd_in: TestCommand) bool {
                     jw.numberValue(@intCast(ps.max_frames));
                     jw.endObject();
                 } else jw.nullValue();
+                // Hover state: nearest test_id on the hovered path and stationary-pointer
+                // re-resolution counters (core/cx_hover.zig).
+                jw.key("hover");
+                if (getCtx()) |ctx| {
+                    jw.beginObject();
+                    jw.key("test_id");
+                    var hovered_test_id: ?[]const u8 = null;
+                    var cur = ctx.hovered_node;
+                    while (cur) |n| : (cur = n.parent) {
+                        if (n.meta.ownership.meta.test_id) |tid| {
+                            hovered_test_id = tid;
+                            break;
+                        }
+                    }
+                    if (hovered_test_id) |tid| jw.stringValue(tid) else jw.nullValue();
+                    jw.key("reconcile_hit_tests");
+                    jw.numberValue(@intCast(ctx.hover_sync.reconcile_hit_tests));
+                    jw.key("reconcile_changes");
+                    jw.numberValue(@intCast(ctx.hover_sync.reconcile_changes));
+                    // Platform presence (cleared by pointer_left) and the resulting liveness.
+                    jw.key("pointer_over_content");
+                    jw.booleanValue(ctx.hover_sync.pointer_over_content);
+                    jw.key("pointer_live");
+                    jw.booleanValue(ctx.pointerLive());
+                    jw.endObject();
+                } else jw.nullValue();
                 jw.key("backdrop_luminance_milli");
                 jw.numberValue(@intFromFloat(st.backdrop_luminance * 1000));
                 jw.key("paint_duplicate_fills");
                 jw.numberValue(@intCast(st.paint_duplicate_fills));
                 jw.key("paint_duplicate_node");
                 jw.numberValue(@intCast(st.paint_duplicate_node));
+                jw.key("incremental_verify_mismatches");
+                jw.numberValue(@intCast(st.incremental_verify_mismatches));
                 jw.key("gpu_execute_us");
                 jw.numberValue(@intCast(st.gpu_execute_us));
                 jw.key("cpu_frame_us");
@@ -856,6 +1028,15 @@ fn executeCommand(queue: *CommandQueue, cmd_in: TestCommand) bool {
                 }
                 jw.key("total_frame_us");
                 jw.numberValue(@intCast(st.total_frame_us));
+                if (st.stage_totals) |totals| {
+                    jw.key("stage_totals");
+                    jw.beginObject();
+                    inline for (@typeInfo(StageTotals).@"struct".field_names) |name| {
+                        jw.key(name);
+                        jw.numberValue(@intCast(@field(totals, name)));
+                    }
+                    jw.endObject();
+                }
                 jw.key("gpu_p95_us");
                 jw.numberValue(@intCast(st.gpu_p95_us));
                 jw.key("cpu_p95_us");
@@ -875,10 +1056,89 @@ fn executeCommand(queue: *CommandQueue, cmd_in: TestCommand) bool {
                 jw.key("gpu_timing_query_supported");
                 if (st.gpu_timing_query_supported) |supported| jw.booleanValue(supported) else jw.nullValue();
                 jw.endObject();
-                queue.result.setJson(jw.getWritten());
+                if (jw.hasOverflowed()) queue.result.setError("frame_stats JSON exceeds its buffer") else queue.result.setJson(jw.getWritten());
             } else {
                 queue.result.setError("frame_stats not supported");
             }
+            return true;
+        },
+        .sprites => |command| {
+            const ctx = getCtx() orelse {
+                queue.result.setError("no context");
+                return true;
+            };
+            switch (command) {
+                .query => {},
+                .debug => ctx.sprites.setDebug(true),
+                .enable, .disable => {
+                    ctx.sprites.enabled = command == .enable;
+                    ctx.needs_redraw = true;
+                    if (ctx.root) |root| root.markRenderDirty();
+                },
+            }
+            var active: u32 = 0;
+            for (ctx.sprites.sources.items) |source| {
+                if (source.active) active += 1;
+            }
+            var buf: [4096]u8 = undefined;
+            var w: std.Io.Writer = .fixed(&buf);
+            w.print("{{\"enabled\":{},\"sources\":{d},\"active\":{d},\"placements\":{d},\"frame_time_ms\":{d},\"atlas_bytes\":{d},\"building\":{d},\"host_error\":\"{s}\",\"rects\":[", .{
+                ctx.sprites.enabled, ctx.sprites.sources.items.len, active, ctx.sprites.placements.items.len, ctx.frame_time_ms, ctx.sprites.host_atlas_bytes, ctx.sprites.host_building, ctx.sprites.host_error,
+            }) catch {};
+            var first = true;
+            for (ctx.sprites.placements.items) |p| {
+                if (p.exiting) continue;
+                w.print("{s}[{d},{d},{d},{d}]", .{ if (first) "" else ",", p.origin_px[0], p.origin_px[1], p.cell_px[0], p.cell_px[1] }) catch {};
+                first = false;
+            }
+            w.writeAll("],\"reasons\":[") catch {};
+            for (ctx.sprites.sources.items, 0..) |source, i| {
+                w.print("{s}\"{s}\"", .{ if (i == 0) "" else ",", if (source.active) "active" else source.last_reject }) catch {};
+            }
+            w.writeAll("]}") catch {
+                queue.result.setError("sprites status overflow");
+                return true;
+            };
+            queue.result.setJson(w.buffered());
+            return true;
+        },
+        .cpu_patches => |command| {
+            const control = g_cpu_patch_fn orelse {
+                queue.result.setError("cpu patches not supported");
+                return true;
+            };
+            var out: CpuPatchStatus = .{};
+            const mode: u8 = switch (command) {
+                .query, .debug => 0,
+                .enable => 1,
+                .disable => 2,
+            };
+            if (!control(mode, &out)) {
+                queue.result.setError("cpu patches not supported");
+                return true;
+            }
+            if (command != .query) if (getCtx()) |ctx| {
+                ctx.needs_redraw = true;
+                if (ctx.root) |root| root.markRenderDirty();
+            };
+            var buf: [2048]u8 = undefined;
+            var w: std.Io.Writer = .fixed(&buf);
+            w.print("{{\"enabled\":{},\"cpu_frames\":{d},\"gpu_frames\":{d},\"shown\":{d},\"unchanged_frames\":{d},\"rects\":[", .{ out.enabled, out.cpu_frames, out.gpu_frames, out.shown, out.unchanged_frames }) catch unreachable;
+            for (out.rects[0..out.rect_count], 0..) |r, i| w.print("{s}[{d},{d},{d},{d}]", .{ if (i == 0) "" else ",", r[0], r[1], r[2], r[3] }) catch unreachable;
+            w.writeAll("]}") catch unreachable;
+            queue.result.setJson(w.buffered());
+            return true;
+        },
+        .composited_screenshot => |payload| {
+            const capture = g_composited_capture_fn orelse {
+                queue.result.setError("composited screenshots not supported");
+                return true;
+            };
+            var path: [@import("command_queue.zig").RecordingStartPayload.PATH_CAP + 1]u8 = undefined;
+            @memcpy(path[0..payload.path_len], payload.getPath());
+            path[payload.path_len] = 0;
+            const status = capture(@ptrCast(&path));
+            queue.result.setJson(if (status == 1) "{\"ok\":true}" else "{\"ok\":false}");
             return true;
         },
         .force_frames => |on| {
@@ -954,7 +1214,9 @@ fn executeCommand(queue: *CommandQueue, cmd_in: TestCommand) bool {
                 queue.result.setError("no root");
                 return true;
             };
-            if (tree_serializer.findByTestId(root, payload.target.getText()) == null) {
+            // A target the click creates (a page it navigates to) may appear later; frames
+            // before it exists count as missing.
+            if (payload.click_target == null and tree_serializer.findByTestId(root, payload.target.getText()) == null) {
                 queue.result.setError("test_id not found");
                 return true;
             }
@@ -1233,23 +1495,16 @@ fn executeCommand(queue: *CommandQueue, cmd_in: TestCommand) bool {
                             queue.result.setError("no input_container under test_id");
                             return true;
                         };
-                        const ctx_ptr = ic.behavior.events.event_context orelse {
-                            queue.result.setError("no event_context on input_container");
+                        // textarea / single-line are different state structs: the input module
+                        // tells them apart (editStateOf), never a blind cast here.
+                        const edit = ui.widgets.input.editStateOf(ic) orelse {
+                            queue.result.setError("unknown on_event handler — not input or textarea");
                             return true;
                         };
-                        // textarea / single-line are different state structs, can't blind-cast to
-                        // TextInputState (layout difference -> buffer_len lands on pointer field ->
-                        // read ~10^18 garbage -> @intCast(i64) panic). Discriminate via on_event
-                        // function ptr: inputEventHandler vs textareaEventHandler.
-                        const TextInputState = ui.widgets.input.TextInputState;
-                        const TextareaState = ui.widgets.input.TextareaState;
-                        const inputEventHandler = ui.widgets.input.inputEventHandler;
-                        const textareaEventHandler = ui.widgets.input.textareaEventHandler;
                         var buf: [4096]u8 = undefined;
                         var jw = JsonWriter.init(&buf);
-                        const on_event = ic.behavior.events.on_event;
-                        if (on_event == inputEventHandler or ui.widgets.input.isEditableTextClickHandler(on_event)) {
-                            const state: *TextInputState = @ptrCast(@alignCast(ctx_ptr));
+                        if (edit == .input) {
+                            const state = edit.input;
                             // EditableText deliberately reuses inputEventHandler for both
                             // storage modes.  Its multiline variant keeps the canonical
                             // bytes in TextareaDocument, so reading buffer/buffer_len here
@@ -1309,8 +1564,8 @@ fn executeCommand(queue: *CommandQueue, cmd_in: TestCommand) bool {
                             jw.key("scroll_x");
                             jw.floatValue(state.scroll_x);
                             jw.endObject();
-                        } else if (on_event == textareaEventHandler) {
-                            const state: *TextareaState = @ptrCast(@alignCast(ctx_ptr));
+                        } else {
+                            const state = edit.textarea;
                             const text = state.getText();
                             jw.beginObject();
                             jw.key("buffer_len");
@@ -1329,6 +1584,12 @@ fn executeCommand(queue: *CommandQueue, cmd_in: TestCommand) bool {
                             jw.stringValue(@tagName(state.cursor_affinity));
                             jw.key("display_line_count");
                             jw.numberValue(@intCast(state.wrap_map.displayLineCount()));
+                            jw.key("line_height");
+                            jw.floatValue(state.line_height);
+                            jw.key("padding_h");
+                            jw.floatValue(state.padding_h);
+                            jw.key("padding_v");
+                            jw.floatValue(state.padding_v);
                             jw.key("cursor_rect");
                             if (state.cursor_node) |cursor_node| {
                                 const rect = cursor_node.globalRect();
@@ -1388,9 +1649,6 @@ fn executeCommand(queue: *CommandQueue, cmd_in: TestCommand) bool {
                             jw.key("scroll_y");
                             jw.floatValue(if (state.vl_state) |vl| vl.scroll_state.effectiveScrollY() else 0);
                             jw.endObject();
-                        } else {
-                            queue.result.setError("unknown on_event handler — not input or textarea");
-                            return true;
                         }
                         queue.result.setJson(jw.getWritten());
                     } else {
@@ -1564,7 +1822,7 @@ fn scrollNodeIntoView(ctx: *Cx, node: *Node, align_top: bool) void {
     const scroll_rect = scroll.globalRect();
     const node_rect = node.globalRect();
     const content_rect = content.globalRect();
-    const view_h = scroll_rect.h - scroll.style.padding.vertical();
+    const view_h = scroll_rect.h - scroll.style.contentInsets().vertical();
 
     // Node top in content coords (independent of current scroll: content and node shift together).
     const offset_in_content = node_rect.y - content_rect.y;
@@ -2074,6 +2332,12 @@ test "harness pacing: input screenshots and opaque routes require an immediate f
     try std.testing.expect(commandRequestsFrame(.{ .resize_window = .{ .width = 640, .height = 480 } }));
     try std.testing.expect(commandRequestsFrame(.{ .screenshot = .{} }));
     try std.testing.expect(commandRequestsFrame(.{ .app_route = command_queue.AppRoutePayload.init("/custom", "").? }));
+}
+
+test "harness pacing: a wheel event requests a frame only through what it changes" {
+    // Like a platform wheel event (pointer_isolation.eventForcesFrame): Cx.handleScroll asks
+    // for the frame when a handler moved something.
+    try std.testing.expect(!commandRequestsFrame(.{ .scroll = .{ .x = 1, .y = 2, .dx = 0, .dy = 12 } }));
 }
 
 test "harness pacing: a consumed batch requests a frame once without a persistent wake" {

@@ -16,9 +16,11 @@ const Color = core.Color;
 
 /// Animation period (seconds)
 pub const cycle_seconds: f32 = 1.4;
+/// Exact repeat of the whole picture: four arc cycles rotate the ring 4 * 270 = 3 * 360 degrees.
+pub const loop_ms: f64 = 5600;
 
-/// MUI dasharray 1 -> 100 -> 1 px (circumference ≈ 126.92px) normalized to radians
-const max_sweep: f32 = (100.0 / 126.92) * 2.0 * math.pi;
+/// COMPONENTS Spinner: the reference frame sweeps 270 degrees.
+const max_sweep: f32 = 1.5 * math.pi;
 const min_sweep: f32 = (1.0 / 126.92) * 2.0 * math.pi; // Prevent complete disappearance
 /// dashoffset 0 -> -15 -> -126 px, normalized to radians
 const offset_mid: f32 = (15.0 / 126.92) * 2.0 * math.pi;

@@ -25,11 +25,12 @@ const bind_mod = @import("../../bind.zig");
 const events = @import("../../events.zig");
 const Event = events.Event;
 const EventResult = events.EventResult;
-const chip_mod = @import("../chip/mod.zig");
+const icons = @import("zenit_system_icons");
 const input_mod = @import("../input/mod.zig");
 const button_mod = @import("../button/mod.zig");
 
 pub const TagsInputProps = struct {
+    show_add_button: bool = true,
     /// Tag list
     tags: Model([]const []const u8) = .{ .local = &.{} },
     max_tags: usize = 16,
@@ -62,6 +63,8 @@ pub const TagsInputResult = struct {
     /// Tags list signal (`ui.split` when null)
     tags: ?*Signal([]const []const u8),
     state: *TagsInputState,
+    /// Default Add action; null when show_add_button is false.
+    add_button: ?*Node = null,
 
     /// `ui.view` entry (see src/ui/view_parts.zig).
     pub fn viewParts(self: TagsInputResult) core.ViewParts {
@@ -190,14 +193,16 @@ pub const TagsInputState = struct {
         try view.mount(child, self.cx, row, view.items(ctxs.items, tags, chipElement));
     }
 
-    /// Chip copies tag text into own node, not borrowed from signal buffer
-    fn chipElement(ctxs: []ChipCloseCtx, tag: []const u8, i: usize) chip_mod.ChipBuilder {
-        return chip_mod.Chip(.{
-            .label = tag,
-            .closable = true,
-            .readonly = false,
-            .on_close = core.Cx.simpleHandler(ChipCloseCtx.fire, &ctxs[i]),
-        });
+    const ChipArgs = struct { close: *ChipCloseCtx, label: []const u8 };
+    fn chipElement(ctxs: []ChipCloseCtx, tag: []const u8, i: usize) view.ComponentOf(buildChip) {
+        return view.component(buildChip, ChipArgs{ .close = &ctxs[i], .label = tag });
+    }
+    fn buildChip(args: ChipArgs, scope: *Scope, cx: *Cx) !*Node {
+        const S = @import("styles.zig");
+        return view.render(scope, cx, view.row(.{ .style = S.chip, .a11y = .{ .role = .listitem, .label = args.label } }, .{
+            view.text(.{ .style = S.chipText }, args.label),
+            view.box(.{ .style = S.closeButton, .a11y = .{ .role = .button, .label = "Remove tag" }, .on_click = core.Cx.simpleHandler(ChipCloseCtx.fire, args.close) }, view.icon(.{ .style = S.closeIcon, .tint = cx.tokens.tokens.color.fg_primary }, icons.close)),
+        }));
     }
 };
 
@@ -268,8 +273,9 @@ fn mountImpl(props: TagsInputProps, scope: *Scope, cx: *Cx) !TagsInputResult {
 
     var chips_row: *Node = undefined;
     var input_result: input_mod.InputResult = undefined;
+    var add_button: ?*Node = null;
     const wrapper = try view.render(my_scope, cx, view.col(.{
-        .style = .{ .width = .{ .px = props.width }, .height = .{ .fit = .{} }, .gap = 6 },
+        .style = .{ @import("styles.zig").shell, .{ .width = .{ .px = props.width }, .height = .{ .fit = .{} }, .gap = 6 } },
         // role=group: binds 'existing chips + input + Add button' as single named unit,
         // else AT users tab into input unaware of context.
         .a11y = .{ .role = .group, .label = "Tags" },
@@ -280,19 +286,20 @@ fn mountImpl(props: TagsInputProps, scope: *Scope, cx: *Cx) !TagsInputResult {
             .a11y = .{ .role = .list, .label = "Current tags" },
         }, {})),
         // Input line: Input + Add button
-        view.row(.{ .style = .{ .width = .{ .grow = .{} }, .height = .{ .fit = .{} }, .gap = 6, .align_items = .center } }, .{
+        view.row(.{ .style = @import("styles.zig").inputRow(props.show_add_button, cx.tokens) }, .{
             view.capture(&input_result, input_mod.Input(.{
                 .placeholder = props.placeholder,
-                .width = props.width - 70,
+                .width = props.width - (if (props.show_add_button) @as(f32, 86) else 16),
+                .embedded = !props.show_add_button,
                 .on_change = cx.on(TagsInputState, state, onInputChanged),
                 .on_submit = cx.on(TagsInputState, state, onInputSubmit),
             })),
-            button_mod.Button(.{
+            if (props.show_add_button) view.capture(&add_button, button_mod.Button(.{
                 .label = "Add",
                 .variant = .secondary,
                 .size = .sm,
                 .on_click = core.Cx.simpleHandler(onAddClick, state),
-            }),
+            })) else null,
         }),
     }));
     wrapper.meta.ownership.meta.component_name = "TagsInput";
@@ -319,7 +326,7 @@ fn mountImpl(props: TagsInputProps, scope: *Scope, cx: *Cx) !TagsInputResult {
     // tags is Model: chips rebuild with it
     try bind_mod.rebuildOn(cx, my_scope, tags.read, chips_row, state, TagsInputState.tagsKey, TagsInputState.buildChips);
 
-    return .{ .wrapper = wrapper, .input = input_result.node, .tags = tags.asSignal(), .state = state };
+    return .{ .wrapper = wrapper, .input = input_result.node, .tags = tags.asSignal(), .state = state, .add_button = add_button };
 }
 
 // ============================================================================

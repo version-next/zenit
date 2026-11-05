@@ -1,6 +1,7 @@
 import { clickTestId, mouseMove, query, screenshot, sleep, tree, waitFor, waitForServerReady, stats, startFrameObservation, readFrameObservation } from "./client";
 import { writeFileSync } from "node:fs";
 import { decodePng } from "./png";
+import { checkboxInk } from "./checkbox-pixels";
 import { assert, getSessionDir, run, test } from "./runner";
 
 test("Windows Notification portal keeps title and body inside the placed card", async () => {
@@ -120,25 +121,19 @@ test("Windows Checkbox check and indeterminate icons produce pixels", async () =
     // pointer over the navigation item. Its center contains only icon ink.
     const box = row.children?.[0];
     assert(box && box.rect.w > 0 && box.rect.h > 0, `missing checkbox square: ${id}`);
-    // Ink is anything clearly brighter than the near-black square fill: at 100% DPI the
+    // Ink is anything clearly brighter than the actual accent fill: at 100% DPI the
     // antialiased 2px minus dash lands between pixel rows at ~50% coverage, so a "white"
     // threshold would count zero pixels for a visibly drawn mark. Minimum counts are per
     // logical area (calibrated on 1.75x captures: 10 light / 30 dark).
-    const minLight = Math.ceil(3.3 * scale * scale), minDark = Math.ceil(10 * scale * scale);
-    let light = 0, dark = 0;
+    const minLight = Math.ceil(3.3 * scale * scale), minFill = Math.ceil(10 * scale * scale);
     const x0 = Math.ceil((box.rect.x + 2) * scale);
     const y0 = Math.ceil((box.rect.y + 2) * scale);
     const x1 = Math.floor((box.rect.x + box.rect.w - 2) * scale);
     const y1 = Math.floor((box.rect.y + box.rect.h - 2) * scale);
     assert(x0 >= 0 && y0 >= 0 && x1 <= png.width && y1 <= png.height, "checkbox outside drawable");
-    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
-      const i = (y * png.width + x) * png.channels;
-      const value = (png.pixels[i] + png.pixels[i + 1] + png.pixels[i + 2]) / 3;
-      if (value > 100) light++;
-      if (value < 80) dark++;
-    }
-    console.log(`  ${id}: light=${light} (min ${minLight}), dark=${dark} (min ${minDark}), ${path}`);
-    assert(light >= minLight && dark >= minDark, `${id} has no visible light icon on dark square`);
+    const { ink, background, fill } = checkboxInk(png, { x0, y0, x1, y1 });
+    console.log(`  ${id}: ink=${ink} (min ${minLight}), fill=${background} (min ${minFill}), color=${fill}, ${path}`);
+    assert(ink >= minLight && background >= minFill, `${id} has no visible light icon on its accent square`);
   }
 });
 

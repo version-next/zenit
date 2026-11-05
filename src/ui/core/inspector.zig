@@ -324,14 +324,19 @@ pub const Inspector = struct {
         // Padding overlay
         if (self.debug_paint.show_padding) {
             const p = node.style.padding;
+            const edges = node.style.contentInsets();
+            const bx = (edges.left - p.left) * sx;
+            const by = (edges.top - p.top) * sy;
+            const pw = @max(0, w - (edges.horizontal() - p.horizontal()) * sx);
+            const ph = @max(0, h - (edges.vertical() - p.vertical()) * sy);
             const pl = p.left * sx;
             const pr = p.right * sx;
             const pt = p.top * sy;
             const pb = p.bottom * sy;
-            if (pt > 0) appendInspectorFillRect(cx, x, y, w, pt, padding_color, .{ 0, 0, 0, 0 });
-            if (pb > 0) appendInspectorFillRect(cx, x, y + h - pb, w, pb, padding_color, .{ 0, 0, 0, 0 });
-            if (pl > 0) appendInspectorFillRect(cx, x, y + pt, pl, h - pt - pb, padding_color, .{ 0, 0, 0, 0 });
-            if (pr > 0) appendInspectorFillRect(cx, x + w - pr, y + pt, pr, h - pt - pb, padding_color, .{ 0, 0, 0, 0 });
+            if (pt > 0) appendInspectorFillRect(cx, x + bx, y + by, pw, pt, padding_color, .{ 0, 0, 0, 0 });
+            if (pb > 0) appendInspectorFillRect(cx, x + bx, y + by + ph - pb, pw, pb, padding_color, .{ 0, 0, 0, 0 });
+            if (pl > 0) appendInspectorFillRect(cx, x + bx, y + by + pt, pl, ph - pt - pb, padding_color, .{ 0, 0, 0, 0 });
+            if (pr > 0) appendInspectorFillRect(cx, x + bx + pw - pr, y + by + pt, pr, ph - pt - pb, padding_color, .{ 0, 0, 0, 0 });
         }
 
         // Border outline

@@ -75,106 +75,122 @@ const WidgetSpec = struct {
     note: []const u8 = "",
     /// The story root spans the panel's width; otherwise it hugs its content, left-aligned.
     wide: bool = false,
+    section: []const u8,
 };
 
-const WIDGETS = [_]WidgetSpec{
-    .{ .key = "button", .title = "Button", .build = stories.buildButton },
-    .{ .key = "checkbox", .title = "Checkbox", .build = stories.buildCheckbox },
-    .{ .key = "switch", .title = "Switch", .build = stories.buildSwitch },
-    .{ .key = "radio", .title = "Radio", .build = stories.buildRadio },
-    .{ .key = "slider", .title = "Slider", .build = stories.buildSlider },
-    .{ .key = "rate", .title = "Rate", .build = stories.buildRate },
-    .{ .key = "stepper", .title = "NumberStepper", .build = stories.buildNumberStepper },
-    .{ .key = "group", .title = "Group", .build = stories.buildGroup },
-    .{ .key = "input", .title = "Input", .build = stories.buildInput },
-    .{ .key = "textarea", .title = "Textarea", .build = stories.buildTextarea },
-    .{ .key = "editabletext", .title = "EditableText", .build = stories.buildEditableText },
-    .{ .key = "select", .title = "Select", .build = stories.buildSelect },
-    .{ .key = "combobox", .title = "ComboBox", .build = stories.buildComboBox },
-    .{ .key = "tags", .title = "TagsInput", .build = stories.buildTagsInput },
-    .{ .key = "upload", .title = "FileUpload", .build = stories.buildFileUpload },
-    .{ .key = "datepicker", .title = "DatePicker", .build = stories.buildDatePicker },
-    .{ .key = "daterange", .title = "DateRangePicker", .build = stories.buildDateRangePicker },
-    .{ .key = "form", .title = "Form", .build = stories.buildForm },
-    .{ .key = "formcompose", .title = "Form Composition", .build = @import("form_composition.zig").build },
-    .{ .key = "badge", .title = "Badge", .build = stories.buildBadge },
-    .{ .key = "tag", .title = "Tag", .build = stories.buildTag },
-    .{ .key = "chip", .title = "Chip", .build = stories.buildChip },
-    .{ .key = "card", .title = "Card", .build = stories.buildCard },
-    .{ .key = "alert", .title = "Alert", .build = stories.buildAlert },
-    .{ .key = "progress", .title = "Progress", .build = stories.buildProgress },
-    .{ .key = "spinner", .title = "Spinner", .build = stories.buildSpinner },
-    .{ .key = "skeleton", .title = "Skeleton", .build = stories.buildSkeleton },
-    .{ .key = "timeline", .title = "Timeline", .build = stories.buildTimeline },
-    .{ .key = "table", .title = "Table", .build = stories.buildTable },
-    .{ .key = "datatable", .title = "DataTable", .build = stories.buildDataTable },
-    .{ .key = "tree", .title = "Tree", .build = stories.buildTree },
-    .{ .key = "calendar", .title = "Calendar", .build = stories.buildCalendar },
-    .{ .key = "markdown", .title = "Markdown", .build = stories.buildMarkdown },
-    .{ .key = "icons", .title = "Icons", .build = stories.buildIconGallery, .note = "System icon contract (provider-neutral subset)" },
-    .{ .key = "tabs", .title = "Tabs", .build = stories.buildTabs },
-    .{ .key = "accordion", .title = "Accordion", .build = stories.buildAccordion },
-    .{ .key = "menu", .title = "Menu", .build = stories.buildMenu, .note = "Click the trigger to open the menu" },
-    .{ .key = "breadcrumb", .title = "Breadcrumb", .build = stories.buildBreadcrumb },
-    .{ .key = "steps", .title = "Steps", .build = stories.buildSteps },
-    .{ .key = "notification", .title = "Notification", .build = stories.buildNotification },
-    .{ .key = "tooltip", .title = "Tooltip", .build = stories.buildTooltip, .note = "Hover a button to see the tooltip (4 positions)" },
-    .{ .key = "popover", .title = "Popover", .build = stories.buildPopover, .note = "Click the button to toggle the popover" },
-    .{ .key = "modal", .title = "Modal", .build = stories.buildModal },
-    .{ .key = "sheet", .title = "Sheet", .build = stories.buildSheet },
-    .{ .key = "zindex", .title = "ZIndex", .build = stories.buildZIndex },
-    .{ .key = "divider", .title = "Divider", .build = stories.buildDivider },
-    .{ .key = "stack", .title = "Stack", .build = stories.buildStack },
-    .{ .key = "layoutbox", .title = "Layout / Box Model", .build = stories.buildLayoutBoxModel },
-    .{ .key = "virtuallist", .title = "VirtualList", .build = stories.buildVirtualList },
-    .{ .key = "virtuallistdynamic", .title = "VirtualList (Dynamic)", .build = stories.buildVirtualListDynamic },
-    .{ .key = "scrolling", .title = "Scrolling", .build = @import("scrolling_story.zig").build, .note = "Wheel and trackpad input in logical points. Try sideways scrolling and nested boundaries; live phase readouts show what the platform delivers." },
-    .{ .key = "scrollarea", .title = "ScrollArea", .build = stories.buildScrollArea },
-    .{ .key = "grid", .title = "Grid", .build = stories.buildGrid },
-    .{ .key = "glassbox", .title = "Liquid Glass", .build = stories.buildGlassBox },
-    .{ .key = "glasslab", .title = "Glass Lab", .build = stories.buildGlassLab },
-    .{ .key = "glasscontrols", .title = "Glass slider & toggle", .build = stories.buildGlassControls, .note = "GlassSlider / GlassToggle: press a knob — it turns into clear Liquid Glass and grows; release restores the white knob" },
-    .{ .key = "glasscontrolsios", .title = "iOS slider & switch", .build = stories.buildGlassControlsIos },
-    .{ .key = "glasstoolbar", .title = "Glass toolbar", .build = stories.buildGlassToolbar, .note = "GlassToolbar: hover shows a plate, press deepens it, the selected segment keeps one; separators only between unselected segments. Dark title bar: the glass flips to the dark family and the plates turn white" },
-    .{ .key = "glassiosbars", .title = "iOS bars & glass buttons", .build = stories.buildGlassIosBars },
-    .{ .key = "glasspopover", .title = "Glass popover", .build = stories.buildGlassPopover, .note = "Glass button + .popover: the popover scales from its arrow tip (spring, opacity follows scale); the button does not morph" },
-    .{ .key = "glasschrome", .title = "Toolbar over content", .build = stories.buildGlassChrome, .note = "Toolbar over scrolling content: GlassToolbar controls on the measured title-bar edge (content washes toward the window background; no custom blur)" },
-    .{ .key = "glassmotion", .title = "Glass Transitions", .build = stories.buildGlassMotion },
-    .{ .key = "glasssplit", .title = "Glass Split & Merge", .build = stories.buildGlassSplit },
-    .{ .key = "glassunion", .title = "GlassEffectContainer: union", .build = stories.buildGlassUnion, .note = "glassEffectUnion(id:): members sharing an id merge into one shape over their bounding box (Apple sample on top)" },
-    .{ .key = "glassadapt", .title = "Glass adaptivity (scroll)", .build = stories.buildGlassAdapt, .note = "Scroll white → black: the 36 pt glass bar flips dark below 48/255 (back above 120); the large panel never flips" },
-    .{ .key = "glassconcentric", .title = "Concentric corners", .build = stories.buildGlassConcentric, .note = "ConcentricRectangle: each corner = max(container radius − max(dx, dy), minimum); glass follows the same shape" },
-    .{ .key = "glassextension", .title = "Background extension", .build = stories.buildGlassExtension, .note = "backgroundExtensionEffect: mirrored copies fill the leading safe area; only the view's own safe area is blurred" },
-    .{ .key = "canvasevents", .title = "CanvasEvents", .build = stories.buildCanvasEvents, .note = "Canvas events: scroll modifiers / magnify / drag / clipboard image" },
-    .{ .key = "drag", .title = "Drag", .build = stories.buildDrag, .note = "Drag: ui.interaction.drag primitive (threshold 4px, Escape cancels, arrows nudge when focused)" },
-    .{ .key = "multiclick", .title = "Gestures", .build = stories.buildMultiClick, .note = "Gesture arena: tap/double/triple counts + press-and-hold long_press (500ms) + pointer-cancel state" },
-    .{ .key = "animctl", .title = "AnimControls", .build = stories.buildAnimCtl, .note = "Animation controls: yoyo replay / timeline reverse / keyframes catch-up / degenerate spring" },
-    .{ .key = "vectorpath", .title = "VectorPath", .build = stories.buildVectorPath, .note = "Batched fill_path: adjacent stars (polygon mode)" },
-    .{ .key = "blend", .title = "BlendModes", .build = stories.buildBlend, .note = "Blend modes (exact-color e2e targets)" },
-    .{ .key = "emoji", .title = "Emoji", .build = stories.buildEmoji, .note = "Color emoji (BGRA atlas page + shader color branch)" },
-    .{ .key = "rtl", .title = "RTL", .build = stories.buildRtl, .note = "RTL bidi text (CoreText 已做 bidi，glyph 数组为视觉序)" },
-    .{ .key = "wordnav", .title = "WordNav", .build = stories.buildWordNav, .note = "Word navigation: Alt+←/→ jumps whole Greek/Cyrillic words; double-click selects the word; family emoji is one cluster" },
-    .{ .key = "viewdsl", .title = "View DSL", .build = @import("view_dsl_story.zig").build },
-    .{ .key = "wall", .title = "Component Wall", .build = @import("component_wall.zig").build },
-    .{ .key = "glassgroup", .title = "GlassEffectContainer: sampling", .build = stories.buildGlassGroup, .note = "GlassGroup: one capture per container; both rows must match pixel-for-pixel" },
-    .{ .key = "glassmerge", .title = "GlassEffectContainer: merge", .build = stories.buildGlassMerge, .note = "GlassMerge: two capsules in a GlassGroup; neck heights must match native GlassEffectContainer" },
-    .{ .key = "glasstint", .title = "GlassEffectContainer: tint fusion", .build = stories.buildGlassTintMerge, .note = "Tint fusion in a GlassEffectContainer (spacing 40), white backdrop: bridges stay untinted, tints feather into neighbours and compose where they overlap" },
-    .{ .key = "glassislands", .title = "Regression: blur islands", .build = stories.buildGlassIslands, .note = "Two blur+rounded-clip islands: BOTH must show their content", .wide = true },
-    .{ .key = "glassappkit", .title = "NSGlassEffectView parameters", .build = stories.buildGlassAppKit },
-    .{ .key = "glassidiom", .title = "Glass idiom: macOS / iOS", .build = stories.buildGlassIdiom },
-    .{ .key = "glassioslens", .title = "iOS tab lens fixtures", .build = stories.buildGlassIosLens },
-    .{ .key = "blendlab", .title = "Blend lab", .build = stories.buildBlendLab, .note = "BlendLab: translucency, group opacity, text, gradients, shadows, edges and scaled images (native_blend_reference.swift geometry)" },
-    .{ .key = "glassedge", .title = "Glass at the window edge", .build = stories.buildGlassEdge, .note = "Glass reaching the window edge samples past it (the capture beyond the window is transparent black): the wallpaper's colours must run cleanly to the right and bottom edges under the inspector and the toolbar, with no dark rim." },
-    .{ .key = "popoverregress", .title = "Popover regressions", .build = stories.buildPopoverRegressions },
-    .{ .key = "paintreplay", .title = "PaintReplay", .build = stories.buildPaintReplay, .scrolls = false },
-    .{ .key = "heavytext", .title = "HeavyText", .build = stories.buildHeavyText },
-    .{ .key = "textanimjitter", .title = "TextAnimJitter", .build = stories.buildTextAnimJitter },
-    .{ .key = "cleanup", .title = "CleanupHooks", .build = stories.buildCleanup },
-    .{ .key = "interactionlifecycle", .title = "Interaction Lifecycle", .build = stories.buildInteractionLifecycle },
-    .{ .key = "teardownstress", .title = "Lifecycle Stress", .build = stories.buildTeardownStress },
-    .{ .key = "secsvg", .title = "Security / SVG", .build = stories.buildSecuritySvg },
-    .{ .key = "secopacity", .title = "Security / Opacity", .build = stories.buildSecurityOpacity },
-    .{ .key = "sectext", .title = "Security / Text", .build = stories.buildSecurityText },
+// Builder names stay as data until selection: taking every function address here
+// would force Zig to analyze the full showcase before filtering.
+const StoryInfo = struct {
+    key: []const u8,
+    title: []const u8,
+    builder: []const u8,
+    scrolls: bool = true,
+    note: []const u8 = "",
+    wide: bool = false,
+};
+const ALL_WIDGETS = [_]StoryInfo{
+    .{ .key = "controls", .title = "Controls", .builder = "buildControls" },
+    .{ .key = "button", .title = "Button", .builder = "buildButton" },
+    .{ .key = "checkbox", .title = "Checkbox", .builder = "buildCheckbox" },
+    .{ .key = "switch", .title = "Switch", .builder = "buildSwitch" },
+    .{ .key = "radio", .title = "Radio", .builder = "buildRadio" },
+    .{ .key = "slider", .title = "Slider", .builder = "buildSlider" },
+    .{ .key = "rate", .title = "Rate", .builder = "buildRate" },
+    .{ .key = "stepper", .title = "NumberStepper", .builder = "buildNumberStepper" },
+    .{ .key = "group", .title = "Group", .builder = "buildGroup" },
+    .{ .key = "input", .title = "Input", .builder = "buildInput" },
+    .{ .key = "textarea", .title = "Textarea", .builder = "buildTextarea" },
+    .{ .key = "editabletext", .title = "EditableText", .builder = "buildEditableText" },
+    .{ .key = "select", .title = "Select", .builder = "buildSelect" },
+    .{ .key = "combobox", .title = "ComboBox", .builder = "buildComboBox" },
+    .{ .key = "tags", .title = "TagsInput", .builder = "buildTagsInput" },
+    .{ .key = "upload", .title = "FileUpload", .builder = "buildFileUpload" },
+    .{ .key = "datetimepicker", .title = "DateTimePicker", .builder = "buildDateTimePicker" },
+    .{ .key = "datepicker", .title = "DatePicker", .builder = "buildDatePicker" },
+    .{ .key = "daterange", .title = "DateRangePicker", .builder = "buildDateRangePicker" },
+    .{ .key = "form", .title = "Form", .builder = "buildForm" },
+    .{ .key = "formcompose", .title = "Form Composition", .builder = "buildFormComposition" },
+    .{ .key = "badge", .title = "Badge", .builder = "buildBadge" },
+    .{ .key = "tag", .title = "Tag", .builder = "buildTag" },
+    .{ .key = "chip", .title = "Chip", .builder = "buildChip" },
+    .{ .key = "card", .title = "Card", .builder = "buildCard" },
+    .{ .key = "alert", .title = "Alert", .builder = "buildAlert" },
+    .{ .key = "progress", .title = "Progress", .builder = "buildProgress" },
+    .{ .key = "spinner", .title = "Spinner", .builder = "buildSpinner" },
+    .{ .key = "skeleton", .title = "Skeleton", .builder = "buildSkeleton" },
+    .{ .key = "timeline", .title = "Timeline", .builder = "buildTimeline" },
+    .{ .key = "table", .title = "Table", .builder = "buildTable" },
+    .{ .key = "datatable", .title = "DataTable", .builder = "buildDataTable" },
+    .{ .key = "tree", .title = "Tree", .builder = "buildTree" },
+    .{ .key = "calendar", .title = "Calendar", .builder = "buildCalendar" },
+    .{ .key = "markdown", .title = "Markdown", .builder = "buildMarkdown" },
+    .{ .key = "icons", .title = "Icons", .builder = "buildIconGallery", .note = "System icon contract (provider-neutral subset)" },
+    .{ .key = "tabs", .title = "Tabs", .builder = "buildTabs" },
+    .{ .key = "accordion", .title = "Accordion", .builder = "buildAccordion" },
+    .{ .key = "menu", .title = "Menu", .builder = "buildMenu", .note = "Click the trigger to open the menu" },
+    .{ .key = "breadcrumb", .title = "Breadcrumb", .builder = "buildBreadcrumb" },
+    .{ .key = "steps", .title = "Steps", .builder = "buildSteps" },
+    .{ .key = "notification", .title = "Notification", .builder = "buildNotification" },
+    .{ .key = "tooltip", .title = "Tooltip", .builder = "buildTooltip", .note = "Hover a button to see the tooltip (4 positions)" },
+    .{ .key = "popover", .title = "Popover", .builder = "buildPopover", .note = "Click the button to toggle the popover" },
+    .{ .key = "modal", .title = "Modal", .builder = "buildModal" },
+    .{ .key = "sheet", .title = "Sheet", .builder = "buildSheet" },
+    .{ .key = "zindex", .title = "ZIndex", .builder = "buildZIndex" },
+    .{ .key = "divider", .title = "Divider", .builder = "buildDivider" },
+    .{ .key = "stack", .title = "Stack", .builder = "buildStack" },
+    .{ .key = "layoutbox", .title = "Layout / Box Model", .builder = "buildLayoutBoxModel" },
+    .{ .key = "virtuallist", .title = "VirtualList", .builder = "buildVirtualList" },
+    .{ .key = "virtuallistdynamic", .title = "VirtualList (Dynamic)", .builder = "buildVirtualListDynamic" },
+    .{ .key = "scrolling", .title = "Scrolling", .builder = "buildScrolling", .note = "Wheel and trackpad input in logical points. Try sideways scrolling and nested boundaries; live phase readouts show what the platform delivers." },
+    .{ .key = "scrollarea", .title = "ScrollArea", .builder = "buildScrollArea" },
+    .{ .key = "grid", .title = "Grid", .builder = "buildGrid" },
+    .{ .key = "glassbox", .title = "Liquid Glass", .builder = "buildGlassBox" },
+    .{ .key = "glasslab", .title = "Glass Lab", .builder = "buildGlassLab" },
+    .{ .key = "glasscontrols", .title = "Glass slider & toggle", .builder = "buildGlassControls", .note = "GlassSlider / GlassToggle: press a knob — it turns into clear Liquid Glass and grows; release restores the white knob" },
+    .{ .key = "glasscontrolsios", .title = "iOS slider & switch", .builder = "buildGlassControlsIos" },
+    .{ .key = "glasstoolbar", .title = "Glass toolbar", .builder = "buildGlassToolbar", .note = "GlassToolbar: hover shows a plate, press deepens it, the selected segment keeps one; separators only between unselected segments. Dark title bar: the glass flips to the dark family and the plates turn white" },
+    .{ .key = "glassiosbars", .title = "iOS bars & glass buttons", .builder = "buildGlassIosBars" },
+    .{ .key = "glasspopover", .title = "Glass popover", .builder = "buildGlassPopover", .note = "Glass button + .popover: the popover scales from its arrow tip (spring, opacity follows scale); the button does not morph" },
+    .{ .key = "glasschrome", .title = "Toolbar over content", .builder = "buildGlassChrome", .note = "Toolbar over scrolling content: GlassToolbar controls on the measured title-bar edge (content washes toward the window background; no custom blur)" },
+    .{ .key = "glassmotion", .title = "Glass Transitions", .builder = "buildGlassMotion" },
+    .{ .key = "glasssplit", .title = "Glass Split & Merge", .builder = "buildGlassSplit" },
+    .{ .key = "glassunion", .title = "GlassEffectContainer: union", .builder = "buildGlassUnion", .note = "glassEffectUnion(id:): members sharing an id merge into one shape over their bounding box (Apple sample on top)" },
+    .{ .key = "glassadapt", .title = "Glass adaptivity (scroll)", .builder = "buildGlassAdapt", .note = "Scroll white → black: the 36 pt glass bar flips dark below 48/255 (back above 120); the large panel never flips" },
+    .{ .key = "glassconcentric", .title = "Concentric corners", .builder = "buildGlassConcentric", .note = "ConcentricRectangle: each corner = max(container radius − max(dx, dy), minimum); glass follows the same shape" },
+    .{ .key = "glassextension", .title = "Background extension", .builder = "buildGlassExtension", .note = "backgroundExtensionEffect: mirrored copies fill the leading safe area; only the view's own safe area is blurred" },
+    .{ .key = "canvasevents", .title = "CanvasEvents", .builder = "buildCanvasEvents", .note = "Canvas events: scroll modifiers / magnify / drag / clipboard image" },
+    .{ .key = "drag", .title = "Drag", .builder = "buildDrag", .note = "Drag: ui.interaction.drag primitive (threshold 4px, Escape cancels, arrows nudge when focused)" },
+    .{ .key = "multiclick", .title = "Gestures", .builder = "buildMultiClick", .note = "Gesture arena: tap/double/triple counts + press-and-hold long_press (500ms) + pointer-cancel state" },
+    .{ .key = "animctl", .title = "AnimControls", .builder = "buildAnimCtl", .note = "Animation controls: yoyo replay / timeline reverse / keyframes catch-up / degenerate spring" },
+    .{ .key = "vectorpath", .title = "VectorPath", .builder = "buildVectorPath", .note = "Batched fill_path: adjacent stars (polygon mode)" },
+    .{ .key = "blend", .title = "BlendModes", .builder = "buildBlend", .note = "Blend modes (exact-color e2e targets)" },
+    .{ .key = "emoji", .title = "Emoji", .builder = "buildEmoji", .note = "Color emoji (BGRA atlas page + shader color branch)" },
+    .{ .key = "rtl", .title = "RTL", .builder = "buildRtl", .note = "RTL bidi text (CoreText 已做 bidi，glyph 数组为视觉序)" },
+    .{ .key = "wordnav", .title = "WordNav", .builder = "buildWordNav", .note = "Word navigation: Alt+←/→ jumps whole Greek/Cyrillic words; double-click selects the word; family emoji is one cluster" },
+    .{ .key = "viewdsl", .title = "View DSL", .builder = "buildViewDsl" },
+    .{ .key = "wall", .title = "Component Wall", .builder = "buildComponentWall" },
+    .{ .key = "glassgroup", .title = "GlassEffectContainer: sampling", .builder = "buildGlassGroup", .note = "GlassGroup: one capture per container; both rows must match pixel-for-pixel" },
+    .{ .key = "glassmerge", .title = "GlassEffectContainer: merge", .builder = "buildGlassMerge", .note = "GlassMerge: two capsules in a GlassGroup; neck heights must match native GlassEffectContainer" },
+    .{ .key = "glasstint", .title = "GlassEffectContainer: tint fusion", .builder = "buildGlassTintMerge", .note = "Tint fusion in a GlassEffectContainer (spacing 40), white backdrop: bridges stay untinted, tints feather into neighbours and compose where they overlap" },
+    .{ .key = "glassislands", .title = "Regression: blur islands", .builder = "buildGlassIslands", .note = "Two blur+rounded-clip islands: BOTH must show their content", .wide = true },
+    .{ .key = "glassappkit", .title = "NSGlassEffectView parameters", .builder = "buildGlassAppKit" },
+    .{ .key = "glassidiom", .title = "Glass idiom: macOS / iOS", .builder = "buildGlassIdiom" },
+    .{ .key = "glassioslens", .title = "iOS tab lens fixtures", .builder = "buildGlassIosLens" },
+    .{ .key = "blendlab", .title = "Blend lab", .builder = "buildBlendLab", .note = "BlendLab: translucency, group opacity, text, gradients, shadows, edges and scaled images (native_blend_reference.swift geometry)" },
+    .{ .key = "glassedge", .title = "Glass at the window edge", .builder = "buildGlassEdge", .note = "Glass reaching the window edge samples past it (the capture beyond the window is transparent black): the wallpaper's colours must run cleanly to the right and bottom edges under the inspector and the toolbar, with no dark rim." },
+    .{ .key = "popoverregress", .title = "Popover regressions", .builder = "buildPopoverRegressions" },
+    .{ .key = "cjkweights", .title = "CJK weights", .builder = "buildCjkWeights", .note = "One Han line in several weights at one size, in the UI font and through a Latin-only family's fallback: every glyph of a semibold line is heavier than the regular line" },
+    .{ .key = "popovertext", .title = "Popover text seam", .builder = "buildPopoverText", .note = "Popovers opening from an off-grid origin: the panel scales its settled text as one picture; no glyph moves on its own while it opens or when it settles" },
+    .{ .key = "cornerclip", .title = "Per-corner clip", .builder = "buildCornerClip", .note = "Overflow clip with four corner radii: rounded corners cut the square red fills, square corners keep them, on every clip path (shader mask, opacity fold, glass clip surface, nested clip layer, half-turned and mirrored owners)" },
+    .{ .key = "paintreplay", .title = "PaintReplay", .builder = "buildPaintReplay", .scrolls = false },
+    .{ .key = "heavytext", .title = "HeavyText", .builder = "buildHeavyText" },
+    .{ .key = "textanimjitter", .title = "TextAnimJitter", .builder = "buildTextAnimJitter" },
+    .{ .key = "cleanup", .title = "CleanupHooks", .builder = "buildCleanup" },
+    .{ .key = "interactionlifecycle", .title = "Interaction Lifecycle", .builder = "buildInteractionLifecycle" },
+    .{ .key = "teardownstress", .title = "Lifecycle Stress", .builder = "buildTeardownStress" },
+    .{ .key = "secsvg", .title = "Security / SVG", .builder = "buildSecuritySvg" },
+    .{ .key = "secopacity", .title = "Security / Opacity", .builder = "buildSecurityOpacity" },
+    .{ .key = "sectext", .title = "Security / Text", .builder = "buildSecurityText" },
 };
 
 const NavSection = struct {
@@ -186,7 +202,7 @@ const NavSection = struct {
 /// inserting a component inside a group cannot silently misclassify every
 /// section after it.
 const NAV_SECTIONS = [_]NavSection{
-    .{ .start_key = "button", .label = "Actions" },
+    .{ .start_key = "controls", .label = "Actions" },
     .{ .start_key = "input", .label = "Inputs" },
     .{ .start_key = "badge", .label = "Data display" },
     .{ .start_key = "tabs", .label = "Navigation" },
@@ -197,6 +213,41 @@ const NAV_SECTIONS = [_]NavSection{
     .{ .start_key = "glassgroup", .label = "Glass regressions" },
     .{ .start_key = "popoverregress", .label = "Regressions" },
     .{ .start_key = "secsvg", .label = "Security regressions" },
+};
+
+const WIDGETS = blk: {
+    @setEvalBranchQuota(100_000);
+    const selection = @import("storybook_options").stories;
+    const filter = @import("story_filter.zig");
+    filter.validate(&ALL_WIDGETS, selection) catch |err|
+        @compileError("invalid -Dstories: " ++ @errorName(err) ++ "; use unique, comma-separated story keys (for example button,card)");
+    var count: usize = 0;
+    for (ALL_WIDGETS) |info| {
+        if (filter.includes(selection, info.key)) count += 1;
+    }
+    var out: [count]WidgetSpec = undefined;
+    var n: usize = 0;
+    if (!std.mem.eql(u8, ALL_WIDGETS[0].key, NAV_SECTIONS[0].start_key))
+        @compileError("storybook registry must start with the first navigation section anchor");
+    var section: []const u8 = undefined;
+    for (ALL_WIDGETS) |info| {
+        for (NAV_SECTIONS) |group| {
+            if (std.mem.eql(u8, group.start_key, info.key)) section = group.label;
+        }
+        if (filter.includes(selection, info.key)) {
+            out[n] = .{
+                .key = info.key,
+                .title = info.title,
+                .build = @field(stories, info.builder),
+                .scrolls = info.scrolls,
+                .note = info.note,
+                .wide = info.wide,
+                .section = section,
+            };
+            n += 1;
+        }
+    }
+    break :blk out;
 };
 
 const COMPONENT_COUNT_LABEL = std.fmt.comptimePrint("{d} components", .{WIDGETS.len});
@@ -225,7 +276,7 @@ const NAV_ENTRIES = blk: {
         out[n] = .{ .widget = i };
         n += 1;
     }
-    break :blk out;
+    break :blk out[0..n].*;
 };
 
 /// sidebar shared state: current story and search term.
@@ -250,14 +301,7 @@ fn anyMatch(first: usize, end: usize, query: []const u8) bool {
 }
 
 fn sectionForIndex(index: usize) []const u8 {
-    var cursor = @min(index + 1, WIDGETS.len);
-    while (cursor > 0) {
-        cursor -= 1;
-        for (NAV_SECTIONS) |section| {
-            if (std.mem.eql(u8, WIDGETS[cursor].key, section.start_key)) return section.label;
-        }
-    }
-    unreachable;
+    return WIDGETS[index].section;
 }
 
 fn titleForIndex(index: usize) []const u8 {
@@ -265,10 +309,7 @@ fn titleForIndex(index: usize) []const u8 {
 }
 
 fn isSectionStart(comptime index: usize) bool {
-    for (NAV_SECTIONS) |section| {
-        if (std.mem.eql(u8, WIDGETS[index].key, section.start_key)) return true;
-    }
-    return false;
+    return index == 0 or !std.mem.eql(u8, WIDGETS[index - 1].section, WIDGETS[index].section);
 }
 
 /// one nav item. item's own derived state (selected / search match) is memo on item scope: row
@@ -339,6 +380,31 @@ fn toggleDevtools(cx: *ui.Cx) void {
 /// decorative text (separators etc): draws normally, not exposed to a11y.
 const decorative = .{ .style = S.category, .a11y = ui.A11yProps{ .hidden = true } };
 
+const StoryPersist = struct {
+    active: *ui.Signal(usize),
+    registered: bool = false,
+    fn encode(raw: *anyopaque, allocator: std.mem.Allocator) ![]u8 {
+        const self: *StoryPersist = @ptrCast(@alignCast(raw));
+        return allocator.dupe(u8, WIDGETS[@min(self.active.peek(), WIDGETS.len - 1)].key);
+    }
+    fn decode(raw: *anyopaque, version: ?u32, bytes: ?[]const u8) !void {
+        if (version != 1) return; // Unknown versions and removed stories retain the startup route.
+        const key = bytes orelse return;
+        const self: *StoryPersist = @ptrCast(@alignCast(raw));
+        for (WIDGETS, 0..) |widget, i| if (std.mem.eql(u8, widget.key, key)) {
+            self.active.set(i);
+            return;
+        };
+    }
+    fn cleanup(self: *StoryPersist) void {
+        if (self.registered) zenit_app.dev_control.unpersist("storybook.story") catch |err| std.log.warn("storybook: dev_control unpersist failed: {s}", .{@errorName(err)});
+    }
+    fn changed(active: *ui.Signal(usize)) void {
+        _ = active.get();
+        zenit_app.dev_control.markDirty();
+    }
+};
+
 fn mountUI(cx: *ui.Cx, scope: *ui.Scope) anyerror!*ui.Node {
     // 74 inline story builders plus key-anchored section lookup exceed Zig's
     // conservative default comptime branch budget during monomorphization.
@@ -360,12 +426,27 @@ fn mountUI(cx: *ui.Cx, scope: *ui.Scope) anyerror!*ui.Node {
         var fba = std.heap.FixedBufferAllocator.init(&env_buf);
         const want = @import("zenit_environment").getOwned(fba.allocator(), "ZENIT_STORYBOOK_STORY") catch break :blk 0;
         for (WIDGETS, 0..) |w, i| if (std.mem.eql(u8, w.key, want)) break :blk i;
+        // A real key that -Dstories filtered out is a build/launch mismatch: falling back to the
+        // first story would silently capture the wrong screen, so fail loudly instead.
+        for (ALL_WIDGETS) |info| if (std.mem.eql(u8, info.key, want)) {
+            std.log.err("ZENIT_STORYBOOK_STORY={s} is not in this build's -Dstories selection", .{want});
+            std.process.exit(2);
+        };
+        std.log.warn("ZENIT_STORYBOOK_STORY={s} matches no story; opening the first one", .{want});
         break :blk 0;
     };
     const nav = Nav{
         .active = try scope.createSignal(usize, initial_index), // default select first
         .query = try scope.createText("", .{}),
     };
+    if (zenit_app.dev_control.enabled and zenit_app.dev_control.active()) {
+        // Decode route/model before v.dynamic mounts the selected story.
+        const persisted_story = try scope.createState(StoryPersist, .{ .active = nav.active });
+        try scope.onCleanup(StoryPersist, persisted_story, StoryPersist.cleanup);
+        try zenit_app.dev_control.persist("storybook.story", 1, persisted_story, StoryPersist.encode, StoryPersist.decode);
+        persisted_story.registered = true;
+        try scope.createEffect(nav.active, StoryPersist.changed);
+    }
     if (zenit_app.test_harness.enabled and @import("builtin").os.tag == .macos) {
         for (WIDGETS, 0..) |spec, index| {
             if (std.mem.eql(u8, spec.key, "emoji"))
@@ -381,7 +462,7 @@ fn mountUI(cx: *ui.Cx, scope: *ui.Scope) anyerror!*ui.Node {
                 v.icon(.{ .style = S.searchIcon, .tint = S.searchIconTint }, ui.system_icons.search),
                 // search box self-draws shell (border / background / icon), embedded Input only
                 // keeps editable text surface.
-                v.attrs(.{ .test_id = "storybook.search", .style = S.searchInput }, W.Input(.{
+                v.attrs(.{ .test_id = "storybook.search", .parts = .{ .input_container = "storybook.search.input" }, .style = S.searchInput }, W.Input(.{
                     .placeholder = "Search components",
                     .placeholder_color = light.tokens.color.fg_tertiary,
                     .size = .sm,
@@ -395,6 +476,7 @@ fn mountUI(cx: *ui.Cx, scope: *ui.Scope) anyerror!*ui.Node {
         // into view before command), so off-screen rows still clickable, see
         // src/test_harness/command_executor.zig.
         v.with(W.ScrollArea(.{
+            .persist_key = "storybook.sidebar",
             .direction = .vertical,
             .padding = .{ .top = 0, .right = 10, .bottom = 12, .left = 10 },
         }), .{
@@ -444,7 +526,7 @@ fn macWindow(scope: *ui.Scope, cx: *ui.Cx, nav: Nav, pager: *Pager, library: *ui
     action_bar.root.style.width = .{ .fit = .{} };
     const sidebar = try W.GlassBox(.{ .height = 1, .corner_radius = S.sidebar_radius, .padding = Padding.all(0), .body_gap = 0 }).mountWithState(scope, cx);
     sidebar.box.style.width = .{ .px = S.sidebar_width };
-    sidebar.box.style.height = .{ .grow = .{} };
+    sidebar.box.style.height = .{ .grow = .{ .min = 0 } };
     sidebar.box.meta.ownership.meta.test_id = "sidebar";
     sidebar.box.behavior.interaction.a11y = sidebar_a11y;
     // Top row: the traffic lights (title-bar height, part of the drag region).
@@ -595,6 +677,7 @@ fn renderStoryContent(comptime spec: WidgetSpec, scope: *ui.Scope, cx: *ui.Cx) !
         v.component(StoryPanel(spec).build, {}),
     } else .{v.component(StoryPanel(spec).build, {})};
     if (spec.scrolls) return v.render(scope, cx, v.with(W.ScrollArea(.{
+        .persist_key = "storybook.content",
         .direction = .vertical,
         .padding = .{ .top = S.content_top, .right = light.tokens.space.space800, .bottom = light.tokens.space.space800, .left = light.tokens.space.space800 },
         .background = S.content_bg,
@@ -620,10 +703,16 @@ fn renderStoryPanel(comptime spec: WidgetSpec, scope: *ui.Scope, cx: *ui.Cx) !*u
 }
 
 pub fn main(init: std.process.Init) !void {
+    // Debug/ReleaseSafe keep leak reporting for the e2e gates. Optimized
+    // builds use the system malloc, which returns idle pages to the OS instead
+    // of keeping per-size-class debug buckets resident.
+    const checked = comptime @import("builtin").mode == .debug or @import("builtin").mode == .safe;
     var gpa = std.heap.DebugAllocator(.{}){};
-    defer _ = gpa.deinit();
+    defer if (checked) {
+        _ = gpa.deinit();
+    };
 
-    const allocator = gpa.allocator();
+    const allocator = if (checked) gpa.allocator() else std.heap.c_allocator;
     // Args.toSlice may own several allocations on Windows; the process arena
     // owns the complete argument view on every platform.
     const args = try init.minimal.args.toSlice(init.arena.allocator());
@@ -638,6 +727,10 @@ pub fn main(init: std.process.Init) !void {
         if (std.mem.eql(u8, arg, "--zenit-custom-titlebar")) native_controls = true;
         if (@import("builtin").os.tag == .linux and std.mem.eql(u8, arg, "--validation")) require_gpu_validation = true;
     }
+    // Outlives the app (deinit runs after application.deinit): the cjkweights fixture's Latin-only
+    // family (examples/storybook/cjk_weights).
+    var font_registry = zenit_app.FontRegistry.init(allocator);
+    defer font_registry.deinit();
     var application = MultiWindowApp.init(allocator, .{ .pump_timeout_ms = 16 });
     defer application.deinit();
 
@@ -650,15 +743,31 @@ pub fn main(init: std.process.Init) !void {
             .min_width = 640,
             .min_height = 420,
             .title = "zenit Storybook",
+            .persist_key = "storybook.main",
             .titlebar_height = S.header_height,
             .chrome = if (native_titlebar) .native else .{ .custom = .{ .controls = if (native_controls) .automatic else .application, .unsupported = .use_native } },
         },
         .idle_skip_frames = true,
     };
     if (comptime @import("builtin").os.tag == .linux) storybook_config.require_gpu_validation = require_gpu_validation;
+    // ZENIT_STORYBOOK_UI_FONT=<family>: replace the system UI font as the default family (a
+    // Latin-only one sends Han text through the default family's fallback, the path an app with
+    // its own Latin UI font takes; the cjkweights fixture checks it).
+    if (@import("zenit_environment").getOwned(init.arena.allocator(), "ZENIT_STORYBOOK_UI_FONT") catch null) |family| {
+        const families = try init.arena.allocator().alloc([]const u8, 1);
+        families[0] = family;
+        storybook_config.font.fallback_families = families;
+    }
     const storybook = try application.createWindowWith(storybook_config, mountUI);
     const storybook_window_id = storybook.windowId();
-    if (zenit_app.test_harness.enabled and @import("builtin").os.tag == .macos)
+    {
+        const App = @TypeOf(storybook.*);
+        font_registry.setFontSystem(if (@hasField(App, "font_manager")) &storybook.font_manager else &storybook.font_system);
+        const cjk = @import("cjk_weights/mod.zig");
+        std.debug.assert(@backingInt(try font_registry.intern(cjk.latin_family_name)) == cjk.latin_family_id);
+        storybook.setFontRegistry(&font_registry);
+    }
+    if (zenit_app.test_harness.enabled)
         @import("atlas_eviction_fixture.zig").install(storybook);
     // BlendLab 32x32 checkerboard (8px squares), same image as native_blend_reference.swift.
     {

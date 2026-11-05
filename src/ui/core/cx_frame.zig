@@ -13,6 +13,7 @@ const Task = core.Task;
 const TaskPriority = core.TaskPriority;
 const WorkKey = core.WorkKey;
 const cx_cursor = @import("cx_cursor.zig");
+const cx_hover = @import("cx_hover.zig");
 const cx_render = @import("cx_render.zig");
 const cx_runtime_index = @import("cx_runtime_index.zig");
 const debug_env = @import("debug_env.zig");
@@ -53,7 +54,13 @@ pub fn advanceFrameClock(self: *Cx) void {
         // during idle real time flows, logic clock must freeze. record this duration in pause
         // offset, else next active frame dumps entire idle into animation (overlay instant jump to
         // end).
-        if (self.last_frame_instant) |prev| self.clock_paused_ns += now.since(prev);
+        // A compositor sprite is an animation of this clock that keeps
+        // running while the window renders nothing: the clock keeps flowing,
+        // so the first frame after it hands back paints the picture the
+        // compositor shows at that moment, not the one from when it took over.
+        if (self.last_frame_instant) |prev| {
+            if (!self.sprites.anyActive()) self.clock_paused_ns += now.since(prev);
+        }
         self.frame_clock_was_idle = true;
         return;
     }
@@ -72,17 +79,20 @@ pub fn advanceFrameClock(self: *Cx) void {
     // The idle cache fast path retains its last declaration and wake deadline.
     self.caret_phase_valid = false;
     self.caret_rect_count = 0;
+    self.caret_shown = null;
     self.caret_rect_overflow = false;
     self.needs_redraw = false;
 
     if (self.test_frame_step_ms) |step| {
-        var taken = step;
+        // f64 throughout: a granted budget lands the clock exactly on the
+        // instant it names (pixel checks compare against a flipbook sample).
+        var taken: f64 = step;
         if (self.test_clock_budget_ms) |*budget| {
-            taken = @floatCast(@min(@as(f64, step), budget.*));
+            taken = @min(taken, budget.*);
             budget.* -= taken;
         }
-        self.frame_dt_ms = taken;
-        self.frame_dt_seconds = taken / 1000;
+        self.frame_dt_ms = @floatCast(taken);
+        self.frame_dt_seconds = @floatCast(taken / 1000);
         self.frame_time_ms += taken;
         return;
     }
@@ -112,24 +122,43 @@ pub fn advanceFrameClock(self: *Cx) void {
 
 pub fn layout(self: *Cx) void {
     defer cx_cursor.updateCursorShape(self);
+    // Stage split of the renderer's layout_us (ZENIT_PERF_TRACE): layout engine + table sync vs.
+    // interaction / order index rebuild. Written after perf.resetFrame below.
+    var layout_engine_us: u64 = 0;
+    var interaction_index_us: u64 = 0;
+    var layout_ran = false;
+    var index_ran = false;
+    defer {
+        self.perf.frame_layout_engine_us = layout_engine_us;
+        self.perf.frame_interaction_index_us = interaction_index_us;
+        self.perf.frame_layout_ran = @intFromBool(layout_ran);
+        self.perf.frame_index_rebuild_ran = @intFromBool(index_ran);
+    }
     self.text.syncLegacyMeasureHooks();
     if (self.root) |r| {
         const had_dirty = r.frame_state.state_bits.dirty.core.layout or r.frame_state.state_bits.dirty.core.subtree_layout;
         const had_interaction_dirty = r.frame_state.state_bits.dirty.pipeline.subtree_interaction;
+        layout_ran = had_dirty;
+        index_ran = had_dirty or had_interaction_dirty;
         var partial_interaction_roots = PartialInteractionRoots{};
-        if ((had_dirty or had_interaction_dirty) and !r.frame_state.state_bits.dirty.runtime.subtree_dirty and !r.frame_state.state_bits.dirty.pipeline.subtree_order) {
+        if (had_dirty or had_interaction_dirty) {
             cx_runtime_index.collectPartialInteractionRoots(self, r, &partial_interaction_roots);
         }
+        var stage_timer = @import("zenit_time").Timer.start(self.io) catch null;
         if (had_dirty) {
             layout_engine.layoutNode(r, self.viewport, LayoutContext{ .frame_allocator = self.frame_arena.allocator(), .shaping_cache = &self.text.shaping_cache, .font_system = self.text.font_system });
             self.syncLayoutToTable(r);
         }
+        if (stage_timer) |*t| layout_engine_us = t.lap() / 1000;
+        defer if (stage_timer) |*t| {
+            interaction_index_us = t.read() / 1000;
+        };
         if (had_dirty or had_interaction_dirty) {
             // OOM not swallowed: see rebuildRuntimeIndexesIfCurrentRootDirty note.
             if (r.frame_state.state_bits.dirty.runtime.subtree_dirty) {
-                cx_runtime_index.rebuildRuntimeIndexes(self) catch @panic("OOM: rebuildRuntimeIndexes (frame end)");
+                cx_runtime_index.rebuildRuntimeIndexesWithRoots(self, partial_interaction_roots) catch @panic("OOM: rebuildRuntimeIndexes (frame end)");
             } else if (r.frame_state.state_bits.dirty.pipeline.subtree_order) {
-                cx_runtime_index.rebuildOrderIndexes(self) catch @panic("OOM: rebuildOrderIndexes (frame end)");
+                cx_runtime_index.rebuildOrderIndexesWithRoots(self, partial_interaction_roots) catch @panic("OOM: rebuildOrderIndexes (frame end)");
             } else {
                 cx_runtime_index.rebuildInteractionIndexWithPartialRoots(self, partial_interaction_roots) catch @panic("OOM: rebuildInteractionIndex (frame end)");
             }
@@ -196,7 +225,7 @@ fn hasDueTimer(self: *const Cx) bool {
     return false;
 }
 
-fn nextTimerDelayNs(self: *const Cx) ?u64 {
+pub fn nextTimerDelayNs(self: *const Cx) ?u64 {
     if (self.timers.items.len == 0) return null;
     const now = currentDeferredTimeNs(self);
     var best: u64 = std.math.maxInt(u64);
@@ -283,7 +312,8 @@ pub fn wantsFrame(self: *Cx) bool {
         self.a11y_prefs_version != a11y_preferences.version() or
         hasDueTimer(self) or
         self.hasReadyWork() or
-        self.hasPendingSceneWork();
+        self.hasPendingSceneWork() or
+        cx_hover.pending(self);
     // host gets false, skips entire frame and blocks waiting, won't call advanceFrameClock again,
     // its idle branch unreachable at runtime. record 'entered idle' here, so next active frame's dt
     // doesn't dump blocking wait into just-event-started incremental animation.
@@ -297,7 +327,8 @@ fn wantsFrameDiagnosed(self: *Cx) bool {
     const needs = self.needs_redraw or hasDueTimer(self);
     const ready = self.hasReadyWork();
     const scene = self.hasPendingSceneWork();
-    const want = needs or ready or scene;
+    const hover = cx_hover.pending(self);
+    const want = needs or ready or scene or hover;
     if (want) {
         var buf: [512]u8 = undefined;
         var w: usize = 0;
@@ -307,7 +338,7 @@ fn wantsFrameDiagnosed(self: *Cx) bool {
                 n.* += s.len;
             }
         }.f;
-        append(&buf, &w, "[wants-frame] needs_redraw={} ready_work={} scene={}", .{ needs, ready, scene });
+        append(&buf, &w, "[wants-frame] needs_redraw={} ready_work={} scene={} hover={}", .{ needs, ready, scene, hover });
         if (scene) {
             if (self.root) |root| {
                 const d = &root.frame_state.state_bits.dirty;
@@ -373,7 +404,7 @@ fn hasActiveNodeAnimations(node: *Node) bool {
 }
 
 pub fn deferredBudgetUs(self: *const Cx) u32 {
-    if (self.pressed_node != null or self.has_new_mouse_down) {
+    if (self.pressed_node != null or self.has_new_mouse_down or self.has_new_press_release) {
         return deferred_scheduler_mod.ACTIVE_FRAME_BUDGET_US;
     }
     if (self.focused_node == null and self.hovered_node == null) {

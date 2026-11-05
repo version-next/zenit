@@ -41,7 +41,7 @@ pub fn enabled(comptime background_default: bool) bool {
 /// sessions are untouched.
 pub fn isOsPointerEvent(event: system_sdk.events.Event) bool {
     return switch (event) {
-        .mouse_move, .mouse_button, .mouse_wheel, .magnify => true,
+        .mouse_move, .pointer_left, .mouse_button, .mouse_wheel, .magnify => true,
         else => false,
     };
 }
@@ -84,9 +84,18 @@ pub fn requestsFrame(isolated: bool, keyboard_isolated: bool, input: []const sys
     for (input) |event| {
         if (isolated and isOsPointerEvent(event)) continue;
         if (keyboard_isolated and isOsKeyboardEvent(event)) continue;
+        if (!eventForcesFrame(event)) continue;
         return true;
     }
     return false;
+}
+
+/// Whether delivering this platform event must render a frame by itself. A wheel event does not:
+/// it requests one through what it changes (Cx.handleScroll; a wheel against a pinned end, or over
+/// content that cannot scroll, changes nothing). Every other event keeps the unconditional frame
+/// (hover/cursor paths do not guarantee a redraw request of their own).
+pub fn eventForcesFrame(event: system_sdk.events.Event) bool {
+    return event != .mouse_wheel;
 }
 
 test "isolated pointer batches do not force frames but native lifecycle events do" {
@@ -98,6 +107,13 @@ test "isolated pointer batches do not force frames but native lifecycle events d
     try std.testing.expect(requestsFrame(false, false, input[0..1]));
     try std.testing.expect(requestsFrame(true, false, &input));
     try std.testing.expect(!requestsFrame(false, false, &.{}));
+}
+
+test "a wheel event alone forces no frame; it requests one through what it changes" {
+    const wheel = [_]system_sdk.events.Event{.{ .mouse_wheel = .{ .window_id = 1, .x = 1, .y = 2, .dx = 0, .dy = 3 } }};
+    try std.testing.expect(!requestsFrame(false, false, &wheel));
+    const mixed = [_]system_sdk.events.Event{ wheel[0], .{ .mouse_move = .{ .window_id = 1, .x = 1, .y = 2 } } };
+    try std.testing.expect(requestsFrame(false, false, &mixed));
 }
 
 test "explicit ZENIT_E2E_ISOLATE_POINTER wins over the background default" {
@@ -118,6 +134,7 @@ test "only OS pointer events are dropped" {
     const E = system_sdk.events.Event;
     inline for (@import("zenit_reflection").fields(E)) |field| {
         const expected = comptime std.mem.eql(u8, field.name, "mouse_move") or
+            std.mem.eql(u8, field.name, "pointer_left") or
             std.mem.eql(u8, field.name, "mouse_button") or
             std.mem.eql(u8, field.name, "mouse_wheel") or
             std.mem.eql(u8, field.name, "magnify");
@@ -213,9 +230,10 @@ test "keyboard isolation suppresses frames for every keyboard event only" {
     const E = system_sdk.events.Event;
     inline for (@import("zenit_reflection").fields(E)) |field| {
         const input = [_]E{@unionInit(E, field.name, std.mem.zeroes(field.type))};
-        try std.testing.expectEqual(!isOsKeyboardEvent(input[0]), requestsFrame(false, true, &input));
-        try std.testing.expectEqual(!isOsKeyboardEvent(input[0]) and !isOsPointerEvent(input[0]), requestsFrame(true, true, &input));
-        try std.testing.expect(requestsFrame(false, false, &input));
+        const forces = eventForcesFrame(input[0]);
+        try std.testing.expectEqual(forces and !isOsKeyboardEvent(input[0]), requestsFrame(false, true, &input));
+        try std.testing.expectEqual(forces and !isOsKeyboardEvent(input[0]) and !isOsPointerEvent(input[0]), requestsFrame(true, true, &input));
+        try std.testing.expectEqual(forces, requestsFrame(false, false, &input));
     }
     const mixed = [_]E{
         .{ .key = std.mem.zeroes(@FieldType(E, "key")) },

@@ -111,11 +111,11 @@ def descriptor_bindings(binary):
 
 def storage_layouts(binary):
     # Match the renderer's existing CPU structs, not a compiler-specific ABI.
-    expected = {'PathVertexIn': 28, 'ImageInstanceData': 112,
+    expected = {'PathVertexIn': 28, 'ImageInstanceData': 128,
                 'GlyphInstance': 80, 'IconInstanceData': 64,
                 'InstanceData': 176, 'ShadowParam': 32, 'GradientStop': 32}
     words = struct.unpack('<%dI' % (len(binary) // 4), binary)
-    names, arrays, strides = {}, {}, {}
+    names, arrays, strides, types = {}, {}, {}, {}
     i = 5
     while i < len(words):
         count, op = words[i] >> 16, words[i] & 65535
@@ -125,12 +125,19 @@ def storage_layouts(binary):
             names[args[0]] = raw.split(b'\0', 1)[0].decode('utf8')
         elif op == 29:  # OpTypeRuntimeArray
             arrays[args[0]] = args[1]
+        elif op in (22, 23):  # OpTypeFloat, OpTypeVector
+            types[args[0]] = (op, args[1:])
         elif op == 71 and args[1] == 6:  # ArrayStride
             strides[args[0]] = args[2]
         i += count
     layouts = {}
     for array, element in arrays.items():
         name = names.get(element)
+        # A bare float4 table (glass's tab lens field): the CPU's [4]f32 rows.
+        vector = types.get(element)
+        if name is None and vector and vector[0] == 23 and vector[1][1] == 4 and types.get(vector[1][0]) == (22, (32,)):
+            name = 'float4'
+            expected = dict(expected, float4=16)
         if name not in expected:
             raise ValueError('unverified CPU storage layout: %r' % name)
         stride = strides.get(array)
@@ -165,11 +172,6 @@ def adapt_source(path, original):
         if source.count(old) != 1:
             raise ValueError('unrecognized glass insertion-sort sentinel')
         source = source.replace(old, 'while (j > 0 && dist[max(j - 1, 0)] > d_i)')
-    if path.stem == 'image':
-        old = 'float3 rect_clip_padding;'
-        if source.count(old) != 1:
-            raise ValueError('unrecognized ImageInstanceData padding')
-        source = source.replace(old, 'float rect_clip_padding0; float rect_clip_padding1; float rect_clip_padding2;')
     if path.stem == 'path':
         old = 'struct PathVertexIn { float x; float y; float alpha_scale; float4 color; };'
         if source.count(old) != 1:

@@ -2,12 +2,19 @@ const std = @import("std");
 pub const PaintFingerprint = @import("command_encoder/paint_fingerprint.zig");
 pub const visual_quality = @import("visual_quality.zig");
 pub const shader_sources = @import("shader_sources.zig");
+pub const tab_lens_field = @import("tab_lens_field.zig");
 /// Glass shader uniform ABI (backdrop_blur.zig), for backend contract direct use not hand-copied
 /// layout.
 pub const GlassUniforms = @import("backdrop_blur.zig").GlassUniforms;
 /// Per-frame glass cost counters (read and reset by the app renderer).
 pub const backdrop_blur = @import("backdrop_blur.zig");
+pub const corner_radii = @import("zenit_corner_radii");
 pub const offscreen_texture = @import("offscreen_texture.zig");
+pub const glass_reuse = @import("glass_reuse.zig");
+pub const opacity_layer = @import("opacity_layer.zig");
+pub const cpu_flat = @import("cpu_flat.zig");
+pub const text_ink = @import("text_ink.zig");
+pub const recording_submission = @import("recording_submission.zig");
 
 // Text rendering (from text abstraction layer)
 const text = @import("text");
@@ -71,6 +78,7 @@ pub const IconInstance = icon_renderer.IconInstance;
 const command_encoder_mod = @import("command_encoder.zig");
 pub const RenderCommandEncoder = command_encoder_mod.RenderCommandEncoder;
 pub const FrameDamage = @import("frame_damage.zig").FrameDamage;
+pub const frame_damage = @import("frame_damage.zig");
 pub const RetainedPlan = @import("command_encoder/retained_plan.zig").Plan;
 pub const OffscreenTexturePool = @import("offscreen_texture.zig").OffscreenTexturePool;
 pub const OffscreenMaintenanceRetry = @import("offscreen_maintenance_retry.zig").MaintenanceRetry;
@@ -103,9 +111,13 @@ pub const PathRenderer = path_renderer_mod.PathRenderer;
 // explicitly import to be collected by test runner, refAllDecls only recurses modules referenced in
 // this file, missing this line silently loses 16 tests.
 test {
+    _ = @import("recording_submission.zig");
     _ = @import("command_encoder_test.zig");
+    _ = @import("zenit_corner_radii");
     _ = @import("texture_upload_validation_test.zig");
     _ = @import("frame_damage.zig");
+    _ = @import("slot_buffer.zig");
+    _ = @import("tab_lens_field.zig");
     // RTL shaping contract test: must run real CoreText (this test target linked bridge).
     _ = @import("rtl_shaping_test.zig");
     // Same: font_registry tests must also be explicitly imported, pub const reference will not
@@ -113,6 +125,7 @@ test {
     _ = @import("font_registry.zig");
     // Explicit font fallback stack: pure logic test + real macOS font coverage test.
     _ = @import("font_fallback_stack.zig");
+    _ = @import("cpu_flat.zig");
     std.testing.refAllDecls(@This());
 }
 

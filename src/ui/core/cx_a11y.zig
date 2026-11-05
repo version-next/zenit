@@ -119,6 +119,12 @@ fn cxA11yPerformAction(ctx: *anyopaque, id: AXId, action: a11y_macos_bridge_mod.
     if (props.disabled or props.hidden or !self.overlay_stack.allowsSemanticAction(node)) return false;
 
     if (node.behavior.interaction.focusable) self.setFocus(node);
+    if (action == .increment or action == .decrement) if (props.value_range) |range| if (range.step) |step| if (range.context) |context| {
+        const stepped = step(context, if (action == .increment) 1 else -1);
+        self.needs_redraw = true;
+        cx_input.rebuildRuntimeIndexesIfCurrentRootDirty(self);
+        return stepped;
+    };
     const rect = node.globalRect();
     const result = switch (action) {
         .press, .toggle => self.dispatcher.dispatch(.{ .click = .{
@@ -341,7 +347,7 @@ fn buildTextClip(self: *Cx, node: *Node, viewport: ?core.ComputedRect) !TextClip
         var node_quad: ?[4]polygon_geometry.Point = null;
         if (current.style.overflow_hidden) {
             const shape = @import("interaction_semantics.zig").nodeClipShape(current);
-            if (shape == .rect or (shape == .rounded_rect and shape.rounded_rect <= 0)) {
+            if (shape == .rect or (shape == .rounded_rect and shape.rounded_rect <= 0) or (shape == .rounded_corners and @max(@max(shape.rounded_corners[0], shape.rounded_corners[1]), @max(shape.rounded_corners[2], shape.rounded_corners[3])) <= 0)) {
                 const local = current.rectFromWorldOrFallback();
                 const padding_clip = @import("render_engine/clip.zig").paddingBoxClipRect(current, .{ .x = 0, .y = 0, .w = local.w, .h = local.h });
                 const transform = retained.buildAncestorWorldTransform(current, .{ .include_rotation = true });

@@ -87,12 +87,17 @@ pub const TabsRuntime = struct {
     variant: TabsVariant,
     size: TabsSize,
     closable: bool,
+    block: bool = false,
     tokens: *const theme.ThemeTokens,
+    /// The view effect reads it: a theme switch re-resolves the slots and rebuilds the tabs.
+    theme: *reactive.Signal(*const theme.ThemeTokens),
     allocator: Allocator,
     cx: *Cx,
     scope: *Scope,
     tab_row: *Node,
     highlight_box: *Node,
+    /// Underline variant's bottom rule (null for the other variants)
+    separator: ?*Node = null,
     slots: TabsSlotRecipe.Slots,
     /// Scope of current tab subtree (hover hook, click context), whole rebuild when items change
     tabs_scope: ?*Scope = null,
@@ -134,6 +139,8 @@ pub const TabsRuntime = struct {
 
     /// View = f(items, active). mount snapshot passes false, effect passes true.
     fn view(self: *TabsRuntime, comptime tracked: bool) !void {
+        const t = if (tracked) self.theme.get() else self.theme.peek();
+        if (t != self.tokens) self.applyTheme(t);
         const items = self.items.read(tracked);
         const index = indexOf(items, self.active.readAs(tracked));
         const key = itemsKey(items);
@@ -150,6 +157,18 @@ pub const TabsRuntime = struct {
             self.shown_index = index;
         }
         self.tab_row.markRenderDirty();
+    }
+
+    /// Theme switch: re-resolve the slots, restyle the row, slider and rule, and drop the built
+    /// key so the tabs rebuild with the new colors (as a fresh mount would build them).
+    fn applyTheme(self: *TabsRuntime, t: *const theme.ThemeTokens) void {
+        self.tokens = t;
+        self.slots = TabsSlotRecipe.resolve(.{ .variant = self.variant, .size = self.size }, t);
+        self.tab_row.setStyleInline(self.allocator, tabRowStyle(self.slots, self.block));
+        self.highlight_box.setStyleInline(self.allocator, highlightStyle(self.slots, self.variant == .underline));
+        if (self.separator) |rule| rule.setBackground(t.tokens.color.separator);
+        self.built_key = null;
+        self.shown_index = std.math.maxInt(usize);
     }
 
     fn viewEffect(self: *TabsRuntime) void {
@@ -170,7 +189,7 @@ pub const TabsRuntime = struct {
             if (i < items.len and items[i].disabled) continue;
             const resolved = if (is_active) active_style else tab_style;
             const text_color = resolved.text_color orelse t.tokens.color.fg_secondary;
-            const icon_tint = if (is_active and self.variant == .tab) t.tokens.color.accent else t.tokens.color.fg_secondary;
+            const icon_tint = if (is_active and self.variant != .underline) t.tokens.color.accent else t.tokens.color.fg_secondary;
             updateTabDescendants(tab_node, text_color, icon_tint, is_active);
         }
     }
@@ -203,6 +222,7 @@ pub const TabsRuntime = struct {
             .is_active = i == c.active,
             .is_disabled = item.disabled,
             .show_close = item.closable or self.closable,
+            .block = self.block,
             .slots = self.slots,
         });
     }
@@ -257,11 +277,49 @@ pub const TabsRuntime = struct {
     }
 };
 
+/// tab_row: row container for all tabs + highlight_box, geometry/background all from root slot
+fn tabRowStyle(slots: TabsSlotRecipe.Slots, block: bool) core.BoxStyle {
+    const root_resolved = slots.root.resolve(.{});
+    var style: core.BoxStyle = .{
+        .border_overlay = true,
+        .no_cross_stretch = true,
+        .position = .relative,
+        .gap = root_resolved.gap,
+        .padding = root_resolved.padding,
+        .align_items = .center,
+        .background = root_resolved.background,
+        .border = root_resolved.border,
+        .border_color = root_resolved.border_color,
+        .border_bottom_width = root_resolved.border_bottom_width,
+        .corner_radius = if (root_resolved.corner_radius) |cr| (if (cr > 0) cr else null) else null,
+    };
+    if (block) {
+        // In a column the fill width is a cross-axis stretch: allow it.
+        style.width = core.Sizing.fill();
+        style.no_cross_stretch = false;
+    }
+    return style;
+}
+
+/// highlight_box: absolute positioned, follows active tab (first child of tab_row)
+fn highlightStyle(slots: TabsSlotRecipe.Slots, is_underline: bool) core.BoxStyle {
+    var hl_style = slots.highlight.resolve(.{});
+    hl_style.position = .absolute;
+    // Anchored at the row's padding box: translate_x / margin_top carry the active
+    // tab's parent-relative rect, which already includes the row padding (the static
+    // position, the content box, would add the padding a second time).
+    hl_style.inset = .{ .top = .{ .px = 0 }, .left = .{ .px = 0 } };
+    // The underline bar overlaps the tabs' bottom edge: paint it over their hover and
+    // pressed backgrounds. Pill and tab sliders stay under the labels.
+    if (is_underline) hl_style.z_index = 1;
+    return hl_style;
+}
+
 // tabsBeforeRender, highlight box follows
 
 /// Update text color, icon tint, and font_weight of tab descendant nodes
 fn updateTabDescendants(parent: *Node, text_color: Color, icon_tint: Color, is_active: bool) void {
-    const target_weight: u16 = if (is_active) 600 else 500;
+    const target_weight: u16 = if (is_active) 500 else 400;
     for (parent.children.items) |child| {
         _ = child.setTint(icon_tint);
         // label_wrapper: [ghost, real_text]
@@ -404,6 +462,8 @@ pub const TabsProps = struct {
     variant: TabsVariant = .underline,
     size: TabsSize = .md,
     closable: bool = false,
+    /// Fill the parent's width, the tabs sharing it equally (a segmented control).
+    block: bool = false,
     /// Called after user switches and lands (the landed id)
     on_change: ?Handler([]const u8) = null,
     /// Click close button (tab id); closing itself is handled by caller updating items
@@ -422,6 +482,7 @@ const TabBuildArgs = struct {
     is_active: bool,
     is_disabled: bool,
     show_close: bool,
+    block: bool = false,
     rt: *TabsRuntime,
     tab_index: usize,
     slots: TabsSlotRecipe.Slots,
@@ -442,25 +503,14 @@ pub const TabsBuilder = struct {
         const p = self.props;
 
         const slots = TabsSlotRecipe.resolve(.{ .variant = p.variant, .size = p.size }, t);
-        const root_resolved = slots.root.resolve(.{});
         const is_underline = p.variant == .underline;
-
-        // tab_row: row container for all tabs + highlight_box, geometry/background all from root
-        // slot
-        const tab_row_style: core.BoxStyle = .{
-            .position = .relative,
-            .gap = root_resolved.gap,
-            .padding = root_resolved.padding,
-            .align_items = .center,
-            .background = root_resolved.background,
-            .corner_radius = if (root_resolved.corner_radius) |cr| (if (cr > 0) cr else null) else null,
-        };
-        // highlight_box: absolute positioned, follows active tab (first child of tab_row)
-        var hl_style = slots.highlight.resolve(.{});
-        hl_style.position = .absolute;
+        const theme_sig = try cx.themeSignal();
+        const tab_row_style = tabRowStyle(slots, p.block);
+        const hl_style = highlightStyle(slots, is_underline);
 
         var tab_row: *Node = undefined;
         var highlight_box: *Node = undefined;
+        var separator: ?*Node = null;
         // Selected state's only observable exit: its translate_x points to current active tab (e2e
         // assertion)
         const highlight = ui_view.capture(&highlight_box, ui_view.box(.{ .style = hl_style, .test_id = "tabs.highlight" }, {}));
@@ -468,16 +518,17 @@ pub const TabsBuilder = struct {
         // underline, otherwise is tab_row
         const tablist_a11y: core.A11yProps = .{ .role = .tablist, .required = true };
         const container = try ui_view.render(my_scope, cx, ui_view.branch(is_underline, ui_view.col(.{
+            .style = core.BoxStyle{ .width = if (p.block) core.Sizing.fill() else core.Sizing{ .fit = .{} } },
             .tag = .button,
             .focusable = true,
             .a11y = tablist_a11y,
         }, .{
             ui_view.capture(&tab_row, ui_view.row(.{ .style = tab_row_style }, .{highlight})),
-            ui_view.box(.{ .style = .{
+            ui_view.capture(&separator, ui_view.box(.{ .style = .{
                 .width = .{ .grow = .{} },
                 .height = .{ .px = 1 },
                 .background = t.tokens.color.separator,
-            } }, {}),
+            } }, {})),
         }), ui_view.capture(&tab_row, ui_view.row(.{
             .style = tab_row_style,
             .tag = .button,
@@ -487,7 +538,9 @@ pub const TabsBuilder = struct {
         // Guard stays armed until return: container remains unowned even after binding
         errdefer cx.freeNode(container);
         highlight_box.meta.ownership.meta.component_name = "TabHighlight";
-        highlight_box.applyTransition(allocator, &comptime recipe_mod.transition("translate-x 150ms ease-out, width 150ms ease-out"));
+        // Decoration only: never takes a pointer from the tab under it.
+        highlight_box.setHitTestVisible(false);
+        try highlight_box.applyTransition(allocator, &comptime recipe_mod.transition("translate-x 150ms ease-out, width 150ms ease-out"));
 
         container.meta.ownership.meta.component_name = "Tabs";
         try core.bindScopeToNode(my_scope, container);
@@ -513,12 +566,15 @@ pub const TabsBuilder = struct {
             .variant = p.variant,
             .size = p.size,
             .closable = p.closable,
+            .block = p.block,
             .tokens = t,
+            .theme = theme_sig,
             .allocator = allocator,
             .cx = cx,
             .scope = my_scope,
             .tab_row = tab_row,
             .highlight_box = highlight_box,
+            .separator = separator,
             .slots = slots,
         };
         items_adopted = true;
@@ -565,7 +621,7 @@ fn buildTab(args: TabBuildArgs, scope: *Scope, cx: *Cx) !*Node {
     const resolved = slots.tab.resolve(.{ .is_selected = is_active });
 
     const text_color = if (is_disabled)
-        t.tokens.color.fg_secondary
+        t.tokens.color.fg_disabled
     else
         resolved.text_color orelse t.tokens.color.fg_secondary;
 
@@ -597,16 +653,22 @@ fn buildTab(args: TabBuildArgs, scope: *Scope, cx: *Cx) !*Node {
     if (!is_disabled) close_style.cursor = .pointer;
 
     const icon_sz = styles.tabIconSize(s);
-    const icon_asset: ?svg_assets.Asset = if (v == .tab) item.icon_asset else null;
+    const icon_asset: ?svg_assets.Asset = item.icon_asset;
 
     // All variants unified: row { icon?, label, badge?, close? }
     // Background from highlight_box, tab transparent; geometry from tab slot's derived
     var close_btn: ?*Node = null;
     const tab_node = try ui_view.render(scope, cx, ui_view.row(.{
         .style = .{
+            .width = if (args.block) core.Sizing.fill() else core.Sizing{ .fit = .{} },
+            .justify = if (args.block) core.Justify.center else .start,
+            .height = resolved.height,
+            .no_cross_stretch = true,
             .padding = resolved.padding,
             .align_items = .center,
             .gap = resolved.gap,
+            .corner_radius = resolved.corner_radius,
+            .corner_radii = resolved.corner_radii,
             .cursor = if (!is_disabled) core.CursorShape.pointer else null,
         },
         // role=tab + label + selected all required (container is role=tablist)
@@ -618,10 +680,10 @@ fn buildTab(args: TabBuildArgs, scope: *Scope, cx: *Cx) !*Node {
             .item_selection = if (is_disabled) null else .{ .context = @ptrCast(click_ctx), .set = setAccessibleTabSelection },
         },
     }, .{
-        // Tab variant: icon
+        // Optional icon (any variant)
         if (icon_asset) |asset| ui_view.icon(.{
             .style = .{ .width = .{ .px = icon_sz }, .height = .{ .px = icon_sz } },
-            .tint = if (is_active) t.tokens.color.accent else t.tokens.color.fg_secondary,
+            .tint = if (is_active and v != .underline) t.tokens.color.accent else t.tokens.color.fg_secondary,
         }, asset) else null,
         // Label: ghost bold text (h=0, prevents jitter) + real text (font_weight switches
         // instantly)
@@ -637,7 +699,7 @@ fn buildTab(args: TabBuildArgs, scope: *Scope, cx: *Cx) !*Node {
             ui_view.text(.{ .style = core.TextStyle{
                 .color = text_color,
                 .font_size = font_sz,
-                .font_weight = if (is_active) @as(u16, 600) else @as(u16, 500),
+                .font_weight = if (is_active) @as(u16, 500) else @as(u16, 400),
             } }, item.label),
         }),
         // badge
@@ -654,7 +716,24 @@ fn buildTab(args: TabBuildArgs, scope: *Scope, cx: *Cx) !*Node {
     if (!is_disabled) {
         tab_node.behavior.events.on_event = tabClickHandler;
         tab_node.behavior.events.event_context = click_ctx;
-        _ = try hooks.useHover(scope, tab_node);
+        const hover = try hooks.useHover(scope, tab_node);
+        const pressed = try hooks.usePressed(scope, cx, tab_node);
+        const Visual = struct {
+            hover: *reactive.Signal(bool),
+            pressed: *reactive.Signal(bool),
+            node: *Node,
+            rt: *TabsRuntime,
+            index: usize,
+            fn update(c: @This()) void {
+                const hovered = c.hover.get();
+                const down = c.pressed.get();
+                const active = TabsRuntime.indexOf(c.rt.items.read(true), c.rt.active.readAs(true)) == c.index;
+                // The selected tab already shows its slider / bar: no hover or pressed fill over it.
+                const visual = c.rt.slots.tab.resolve(.{ .is_selected = active, .is_hovered = hovered and !active, .is_pressed = down and hovered and !active });
+                c.node.setBackgroundRaw(visual.background orelse Color.TRANSPARENT);
+            }
+        };
+        try scope.createEffect(Visual{ .hover = hover, .pressed = pressed, .node = tab_node, .rt = args.rt, .index = args.tab_index }, Visual.update);
         if (close_btn) |btn| {
             btn.behavior.events.on_event = tabCloseHandler;
             btn.behavior.events.event_context = click_ctx;
@@ -894,9 +973,9 @@ test "Tabs: icon variant" {
     try root.appendChild(std.testing.allocator, tabs_node);
 
     // children = [highlight_box, tab_a, tab_b]
-    // highlight_box should have accent_subtle background
+    // cokFx document tabs: selected page is the primary surface.
     const hbox = tabs_node.children.items[0];
-    try std.testing.expect(Color.eql(hbox.getBackground(), ctx.tokens.tokens.color.accent_subtle));
+    try std.testing.expect(Color.eql(hbox.getBackground(), ctx.tokens.tokens.color.bg_primary));
 
     // Each tab should have icon + label = 2 children
     const first_tab = tabs_node.children.items[1];
@@ -960,8 +1039,8 @@ test "Tabs: underline highlight box" {
     // tab_row children = [highlight_box, tab_a, tab_b]
     const hbox = tab_row.children.items[0];
     try std.testing.expectEqualStrings("TabHighlight", hbox.meta.ownership.meta.component_name.?);
-    // Underline highlight = accent background, 2px height
-    try std.testing.expect(Color.eql(hbox.getBackground(), ctx.tokens.tokens.color.accent));
+    // Underline highlight = primary ink, 2px height
+    try std.testing.expect(Color.eql(hbox.getBackground(), ctx.tokens.tokens.color.fg_primary));
     try std.testing.expectEqual(@as(f32, 2), hbox.style.height.px);
 }
 

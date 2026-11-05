@@ -48,7 +48,7 @@ test "Alert: basic" {
 
     try root.appendChild(std.testing.allocator, alert);
 
-    // alert has 2 children: accent_bar + content
+    // alert has 2 children: status icon + content
     try std.testing.expectEqual(@as(usize, 2), alert.children.items.len);
 }
 
@@ -85,7 +85,7 @@ test "Alert: closable" {
 
     try root.appendChild(std.testing.allocator, alert);
 
-    // accent bar + content area + close button
+    // status icon + content area + close button
     try std.testing.expectEqual(@as(usize, 3), alert.children.items.len);
     try std.testing.expectEqualStrings("Dismiss", alert.children.items[2].behavior.interaction.a11y.?.label.?);
 }
@@ -119,10 +119,9 @@ test "Alert: variant backgrounds stay visually distinct" {
     const warn = try Alert(.{ .variant = .warning, .message = "b" }).mount(scope, ctx);
     defer ctx.freeNode(warn);
     try std.testing.expect(!Color.eql(info.getBackground(), warn.getBackground()));
-    try std.testing.expect(!Color.eql(info.style.border.color, warn.style.border.color));
 }
 
-test "Alert: render emits left accent bar" {
+test "Alert: render emits leading status icon" {
     var ctx = try Cx.init(std.testing.allocator, std.testing.io);
     defer ctx.deinit();
     ctx.setViewport(360, 80);
@@ -147,15 +146,19 @@ test "Alert: render emits left accent bar" {
     _ = ctx.render();
     const commands = ctx.lowerForEncoderPaintTable();
 
-    var saw_accent_bar = false;
-    for (commands) |cmd| if (cmd.isFillRect()) {
-        const r = cmd;
-        if (Color.eql(r.color.toColor(), ctx.tokens.tokens.color.warning) and r.geom.w <= 4 and r.geom.h >= 24) {
-            saw_accent_bar = true;
+    // COMPONENTS.json Alert / warning: 16px icon inside a 20x22 alignment slot.
+    const icon = alert.children.items[0].children.items[0];
+    try std.testing.expectEqual(@as(f32, 16), icon.rectFromWorldOrFallback().w);
+    try std.testing.expect(Color.eql(icon.getIcon().?.tint, ctx.tokens.tokens.color.warning));
+    var emitted = false;
+    for (commands) |cmd| {
+        if (cmd.icon_rep_ptr != null and std.meta.eql(cmd.icon_rep_ptr.?.*, icon.getIcon().?.rep) and cmd.icon_tint.r == icon.getIcon().?.tint.r and
+            cmd.icon_tint.g == icon.getIcon().?.tint.g and cmd.icon_tint.b == icon.getIcon().?.tint.b)
+        {
+            emitted = true;
         }
-    };
-
-    try std.testing.expect(saw_accent_bar);
+    }
+    try std.testing.expect(emitted);
 }
 
 test "Alert: dynamic message and variant update the view and the live region" {
@@ -177,7 +180,7 @@ test "Alert: dynamic message and variant update the view and the live region" {
     try std.testing.expectEqualStrings("Save failed: disk full", alert.behavior.interaction.a11y.?.live_text.?);
     try std.testing.expectEqualStrings("assertive", alert.behavior.interaction.a11y.?.live.?);
     const k = ctx.tokens.tokens.color;
-    try std.testing.expect(Color.eql(alert.getBackground(), Color.lerp(k.danger, k.bg_primary, 0.78)));
+    try std.testing.expect(Color.eql(alert.getBackground(), k.danger_alert_bg));
 }
 
 test "alert: 动态变体 / 消息的 mount 在任意分配点失败时不泄漏（sweep）" {
@@ -224,4 +227,23 @@ test "alert(closable): mount 在任意分配点失败时不泄漏（sweep）" {
             return try Alert(.{ .variant = .warning, .title = "Title", .message = "message body", .closable = true }).mount(scope, cx);
         }
     }.m);
+}
+
+test "Alert: contextual action is focusable and invokes its handler" {
+    var cx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer cx.deinit();
+    const scope = try Scope.init(std.testing.allocator, null, cx.owner);
+    defer scope.dispose();
+    var calls: u32 = 0;
+    const alert = try Alert(.{ .title = "Offline", .action_label = "Retry", .on_action = cx.on(u32, &calls, struct {
+        fn run(n: *u32) void {
+            n.* += 1;
+        }
+    }.run) }).mount(scope, cx);
+    defer cx.freeNode(alert);
+    const action = alert.children.items[1].children.items[1].children.items[0];
+    try std.testing.expect(action.behavior.interaction.focusable);
+    try std.testing.expectEqualStrings("Retry", action.behavior.interaction.a11y.?.label.?);
+    action.behavior.events.on_click.?.invoke();
+    try std.testing.expectEqual(@as(u32, 1), calls);
 }

@@ -14,6 +14,12 @@ pub const Surface = struct {
     layer: *mtl.CAMetalLayer,
     format: ?gpu.TextureFormat = null,
     extent: gpu.Extent3D = .{ .width = 0, .height = 0, .depth = 1 },
+    /// Depth set by setFrameLatency; overrides the configured latency.
+    frame_latency: ?u32 = null,
+    /// Latency from the last configure (before any setFrameLatency override).
+    configured_latency: u32 = 2,
+    /// maximumDrawableCount last handed to the layer (null: unknown).
+    applied_drawable_count: ?u32 = null,
 
     /// Create Surface from platform-native surface handle.
     ///
@@ -45,6 +51,8 @@ pub const Surface = struct {
         var pool = mtl.AutoreleasePool.init();
         defer pool.deinit();
 
+        if (@import("zenit_environment").flag("ZENIT_DEBUG_DRAWABLES"))
+            std.debug.print("[drawable] configure {d}x{d} usage={s}\n", .{ config.width, config.height, @tagName(config.usage) });
         // Save configuration
         self.format = config.format;
         self.extent = .{
@@ -64,11 +72,10 @@ pub const Surface = struct {
         const framebuffer_only: c_int = if (config.usage == .color_target_only) 1 else 0;
         mtl.metal_layer_set_framebuffer_only(self.layer, framebuffer_only);
 
-        // Frame buffer control
-        mtl.metal_layer_set_maximum_drawable_count(
-            self.layer,
-            config.maximum_frame_latency + 1,
-        );
+        // Frame buffer control. A depth chosen at runtime survives reconfiguration.
+        self.configured_latency = config.maximum_frame_latency;
+        self.applied_drawable_count = null;
+        self.applyDrawableCount(mtl.metal_layer_presents_with_transaction(self.layer) != 0);
 
         // VSync
         const display_sync: c_int = if (config.present_mode == .fifo) 1 else 0;
@@ -114,6 +121,11 @@ pub const Surface = struct {
         var pool = mtl.AutoreleasePool.init();
         defer pool.deinit();
 
+        // Transactional presentation (live resize, final resize frame) needs a
+        // spare drawable: see drawableCountFor.
+        const transactional = mtl.metal_layer_presents_with_transaction(self.layer) != 0;
+        self.applyDrawableCount(transactional);
+
         // Get drawable (critical: in autorelease pool).
         // ABI contract: metal_layer_next_drawable uses __bridge_retained returning +1 owned
         // (metal_bridge.m:566); take over directly, **do not retain again**.
@@ -145,8 +157,35 @@ pub const Surface = struct {
         return SurfaceTexture{
             .texture = texture,
             .drawable = drawable,
-            .present_with_transaction = mtl.metal_layer_presents_with_transaction(self.layer) != 0,
+            .present_with_transaction = transactional,
         };
+    }
+
+    /// Free every pooled drawable except the one on screen. Only call when no
+    /// SurfaceTexture is outstanding and the GPU finished the last frame.
+    pub fn purgeIdleDrawables(self: *Surface) void {
+        var pool = mtl.AutoreleasePool.init();
+        defer pool.deinit();
+        mtl.metal_layer_purge_drawables(self.layer);
+    }
+
+    /// Change the presentation depth without reconfiguring. Drawables beyond
+    /// the new limit are released by the layer as they retire (or by
+    /// purgeIdleDrawables).
+    pub fn setFrameLatency(self: *Surface, latency: u32) void {
+        self.frame_latency = latency;
+        if (@import("zenit_environment").flag("ZENIT_DEBUG_DRAWABLES"))
+            std.debug.print("[drawable] latency {d}\n", .{latency});
+        var pool = mtl.AutoreleasePool.init();
+        defer pool.deinit();
+        self.applyDrawableCount(mtl.metal_layer_presents_with_transaction(self.layer) != 0);
+    }
+
+    fn applyDrawableCount(self: *Surface, transactional: bool) void {
+        const count = drawableCountFor(self.frame_latency orelse self.configured_latency, transactional);
+        if (self.applied_drawable_count == count) return;
+        self.applied_drawable_count = count;
+        mtl.metal_layer_set_maximum_drawable_count(self.layer, count);
     }
 
     /// Destroy Surface
@@ -154,6 +193,32 @@ pub const Surface = struct {
         mtl.release(self.layer);
     }
 };
+
+/// Fewest drawables a transactional present (`presentsWithTransaction`) can
+/// run with. Such a present takes effect only when the main thread's CA
+/// transaction commits, so until then neither the on-screen drawable nor the
+/// pending one is free. AppKit live resize can render twice in one run-loop
+/// turn (setFrameSize: twice for one drag step, or setFrameSize: plus the
+/// resize ticker); with two drawables the second nextDrawable waits for a
+/// commit that cannot happen while it blocks, and CoreAnimation releases it
+/// only after a ~1 s internal timeout. A third drawable lets the second
+/// present supersede the pending one, which frees it at once.
+pub const transactional_min_drawables: u32 = 3;
+
+/// maximumDrawableCount for a presentation depth (frames queued ahead).
+pub fn drawableCountFor(latency: u32, transactional: bool) u32 {
+    const count = latency + 1;
+    return if (transactional) @max(count, transactional_min_drawables) else count;
+}
+
+test "transactional presentation always keeps a spare drawable" {
+    // Shallow adaptive depth (render_pacing.DrawableDepth.shallow = 1) is two
+    // drawables for queued presentation, but never for transactional.
+    try std.testing.expectEqual(@as(u32, 2), drawableCountFor(1, false));
+    try std.testing.expectEqual(@as(u32, 3), drawableCountFor(1, true));
+    try std.testing.expectEqual(@as(u32, 3), drawableCountFor(2, false));
+    try std.testing.expectEqual(@as(u32, 3), drawableCountFor(2, true));
+}
 
 /// SurfaceTexture - presentable texture
 pub const SurfaceTexture = struct {

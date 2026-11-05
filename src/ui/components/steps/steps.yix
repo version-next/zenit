@@ -35,9 +35,8 @@ fn rowKey(it: StepItem) u64 {
     return h.final();
 }
 
-// Circle: number text is the circle node itself (text_align = center, excludes
-// children); with checkmark icon, done step becomes circle with icon (icon =
-// checkmark when done, else null).
+// Number circles retain their own text API. num_box supplies the explicit
+// vertical line inset; icon circles use their flex centering.
 
 /// Horizontal step: equal-width column (circle + title + description)
 fn HStep(item: StepItem, index: usize, current: usize, check: ?ui.SvgAsset) View {
@@ -49,7 +48,7 @@ fn HStep(item: StepItem, index: usize, current: usize, check: ?ui.SvgAsset) View
     const icon = computed(if (index < current) check else null);
     return (
         <box style={S.h_step} a11y={semantics}>
-            {if (icon) |asset| <box style={p.circle}><icon style={p.icon} src={asset} /></box> else <text style={p.num} box={p.circle}>{label}</text>}
+            {if (icon) |asset| <box style={p.circle}><icon style={p.icon} src={asset} /></box> else <text style={p.num} box={.{ p.circle, S.num_box }}>{label}</text>}
             <text style={p.title}>{item.title}</text>
             {if (item.description) |desc| <text style={S.desc}>{desc}</text>}
         </box>
@@ -66,8 +65,8 @@ fn VStep(item: StepItem, index: usize, current: usize, count: usize, check: ?ui.
     const icon = computed(if (index < current) check else null);
     return (
         <box style={S.v_step} a11y={semantics}>
-            <box style={S.v_indicator}>
-                {if (icon) |asset| <box style={p.circle}><icon style={p.icon} src={asset} /></box> else <text style={p.num} box={p.circle}>{label}</text>}
+            <box style={S.vIndicator}>
+                {if (icon) |asset| <box style={p.circle}><icon style={p.icon} src={asset} /></box> else <text style={p.num} box={.{ p.circle, S.num_box }}>{label}</text>}
                 {if (index + 1 < count) <box style={p.connector} />}
             </box>
             <box style={S.vText}>

@@ -49,6 +49,7 @@
 //!     change: slices borrowed in descriptions (strings, arrays) must outlive the region --
 //!     literals and scope-owned data do, stack-built strings don't.
 const std = @import("std");
+const dev_preview = @import("zenit_environment").dev_preview;
 const core = @import("core.zig");
 const types = @import("core/types.zig");
 const reactive = @import("reactive.zig");
@@ -61,8 +62,11 @@ const theme_mod = @import("theme.zig");
 const render_engine = @import("core/render_engine/mod.zig");
 
 const view_parts = @import("view_parts.zig");
+pub const template = @import("template.zig");
+pub const templateSite = template.site;
 pub const ViewParts = view_parts.ViewParts;
 pub const SlotPoint = view_parts.SlotPoint;
+pub const SlotPresence = view_parts.SlotPresence;
 
 const Node = core.Node;
 const Cx = core.Cx;
@@ -94,6 +98,8 @@ const BoxDecl = style_decl.StyleDecl(BoxStyle);
 /// under caller scope; mount fail entire tree reclaim per unload order, error pass-through.
 pub fn render(scope: *Scope, cx: *Cx, element: anytype) !*Node {
     comptime requireSingle(@TypeOf(element), "ui.view.render");
+    cx.owner.beginReactiveCallback();
+    defer cx.owner.endReactiveCallback();
     const rs = try scope.childScope();
     var root: ?*Node = null;
     var stray: ?*Node = null;
@@ -101,15 +107,1101 @@ pub fn render(scope: *Scope, cx: *Cx, element: anytype) !*Node {
         control_flow.discardCaptured(cx, rs, root, stray);
         return err;
     };
-    return root orelse {
+    const node = root orelse {
         control_flow.discardCaptured(cx, rs, null, stray);
         return error.ViewEmptyRoot;
     };
+    if (rs.willBeDisposedAfterReactiveCallback() or node.pending_free_cx != null) {
+        control_flow.discardCaptured(cx, rs, node, stray);
+        return error.ViewMountCancelled;
+    }
+    return node;
+}
+
+/// Explicit host alias. Its owner releases it before discarding the host entry.
+/// The allocation is independent of setup, so scope-first host teardown may still
+/// reclaim detached rows after component resources have gone away.
+pub const RootLease = struct {
+    node: ?*Node,
+    instance: ?*ComponentInstance,
+    cx: *Cx,
+    element: core.ElementId,
+    next: ?*RootLease = null,
+    allocator: std.mem.Allocator,
+
+    pub fn acquire(allocator: std.mem.Allocator, node: *Node) !?*RootLease {
+        const instance = findComponentInstance(node.meta.ownership.scope.scope orelse return null, node) orelse return null;
+        // Preserve legacy mounting behavior, but its untracked root cannot
+        // safely participate in a persistent migrating host alias.
+        if (!leaseableRoot(instance.cx, node)) {
+            instance.root_snapshot_pinned = true;
+            return null;
+        }
+        const lease = try allocator.create(RootLease);
+        lease.* = .{ .node = node, .instance = instance, .cx = instance.cx, .element = .fromRaw(node.element_id_raw), .next = instance.leases, .allocator = allocator };
+        instance.leases = lease;
+        return lease;
+    }
+
+    /// Resolve without dereferencing a potentially freed cached pointer. An
+    /// instance can disappear while the For row's host record remains alive.
+    /// Preserve all three guards: destruction nulls instance, root replacement
+    /// updates the node, and retainedNode checks World element generation.
+    pub fn resolve(self: *const RootLease) ?*Node {
+        const instance = self.instance orelse return null;
+        if (instance.state == .disposed or instance.view_scope == null or instance.parts.root != self.node) return null;
+        return self.retainedNode();
+    }
+
+    /// Scope-first host teardown must reclaim a still-live detached node even
+    /// after setup has gone away. This weak identity is for cleanup, not input.
+    pub fn retainedNode(self: *const RootLease) ?*Node {
+        if (!self.cx.world.elements.isValid(self.element)) return null;
+        return self.node;
+    }
+
+    pub fn release(self: *RootLease) void {
+        if (self.instance) |instance| {
+            var cursor = &instance.leases;
+            while (cursor.*) |lease| {
+                if (lease == self) {
+                    cursor.* = self.next;
+                    break;
+                }
+                cursor = &lease.next;
+            }
+        }
+        self.allocator.destroy(self);
+    }
+};
+
+/// Persistent identity for a setup/view component. Owned by setup, never by a
+/// particular view allocation. Snapshot Node/ViewParts returns expire on rebuild;
+/// use parts or a live Ref to observe the replacement.
+pub const ComponentInstance = struct {
+    setup: *Scope,
+    cx: *Cx,
+    binding: *@import("core/cx_node_lifetime.zig").NodeScopeBinding,
+    view_scope: ?*Scope = null,
+    parts: ViewParts = .{ .root = null },
+    state: enum { mounting, ready, rebuilding, needs_remount, disposed } = .mounting,
+    context: *anyopaque,
+    render_fn: *const fn (*ComponentInstance) anyerror!ViewParts,
+    attachments: std.ArrayList(*ViewAttachment) = .empty,
+    leases: ?*RootLease = null,
+    root_snapshot_pinned: bool = false,
+    template_region: if (dev_preview) bool else void = if (dev_preview) false else {},
+    preview_region_identity: if (dev_preview) control_flow.TemplateRegionIdentity else void = if (dev_preview) .{} else {},
+    preview_template: if (dev_preview) ?*@import("template_reload.zig").Entry else void = if (dev_preview) null else {},
+
+    /// LP4 uses a second view scope while the live tree remains attached. The
+    /// publisher must prove side-effect isolation before calling this operation.
+    pub fn prepareView(self: *ComponentInstance) !PreparedView {
+        if (comptime !dev_preview) @compileError("template preparation requires dev preview");
+        const cx = self.cx;
+        const owner = cx.owner;
+        owner.assertThread();
+        if (self.setup.owner != owner) return error.TemplateOwnerMismatch;
+        if (owner.graph.flushing or owner.reactive_callback_depth != 0 or cx.tick_depth != 0 or owner.scope_disposal_depth != 0 or owner.inReactiveComputation() or owner.draining_disposals or owner.draining_settled_tasks or cx.draining_deferred_frees)
+            return error.ViewRebuildNeedsSafePoint;
+        if (self.state != .ready or self.root_snapshot_pinned or !rootOnlyParts(self.parts) or self.setup.willBeDisposedAfterReactiveCallback()) return error.ViewTransactionUnsupported;
+        for (self.attachments.items) |attachment| {
+            if (!attachment.replayable or !attachment.preview_replay_safe or attachment.live_scope == null or attachment.caller.owner != owner or attachment.caller.willBeDisposedAfterReactiveCallback()) return error.ViewTransactionUnsupported;
+        }
+        const old = self.parts.root orelse return error.ViewRebuildUnavailable;
+        if (nodePendingFree(old)) return error.ViewTransactionUnsupported;
+        var promotions: [template.max_depth]*ComponentInstance = undefined;
+        var promotion_count: usize = 0;
+        const bound = old.meta.ownership.scope.scope orelse return error.ViewTransactionUnsupported;
+        var promotion_scope: ?*Scope = self.setup;
+        while (promotion_scope) |scope| : (promotion_scope = scope.parent) {
+            for (scope.resources.items) |resource| {
+                if (resource.destroyFn != ComponentInstance.destroy) continue;
+                const outer: *ComponentInstance = @ptrCast(@alignCast(resource.ptr));
+                if (outer == self or outer.parts.root != old) continue;
+                // New branch/row boundaries have a known, root-only promotion
+                // contract. Unknown native aliases and decorated outer roots
+                // retain the existing conservative L3 boundary.
+                if (!outer.template_region or outer.state != .ready or outer.root_snapshot_pinned or outer.attachments.items.len != 0 or !rootOnlyParts(outer.parts)) return error.ViewTransactionUnsupported;
+                if (promotion_count == promotions.len) return error.ViewPromotionTooDeep;
+                promotions[promotion_count] = outer;
+                promotion_count += 1;
+            }
+            if (scope == bound) break;
+        }
+        if (bound != (if (promotion_count == 0) self.setup else promotions[promotion_count - 1].setup)) return error.ViewTransactionUnsupported;
+        if (!transactionOwnerSafe(cx, old)) return error.ViewTransactionUnsupported;
+        // Focus/capture cancellation can invoke arbitrary application callbacks.
+        // Route those active interactions through L3 until they have a replay lease.
+        if (cx.focused_node) |focused| if (focused.isDescendantOf(old)) return error.ViewTransactionUnsupported;
+        if (cx.focus_manager.current_focus) |focused| if (focused.isDescendantOf(old)) return error.ViewTransactionUnsupported;
+        if (cx.dispatcher.pointer_capture_handle != null or cx.drag_manager.session != null) return error.ViewTransactionUnsupported;
+        for (cx.overlay_stack.layers.items) |maybe| if (maybe) |layer| {
+            if (layer.content_node == old or layer.barrier_node == old) return error.ViewTransactionUnsupported;
+        };
+        if (!transactionSubtree(old, old)) return error.ViewTransactionUnsupported;
+        const old_scope = self.view_scope;
+        defer self.view_scope = old_scope;
+        self.state = .rebuilding;
+        defer self.state = .ready;
+        const graph_mod = @import("reactive/graph.zig");
+        const tracking_failures = graph_mod.reactive_tracking_failures;
+        if (tracking_failures == std.math.maxInt(u64)) return error.ViewTransactionUnsupported;
+        const original = try PreviewRootSnapshot.capture(cx, old);
+        const mount_tx = @import("preview_mount.zig");
+        const tx = try cx.allocator.create(mount_tx.Transaction);
+        tx.* = .init(cx.allocator);
+        tx.source_scope = old_scope;
+        tx.retain_children = self.template_region;
+        errdefer {
+            tx.deinit();
+            cx.allocator.destroy(tx);
+        }
+        try tx.promotions.appendSlice(tx.arena.allocator(), promotions[0..promotion_count]);
+        std.debug.assert(mount_tx.current == null);
+        mount_tx.current = tx;
+        defer mount_tx.current = null;
+        const parts = try self.render_fn(self);
+        // Replay root decorations against a local instance snapshot and private
+        // scopes. Do not append to or mutate the live instance's attachments.
+        var shadow = self.*;
+        shadow.parts = parts;
+        for (self.attachments.items) |attachment| {
+            const replay_scope = self.view_scope.?.childScope() catch |err| {
+                control_flow.discardCaptured(cx, self.view_scope.?, parts.root, null);
+                return err;
+            };
+            const replay = replay_scope.createState(AttachmentReplay, .{ .attachment = attachment, .scope = replay_scope }) catch |err| {
+                control_flow.discardCaptured(cx, self.view_scope.?, parts.root, null);
+                return err;
+            };
+            replay_scope.onCleanup(AttachmentReplay, replay, AttachmentReplay.clear) catch |err| {
+                control_flow.discardCaptured(cx, self.view_scope.?, parts.root, null);
+                return err;
+            };
+            attachment.apply_fn(attachment, &shadow, replay_scope, .{ .parent = null }) catch |err| {
+                control_flow.discardCaptured(cx, self.view_scope.?, parts.root, null);
+                return err;
+            };
+            tx.attachment_replays.append(tx.arena.allocator(), replay) catch |err| {
+                control_flow.discardCaptured(cx, self.view_scope.?, parts.root, null);
+                return err;
+            };
+        }
+        if (tx.failure != null or graph_mod.reactive_tracking_failures != tracking_failures) {
+            control_flow.discardCaptured(cx, self.view_scope.?, parts.root, null);
+            return tx.failure orelse error.OutOfMemory;
+        }
+        for (tx.relocations.items) |move| {
+            var reserved: usize = 0;
+            for (tx.relocations.items) |other| if (other.destination == move.destination) {
+                reserved += other.child.scopes.len;
+            };
+            move.destination.children.ensureUnusedCapacity(move.destination.allocator, reserved) catch |err| {
+                control_flow.discardCaptured(cx, self.view_scope.?, parts.root, null);
+                return err;
+            };
+            const parent = move.placeholder.parent orelse {
+                control_flow.discardCaptured(cx, self.view_scope.?, parts.root, null);
+                return error.TemplateChildRootPromotion;
+            };
+            parent.children.ensureUnusedCapacity(cx.allocator, 1) catch |err| {
+                control_flow.discardCaptured(cx, self.view_scope.?, parts.root, null);
+                return err;
+            };
+        }
+        const replacement = PreviewRootSnapshot.capture(cx, parts.root) catch |err| {
+            control_flow.discardCaptured(cx, self.view_scope.?, parts.root, null);
+            return err;
+        };
+        return .{ .instance = self, .cx = cx, .scope = self.view_scope.?, .parts = parts, .transaction = tx, .lifetime = .{ .scope = self.setup }, .original = original, .replacement = replacement };
+    }
+
+    fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+        const self: *ComponentInstance = @ptrCast(@alignCast(ptr));
+        var lease = self.leases;
+        while (lease) |l| {
+            l.instance = null;
+            lease = l.next;
+        }
+        self.attachments.deinit(allocator);
+        allocator.destroy(self);
+    }
+
+    fn clearView(self: *ComponentInstance) void {
+        self.view_scope = null;
+    }
+
+    fn onDispose(self: *ComponentInstance) void {
+        self.state = .disposed;
+        // These scopes are siblings under the caller. They must finish cleanup
+        // before setup frees the attachment records they reference, even when
+        // teardown runs under a surrounding mount/rebuild lifetime guard.
+        for (self.attachments.items) |attachment| attachment.dispose(self.cx.owner.reactive_callback_depth > 0);
+        self.parts = .{ .root = null };
+    }
+
+    /// Identical-template reconstruction only. LP4 publication/rollback is not
+    /// enabled here. A build failure consumes the old view and requires remount
+    /// (the L3 policy); retrying a half-built instance is explicitly rejected.
+    pub fn rebuild(self: *ComponentInstance) !ViewParts {
+        if (comptime dev_preview) if (@import("template_reload.zig").rejectReentry()) return error.TemplateReloadReentry;
+        if (comptime !@import("builtin").is_test and !dev_preview)
+            @compileError("component view rebuilding is available only in tests or dev preview");
+        if (self.state != .ready) return error.ViewRebuildUnavailable;
+        if (self.root_snapshot_pinned) return error.ViewHostRootAliasNeedsOwnerRebuild;
+        const cx = self.cx;
+        const owner = cx.owner;
+        owner.assertThread();
+        if (owner.graph.flushing or owner.reactive_callback_depth != 0 or cx.tick_depth != 0 or owner.scope_disposal_depth != 0 or owner.inReactiveComputation() or owner.draining_disposals or owner.draining_settled_tasks or cx.draining_deferred_frees)
+            return error.ViewRebuildNeedsSafePoint;
+        if (self.setup.willBeDisposedAfterReactiveCallback()) return error.ViewRebuildUnavailable;
+        const old = self.parts.root orelse return error.ViewRebuildUnavailable;
+        if (nodePendingFree(old)) return error.ViewRebuildUnavailable;
+        // Collect promotion owners without allocating or retaining borrowed scope
+        // addresses beyond this guarded operation. An unregistered native binding
+        // can hide arbitrary root aliases and must fail before consuming the view.
+        var promotion: [128]*ComponentInstance = undefined;
+        var count: usize = 0;
+        var current: ?*Scope = self.setup;
+        const bound = old.meta.ownership.scope.scope orelse return error.ViewRebuildUnavailable;
+        while (current) |scope| : (current = scope.parent) {
+            for (scope.resources.items) |resource| {
+                if (resource.destroyFn != ComponentInstance.destroy) continue;
+                const instance: *ComponentInstance = @ptrCast(@alignCast(resource.ptr));
+                if (instance == self or instance.parts.root != old) continue;
+                if (count == promotion.len) return error.ViewPromotionTooDeep;
+                if (instance.state != .ready or instance.root_snapshot_pinned or !rootOnlyParts(instance.parts)) return error.ViewHostRootAliasNeedsOwnerRebuild;
+                for (instance.attachments.items) |a| {
+                    if (!a.replayable) return error.ViewNonReplayableAttachment;
+                    if (a.caller.willBeDisposedAfterReactiveCallback()) return error.ViewRebuildUnavailable;
+                }
+                promotion[count] = instance;
+                count += 1;
+            }
+            if (scope == bound) break;
+        }
+        // Shared component roots arise only through nested template promotion:
+        // each additional owner is on this setup ancestor chain. The final
+        // binding must name the outermost collected owner; any foreign binding
+        // (including a future root-sharing API) fails closed before teardown.
+        if (bound != (if (count == 0) self.setup else promotion[count - 1].setup))
+            return error.ViewHostRootAliasNeedsOwnerRebuild;
+        for (cx.overlay_stack.layers.items) |maybe| if (maybe) |layer| {
+            if (layer.content_node == old or layer.barrier_node == old)
+                return error.ViewOverlayRootNeedsOwnerRebuild;
+        };
+        for (self.attachments.items) |a| {
+            if (!a.replayable) return error.ViewNonReplayableAttachment;
+            if (a.caller.willBeDisposedAfterReactiveCallback()) return error.ViewRebuildUnavailable;
+        }
+        // Keep a stack lifetime ticket until deferred node cleanups and settled
+        // tasks finish. They may dispose setup after a candidate was committed.
+        const setup_scope = self.setup;
+        var disposed = false;
+        // Scope cleanups are append-only until disposal. No intermediate
+        // removal/reordering is permitted while this synchronous ticket lives;
+        // any future cleanup-handle API must replace this index protocol too.
+        const ticket = setup_scope.cleanups.items.len;
+        try setup_scope.onCleanup(bool, &disposed, struct {
+            fn mark(flag: *bool) void {
+                flag.* = true;
+            }
+        }.mark);
+        var snapshot: RebuildSnapshot = .{};
+        owner.beginReactiveCallback();
+        const result = self.rebuildGuarded(old, &snapshot, promotion[0..count]);
+        owner.endReactiveCallback();
+        if (disposed) {
+            // self/setup may already be freed. Only the registry may validate
+            // the snapshot; a scope-first teardown can leave an orphan Node.
+            if (node_refs.resolveTrackedNode(&cx.node_registry, snapshot.handle, snapshot.node)) |node|
+                freeCancelledReplacement(cx, node);
+            return error.ViewMountCancelled;
+        }
+        std.debug.assert(setup_scope.cleanups.items[ticket].ctx == @as(*anyopaque, @ptrCast(&disposed)));
+        _ = setup_scope.cleanups.orderedRemove(ticket);
+        if (result) |parts| {
+            if (parts.root == null or self.view_scope == null or (if (count == 0) self.binding.node else promotion[count - 1].binding.node) != parts.root) {
+                if (parts.root) |node| freeCancelledReplacement(cx, node) else setup_scope.dispose();
+                return error.ViewMountCancelled;
+            }
+            self.state = .ready;
+            return parts;
+        } else |err| return err;
+    }
+
+    fn replaceRoot(self: *ComponentInstance, node: ?*Node) void {
+        self.parts.root = node;
+        var lease = self.leases;
+        while (lease) |l| {
+            l.node = node;
+            l.element = if (node) |n| .fromRaw(n.element_id_raw) else core.ElementId.NULL;
+            lease = l.next;
+        }
+    }
+
+    fn rebuildGuarded(self: *ComponentInstance, old: *Node, snapshot: *RebuildSnapshot, promotion: []*ComponentInstance) !ViewParts {
+        const cx = self.cx;
+        self.state = .rebuilding;
+        errdefer self.state = .needs_remount;
+        const parent = old.parent;
+        const host_root = cx.root == old;
+        const before = if (parent) |p| blk: {
+            for (p.children.items, 0..) |child, i| {
+                if (child == old) break :blk if (i + 1 < p.children.items.len) p.children.items[i + 1] else null;
+            }
+            unreachable;
+        } else null;
+        const component_name = old.meta.ownership.meta.component_name;
+        // Retire outer binding first, then clear every externally observed root.
+        // Outer view scopes stay alive: they contain the refreshed setup instance.
+        for (promotion) |instance| {
+            instance.state = .rebuilding;
+            instance.binding.detach();
+            instance.replaceRoot(null);
+            for (instance.attachments.items) |a| a.dispose(true);
+        }
+        errdefer for (promotion) |instance| {
+            instance.state = .needs_remount;
+        };
+        self.binding.detach();
+        self.replaceRoot(null);
+        cx.needs_redraw = true;
+        if (host_root) cx.root = null;
+        // Invalidate while all contexts still exist. User cancellation callbacks
+        // run under the lifetime guard and can request instance destruction.
+        if (parent) |p| cx.detachChild(p, old) else cx.invalidateReferencesTo(old);
+        hooks.invalidateSubtreeHookState(old);
+        if (self.view_scope) |vs| self.setup.disposeChildAtSafePoint(vs);
+        for (self.attachments.items) |a| a.dispose(true);
+        self.parts = .{ .root = null };
+        cx.freeNode(old);
+        if (self.setup.willBeDisposedAfterReactiveCallback() or nodePendingFree(parent)) return error.ViewMountCancelled;
+        const parts = try self.render_fn(self);
+        const root = parts.root.?;
+        self.parts = parts;
+        self.replaceRoot(root);
+        self.binding.attach(root);
+        errdefer {
+            for (promotion) |instance| {
+                instance.binding.detach();
+                instance.replaceRoot(null);
+                for (instance.attachments.items) |a| a.dispose(true);
+            }
+            self.binding.detach();
+            self.replaceRoot(null);
+            hooks.invalidateSubtreeHookState(root);
+            if (self.view_scope) |vs| self.setup.disposeChildAtSafePoint(vs);
+            for (self.attachments.items) |a| a.dispose(true);
+            self.parts = .{ .root = null };
+            if (root.parent) |p| cx.detachChild(p, root);
+            cx.freeNode(root);
+        }
+        if (!leaseableRoot(cx, root)) {
+            if (self.leases != null) return error.ViewHostRootAliasNeedsOwnerRebuild;
+            for (promotion) |instance| if (instance.leases != null) return error.ViewHostRootAliasNeedsOwnerRebuild;
+        }
+        snapshot.node = root;
+        snapshot.handle = .{ .id = root.id, .generation = try cx.node_registry.trackGeneration(root) };
+        for (self.attachments.items) |a| try a.apply(self);
+        for (promotion) |instance| {
+            instance.replaceRoot(root);
+            instance.binding.attach(root);
+            for (instance.attachments.items) |a| try a.apply(instance);
+        }
+        root.meta.ownership.meta.component_name = component_name;
+        if (self.setup.willBeDisposedAfterReactiveCallback() or nodePendingFree(root) or nodePendingFree(parent))
+            return error.ViewMountCancelled;
+        if (parent) |p| try p.insertChildBefore(cx.allocator, root, before);
+        // Root-mounted hosts must follow the new root too.
+        if (host_root) cx.root = root;
+        for (promotion) |instance| {
+            instance.state = .ready;
+        }
+        return parts;
+    }
+};
+
+/// Owner-wide conservative barriers: press invalidation writes external signals;
+/// overlays/focus scopes may own aliases and callbacks outside the refreshed view.
+fn transactionOwnerSafe(cx: *Cx, root: *Node) bool {
+    if (cx.pressed_node != null or cx.pressed_handle != null or
+        cx.overlay_stack.pending_focus_restore != null or cx.focus_manager.scope_count != 0 or
+        cx.text_input_session.active_node != null or cx.dispatcher.dispatch_depth != 0 or
+        cx.dispatcher.mouse_down_handle != null or cx.magnify_target_handle != null or
+        cx.dispatcher.scroll_session_owner != null or cx.dispatcher.scroll_momentum_owner != null or
+        cx.bulk_quads_anchor != null) return false;
+    for (cx.overlay_stack.layers.items) |layer| if (layer != null) return false;
+    if (cx.popover_portal_root) |portal_root| if (portal_root.isDescendantOf(root)) return false;
+    return true;
+}
+
+fn transactionSubtree(node: *Node, root: *Node) bool {
+    if (node.meta.ownership.hooks.on_cleanup != null or node.on_capture_lost != null) return false;
+    for (node.children.items) |child| if (!transactionSubtree(child, root)) return false;
+    return true;
+}
+
+/// Scope-first destruction can finish at the outer callback guard. Tickets live
+/// in the publisher's reserved array, never in the scope they observe.
+pub const PreviewScopeWatch = struct {
+    scope: ?*Scope,
+    disposed: bool = false,
+    registered: bool = false,
+    fn mark(self: *@This()) void {
+        self.disposed = true;
+    }
+    pub fn install(self: *@This()) !void {
+        const scope = self.scope orelse return;
+        try scope.onCleanup(@This(), self, mark);
+        self.registered = true;
+    }
+    pub fn release(self: *@This()) void {
+        if (!self.registered) return;
+        if (!self.disposed) {
+            const scope = self.scope.?;
+            for (scope.cleanups.items, 0..) |entry, index| if (entry.ctx == @as(*anyopaque, @ptrCast(self))) {
+                _ = scope.cleanups.orderedRemove(index);
+                break;
+            };
+        }
+        self.registered = false;
+    }
+};
+pub const PreviewRootSnapshot = struct {
+    cx: *Cx,
+    node: ?*Node = null,
+    handle: ?core.NodeHandle = null,
+    pub fn capture(cx: *Cx, node: ?*Node) !@This() {
+        return .{ .cx = cx, .node = node, .handle = if (node) |n| .{ .id = n.id, .generation = try cx.node_registry.trackGeneration(n) } else null };
+    }
+    pub fn recordKnown(self: *@This(), node: ?*Node) bool {
+        self.node = node;
+        self.handle = null;
+        const n = node orelse return true;
+        const entry = self.cx.node_registry.generations.get(n.id) orelse return false;
+        if (entry.last_ptr != n) return false;
+        self.handle = .{ .id = n.id, .generation = entry.generation };
+        return true;
+    }
+    pub fn resolve(self: *@This()) ?*Node {
+        return node_refs.resolveTrackedNode(&self.cx.node_registry, self.handle, self.node);
+    }
+    pub fn discard(self: *@This()) void {
+        if (self.resolve()) |node| freeCancelledReplacement(self.cx, node) else if (self.node != null and self.cx.root == self.node) self.cx.root = null;
+    }
+};
+pub fn discardPreviewRootWhileGuarded(cx: *Cx, node: *Node) void {
+    freeCancelledReplacement(cx, node);
+}
+
+pub const PreparedView = struct {
+    instance: *ComponentInstance,
+    cx: *Cx,
+    lifetime: PreviewScopeWatch,
+    original: PreviewRootSnapshot,
+    replacement: PreviewRootSnapshot,
+    retired_disposed_roots: bool = false,
+    scope_invalidated: bool = false,
+    scope: *Scope,
+    parts: ViewParts,
+    consumed: bool = false,
+    transaction: *@import("preview_mount.zig").Transaction,
+
+    pub fn retains(self: *const PreparedView, retained_setup: *Scope) bool {
+        for (self.transaction.relocations.items) |move| {
+            var cursor: ?*Scope = retained_setup;
+            while (cursor) |scope| : (cursor = scope.parent) {
+                for (move.child.scopes) |retained| if (scope == retained) return true;
+            }
+        }
+        return false;
+    }
+
+    pub fn cancel(self: *PreparedView) void {
+        if (self.consumed) return;
+        if (self.lifetime.disposed) self.replacement.discard() else {
+            const i = self.instance;
+            const old_scope = i.view_scope;
+            control_flow.discardCaptured(i.cx, self.scope, self.parts.root, null);
+            i.view_scope = old_scope;
+        }
+        self.transaction.deinit();
+        self.cx.allocator.destroy(self.transaction);
+        self.consumed = true;
+    }
+
+    /// Retire a view whose callback destroyed one of its owned scopes. Preserve
+    /// live setup/model state for the L3 snapshot, then remove all affected nodes.
+    pub fn abandonView(self: *PreparedView) void {
+        if (!self.lifetime.disposed) {
+            const i = self.instance;
+            const owner = self.cx.owner;
+            owner.beginReactiveCallback();
+            i.state = .needs_remount;
+            if (self.original.resolve()) |node| hooks.invalidateSubtreeHookState(node);
+            if (self.replacement.resolve()) |node| hooks.invalidateSubtreeHookState(node);
+            i.binding.detach();
+            i.replaceRoot(null);
+            if (i.view_scope) |scope| i.setup.disposeChildAtSafePoint(scope);
+            i.parts = .{ .root = null };
+            owner.endReactiveCallback();
+        }
+        self.original.discard();
+        self.replacement.discard();
+    }
+
+    /// Irreversible boundary. The publisher guards all owners until every queue
+    /// and cancelled candidate has released its scope tickets.
+    pub fn commit(self: *PreparedView) !void {
+        if (self.lifetime.disposed) return error.ViewMountCancelled;
+        const i = self.instance;
+        const cx = i.cx;
+        if (i.setup.willBeDisposedAfterReactiveCallback()) return error.ViewMountCancelled;
+        i.state = .rebuilding;
+        errdefer i.state = .needs_remount;
+        errdefer if (!self.consumed) for (self.transaction.promotions.items) |outer| {
+            outer.state = .needs_remount;
+        };
+        const queue = @import("preview_mount.zig");
+        std.debug.assert(queue.committing == null);
+        queue.committing = self.transaction;
+        defer queue.committing = null;
+        const errors_before = @import("on.zig").handler_error_count;
+        const old = i.parts.root.?;
+        if (nodePendingFree(old)) return error.ViewMountCancelled;
+        const root = self.parts.root.?;
+        const parent = old.parent;
+        const was_root = cx.root == old;
+        const name = old.meta.ownership.meta.component_name;
+        const before: ?*Node = if (parent) |p| blk: {
+            for (p.children.items, 0..) |child, index| if (child == old) {
+                break :blk if (index + 1 < p.children.items.len) p.children.items[index + 1] else null;
+            };
+            unreachable;
+        } else null;
+        // Relocations were completely reserved and validated during preparation.
+        // Move retained roots/scopes out before old-tree hook invalidation.
+        for (self.transaction.relocations.items) |move| move.commit(cx) catch |err| {
+            if (err == error.ViewMountCancelled) self.scope_invalidated = true;
+            return err;
+        };
+        for (self.transaction.promotions.items) |outer| {
+            outer.state = .rebuilding;
+            outer.binding.detach();
+            outer.replaceRoot(null);
+        }
+        i.binding.detach();
+        if (parent) |p| cx.detachChild(p, old) else cx.invalidateReferencesTo(old);
+        hooks.invalidateSubtreeHookState(old);
+        i.replaceRoot(null);
+        if (was_root) cx.root = null;
+        for (self.transaction.attachment_replays.items) |replay| try replay.commit(i);
+        if (i.view_scope) |scope| i.setup.disposeChildAtSafePoint(scope);
+        cx.freeNode(old);
+        if (i.setup.willBeDisposedAfterReactiveCallback() or nodePendingFree(parent)) return error.ViewMountCancelled;
+        if (parent) |p| try p.insertChildBefore(cx.allocator, root, before);
+        i.view_scope = self.scope;
+        i.parts = self.parts;
+        i.replaceRoot(root);
+        i.binding.attach(root);
+        for (self.transaction.promotions.items) |outer| {
+            outer.replaceRoot(root);
+            outer.binding.attach(root);
+        }
+        root.meta.ownership.meta.component_name = name;
+        if (was_root) cx.root = root;
+        cx.needs_redraw = true;
+        self.consumed = true;
+        defer {
+            self.transaction.deinit();
+            cx.allocator.destroy(self.transaction);
+        }
+        errdefer for (self.transaction.promotions.items) |outer| {
+            outer.state = .needs_remount;
+        };
+        if (self.transaction.failure) |err| return err;
+        if (@import("on.zig").handler_error_count != errors_before) return error.TemplateCommitCallbackFailed;
+        if (@import("template_reload.zig").commit_reentered) return error.TemplateReloadReentry;
+        self.transaction.run() catch |err| {
+            if (err == error.ViewMountCancelled) self.scope_invalidated = true;
+            return err;
+        };
+        if (@import("template_reload.zig").commit_reentered) return error.TemplateReloadReentry;
+        if (i.setup.willBeDisposedAfterReactiveCallback() or nodePendingFree(root)) return error.ViewMountCancelled;
+        for (self.transaction.promotions.items) |outer| outer.state = .ready;
+        i.state = .ready;
+    }
+};
+
+/// A factory emission owns its setup and all sibling attachment scopes. This
+/// record is owned by that setup, so relocation never retains a retiring view's
+/// bookkeeping. The lease follows subsequent child-only root replacement.
+const TemplateChild = struct {
+    caller: *Scope,
+    scopes: []*Scope,
+    hole: template.Hole,
+    lease: *RootLease,
+    relocated: bool = false,
+    context: *const anyopaque,
+    validate_context: *const fn (*const anyopaque, *Scope) bool,
+    fn destroy(raw: *anyopaque, allocator: std.mem.Allocator) void {
+        const self: *@This() = @ptrCast(@alignCast(raw));
+        self.lease.release();
+        allocator.free(self.scopes);
+        allocator.destroy(self);
+    }
+};
+
+pub fn recordTemplateChild(scope: *Scope, cx: *Cx, start: usize, hole: template.Hole, value: anytype, comptime meta: template.Metadata) !void {
+    if (comptime !dev_preview) return;
+    // Only direct emissions of an instance's repeatable view participate.
+    if (templateInstanceForScope(scope) == null) return;
+    const children = scope.children.items[start..];
+    if (children.len == 0) return;
+    var child_instance: ?*ComponentInstance = null;
+    for (children[0].resources.items) |resource| if (resource.destroyFn == ComponentInstance.destroy) {
+        child_instance = @ptrCast(@alignCast(resource.ptr));
+    };
+    const instance = child_instance orelse return;
+    const root = instance.parts.root orelse return;
+    if (instance.root_snapshot_pinned or !leaseableRoot(cx, root)) return;
+    const C = @TypeOf(value);
+    const context = try instance.setup.createState(C, value);
+    const lease = (try RootLease.acquire(scope.allocator, root)) orelse return;
+    errdefer lease.release();
+    const scopes = try scope.allocator.dupe(*Scope, children);
+    errdefer scope.allocator.free(scopes);
+    const child = try scope.allocator.create(TemplateChild);
+    child.* = .{ .caller = scope, .scopes = scopes, .hole = hole, .lease = lease, .context = context, .validate_context = struct {
+        fn check(raw: *const anyopaque, destination: *Scope) bool {
+            const saved: *const C = @ptrCast(@alignCast(raw));
+            return template.retainedFactorySafe(saved.*, destination, meta);
+        }
+    }.check };
+    // The resource list owns the record after append. On append failure the
+    // helper frees only its header; these errdefers release lease and scopes.
+    try attachTemplateChild(instance.setup, child);
+}
+fn attachTemplateChild(scope: *Scope, child: *TemplateChild) !void {
+    scope.resources.append(scope.allocator, .{ .ptr = child, .destroyFn = TemplateChild.destroy }) catch |err| {
+        scope.allocator.destroy(child);
+        return err;
+    };
+}
+
+pub const TemplateChildMove = struct {
+    child: *TemplateChild,
+    destination: *Scope,
+    placeholder: *Node,
+    fn commit(self: *@This(), cx: *Cx) !void {
+        const child = self.child;
+        const root = child.lease.resolve() orelse return error.ViewMountCancelled;
+        const old_caller = child.caller;
+        const instance = child.lease.instance orelse return error.ViewMountCancelled;
+        if (instance.setup.willBeDisposedAfterReactiveCallback() or self.destination.willBeDisposedAfterReactiveCallback()) return error.ViewMountCancelled;
+        const parent = self.placeholder.parent orelse return error.TemplateChildRootPromotion;
+        // No callbacks or allocation are allowed in the ownership transfer.
+        for (child.scopes) |scope| {
+            const index = std.mem.indexOfScalar(*Scope, old_caller.children.items, scope) orelse return error.TemplateChildScopeChanged;
+            _ = old_caller.children.orderedRemove(index);
+            self.destination.children.appendAssumeCapacity(scope);
+            scope.parent = self.destination;
+        }
+        for (instance.attachments.items) |attachment| {
+            if (attachment.caller == old_caller) attachment.caller = self.destination;
+        }
+        child.caller = self.destination;
+        child.relocated = true;
+        if (root.parent) |old_parent| old_parent.removeChildRetained(root);
+        // The placeholder reserves exactly the child's slot in both Node and
+        // ElementTable order. insert consumes its existing capacity.
+        try parent.insertChildBefore(cx.allocator, root, self.placeholder);
+        parent.removeChildRetained(self.placeholder);
+        cx.freeNode(self.placeholder);
+    }
+};
+
+pub fn retainRelocatedTemplateChild(scope: *Scope, hole: template.Hole) bool {
+    if (comptime !dev_preview) return false;
+    const tx = @import("preview_mount.zig").current orelse return false;
+    const old = tx.source_scope orelse return false;
+    if (scope.parent != old.parent) return false;
+    for (old.children.items) |child_scope| for (child_scope.resources.items) |resource| {
+        if (resource.destroyFn != TemplateChild.destroy) continue;
+        const child: *TemplateChild = @ptrCast(@alignCast(resource.ptr));
+        if ((child.relocated or tx.retain_children) and child.caller == old and template.holeEqual(child.hole, hole)) return true;
+    };
+    return false;
+}
+
+pub fn stageTemplateChild(scope: *Scope, cx: *Cx, sink: Sink, hole: template.Hole) !void {
+    if (comptime !dev_preview) return error.TemplateChildRelocation;
+    const tx = @import("preview_mount.zig").current orelse return error.TemplateChildRelocation;
+    const old = tx.source_scope orelse return error.TemplateChildRelocation;
+    if (sink.parent == null or scope.parent != old.parent) return error.TemplateChildRootPromotion;
+    var found: ?*TemplateChild = null;
+    for (old.children.items) |child_scope| for (child_scope.resources.items) |resource| {
+        if (resource.destroyFn != TemplateChild.destroy) continue;
+        const child: *TemplateChild = @ptrCast(@alignCast(resource.ptr));
+        if (child.caller != old or !template.holeEqual(child.hole, hole)) continue;
+        if (found != null) return error.TemplateAmbiguousInstance;
+        found = child;
+    };
+    const child = found orelse return error.TemplateInstanceMissing;
+    if (!child.validate_context(child.context, scope)) return error.TemplateRetainedCaptureLifetime;
+    const instance = child.lease.instance orelse return error.TemplateInstanceMissing;
+    const root = child.lease.resolve() orelse return error.TemplateInstanceMissing;
+    if (instance.state != .ready or instance.root_snapshot_pinned or root == cx.root) return error.TemplateChildRelocation;
+    for (instance.attachments.items) |attachment| {
+        if (!attachment.replayable or attachment.caller != old) return error.TemplateChildAttachment;
+    }
+    for (child.scopes) |owned| {
+        if (owned.parent != old or owned.owner != scope.owner or owned.willBeDisposedAfterReactiveCallback()) return error.TemplateChildScopeChanged;
+    }
+    var reserved: usize = child.scopes.len;
+    for (tx.relocations.items) |move| {
+        if (move.child == child) return error.TemplateAmbiguousInstance;
+        if (move.destination == scope) reserved += move.child.scopes.len;
+    }
+    try scope.children.ensureUnusedCapacity(scope.allocator, reserved);
+    // Inserting before the placeholder temporarily needs one extra slot.
+    try sink.parent.?.children.ensureUnusedCapacity(cx.allocator, 2);
+    const placeholder = try core.anchorNode(cx);
+    try sink.insert(cx, placeholder);
+    const move = try tx.arena.allocator().create(TemplateChildMove);
+    move.* = .{ .child = child, .destination = scope, .placeholder = placeholder };
+    try tx.relocations.append(tx.arena.allocator(), move);
+}
+
+/// The root template executes directly in its instance's view scope. Descendant
+/// factories must not accidentally register as independently refreshable roots.
+pub fn templateInstanceForScope(scope: *Scope) ?*ComponentInstance {
+    const setup_scope = scope.parent orelse return null;
+    for (setup_scope.resources.items) |resource| {
+        if (resource.destroyFn == ComponentInstance.destroy) {
+            const i: *ComponentInstance = @ptrCast(@alignCast(resource.ptr));
+            if (i.view_scope == scope) return i;
+        }
+    }
+    return null;
+}
+
+pub fn collectTemplateInstances(scope: *Scope, a: std.mem.Allocator, instances: *std.ArrayList(*ComponentInstance)) !void {
+    if (comptime !dev_preview) return;
+    for (scope.resources.items) |resource| if (resource.destroyFn == ComponentInstance.destroy) {
+        const i: *ComponentInstance = @ptrCast(@alignCast(resource.ptr));
+        if (i.preview_template != null) try instances.append(a, i);
+    };
+    for (scope.children.items) |child| try collectTemplateInstances(child, a, instances);
+}
+
+fn leaseableRoot(cx: *Cx, node: *Node) bool {
+    return node.world_ref == &cx.world and cx.world.elements.isValid(.fromRaw(node.element_id_raw));
+}
+
+fn rootOnlyParts(parts: ViewParts) bool {
+    if (parts.slot != null or parts.slot_before != null or parts.slot_scope != null or parts.trigger != null) return false;
+    for (parts.named) |slot| if (slot != null) return false;
+    return true;
+}
+
+const RebuildSnapshot = struct {
+    node: ?*Node = null,
+    handle: ?core.NodeHandle = null,
+};
+
+fn freeCancelledReplacement(cx: *Cx, node: *Node) void {
+    if (cx.root == node) cx.root = null;
+    // Setup is already disposed or its view was cancelled. Detach silently:
+    // calling blur handlers here could enter their released view contexts.
+    if (node.parent) |parent| parent.removeChildRetained(node);
+    cx.freeNode(node);
+}
+
+fn nodePendingFree(node: ?*Node) bool {
+    var current = node;
+    while (current) |n| : (current = n.parent) {
+        if (n.freeing or n.pending_free_cx != null) return true;
+    }
+    return false;
+}
+
+/// Find the outermost setup/view instance owning this root. No global registry,
+/// additional Node fields, root shell or anchor nodes are needed.
+pub fn componentInstance(root: *Node) ?*ComponentInstance {
+    const scope = root.meta.ownership.scope.scope orelse return null;
+    if (comptime !dev_preview) return findComponentInstance(scope, root);
+    const instance = findComponentInstance(scope, root) orelse return null;
+    if (instance.template_region) {
+        for (scope.children.items) |child| if (findComponentInstance(child, root)) |inner| return inner;
+    }
+    return instance;
+}
+
+/// A native host retains a snapshot root/part or applies imperative decorations
+/// that it cannot replay. Explicitly prevent replacement of that root (including
+/// a promoted inner instance). The host can instead retain a RootLease/live Ref.
+pub fn pinComponentRoot(root: *Node) void {
+    if (componentInstance(root)) |instance| instance.root_snapshot_pinned = true;
+}
+
+fn findComponentInstance(scope: *Scope, root: *Node) ?*ComponentInstance {
+    for (scope.resources.items) |resource| {
+        if (resource.destroyFn == ComponentInstance.destroy) {
+            const instance: *ComponentInstance = @ptrCast(@alignCast(resource.ptr));
+            if (instance.parts.root == root) return instance;
+        }
+    }
+    for (scope.children.items) |child| if (findComponentInstance(child, root)) |instance| return instance;
+    return null;
+}
+
+pub const AttachmentReplay = struct {
+    attachment: *ViewAttachment,
+    scope: *Scope,
+    published: bool = false,
+    fn clear(self: *@This()) void {
+        if (self.published) self.attachment.live_scope = null;
+    }
+    fn commit(self: *@This(), instance: *ComponentInstance) !void {
+        const attachment = self.attachment;
+        const old = attachment.live_scope orelse return error.ViewMountCancelled;
+        const caller = attachment.caller;
+        if (caller.willBeDisposedAfterReactiveCallback() or old.parent != caller) return error.ViewMountCancelled;
+        // Retire the old binding before publishing the new generation. The old
+        // slot in caller.children is the new scope's reservation.
+        caller.disposeChildAtSafePoint(old);
+        const from = self.scope.parent.?;
+        const index = std.mem.indexOfScalar(*Scope, from.children.items, self.scope) orelse return error.TemplateChildScopeChanged;
+        _ = from.children.orderedRemove(index);
+        caller.children.appendAssumeCapacity(self.scope);
+        self.scope.parent = caller;
+        attachment.live_scope = self.scope;
+        self.published = true;
+        for (instance.setup.resources.items) |resource| if (resource.destroyFn == TemplateChild.destroy) {
+            const child: *TemplateChild = @ptrCast(@alignCast(resource.ptr));
+            for (child.scopes) |*owned| if (owned.* == old) {
+                owned.* = self.scope;
+            };
+        };
+    }
+};
+
+const ViewAttachment = struct {
+    caller: *Scope,
+    live_scope: ?*Scope = null,
+    context: ?*anyopaque,
+    replayable: bool,
+    preview_replay_safe: if (dev_preview) bool else void,
+    apply_fn: *const fn (*ViewAttachment, *ComponentInstance, *Scope, Sink) anyerror!void,
+
+    fn clear(self: *ViewAttachment) void {
+        self.live_scope = null;
+    }
+
+    fn dispose(self: *ViewAttachment, safe_point: bool) void {
+        if (self.live_scope) |scope| {
+            if (safe_point) self.caller.disposeChildAtSafePoint(scope) else scope.dispose();
+        }
+    }
+
+    fn apply(self: *ViewAttachment, instance: *ComponentInstance) !void {
+        const scope = try self.caller.childScope();
+        var stray: ?*Node = null;
+        // Slots can fail inserting an already-built component. Keep its node
+        // alive through ref/detach cleanup, just like a root mount transaction.
+        errdefer control_flow.discardCaptured(instance.cx, scope, null, stray);
+        try scope.onCleanup(ViewAttachment, self, ViewAttachment.clear);
+        self.live_scope = scope;
+        try self.apply_fn(self, instance, scope, .{ .parent = null, .stray = &stray });
+    }
+};
+
+fn attachComponentView(instance: *ComponentInstance, caller: *Scope, ctx: anytype, replayable: bool, comptime preview_replay_safe: bool, comptime apply: anytype) !void {
+    const C = @TypeOf(ctx);
+    // One-shot slot descriptions can contain stack captures or transferred
+    // nodes. Use them only during initial emission, never retain their address.
+    var transient_context = ctx;
+    const context = if (replayable) try instance.setup.createState(C, ctx) else &transient_context;
+    const attachment = try instance.setup.createState(ViewAttachment, .{
+        .caller = caller,
+        .context = @ptrCast(context),
+        .replayable = replayable,
+        .preview_replay_safe = if (comptime dev_preview) preview_replay_safe and template.attachmentContextSafe(ctx) else {},
+        .apply_fn = struct {
+            fn run(a: *ViewAttachment, i: *ComponentInstance, scope: *Scope, at: Sink) anyerror!void {
+                const c: *C = @ptrCast(@alignCast(a.context.?));
+                if (comptime @import("zenit_reflection").params(@TypeOf(apply)).len == 5) {
+                    try apply(c.*, scope, i.cx, i.parts, at);
+                } else try apply(c.*, scope, i.cx, i.parts);
+            }
+        }.run,
+    });
+    defer if (!replayable) {
+        attachment.context = null;
+    };
+    try instance.attachments.append(instance.setup.allocator, attachment);
+    try attachment.apply(instance);
+}
+
+/// Generated lifecycle operations share normal mount call sites and ordering.
+/// Candidate-only queuing is comptime erased from release instantiations.
+pub inline fn runMountAction(scope: *Scope, ctx: anytype, comptime run: anytype) !void {
+    return runLifecycleAction(scope, "onMount", ctx, run);
+}
+pub inline fn runLifecycleAction(scope: *Scope, comptime site: []const u8, ctx: anytype, comptime run: anytype) !void {
+    if (comptime dev_preview) if (try @import("preview_mount.zig").deferAction(scope, .mount, ctx, struct {
+        fn call(c: @TypeOf(ctx), _: *Scope) anyerror!void {
+            const R = @typeInfo(@TypeOf(run)).@"fn".return_type.?;
+            if (comptime @typeInfo(R) == .error_union) try run(c) else run(c);
+        }
+    }.call)) return;
+    const R = @typeInfo(@TypeOf(run)).@"fn".return_type.?;
+    if (comptime @typeInfo(R) == .error_union) run(ctx) catch |err| @import("on.zig").reportError(site, err) else run(ctx);
+}
+
+pub inline fn setupEffect(scope: *Scope, ctx: anytype, comptime run: anytype) !void {
+    if (comptime dev_preview) if (try @import("preview_mount.zig").deferAction(scope, .effect, ctx, struct {
+        fn call(c: @TypeOf(ctx), s: *Scope) anyerror!void {
+            try s.createEffect(c, run);
+        }
+    }.call)) return;
+    try scope.createEffect(ctx, run);
+}
+
+pub inline fn setupCleanup(scope: *Scope, ctx: anytype, comptime run: anytype) !void {
+    const C = @TypeOf(ctx);
+    if (comptime dev_preview) if (@import("preview_mount.zig").current != null) {
+        // Keep the cleanup's original registration position. A cancelled
+        // candidate releases the placeholder without invoking user code.
+        const Gate = struct {
+            context: C,
+            armed: bool = false,
+            fn cleanup(self: *@This()) void {
+                if (self.armed) run(self.context);
+            }
+            fn arm(self: *@This(), _: *Scope) anyerror!void {
+                self.armed = true;
+            }
+        };
+        const gate = try scope.createState(Gate, .{ .context = ctx });
+        try scope.onCleanup(Gate, gate, Gate.cleanup);
+        if (try @import("preview_mount.zig").deferAction(scope, .cleanup, gate, Gate.arm)) return;
+    };
+    const saved = try scope.createState(C, ctx);
+    try scope.onCleanup(C, saved, struct {
+        fn call(c: *C) void {
+            run(c.*);
+        }
+    }.call);
+}
+
+/// The generated proof rejects unknown setup calls before entering user code.
+pub inline fn previewCheckSetup(scope: *Scope, comptime safe: bool) !void {
+    if (comptime dev_preview) if (@import("preview_mount.zig").current != null and !safe) return error.TemplateCandidateSideEffects;
+    _ = scope;
+}
+
+// Generic specialization includes the function value, not just its signature.
+// This also works for generic builders, which cannot be compared as fn pointers.
+fn PreviewFunctionIdentity(comptime function: anytype) type {
+    return struct {
+        pub const value = function;
+    };
+}
+
+pub inline fn previewCheckBuilder(scope: *Scope, comptime builder: anytype) !void {
+    if (comptime dev_preview) if (@import("preview_mount.zig").current != null) {
+        const R = BuilderResult(builder) orelse return error.TemplateCandidateSideEffects;
+        if (comptime @typeInfo(R) != .@"struct") return error.TemplateCandidateSideEffects;
+        if (comptime @hasDecl(R, "viewMountWith")) return error.TemplateCandidateSideEffects;
+        if (comptime !@hasField(R, "props")) return error.TemplateCandidateSideEffects;
+        const P = @FieldType(R, "props");
+        if (comptime @typeInfo(P) != .@"struct" or !@hasDecl(P, "__yix_preview_setup")) return error.TemplateCandidateSideEffects;
+        if (comptime !@hasDecl(P, "__yix_preview_builder")) return error.TemplateCandidateSideEffects;
+        if (comptime PreviewFunctionIdentity(builder) != PreviewFunctionIdentity(P.__yix_preview_builder)) return error.TemplateCandidateSideEffects;
+    };
+    _ = scope;
+}
+
+/// Yix setup/view boundary: persist typed captures once and evaluate the template
+/// in a short-lived view scope. Hand-written components can opt in explicitly.
+pub fn renderComponentView(setup_scope: *Scope, cx: *Cx, ctx: anytype, comptime build: anytype) !FnPayload(@TypeOf(build)) {
+    const R = FnPayload(@TypeOf(build));
+    const C = @TypeOf(ctx);
+    comptime if (R != *Node and R != ViewParts) @compileError("component view must return *Node or ViewParts");
+    const context = try setup_scope.createState(C, ctx);
+    const instance = try setup_scope.allocator.create(ComponentInstance);
+    instance.* = .{
+        .setup = setup_scope,
+        .cx = cx,
+        .template_region = if (comptime dev_preview) template.isRegionContext(C) else {},
+        .preview_region_identity = if (comptime dev_preview) (if (comptime template.isRegionContext(C)) ctx.identity else .{}) else {},
+        .binding = undefined,
+        .context = @ptrCast(context),
+        .render_fn = struct {
+            fn run(i: *ComponentInstance) anyerror!ViewParts {
+                const c: *C = @ptrCast(@alignCast(i.context));
+                if (comptime dev_preview) {
+                    if (@import("template_reload.zig").preparing()) {
+                        if (comptime template.isRegionContext(C)) {
+                            try template.validateRegionContext(c.*);
+                        } else try template.validatePreviewContext(c.*);
+                    }
+                }
+                const result = try buildComponentView(i, c.*, build);
+                return if (R == *Node) .{ .root = result } else result;
+            }
+        }.run,
+    };
+    try setup_scope.adoptResource(instance, ComponentInstance.destroy);
+    instance.binding = try @import("core/cx_node_lifetime.zig").NodeScopeBinding.create(setup_scope);
+    try setup_scope.onCleanup(ComponentInstance, instance, ComponentInstance.onDispose);
+    cx.owner.beginReactiveCallback();
+    defer cx.owner.endReactiveCallback();
+    const parts = try instance.render_fn(instance);
+    instance.parts = parts;
+    instance.binding.attach(parts.root.?);
+    instance.state = .ready;
+    return if (R == *Node) parts.root.? else parts;
+}
+
+fn buildComponentView(instance: *ComponentInstance, ctx: anytype, comptime build: anytype) !FnPayload(@TypeOf(build)) {
+    const R = FnPayload(@TypeOf(build));
+    const setup_scope = instance.setup;
+    const cx = instance.cx;
+    const vs = try setup_scope.childScope();
+    instance.view_scope = vs;
+    var root: ?*Node = null;
+    var stray: ?*Node = null;
+    vs.onCleanup(ComponentInstance, instance, ComponentInstance.clearView) catch |err| {
+        instance.view_scope = null;
+        control_flow.discardCaptured(cx, vs, root, stray);
+        return err;
+    };
+    const result = build(ctx, vs, cx, Sink.capture(&root, &stray)) catch |err| {
+        control_flow.discardCaptured(cx, vs, root, stray);
+        return err;
+    };
+    const returned_root = if (R == *Node) result else result.root;
+    if (root == null or root != returned_root) {
+        control_flow.discardCaptured(cx, vs, root, stray);
+        return error.ViewComponentRootMismatch;
+    }
+    if (setup_scope.willBeDisposedAfterReactiveCallback() or vs.willBeDisposedAfterReactiveCallback() or root.?.pending_free_cx != null) {
+        control_flow.discardCaptured(cx, vs, root, stray);
+        return error.ViewMountCancelled;
+    }
+    return result;
 }
 
 /// append children to existing node (mix with imperative code, gradual migrate). fail this round's
 /// nodes all reclaim, parent's existing children untouched.
 pub fn mount(scope: *Scope, cx: *Cx, parent: *Node, children: anytype) !void {
+    cx.owner.beginReactiveCallback();
+    defer cx.owner.endReactiveCallback();
     const ms = try scope.childScope();
     const before_len = parent.children.items.len;
     var stray: ?*Node = null;
@@ -136,6 +1228,8 @@ pub fn mount(scope: *Scope, cx: *Cx, parent: *Node, children: anytype) !void {
 /// scope.
 pub fn append(scope: *Scope, cx: *Cx, parent: *Node, element: anytype) !*Node {
     comptime requireSingle(@TypeOf(element), "ui.view.append");
+    cx.owner.beginReactiveCallback();
+    defer cx.owner.endReactiveCallback();
     const rs = try scope.childScope();
     var root: ?*Node = null;
     var stray: ?*Node = null;
@@ -232,9 +1326,15 @@ pub fn Box(comptime Props: type, comptime Children: type, comptime dir: ?Directi
 
         pub const zenit_view_element = true;
         pub const view_single = true;
+        pub const template_container = true;
         const Plan = BoxPlan(Props, dir, false);
 
         pub fn viewEmit(self: @This(), scope: *Scope, cx: *Cx, sink: Sink) anyerror!void {
+            const node = try self.viewShallow(scope, cx, sink);
+            try emit(scope, cx, sink.child(node), self.children);
+        }
+
+        pub fn viewShallow(self: @This(), scope: *Scope, cx: *Cx, sink: Sink) anyerror!*Node {
             const node = try core.box(cx, Plan.initial(self.props, cx.tokens), .{});
             try sink.insert(cx, node);
             applyAttrs(node, self.props);
@@ -243,7 +1343,7 @@ pub fn Box(comptime Props: type, comptime Children: type, comptime dir: ?Directi
             try bindA11y(scope, node, self.props);
             try Plan.attach(self.props, scope, cx, node);
             try bindFocus(scope, cx, node, self.props);
-            try emit(scope, cx, sink.child(node), self.children);
+            return node;
         }
     };
 }
@@ -268,9 +1368,15 @@ pub fn GridBox(comptime Props: type, comptime Children: type) type {
 
         pub const zenit_view_element = true;
         pub const view_single = true;
+        pub const template_container = true;
         const Plan = BoxPlan(Props, null, false);
 
         pub fn viewEmit(self: @This(), scope: *Scope, cx: *Cx, sink: Sink) anyerror!void {
+            const node = try self.viewShallow(scope, cx, sink);
+            try emit(scope, cx, sink.child(node), self.children);
+        }
+
+        pub fn viewShallow(self: @This(), scope: *Scope, cx: *Cx, sink: Sink) anyerror!*Node {
             const node = try core.box(cx, Plan.initial(self.props, cx.tokens), .{});
             try sink.insert(cx, node);
             const max = types.GridConfig.MAX_TRACKS;
@@ -295,7 +1401,7 @@ pub fn GridBox(comptime Props: type, comptime Children: type) type {
             try bindVisible(scope, node, self.props);
             try bindA11y(scope, node, self.props);
             try Plan.attach(self.props, scope, cx, node);
-            try emit(scope, cx, sink.child(node), self.children);
+            return node;
         }
 
         fn copyTracks(dst: *[types.GridConfig.MAX_TRACKS]types.GridTrackSize, src: []const types.GridTrackSize) u8 {
@@ -368,11 +1474,14 @@ pub fn Text(comptime Props: type, comptime Content: type) type {
 
         pub const zenit_view_element = true;
         pub const view_single = true;
+        pub const template_text = true;
         const Plan = TextPlan(Props);
 
         pub fn viewEmit(self: @This(), scope: *Scope, cx: *Cx, sink: Sink) anyerror!void {
             const initial = Plan.initial(self.props, cx.tokens);
-            const node = if (comptime isFmt(Content) and !fmtReactive(Content))
+            const node = if (comptime dev_preview and isPreviewFmt(Content))
+                try self.content.createNode(scope, cx, initial)
+            else if (comptime isFmt(Content) and !fmtReactive(Content))
                 try staticFmtText(cx, Content.format, self.content.args, initial)
             else if (comptime isFmt(Content) and fmtSourcesOnly(Content)) (if (fmtStaticNow(self.content.args))
                 // reactive params all Source and now all static value (component received static
@@ -397,7 +1506,7 @@ pub fn Text(comptime Props: type, comptime Content: type) type {
             // text node
             // self
             if (comptime textStyleBoxPart(Props)) |B| try BoxPlan(struct { style: B }, null, true).attach(.{ .style = B{} }, scope, cx, node);
-            if (comptime !isFmt(Content) and !isStringLike(Content)) {
+            if (comptime !isFmt(Content) and !isStringLike(Content) and !(dev_preview and isPreviewFmt(Content))) {
                 try bind_mod.bindText(cx, scope, self.content, node);
             }
         }
@@ -437,6 +1546,9 @@ pub fn icon(props: anytype, asset: anytype) Media(@TypeOf(props), @TypeOf(asset)
 /// fn iconTint(c: TagColor, t: *const ThemeTokens) Color. Re-tint when source changes or theme
 /// switches;
 /// when source is currently static, replay only with theme (no effect).
+/// f may return `?Color`: null tints with the current color (nearest ancestor text color, CSS
+/// currentColor, resolved at paint and repainted when it changes; fg-primary when no ancestor
+/// declares one), so a glyph inside a control follows the control's foreground through its states.
 pub fn tintBy(src: anytype, comptime f: anytype) TintBy(@TypeOf(src), f) {
     return .{ .src = src };
 }
@@ -485,8 +1597,11 @@ fn Media(comptime Props: type, comptime Res: type, comptime kind: enum { icon, i
     const tint_by = has_tint and isTintBy(Tint);
     if (has_tint and !tint_fn and Tint != Color and @typeInfo(Tint) != .@"struct")
         @compileError("ui.view.icon: .tint must be a Color, fn (*const ThemeTokens) Color or v.tintBy(src, f), got " ++ @typeName(Tint));
-    // When both tint sources exist, precedence depends on effect order; undoing icon_color can't
-    // restore correct color: give only one.
+    // The element's own style stating icon_color next to tint= is two declarations of one
+    // property: give only one. Runtime layers (cva .merge(layers), a caller's v.attrs overlay)
+    // can't be seen here and need no rule: they cascade over the element's tint in its style host
+    // (a layer's icon_color wins while declared, its withdrawal restores the element's whole tint
+    // mode, see writeElementTint / StyleHost.applyIconColor).
     if (has_tint and @hasField(Props, "style") and specSetsIconColor(@FieldType(Props, "style")))
         @compileError(who ++ ": the style sets icon-color and the element also has tint=; give the icon color in one place");
     return struct {
@@ -499,7 +1614,7 @@ fn Media(comptime Props: type, comptime Res: type, comptime kind: enum { icon, i
         pub const view_single = !isReactiveSource(Res);
         const Plan = BoxPlan(Props, null, false);
 
-        fn tintFor(props: Props, t: *const ThemeTokens) Color {
+        fn tintFor(props: Props, t: *const ThemeTokens) ?Color {
             if (!has_tint) return Color.WHITE;
             if (tint_fn) return props.tint(t);
             if (tint_by) return Tint.f(readSource(Tint.Arg, props.tint.src, false), t);
@@ -515,12 +1630,13 @@ fn Media(comptime Props: type, comptime Res: type, comptime kind: enum { icon, i
             theme: *Signal(*const ThemeTokens),
             link: ThemeLink = undefined,
             fn run(st: *@This()) void {
-                _ = st.node.setTint(Tint.f(readSource(Tint.Arg, st.src, true), st.theme.get()));
+                const t = st.theme.get();
+                applyTint(st.node, Tint.f(readSource(Tint.Arg, st.src, true), t), t);
             }
             fn replay(r: *ViewThemeReplay, t: *const ThemeTokens) void {
                 const link: *ThemeLink = @fieldParentPtr("replay", r);
                 const st: *@This() = @fieldParentPtr("link", link);
-                _ = st.node.setTint(Tint.f(readSource(Tint.Arg, st.src, false), t));
+                applyTint(st.node, Tint.f(readSource(Tint.Arg, st.src, false), t), t);
             }
             fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
                 allocator.destroy(@as(*@This(), @ptrCast(@alignCast(ptr))));
@@ -528,7 +1644,7 @@ fn Media(comptime Props: type, comptime Res: type, comptime kind: enum { icon, i
             fn start(props: Props, scope: *Scope, cx: *Cx, node: *Node) !void {
                 // First get the maybe-failing theme signal, then allocate state: no failure point
                 // allowed between create and adoptResource.
-                const theme_sig = try cx.themeSignal(rootScopeOf(scope));
+                const theme_sig = try cx.themeSignal();
                 const st = try scope.allocator.create(@This());
                 st.* = .{ .node = node, .cx = cx, .src = props.tint.src, .theme = theme_sig };
                 try scope.adoptResource(@ptrCast(st), destroy);
@@ -565,9 +1681,10 @@ fn Media(comptime Props: type, comptime Res: type, comptime kind: enum { icon, i
             const tint = tintFor(self.props, cx.tokens);
             const style = Plan.initial(self.props, cx.tokens);
             const node = if (kind == .icon)
-                try ui_api.iconTintStyled(cx, try resourceNow(SvgAsset, who, self.res), tint, style)
+                try ui_api.iconTintStyled(cx, try resourceNow(SvgAsset, who, self.res), tint orelse currentColorFallback(cx.tokens), style)
             else
-                try core.imageTintStyled(cx, try resourceNow(u32, who, self.res), tint, style);
+                try core.imageTintStyled(cx, try resourceNow(u32, who, self.res), tint orelse currentColorFallback(cx.tokens), style);
+            if (tint == null) writeElementTint(node, .currentColor(currentColorFallback(cx.tokens)));
             try sink.insert(cx, node);
             // icon_color from static style now lands on the node (dynamic style followed by
             // BoxRuntime).
@@ -586,7 +1703,7 @@ fn Media(comptime Props: type, comptime Res: type, comptime kind: enum { icon, i
                 node.meta.per_frame.hooks.on_theme = struct {
                     fn hook(n: *Node, t: *const ThemeTokens, allocator: std.mem.Allocator) void {
                         Plan.applyThemed(n, t, allocator);
-                        _ = n.setTint(tint_value(t));
+                        writeElementTint(n, .fixed(tint_value(t)));
                     }
                 }.hook;
                 if (Plan.plan_mode == .dynamic) try Plan.attach(self.props, scope, cx, node);
@@ -596,6 +1713,30 @@ fn Media(comptime Props: type, comptime Res: type, comptime kind: enum { icon, i
             }
         }
     };
+}
+
+/// Tint from a tintBy function: a color, or null = the current color (see tintBy).
+fn applyTint(node: *Node, tint: anytype, t: *const ThemeTokens) void {
+    if (@TypeOf(tint) == ?Color) {
+        writeElementTint(node, if (tint) |c| .fixed(c) else .currentColor(currentColorFallback(t)));
+    } else writeElementTint(node, .fixed(tint));
+}
+
+/// The element's own tint (tint= / its mount value), the base under its style layers' icon_color:
+/// the only writer of it. While a layer declares icon_color the base is recorded and stays under
+/// it (a tintBy source changing during hover doesn't paint over the hover color); the layer's
+/// withdrawal lands on the latest base, its whole mode (StyleHost.applyIconColor).
+fn writeElementTint(node: *Node, mode: types.TintMode) void {
+    if (StyleHost.of(node)) |h| {
+        h.tint_base = mode;
+        if (h.computed.has(.icon_color)) return;
+    }
+    _ = node.setTintMode(mode);
+}
+
+/// currentColor with no ancestor text color: what text shows by default.
+fn currentColorFallback(t: *const ThemeTokens) Color {
+    return t.tokens.color.fg_primary;
 }
 
 fn isColorFn(comptime T: type) bool {
@@ -745,8 +1886,34 @@ pub fn With(comptime B: type, comptime Children: type, comptime Trigger: type, c
             return self.ref(CaptureDest(@TypeOf(dest)){ .dest = dest });
         }
 
+        /// Named slots with a value (absent = `null` or a null optional). Optional-slot components
+        /// (`?View` in Yix) build only the present ones; absent ones are skipped below.
+        fn presence(self: @This()) view_parts.SlotPresence {
+            var p: view_parts.SlotPresence = .{};
+            if (Named != void) inline for (@import("zenit_reflection").fields(Named)) |f| {
+                if (slotValue(@field(self.named, f.name)) != null) p.add(f.name);
+            };
+            return p;
+        }
+
         pub fn viewEmit(self: @This(), scope: *Scope, cx: *Cx, sink: Sink) anyerror!void {
-            const vp = try mountComponent(scope, cx, sink, self.builder, self.part_ids, self.ref_dest);
+            const vp = try mountComponentWith(scope, cx, sink, self.builder, self.part_ids, self.ref_dest, self.presence());
+            if (vp.root) |root| {
+                if (componentInstance(root)) |instance| {
+                    if (comptime Trigger != void or hasChildren(Children) or Named != void) {
+                        const content = .{ .children = self.children, .trigger_children = self.trigger_children, .named = self.named };
+                        try attachComponentView(instance, scope, content, replayableChildren(content), false, struct {
+                            fn run(c: @TypeOf(content), s: *Scope, context: *Cx, current: ViewParts, at: Sink) anyerror!void {
+                                try emitContents(c, s, context, at, current);
+                            }
+                        }.run);
+                    }
+                    return;
+                }
+            }
+            try emitContents(self, scope, cx, sink, vp);
+        }
+        fn emitContents(self: anytype, scope: *Scope, cx: *Cx, sink: Sink, vp: ViewParts) !void {
             if (Trigger != void) {
                 const t = vp.trigger orelse return error.ViewComponentHasNoTrigger;
                 try emit(scope, cx, sink.child(t), self.trigger_children);
@@ -755,15 +1922,54 @@ pub fn With(comptime B: type, comptime Children: type, comptime Trigger: type, c
                 const slot = vp.slot orelse return error.ViewComponentHasNoSlot;
                 var at = sink.child(slot);
                 at.before = vp.slot_before;
-                try emit(vp.slot_scope orelse scope, cx, at, self.children);
+                if (comptime dev_preview) {
+                    try template.emitSlot(vp.slot_scope orelse scope, cx, at, self.children);
+                } else {
+                    try emit(vp.slot_scope orelse scope, cx, at, self.children);
+                }
             }
             if (Named != void) inline for (@import("zenit_reflection").fields(Named)) |f| {
-                const point = namedSlot(vp, f.name) orelse return error.ViewComponentHasNoSlot;
-                var at = sink.child(point.parent);
-                at.before = point.before;
-                try emit(vp.slot_scope orelse scope, cx, at, @field(self.named, f.name));
+                if (slotValue(@field(self.named, f.name))) |content| {
+                    const point = namedSlot(vp, f.name) orelse return error.ViewComponentHasNoSlot;
+                    var at = sink.child(point.parent);
+                    at.before = point.before;
+                    if (comptime dev_preview) {
+                        try template.emitSlot(vp.slot_scope orelse scope, cx, at, content);
+                    } else {
+                        try emit(vp.slot_scope orelse scope, cx, at, content);
+                    }
+                }
             };
         }
+    };
+}
+
+/// Value of a plain value or a reactive source, read once at mount (Yix `slot={if (c) <…/>}`:
+/// slot presence is structure, fixed when the component mounts; forwarded `ui.view.Pins`).
+pub fn atMount(x: anytype) AtMount(@TypeOf(x)) {
+    const X = @TypeOf(x);
+    if (comptime !isReactiveSource(X)) return x;
+    return sourceOf(reactive.SourceValueOf(X), "ui.view atMount", x).peek();
+}
+
+fn AtMount(comptime X: type) type {
+    return if (isReactiveSource(X)) reactive.SourceValueOf(X) else X;
+}
+
+/// Named-slot content, or null when the caller left it absent (`null` / null optional).
+fn SlotValue(comptime T: type) type {
+    return switch (@typeInfo(T)) {
+        .null => void,
+        .optional => |o| o.child,
+        else => T,
+    };
+}
+
+fn slotValue(value: anytype) ?SlotValue(@TypeOf(value)) {
+    return switch (@typeInfo(@TypeOf(value))) {
+        .null => null,
+        .optional => value,
+        else => value,
     };
 }
 
@@ -1001,12 +2207,34 @@ pub fn Component(comptime f: anytype, comptime Props: type) type {
         pub fn mount(self: @This(), scope: *Scope, cx: *Cx) !*Node {
             cx.owner.enterMount();
             defer cx.owner.exitMount();
+            cx.owner.beginReactiveCallback();
+            defer cx.owner.endReactiveCallback();
+            if (comptime dev_preview) if (@import("preview_mount.zig").current != null) {
+                if (comptime @typeInfo(Props) != .@"struct" or !@hasDecl(Props, "__yix_preview_setup")) return error.TemplateCandidateSideEffects;
+                if (comptime !@hasDecl(Props, "__yix_preview_mount")) return error.TemplateCandidateSideEffects;
+                if (comptime PreviewFunctionIdentity(f) != PreviewFunctionIdentity(Props.__yix_preview_mount)) return error.TemplateCandidateSideEffects;
+            };
             const cs = try scope.childScope();
             const node = (if (Props == void) f(cs, cx) else f(self.props, cs, cx)) catch |err| {
+                if (comptime dev_preview) if (@import("preview_mount.zig").current != null) {
+                    // A generated onMount enqueue can fail after render returned
+                    // its root. Scope disposal alone only detaches its binding.
+                    var built_root: ?*Node = null;
+                    for (cs.resources.items) |resource| if (resource.destroyFn == ComponentInstance.destroy) {
+                        const instance: *ComponentInstance = @ptrCast(@alignCast(resource.ptr));
+                        built_root = instance.parts.root;
+                    };
+                    control_flow.discardCaptured(cx, cs, built_root, null);
+                    return err;
+                };
                 cs.dispose();
                 return err;
             };
-            Cx.bindScopeToNode(cs, node) catch |err| {
+            if (cs.willBeDisposedAfterReactiveCallback() or node.pending_free_cx != null) {
+                control_flow.discardCaptured(cx, cs, node, null);
+                return error.ViewMountCancelled;
+            }
+            if (node.meta.ownership.scope.scope != cs) Cx.bindScopeToNode(cs, node) catch |err| {
                 control_flow.discardCaptured(cx, cs, node, null);
                 return err;
             };
@@ -1033,8 +2261,13 @@ pub fn SlottedOf(comptime f: anytype) type {
 
 fn SlottedProps(comptime f: anytype) type {
     const params = @import("zenit_reflection").params(@TypeOf(f));
-    if (params.len != 3) @compileError("ui.view.slotted: f must be fn (Props, *Scope, *Cx) !ViewParts");
+    if (params.len != 3 and params.len != 4) @compileError("ui.view.slotted: f must be fn (Props, *Scope, *Cx) !ViewParts or fn (Props, SlotPresence, *Scope, *Cx) !ViewParts");
     return params[0].type orelse @compileError("ui.view.slotted: props parameter must have a concrete type");
+}
+
+/// f takes the caller's slot presence (Yix components with `?View` slots).
+fn takesPresence(comptime f: anytype) bool {
+    return @import("zenit_reflection").params(@TypeOf(f)).len == 4;
 }
 
 pub fn Slotted(comptime f: anytype, comptime Props: type) type {
@@ -1042,14 +2275,25 @@ pub fn Slotted(comptime f: anytype, comptime Props: type) type {
         props: Props,
 
         pub fn viewMount(self: @This(), scope: *Scope, cx: *Cx) !ViewParts {
+            return self.viewMountWith(scope, cx, .{});
+        }
+
+        /// Mount with the caller's named-slot presence (set by `ui.view.with(...).slots(...)`).
+        pub fn viewMountWith(self: @This(), scope: *Scope, cx: *Cx, presence: view_parts.SlotPresence) !ViewParts {
             cx.owner.enterMount();
             defer cx.owner.exitMount();
+            cx.owner.beginReactiveCallback();
+            defer cx.owner.endReactiveCallback();
             const cs = try scope.childScope();
-            const vp: ViewParts = f(self.props, cs, cx) catch |err| {
+            const vp: ViewParts = (if (comptime takesPresence(f)) f(self.props, presence, cs, cx) else f(self.props, cs, cx)) catch |err| {
                 cs.dispose();
                 return err;
             };
-            Cx.bindScopeToNode(cs, vp.root.?) catch |err| {
+            if (cs.willBeDisposedAfterReactiveCallback() or vp.root.?.pending_free_cx != null) {
+                control_flow.discardCaptured(cx, cs, vp.root.?, null);
+                return error.ViewMountCancelled;
+            }
+            if (vp.root.?.meta.ownership.scope.scope != cs) Cx.bindScopeToNode(cs, vp.root.?) catch |err| {
                 control_flow.discardCaptured(cx, cs, vp.root.?, null);
                 return err;
             };
@@ -1091,6 +2335,7 @@ pub fn MountResult(comptime B: type) type {
 /// The handle itself is valid only while its owner scope is alive.
 pub fn Ref(comptime T: type) type {
     return struct {
+        pub const view_preview_ref = true;
         owner: *Scope,
         value: ?T = null,
         generation: usize = 0,
@@ -1109,6 +2354,52 @@ fn CaptureDest(comptime D: type) type {
         pub const view_capture = true;
         dest: D,
     };
+}
+
+fn LiveDest(comptime D: type) type {
+    return if (isCapture(D)) void else D;
+}
+
+fn liveDest(dest: anytype) LiveDest(@TypeOf(dest)) {
+    return if (comptime isCapture(@TypeOf(dest))) {} else dest;
+}
+
+// Raw Node children transfer ownership once and cannot be replayed after free.
+// Ordinary descriptions, signal pointers and builder props retain their usual
+// borrowed-data lifetime contract.
+fn replayableChildren(child: anytype) bool {
+    const T = @TypeOf(child);
+    if (T == *Node) return false;
+    if (T == void or T == @TypeOf(null) or isStringLike(T)) return true;
+    if (comptime @typeInfo(T) == .@"struct") {
+        inline for (.{ "dest", "ref_dest" }) |name| {
+            if (comptime @hasField(T, name)) {
+                const D = @FieldType(T, name);
+                if (comptime isCapture(D) or D == *?SlotPoint) return false;
+            }
+        }
+    }
+    switch (@typeInfo(T)) {
+        .optional => return if (child) |c| replayableChildren(c) else true,
+        .array => {
+            for (child) |c| if (!replayableChildren(c)) return false;
+        },
+        .@"struct" => |info| {
+            if (comptime info.is_tuple) {
+                inline for (@import("zenit_reflection").fields(T)) |f| if (!replayableChildren(@field(child, f.name))) return false;
+            } else {
+                inline for (.{ "children", "trigger_children", "named", "child" }) |name| {
+                    if (comptime @hasField(T, name)) if (!replayableChildren(@field(child, name))) return false;
+                }
+                // Named-slot records contain descriptions under arbitrary names.
+                if (comptime !@hasField(T, "zenit_view_element") and !@hasDecl(T, "zenit_view_element") and !@hasField(T, "props")) {
+                    inline for (@import("zenit_reflection").fields(T)) |f| if (!replayableChildren(@field(child, f.name))) return false;
+                }
+            }
+        },
+        else => {},
+    }
+    return true;
 }
 
 fn isCapture(comptime D: type) bool {
@@ -1132,6 +2423,32 @@ fn storeRef(scope: *Scope, dest: anytype, value: anytype) !void {
         dest.dest.* = value;
         return;
     }
+    if (comptime dev_preview) if (@import("preview_mount.zig").current != null) {
+        var ancestor: ?*Scope = scope;
+        while (ancestor) |s| : (ancestor = s.parent) {
+            if (s == dest.owner) break;
+        }
+        if (ancestor == null) return error.ViewRefOwnerMustOutliveMount;
+        const Gate = struct {
+            dest: D,
+            value: @TypeOf(value),
+            generation: usize = 0,
+            armed: bool = false,
+            fn clear(self: *@This()) void {
+                if (self.armed and self.dest.generation == self.generation) self.dest.value = null;
+            }
+            fn publish(self: *@This(), _: *Scope) anyerror!void {
+                if (self.dest.generation == std.math.maxInt(usize)) return error.ViewRefGenerationExhausted;
+                self.generation = self.dest.generation + 1;
+                self.armed = true;
+                self.dest.generation = self.generation;
+                self.dest.value = self.value;
+            }
+        };
+        const gate = try scope.createState(Gate, .{ .dest = dest, .value = value });
+        try scope.onCleanup(Gate, gate, Gate.clear);
+        if (try @import("preview_mount.zig").deferAction(scope, .ref, gate, Gate.publish)) return;
+    };
     // A short-lived owner cannot safely hold a longer-lived mount's cleanup.
     var ancestor: ?*Scope = scope;
     while (ancestor) |s| : (ancestor = s.parent) {
@@ -1183,8 +2500,12 @@ fn applyParts(scope: *Scope, cx: *Cx, result: anytype, parts: anytype) !void {
 /// Mount component, insert root at insertion point, then write ref and part attributes.
 /// Part attribute write failure: root already in tree, rolls back with it.
 fn mountComponent(scope: *Scope, cx: *Cx, sink: Sink, builder: anytype, parts: anytype, ref_dest: anytype) !ViewParts {
+    return mountComponentWith(scope, cx, sink, builder, parts, ref_dest, .{});
+}
+
+fn mountComponentWith(scope: *Scope, cx: *Cx, sink: Sink, builder: anytype, parts: anytype, ref_dest: anytype, presence: view_parts.SlotPresence) !ViewParts {
     const B = @TypeOf(builder);
-    const result = if (comptime @hasDecl(B, "viewMount")) try builder.viewMount(scope, cx) else blk: {
+    const result = if (comptime @hasDecl(B, "viewMountWith")) try builder.viewMountWith(scope, cx, presence) else if (comptime @hasDecl(B, "viewMount")) try builder.viewMount(scope, cx) else blk: {
         if (comptime @import("zenit_reflection").params(@TypeOf(B.mount)).len != 3)
             @compileError(@typeName(B) ++ ".mount takes extra arguments, so ui.view cannot mount it; mount it yourself and pass the resulting *Node as a child");
         break :blk try builder.mount(scope, cx);
@@ -1196,7 +2517,30 @@ fn mountComponent(scope: *Scope, cx: *Cx, sink: Sink, builder: anytype, parts: a
     } else if (comptime @typeInfo(R) == .@"struct" and @hasDecl(R, "viewParts")) result.viewParts() else @compileError(@typeName(B) ++ " mounts to " ++ @typeName(R) ++
         "; ui.view needs to know which node to attach — add `pub fn viewParts(self) ui.ViewParts` to " ++
         @typeName(R) ++ " (see src/ui/view_parts.zig)");
-    if (vp.root) |r| try sink.insert(cx, r);
+    if (vp.root) |r| {
+        if (comptime R != *Node and R != ViewParts) pinComponentRoot(r);
+        try sink.insert(cx, r);
+    }
+    if (comptime R == *Node or R == ViewParts) if (vp.root) |root| {
+        if (componentInstance(root)) |instance| {
+            // Captures can point into a caller stack frame. Never persist them.
+            if (comptime isCapture(@TypeOf(ref_dest))) {
+                pinComponentRoot(root);
+                try storeRef(scope, ref_dest, result);
+            }
+            if (comptime @TypeOf(parts) != void or LiveDest(@TypeOf(ref_dest)) != void) {
+                const context = .{ .dest = liveDest(ref_dest), .parts = parts };
+                try attachComponentView(instance, scope, context, true, true, struct {
+                    fn run(c: @TypeOf(context), s: *Scope, cx_: *Cx, current: ViewParts) anyerror!void {
+                        const value: R = if (R == *Node) current.root.? else current;
+                        try storeRef(s, c.dest, value);
+                        try applyParts(s, cx_, value, c.parts);
+                    }
+                }.run);
+            }
+            return vp;
+        }
+    };
     try storeRef(scope, ref_dest, result);
     try applyParts(scope, cx, result, parts);
     return vp;
@@ -1204,7 +2548,9 @@ fn mountComponent(scope: *Scope, cx: *Cx, sink: Sink, builder: anytype, parts: a
 
 // Elements: decorators and static lists
 
-const attrs_props = [_][]const u8{ "window_region", "style", "test_id", "a11y", "on_click", "visible", "parts", "focusable", "hit_test", "on_focus", "on_blur", "on_hover", "on_leave", "tag", "on_key_down", "on_key_up", "on_pointer_down", "on_pointer_move", "on_pointer_up", "on_scroll" };
+/// `state` on attrs feeds the overlay layer's own style conditions (`_invalid`, `_selected` ...):
+/// the caller's layer reads the caller's sources, never the component's private ones.
+const attrs_props = [_][]const u8{ "window_region", "style", "test_id", "a11y", "on_click", "visible", "parts", "focusable", "hit_test", "on_focus", "on_blur", "on_hover", "on_leave", "tag", "state", "on_key_down", "on_key_up", "on_pointer_down", "on_pointer_move", "on_pointer_up", "on_scroll" };
 
 /// Yix: <X>text</X>. Component declares param as Text (generated props has pub const text_child =
 /// "name"), text is that param
@@ -1319,13 +2665,20 @@ pub fn Attrs(comptime Props: type, comptime Child: type) type {
             const maybe_node = try emitSingle(scope, cx, sink, self.withParts());
             if (parts_only) return;
             const node = maybe_node orelse return error.ViewAttrsNoRoot;
-            applyAttrs(node, self.props);
-            try bindVisible(scope, node, self.props);
-            try bindA11y(scope, node, self.props);
-            // Typed component root event uses capture slot: fires before component's own
-            // (e.consume() can intercept), doesn't override on_event.
-            try bindTypedEventsAt(.capture, scope, node, self.props);
-            try Plan.attach(self.props, scope, cx, node);
+            if (componentInstance(node)) |instance| {
+                try attachComponentView(instance, scope, self.props, true, true, struct {
+                    fn run(props: Props, s: *Scope, context: *Cx, vp: ViewParts) anyerror!void {
+                        try applyRootAttrs(props, s, context, vp.root.?);
+                    }
+                }.run);
+            } else try applyRootAttrs(self.props, scope, cx, node);
+        }
+        fn applyRootAttrs(props: Props, scope: *Scope, cx: *Cx, node: *Node) !void {
+            applyAttrs(node, props);
+            try bindVisible(scope, node, props);
+            try bindA11y(scope, node, props);
+            try bindTypedEventsAt(.capture, scope, node, props);
+            try Plan.attach(props, scope, cx, node);
         }
     };
 }
@@ -1364,12 +2717,24 @@ pub fn NodeRef(comptime D: type, comptime Child: type) type {
     return struct {
         dest: D,
         child: Child,
+        pub const view_preview_ref = true;
 
         pub const zenit_view_element = true;
         pub const view_single = true;
 
         pub fn viewEmit(self: @This(), scope: *Scope, cx: *Cx, sink: Sink) anyerror!void {
             const node = (try emitSingle(scope, cx, sink, self.child)) orelse return error.ViewRefNoRoot;
+            if (comptime !isCapture(D)) {
+                if (componentInstance(node)) |instance| {
+                    try attachComponentView(instance, scope, self.dest, true, true, struct {
+                        fn run(dest: D, s: *Scope, _: *Cx, parts: ViewParts) anyerror!void {
+                            try storeRef(s, dest, parts.root.?);
+                        }
+                    }.run);
+                    return;
+                }
+            }
+            if (comptime isCapture(D)) pinComponentRoot(node);
             try storeRef(scope, self.dest, node);
         }
     };
@@ -1431,17 +2796,42 @@ pub fn Portal(comptime Child: type) type {
         /// so effect in runtime content already destroyed here.
         const Mounted = struct {
             cx: *Cx,
-            node: ?*Node = null,
+            root: Root = .{ .node = null },
+            active: bool = false,
+            has_lease: bool = false,
+
+            // A portal is a host alias, like a keyed For entry. The lease is
+            // independent of setup and tracks root publication without replaying
+            // a callback against shared Mounted state during preparation.
+            // These alternatives are exclusive; the discriminator fits in the
+            // former Mounted padding instead of adding a second pointer.
+            // A bare Zig union adds a safety tag in checked builds. The
+            // private explicit discriminator below owns this storage instead.
+            const Root = extern union {
+                node: ?*Node,
+                lease: *RootLease,
+            };
+
+            fn current(self: *Mounted) ?*Node {
+                if (self.has_lease) return self.root.lease.retainedNode();
+                return self.root.node;
+            }
 
             fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
                 const self: *Mounted = @ptrCast(@alignCast(ptr));
-                if (self.node) |n| {
+                if (if (self.active) self.current() else null) |n| {
                     if (n.parent) |parent| self.cx.detachChild(parent, n);
                     self.cx.freeDetachedNodeAfterScopeDispose(n);
                 }
+                if (self.has_lease) self.root.lease.release();
                 allocator.destroy(self);
             }
         };
+        comptime {
+            const LegacyMounted = struct { cx: *Cx, node: ?*Node, active: bool };
+            if (@sizeOf(Mounted) != @sizeOf(LegacyMounted) or @alignOf(Mounted) != @alignOf(LegacyMounted))
+                @compileError("Portal Mounted must preserve the legacy allocation size and alignment");
+        }
 
         pub fn viewEmit(self: @This(), scope: *Scope, cx: *Cx, _: Sink) anyerror!void {
             const ps = try scope.childScope();
@@ -1466,15 +2856,33 @@ pub fn Portal(comptime Child: type) type {
                 control_flow.discardCaptured(cx, ps, n, null);
                 return err;
             };
-            const portal_root = cx.ensurePopoverPortalRoot() catch |err| {
+            const lease = RootLease.acquire(ps.allocator, n) catch |err| {
                 control_flow.discardCaptured(cx, ps, n, null);
+                return err;
+            };
+            // Legacy non-component content has no replaceable root.
+            if (lease) |owned| {
+                mounted.root = .{ .lease = owned };
+                mounted.has_lease = true;
+            } else mounted.root = .{ .node = n };
+            mounted.active = true;
+            if (comptime dev_preview) if (@import("preview_mount.zig").deferAction(ps, .portal, mounted, struct {
+                fn call(m: *Mounted, _: *Scope) anyerror!void {
+                    const portal_root = try m.cx.ensurePopoverPortalRoot();
+                    try portal_root.appendChild(m.cx.allocator, m.current() orelse return error.ViewMountCancelled);
+                }
+            }.call) catch |err| {
+                ps.dispose();
+                return err;
+            }) return;
+            const portal_root = cx.ensurePopoverPortalRoot() catch |err| {
+                ps.dispose();
                 return err;
             };
             portal_root.appendChild(cx.allocator, n) catch |err| {
-                control_flow.discardCaptured(cx, ps, n, null);
+                ps.dispose();
                 return err;
             };
-            mounted.node = n;
         }
     };
 }
@@ -1501,7 +2909,17 @@ pub fn Setup(comptime Child: type, comptime Ctx: type, comptime f: anytype) type
 
         pub fn viewEmit(self: @This(), scope: *Scope, cx: *Cx, sink: Sink) anyerror!void {
             const node = (try emitSingle(scope, cx, sink, self.child)) orelse return error.ViewSetupNoRoot;
-            const r = if (nparams == 2) f(self.ctx, node) else f(self.ctx, node, scope, cx);
+            if (componentInstance(node)) |instance| {
+                try attachComponentView(instance, scope, self.ctx, true, false, struct {
+                    fn run(ctx: Ctx, s: *Scope, context: *Cx, vp: ViewParts) anyerror!void {
+                        try applySetup(ctx, vp.root.?, s, context);
+                    }
+                }.run);
+            } else try applySetup(self.ctx, node, scope, cx);
+        }
+
+        fn applySetup(ctx: Ctx, node: *Node, scope: *Scope, cx: *Cx) !void {
+            const r = if (nparams == 2) f(ctx, node) else f(ctx, node, scope, cx);
             if (@typeInfo(Ret) == .error_union) try r;
         }
     };
@@ -1516,6 +2934,12 @@ pub const Frame = struct {
     now_ms: f64,
     tokens: *const ThemeTokens,
 };
+
+/// `animate = ui.view.LoopPeriod{ .period_ms = p }`: animates like `true`, and promises the picture is a
+/// pure function of `frame.now_ms` repeating every `p` ms. The host may then hand the animation to
+/// the system compositor (see core/compositor_sprite.zig): no frames are rendered while only it
+/// changes.
+pub const LoopPeriod = struct { period_ms: f64 };
 
 /// Custom-draw element: picture = draw(ctx, data, frame).
 /// v.canvas(.{ .style = S.ring }, v.paint(.{ .data = ring, .animate = true }, S.drawArc)),
@@ -1561,6 +2985,7 @@ pub fn Canvas(comptime Props: type, comptime P: type) type {
         pub const view_single = true;
 
         const Self = @This();
+        const is_loop = @FieldType(P, "animate") == LoopPeriod;
         const State = struct {
             node: *Node,
             cx: *Cx,
@@ -1575,19 +3000,40 @@ pub fn Canvas(comptime Props: type, comptime P: type) type {
                 try P.draw(ctx, st.data, .{ .now_ms = st.frame_ms, .tokens = st.cx.tokens });
             }
 
+            fn drawAt(ctx: core.DrawContext, context: ?*anyopaque, now_ms: f64) anyerror!void {
+                const st: *State = @ptrCast(@alignCast(context orelse return));
+                // Flipbook frames are drawn outside the paint walk: resolve
+                // currentColor from the node as paint does.
+                var at = ctx;
+                if (at.current_color == null) if (node_refs.resolveTrackedNode(&st.cx.node_registry, st.handle, st.node)) |node| {
+                    at.current_color = node.resolveTextColor();
+                };
+                try P.draw(at, st.data, .{ .now_ms = now_ms, .tokens = st.cx.tokens });
+            }
+
+            fn repaint(context: ?*anyopaque) void {
+                const st: *State = @ptrCast(@alignCast(context orelse return));
+                const node = node_refs.resolveTrackedNode(&st.cx.node_registry, st.handle, st.node) orelse return;
+                node.markRenderDirty();
+            }
+
             fn tick(node: *Node) void {
                 const d = node.meta.per_frame.custom_hooks.draw orelse return;
                 if (d.callback != &drawThunk) return;
                 const st: *State = @ptrCast(@alignCast(d.context orelse return));
                 st.frame_ms = render_engine.current_frame_time_ms;
                 if (node.frame_state.state_bits.flags.out_of_viewport) return;
+                // The compositor animates it; frames rendered for other reasons
+                // drop its (stale) items.
+                if (is_loop and st.cx.sprites.isActive(node.id)) return;
                 node.markRenderDirty();
             }
 
             fn setAnimating(st: *State, on: bool) void {
                 if (on == st.animating) return;
                 if (on) {
-                    st.node.addBeforeRender(tick);
+                    // tick writes only its own frame clock and marks the node dirty.
+                    st.node.addBeforeRenderScoped(tick, .dirty_marking);
                     st.node.markRenderDirty();
                 } else st.node.removeBeforeRender(tick);
                 st.animating = on;
@@ -1596,6 +3042,7 @@ pub fn Canvas(comptime Props: type, comptime P: type) type {
             /// Scope destroy: detach custom-draw callback and frame hook (they point to state about
             /// to release).
             fn detach(st: *State) void {
+                if (is_loop) st.cx.sprites.unregister(@ptrCast(st));
                 const node = node_refs.resolveTrackedNode(&st.cx.node_registry, st.handle, st.node) orelse return;
                 if (node.meta.per_frame.custom_hooks.draw) |d| {
                     if (d.context == @as(?*anyopaque, @ptrCast(st))) node.meta.per_frame.custom_hooks.draw = null;
@@ -1634,6 +3081,11 @@ pub fn Canvas(comptime Props: type, comptime P: type) type {
                         c.st.node.markRenderDirty();
                     }
                 }.run);
+            }
+            if (comptime is_loop) {
+                st.setAnimating(true);
+                try cx.sprites.register(cx.allocator, node.id, self.painter.animate.period_ms, @ptrCast(st), State.drawAt, State.repaint);
+                return;
             }
             const anim = sourceOf(bool, "ui.view.paint animate", self.painter.animate);
             if (anim.isStatic()) {
@@ -2310,6 +3762,11 @@ pub fn emitCallback(comptime f: anytype, ctx: anytype, args: anytype, scope: *Sc
 /// inside element
 /// destroys with it. On failure, all nodes + scopes from this call recycle, node unchanged, error
 /// passes through.
+/// `parent_scope` must be the scope that owns `node` (or a descendant of it): freeing an ancestor
+/// of `node` clears the scope bindings of its whole subtree and only disposes the ancestor's own
+/// scope, so a subscope opened under some longer-lived scope would outlive the freed nodes its
+/// effects still point at. Pooled components therefore hand their slot callbacks their own scope
+/// (VirtualList `mountScoped`, Grid / Table cell callbacks).
 pub fn renderInto(parent_scope: *Scope, cx: *Cx, node: *Node, comptime f: anytype, ctx: anytype, args: anytype, comptime what: []const u8) !void {
     const rs = try parent_scope.childScope();
     var root: ?*Node = null;
@@ -2386,7 +3843,9 @@ pub fn Hover(comptime part_value: anytype) type {
 }
 
 /// Style = f(source's current value, tokens): v.styleBy(size, S.sized),
-/// fn sized(s: Size, t: *const ThemeTokens) BoxStyle (text element returns TextStyle).
+/// fn sized(s: Size, t: *const ThemeTokens) BoxStyle (text element returns TextStyle — the whole
+/// text style, color included — or a partial struct such as `struct { font_size: f32 }`, which
+/// layers only its fields and leaves an undeclared color inherited).
 pub fn styleBy(src: anytype, comptime f: anytype) StyleBy(@TypeOf(src), f) {
     return .{ .src = src };
 }
@@ -2502,9 +3961,25 @@ pub fn StatesBy(comptime Src: type, comptime f_value: anytype) type {
 }
 
 fn partKind(comptime T: type) ?@TypeOf(.enum_literal) {
+    // A style value that is itself a source (a component forwarding its `contentStyle: BoxStyle`
+    // parameter): a styleBy with the identity function — follows the source, no other wiring.
+    if (styleValueSource(T) != null) return .style_by;
     if (@typeInfo(T) != .@"struct") return null;
     if (!@hasDecl(T, "zenit_style_part")) return null;
     return T.zenit_style_part;
+}
+
+/// BoxStyle / TextStyle when T is a source of that style value (Source / *Signal / *Memo).
+fn styleValueSource(comptime T: type) ?type {
+    inline for (.{ BoxStyle, TextStyle }) |V| {
+        if (T == reactive.Source(V) or T == *Signal(V) or T == *reactive.Memo(V)) return V;
+    }
+    return null;
+}
+
+/// The source behind a styleBy part (the part itself for a style-value source).
+fn styleBySource(spec: anytype) if (styleValueSource(@TypeOf(spec)) != null) @TypeOf(spec) else @TypeOf(spec.src) {
+    return if (comptime styleValueSource(@TypeOf(spec)) != null) spec else spec.src;
 }
 
 fn isStyleFn(comptime T: type, comptime R: type) bool {
@@ -2541,6 +4016,7 @@ fn paramReactive(comptime T: type) bool {
 
 fn cvaReactive(comptime T: type) bool {
     if (T.R.has_hover or T.R.has_active or T.R.state_conditions.any()) return true;
+    if (cvaHasLayers(T)) return true;
     for (@import("zenit_reflection").fields(@FieldType(T, "args"))) |f| if (isReactiveSource(f.type)) return true;
     return false;
 }
@@ -2555,7 +4031,8 @@ fn specNeedsExt(spec: anytype) bool {
         .when, .hover => specNeedsExt(T.part),
         .style_by, .loop, .states_by => true,
         .css => T.needs_ext,
-        .cva, .param => T.R.needs_ext,
+        .cva => cvaHasLayers(T) or T.R.needs_ext,
+        .param => T.R.needs_ext,
         else => unreachable,
     };
     if (comptime isTuple(T)) {
@@ -2574,7 +4051,7 @@ fn specHover(comptime T: type) bool {
         .when => specHover(@TypeOf(T.part)),
         .style_by, .loop, .param => false,
         .css => T.has_hover or T.has_active,
-        .cva => T.R.has_hover or T.R.has_active,
+        .cva => cvaHasLayers(T) or T.R.has_hover or T.R.has_active,
         else => unreachable,
     };
     if (isTuple(T)) {
@@ -2590,7 +4067,7 @@ fn specActive(comptime T: type) bool {
         .states_by => true,
         .hover, .style_by, .loop, .param => false,
         .css => T.has_active,
-        .cva => T.R.has_active,
+        .cva => cvaHasLayers(T) or T.R.has_active,
         else => unreachable,
     };
     if (isTuple(T)) {
@@ -2604,6 +4081,8 @@ fn specActive(comptime T: type) bool {
 fn specThemed(comptime T: type) bool {
     if (isStyleFn(T, BoxStyle) or isStyleFn(T, TextStyle)) return true;
     if (partKind(T)) |k| return switch (k) {
+        // CSS/CVA facades always read theme, including literal-only compiled
+        // specs: preview values can gain token references after mounting.
         .style_by, .css, .cva, .loop, .states_by, .param => true,
         .when, .hover => specThemed(@TypeOf(T.part)),
         else => unreachable,
@@ -2626,7 +4105,7 @@ fn specConditions(comptime T: type) css_mod.StateConditions {
         .when => specConditions(@TypeOf(T.part)),
         .hover, .style_by, .loop, .states_by, .param => .{},
         .css => T.state_conditions,
-        .cva => T.R.state_conditions,
+        .cva => if (cvaHasLayers(T)) all_state_conditions else T.R.state_conditions,
         else => unreachable,
     };
     var out: css_mod.StateConditions = .{};
@@ -2645,13 +4124,48 @@ const ConditionSources = struct {
     invalid: ?reactive.Source(bool) = null,
     selected: ?reactive.Source(bool) = null,
     expanded: ?reactive.Source(bool) = null,
+    /// Pinned node-driven conditions: state={.{ .hover = true }} holds _hover on (false holds it
+    /// off) regardless of the pointer; absent or a null `?bool` = driven by the node. For design
+    /// specimens and tests (DevTools :hov). disabled still short-circuits everything.
+    hover: ?reactive.Source(bool) = null,
+    active: ?reactive.Source(bool) = null,
+    focus: ?reactive.Source(bool) = null,
+    focus_visible: ?reactive.Source(bool) = null,
 };
+
+/// Pinned interaction states a component forwards to its root (`state={.{ .hover = pins.hover,
+/// ... }}`): null leaves the condition driven by the node. Read at mount (`ui.view.atMount`).
+pub const Pins = struct {
+    hover: ?bool = null,
+    active: ?bool = null,
+    focus: ?bool = null,
+    focus_visible: ?bool = null,
+};
+
+const semantic_conditions = [_][]const u8{ "disabled", "invalid", "selected", "expanded" };
+const pinned_conditions = [_][]const u8{ "hover", "active", "focus", "focus_visible" };
 
 fn conditionSources(comptime Spec: type, props: anytype) ConditionSources {
     const conds = comptime specConditions(Spec);
     var out: ConditionSources = .{};
-    inline for (@import("zenit_reflection").fields(ConditionSources)) |f| {
-        if (@field(conds, f.name)) @field(out, f.name) = conditionSource(f.name, props);
+    inline for (semantic_conditions) |name| {
+        if (@field(conds, name)) @field(out, name) = conditionSource(name, props);
+    }
+    const P = @TypeOf(props);
+    if (@hasField(P, "state")) {
+        const S = @TypeOf(props.state);
+        inline for (@import("zenit_reflection").fields(S)) |f| comptime {
+            for (semantic_conditions ++ pinned_conditions) |n| {
+                if (std.mem.eql(u8, n, f.name)) break;
+            } else @compileError("ui.view state: unknown condition ." ++ f.name ++ " (disabled, invalid, selected, expanded, hover, active, focus, focus_visible)");
+        };
+        inline for (pinned_conditions) |name| if (@hasField(S, name)) {
+            const pin = @field(props.state, name);
+            // `?bool`: a component forwarding its caller's pin (ui.view.Pins); null = unpinned.
+            if (@typeInfo(@TypeOf(pin)) == .optional) {
+                if (pin) |on| @field(out, name) = sourceOf(bool, "ui.view state ." ++ name, on);
+            } else @field(out, name) = sourceOf(bool, "ui.view state ." ++ name, pin);
+        };
     }
     return out;
 }
@@ -2693,8 +4207,8 @@ const Interact = struct {
         return .{
             .is_hovered = self.hover(tracked),
             .is_pressed = self.active(tracked),
-            .is_focused = readFlag(self.focused, tracked),
-            .is_focus_visible = readFlag(self.focus_visible, tracked),
+            .is_focused = pinned(self.sources.focus, tracked) orelse readFlag(self.focused, tracked),
+            .is_focus_visible = pinned(self.sources.focus_visible, tracked) orelse readFlag(self.focus_visible, tracked),
             .is_disabled = readSrc(self.sources.disabled, tracked),
             .is_invalid = readSrc(self.sources.invalid, tracked),
             .is_selected = readSrc(self.sources.selected, tracked),
@@ -2707,13 +4221,20 @@ const Interact = struct {
         return if (tracked) x.get() else x.peek();
     }
 
+    /// Pinned value (state={.{ .hover = … }}), or null when the node drives the condition.
+    fn pinned(src: ?reactive.Source(bool), comptime tracked: bool) ?bool {
+        const x = src orelse return null;
+        return if (tracked) x.get() else x.peek();
+    }
+
     fn hover(self: Interact, comptime tracked: bool) bool {
-        return readFlag(self.hovered, tracked);
+        return pinned(self.sources.hover, tracked) orelse readFlag(self.hovered, tracked);
     }
 
     /// Pressed and pointer still in node (native button semantics: hold-drag-out cancels highlight,
     /// drag back restores).
     fn active(self: Interact, comptime tracked: bool) bool {
+        if (pinned(self.sources.active, tracked)) |v| return v;
         const p = readFlag(self.pressed, tracked);
         const h = readFlag(self.hovered, tracked);
         return p and h;
@@ -2734,6 +4255,10 @@ fn resolveBox(spec: anytype, t: *const ThemeTokens, comptime tracked: bool, ix: 
             .when => return if (readSource(bool, spec.cond, tracked)) resolveBox(T.part, t, tracked, ix) else .{},
             .hover => return if (ix.hover(tracked)) resolveBox(T.part, t, tracked, ix) else .{},
             .style_by => {
+                if (comptime styleValueSource(T)) |V| {
+                    if (V != BoxStyle) @compileError("ui.view: a TextStyle source on a box");
+                    return readSource(BoxStyle, spec, tracked);
+                }
                 if (T.Out != BoxStyle) @compileError("ui.view.styleBy on a box: f must return BoxStyle");
                 return T.f(readSource(T.Arg, spec.src, tracked), t);
             },
@@ -2753,8 +4278,8 @@ fn resolveBox(spec: anytype, t: *const ThemeTokens, comptime tracked: bool, ix: 
                 return s;
             },
             .cva => {
-                const cs = T.R.resolve(readVariants(T, spec, tracked), t);
-                if (comptime T.R.state_conditions.any()) return cs.resolve(ix.state(tracked));
+                const cs = cvaResolve(T, spec, t, tracked);
+                if (comptime cvaHasLayers(T) or T.R.state_conditions.any()) return cs.resolve(ix.state(tracked));
                 var s = cs.base;
                 if (T.R.has_hover and ix.hover(tracked)) s = s.merge(cs.hover orelse .{});
                 if (T.R.has_active and ix.active(tracked)) s = s.merge(cs.active orelse .{});
@@ -2775,6 +4300,21 @@ fn resolveBox(spec: anytype, t: *const ThemeTokens, comptime tracked: bool, ix: 
     }
     @compileError("ui.view: unsupported box style " ++ @typeName(T) ++
         ". Expected a fn (*const ThemeTokens) BoxStyle, a BoxStyle literal, v.when / v.hover / v.styleBy, or a tuple of those");
+}
+
+/// A cva part carrying runtime per-state layers (`S.Recipe.of(…).merge(layers)`).
+fn cvaHasLayers(comptime T: type) bool {
+    return @hasField(T, "layers");
+}
+
+/// Layers may carry any condition: the element wires every state source.
+const all_state_conditions: css_mod.StateConditions = .{ .focus = true, .focus_visible = true, .disabled = true, .invalid = true, .selected = true, .expanded = true };
+
+/// The cva part's conditional style: recipe at the variant values, then its runtime layers.
+fn cvaResolve(comptime T: type, spec: T, t: *const ThemeTokens, comptime tracked: bool) recipe_entry.ConditionalStyle {
+    const cs = T.R.resolve(readVariants(T, spec, tracked), t);
+    if (comptime !cvaHasLayers(T)) return cs;
+    return cs.merge(readSource(recipe_entry.ConditionalStyle, spec.layers, tracked));
 }
 
 /// cva part variant value: unspecified dimensions take default, specified read source (tracked:
@@ -2859,6 +4399,12 @@ fn BoxPlan(comptime Props: type, comptime dir: ?Direction, comptime overlay: boo
             if (s.background) |c| n.setBackgroundRaw(c);
             if (s.opacity) |o| n.setOpacityRaw(o);
             n.markLayoutDirty();
+            n.markInheritedTextDirty(.of(s));
+        }
+
+        fn themedDecl(t: *const ThemeTokens) BoxStyle {
+            const spec = comptime spec_field.?.defaultValue().?;
+            return withDir(resolveBox(spec, t, false, .{}));
         }
 
         fn initial(props: Props, t: *const ThemeTokens) BoxStyle {
@@ -2873,11 +4419,15 @@ fn BoxPlan(comptime Props: type, comptime dir: ?Direction, comptime overlay: boo
         const transitions = if (has_style) specTransitions(Spec) else &[_]recipe_entry.TransitionEntry{};
 
         fn attach(props: Props, scope: *Scope, cx: *Cx, node: *Node) !void {
-            if (comptime transitions.len > 0) node.applyTransition(cx.allocator, transitions);
+            if (comptime transitions.len > 0) try node.applyTransition(cx.allocator, transitions);
             if (overlay) {
                 if (!has_style) return;
                 switch (mode) {
                     .plain => {
+                        // A component root whose own style is layered: the caller's overlay is a
+                        // layer too, or the root's next cascade (theme, state) would erase it.
+                        if (node.meta.per_frame.hooks.style_host != null)
+                            return BoxRuntime(Spec, dir, true, staticSpec()).start(props.style, scope, cx, node, conditionSources(Spec, props));
                         const s = initial(props, cx.tokens);
                         // ext allocate first, can fail: OOM takes error path, not applyTo silent
                         // field drop.
@@ -2886,6 +4436,7 @@ fn BoxPlan(comptime Props: type, comptime dir: ?Direction, comptime overlay: boo
                         if (s.background) |c| node.setBackgroundRaw(c);
                         if (s.opacity) |o| node.setOpacityRaw(o);
                         node.markLayoutDirty();
+                        node.markInheritedTextDirty(.of(s));
                         return;
                     },
                     // Component root might have own on_theme (single slot): don't override, effect
@@ -2896,8 +4447,10 @@ fn BoxPlan(comptime Props: type, comptime dir: ?Direction, comptime overlay: boo
             switch (mode) {
                 .plain => {},
                 .theme_hook => {
+                    if (dev_preview) return BoxRuntime(Spec, dir, false, staticSpec()).start(props.style, scope, cx, node, conditionSources(Spec, props));
                     if (specNeedsExt(props.style)) _ = try node.style.ensureExtFallible(cx.allocator);
                     node.meta.per_frame.hooks.on_theme = applyThemed;
+                    node.meta.per_frame.hooks.theme_decl = themedDecl;
                 },
                 .dynamic => try BoxRuntime(Spec, dir, false, staticSpec()).start(props.style, scope, cx, node, conditionSources(Spec, props)),
             }
@@ -2907,14 +4460,7 @@ fn BoxPlan(comptime Props: type, comptime dir: ?Direction, comptime overlay: boo
 
 /// Style reset baseline: condition withdraws, field back here. New box uses Style default; v.attrs
 /// stack to component root
-/// uses mount snapshot (doesn't follow component updates). Node's current tint (icon / image), null
-/// without media content.
-fn currentTint(node: *Node) ?Color {
-    if (node.getIcon()) |ic| return ic.tint;
-    if (node.getImage()) |img| return img.tint;
-    return null;
-}
-
+/// uses mount snapshot (doesn't follow component updates).
 /// Layer cascade bottom: style default. Property unspecified across layers falls here
 /// (component root stacked: component's own style already part of inline layer cascade, no snapshot
 /// needed).
@@ -2964,12 +4510,13 @@ fn specSourcesStaticNow(spec: anytype) bool {
     if (comptime partKind(T)) |k| switch (k) {
         .when => return sourceStaticNow(spec.cond),
         .hover, .css => return true,
-        .style_by, .states_by => return sourceStaticNow(spec.src),
+        .style_by, .states_by => return sourceStaticNow(styleBySource(spec)),
         // Loop on always re-calculates per frame; source static and off same as static, still
         // runtime (rare, not worth path).
         .loop => return false,
         .cva, .param => {
             inline for (@import("zenit_reflection").fields(@FieldType(T, "args"))) |f| if (!sourceStaticNow(@field(spec.args, f.name))) return false;
+            if (comptime cvaHasLayers(T)) return sourceStaticNow(spec.layers);
             return true;
         },
         else => unreachable,
@@ -3003,7 +4550,7 @@ fn specHoverNow(spec: anytype, t: *const ThemeTokens) bool {
         },
         .cva => {
             if (!specSourcesStaticNow(spec)) return true;
-            const cs = T.R.resolve(readVariants(T, spec, false), t);
+            const cs = cvaResolve(T, spec, t, false);
             return cs.hover != null or cs.active != null;
         },
         else => unreachable,
@@ -3031,7 +4578,7 @@ fn specActiveNow(spec: anytype, t: *const ThemeTokens) bool {
         },
         .cva => {
             if (!specSourcesStaticNow(spec)) return true;
-            return T.R.resolve(readVariants(T, spec, false), t).active != null;
+            return cvaResolve(T, spec, t, false).active != null;
         },
         else => unreachable,
     };
@@ -3112,6 +4659,10 @@ const StyleLayer = struct {
     /// Already applied once: first apply (during mount) immediate, skip transition (CSS: initial
     /// render doesn't trigger transition).
     applied_once: bool = false,
+    /// A void reactive update can keep its previous declaration on OOM. Initial
+    /// mounting must observe that failure and roll back the incomplete view.
+    allocation_failed: bool = false,
+    preview_value: if (dev_preview) BoxStyle else void = if (dev_preview) .{} else {},
     /// Owning host (set post-register). Layer & host unlink each other: layer releases first
     /// unlinks self from host;
     /// host releases (node release) clear this. Invariant: host's layer list only live layers (each
@@ -3135,13 +4686,69 @@ const StyleLayer = struct {
     /// log).
     fn replace(self: *StyleLayer, next: BoxStyle) bool {
         if (declEqlStyle(self.decl, next)) return false;
+        if (dev_preview) {
+            self.decl.deinit(self.cx.allocator);
+            self.preview_value = next;
+            self.decl = BoxDecl.fromBorrowed(&self.preview_value);
+            if (self.host) |h| h.revision +%= 1;
+            return true;
+        }
         const d = BoxDecl.encode(self.cx.allocator, next) catch {
+            self.allocation_failed = true;
             std.log.warn("ui.view: style layer update dropped (out of memory)", .{});
             return false;
         };
         self.decl.deinit(self.cx.allocator);
         self.decl = d;
+        if (self.host) |h| h.revision +%= 1;
         return true;
+    }
+
+    /// Fallible `set` (mount paths): the new declaration and the host target it leads to land
+    /// together, or neither does (`error.OutOfMemory`, layer and node exactly as before).
+    fn setFallible(self: *StyleLayer, next: BoxStyle) error{OutOfMemory}!void {
+        return setLayersFallible(1, .{self}, .{next});
+    }
+
+    /// `setFallible` for several layers of one host, recalculated once.
+    fn setLayersFallible(comptime n: usize, layers: [n]*StyleLayer, nexts: [n]BoxStyle) error{OutOfMemory}!void {
+        const host = layers[0].host;
+        for (layers[1..]) |l| std.debug.assert(l.host == host);
+        const a = layers[0].cx.allocator;
+        var fresh: [n]?BoxDecl = @splat(null);
+        errdefer for (fresh) |f| if (f) |d| d.deinit(a);
+        for (layers, nexts, &fresh) |l, next, *f| {
+            if (!declEqlStyle(l.decl, next)) f.* = try BoxDecl.encode(a, next);
+        }
+        const changed = for (fresh) |f| {
+            if (f != null) break true;
+        } else false;
+        const h = host orelse {
+            // not registered (yet): nothing to recalculate
+            for (layers, fresh) |l, f| if (f) |d| {
+                l.decl.deinit(a);
+                l.decl = d;
+            };
+            return;
+        };
+        if (!changed) {
+            // Declarations unchanged, but an earlier recalculation may not have landed: catch up.
+            if (h.stale) try h.recomputeFallible();
+            return;
+        }
+        var old: [n]BoxDecl = undefined;
+        for (layers, fresh, &old) |l, f, *o| {
+            o.* = l.decl;
+            if (f) |d| l.decl = d;
+        }
+        h.revision +%= 1;
+        h.recomputeFallible() catch |err| {
+            // restore the previous declarations; `fresh` is freed by the errdefer
+            for (layers, old) |l, o| l.decl = o;
+            h.revision +%= 1;
+            return err;
+        };
+        for (old, fresh) |o, f| if (f != null) o.deinit(a);
     }
 
     /// Unlink from host and release declaration (host already released: just release declaration).
@@ -3159,13 +4766,7 @@ const StyleLayer = struct {
 
 /// Same as current declaration (no alloc): bit set consistent and each declared field value equal.
 fn declEqlStyle(d: BoxDecl, s: BoxStyle) bool {
-    inline for (@import("zenit_reflection").fields(BoxStyle), 0..) |f, i| {
-        const field: BoxDecl.Field = @fromBackingInt(@intCast(i));
-        const in_s = @field(s, f.name) != null;
-        if (in_s != d.has(field)) return false;
-        if (in_s and !style_decl.valueEql(d.get(field).?, @field(s, f.name).?)) return false;
-    }
-    return true;
+    return d.eqlStyle(s);
 }
 
 /// Read node's current box style as declaration (fields matching default don't declare): component
@@ -3173,6 +4774,21 @@ fn declEqlStyle(d: BoxDecl, s: BoxStyle) bool {
 /// component's own style becomes component inline layer init. Inverse of BoxStyle.applyTo -- write
 /// result to new node,
 /// style storage matches original (roundtrip property for tests).
+/// `shown` without the fields `decl` declares (whole border group when it declares any border).
+fn withoutDeclared(shown: BoxStyle, decl: BoxStyle) BoxStyle {
+    var out = shown;
+    inline for (@import("zenit_reflection").fields(BoxStyle)) |f| {
+        if (@field(decl, f.name) != null) @field(out, f.name) = null;
+    }
+    const border_fields = .{ "border", "border_color", "border_width", "border_overlay", "border_top_width", "border_right_width", "border_bottom_width", "border_left_width", "border_top_color", "border_right_color", "border_bottom_color", "border_left_color" };
+    var declares_border = false;
+    inline for (border_fields) |name| declares_border = declares_border or @field(decl, name) != null;
+    if (declares_border) inline for (border_fields) |name| {
+        @field(out, name) = null;
+    };
+    return out;
+}
+
 fn captureInlineStyle(node: *Node) BoxStyle {
     @setEvalBranchQuota(20000);
     comptime assertCaptureCoverage();
@@ -3268,7 +4884,7 @@ fn assertCaptureCoverage() void {
         "shadow",             "shadows",             "inset_shadow",        "inset_shadows",     "text_color",
         "font_size",          "font_weight",         "icon_color",          "border_color",      "border_width",
         "border_top_width",   "border_right_width",  "border_bottom_width", "border_left_width", "border_top_color",
-        "border_right_color", "border_bottom_color", "border_left_color",
+        "border_right_color", "border_bottom_color", "border_left_color",   "border_overlay",
     };
     for (@import("zenit_reflection").fields(BoxStyle)) |f| {
         const V = @typeInfo(f.type).optional.child;
@@ -3323,16 +4939,39 @@ const StyleHost = struct {
     layers: std.ArrayListUnmanaged(*StyleLayer) = .empty,
     /// Last applied layer cascade result (sparse coverage vs baseline).
     computed: BoxDecl = .{},
-    /// Mount tint (icon_color undo back to it).
-    tint0: ?Color = null,
+    preview_targets: if (dev_preview) [2]BoxStyle else void = if (dev_preview) .{ .{}, .{} } else {},
+    preview_target_index: if (dev_preview) u1 else void = if (dev_preview) 0 else {},
+    /// The element's own tint mode (fixed color or currentColor; null: not an icon / image), the
+    /// base the layers' icon_color cascades over and withdraws to. Written by writeElementTint.
+    tint_base: ?types.TintMode = null,
     /// Last recalc OOM didn't apply (node & computed at old target).
     stale: bool = false,
     /// Component inline layer (host owns, always in layer list).
     inline_layer: StyleLayer,
+    /// The node's own theme-replayed declaration (`hooks.theme_decl`) when this host stacked on it
+    /// (host owns; in the layer list only then): an element layer, so theme switches update it
+    /// under the inline and caller layers instead of rewriting the node.
+    theme_layer: StyleLayer,
+    theme_decl: ?@import("core/node.zig").ThemeDecl = null,
     /// Applying change to node now: node setter continue normal, don't fall back to inline layer.
     applying: bool = false,
     /// Debug: reported "host-managed field directly rewritten" (once per host).
     conflict_reported: bool = false,
+    /// Bumped whenever a cascade input (layer list / declaration) or the applied target changes:
+    /// a staged inline write is only applied as staged when nothing moved in between.
+    revision: u64 = 0,
+    /// Fallible inline write between stage and commit / abort (`Node.stageStyleInline`).
+    staged: ?StagedInline = null,
+
+    const StagedInline = struct {
+        /// the inline layer's declaration after the write
+        inline_decl: BoxDecl,
+        /// the cascade target with it, encoded (the ext block it may need is reserved too)
+        target: BoxDecl,
+        revision: u64,
+        /// staging created the node's ext block (abort frees it again)
+        created_ext: bool,
+    };
 
     fn of(node: *Node) ?*StyleHost {
         const r = node.meta.per_frame.hooks.style_host orelse return null;
@@ -3344,7 +4983,7 @@ const StyleHost = struct {
     fn ensure(cx: *Cx, node: *Node, snapshot: bool) !*StyleHost {
         if (of(node)) |h| return h;
         const h = try cx.allocator.create(StyleHost);
-        h.* = .{ .cx = cx, .node = node, .tint0 = currentTint(node), .inline_layer = .{ .kind = .inline_, .cx = cx, .applied_once = true } };
+        h.* = .{ .cx = cx, .node = node, .tint_base = node.tintMode(), .inline_layer = .{ .kind = .inline_, .cx = cx, .applied_once = true }, .theme_layer = .{ .kind = .element, .cx = cx, .applied_once = true } };
         h.layers.append(cx.allocator, &h.inline_layer) catch |err| {
             cx.allocator.destroy(h);
             return err;
@@ -3353,21 +4992,70 @@ const StyleHost = struct {
         if (snapshot) {
             // Stack to existing node (component root): component's own style becomes component
             // inline layer init; what node displays now is it.
-            const own = captureInlineStyle(node);
+            const shown = captureInlineStyle(node);
+            var own = shown;
+            const themed: ?BoxStyle = if (node.meta.per_frame.hooks.theme_decl) |f| f(cx.tokens) else null;
+            if (themed) |d| {
+                // The theme-replayed declaration becomes the element layer: what the node shows
+                // beyond it (component inline writes) stays in the inline layer.
+                own = withoutDeclared(own, d);
+                if (node.meta.per_frame.hooks.theme_inline) |rec| own = own.merge(rec.style);
+            }
             h.inline_layer.decl = BoxDecl.encode(cx.allocator, own) catch |err| {
                 h.layers.deinit(cx.allocator);
                 cx.allocator.destroy(h);
                 return err;
             };
-            h.computed = BoxDecl.encode(cx.allocator, own) catch |err| {
+            if (themed) |d| {
+                h.theme_layer.decl = BoxDecl.encode(cx.allocator, d) catch |err| {
+                    h.inline_layer.decl.deinit(cx.allocator);
+                    h.layers.deinit(cx.allocator);
+                    cx.allocator.destroy(h);
+                    return err;
+                };
+                h.layers.insert(cx.allocator, 0, &h.theme_layer) catch |err| {
+                    h.theme_layer.decl.deinit(cx.allocator);
+                    h.inline_layer.decl.deinit(cx.allocator);
+                    h.layers.deinit(cx.allocator);
+                    cx.allocator.destroy(h);
+                    return err;
+                };
+            }
+            h.computed = BoxDecl.encode(cx.allocator, shown) catch |err| {
+                h.theme_layer.decl.deinit(cx.allocator);
                 h.inline_layer.decl.deinit(cx.allocator);
                 h.layers.deinit(cx.allocator);
                 cx.allocator.destroy(h);
                 return err;
             };
+            if (themed != null) {
+                h.theme_layer.host = h;
+                h.theme_decl = node.meta.per_frame.hooks.theme_decl;
+                // The host now keeps the inline writes the record held.
+                if (node.meta.per_frame.hooks.theme_inline) |rec| {
+                    node.meta.per_frame.hooks.theme_inline = null;
+                    rec.destroy();
+                }
+            }
         }
-        node.meta.per_frame.hooks.style_host = .{ .ptr = @ptrCast(h), .destroy = destroy, .write_inline = writeInline, .unset_inline = unsetInline };
+        node.meta.per_frame.hooks.style_host = .{
+            .ptr = @ptrCast(h),
+            .destroy = destroy,
+            .write_inline = writeInline,
+            .unset_inline = unsetInline,
+            .stage_inline = stageInline,
+            .commit_inline = commitInline,
+            .abort_inline = abortInline,
+            .retheme = retheme,
+        };
         return h;
+    }
+
+    fn retheme(ptr: *anyopaque, t: *const ThemeTokens) bool {
+        const h: *StyleHost = @ptrCast(@alignCast(ptr));
+        const f = h.theme_decl orelse return false;
+        h.theme_layer.set(f(t));
+        return true;
     }
 
     fn destroy(ptr: *anyopaque) void {
@@ -3379,8 +5067,11 @@ const StyleHost = struct {
             std.debug.assert(l.host == h);
             l.host = null;
         }
+        // A stage is committed or aborted within one synchronous mount step; never left behind.
+        std.debug.assert(h.staged == null);
         h.layers.deinit(h.cx.allocator);
         h.inline_layer.decl.deinit(h.cx.allocator);
+        h.theme_layer.decl.deinit(h.cx.allocator);
         h.computed.deinit(h.cx.allocator);
         h.cx.allocator.destroy(h);
     }
@@ -3392,6 +5083,62 @@ const StyleHost = struct {
         if (h.applying) return false;
         h.inline_layer.set(h.inline_layer.decl.decode().merge(partial.*));
         return true;
+    }
+
+    /// Fallible component inline write, staged: encode the new inline declaration and the new
+    /// target, reserve the node's ext block if the target needs it. Nothing visible changes.
+    fn stageInline(ptr: *anyopaque, partial: *const BoxStyle) error{OutOfMemory}!bool {
+        const h: *StyleHost = @ptrCast(@alignCast(ptr));
+        if (h.applying) return false;
+        std.debug.assert(h.staged == null);
+        const a = h.cx.allocator;
+        const inline_decl = try BoxDecl.encode(a, h.inline_layer.decl.decode().merge(partial.*));
+        errdefer inline_decl.deinit(a);
+        // target with the staged declaration in place (cascade is pure)
+        const current = h.inline_layer.decl;
+        h.inline_layer.decl = inline_decl;
+        const next = h.cascade();
+        h.inline_layer.decl = current;
+        const had_ext = h.node.style.ext != null;
+        // A stage can outlive other layer updates. It owns separate storage;
+        // borrowing the immediate-update double buffer would overwrite computed.
+        const target = try BoxDecl.encode(a, next);
+        errdefer target.deinit(a);
+        if (next.needsExt()) _ = try h.node.style.ensureExtFallible(a);
+        h.staged = .{ .inline_decl = inline_decl, .target = target, .revision = h.revision, .created_ext = !had_ext and h.node.style.ext != null };
+        return true;
+    }
+
+    fn commitInline(ptr: *anyopaque) void {
+        const h: *StyleHost = @ptrCast(@alignCast(ptr));
+        const s = h.staged.?;
+        h.staged = null;
+        const a = h.cx.allocator;
+        const unchanged_since_stage = h.revision == s.revision;
+        h.inline_layer.decl.deinit(a);
+        h.inline_layer.decl = s.inline_decl;
+        h.revision +%= 1;
+        if (!unchanged_since_stage or h.applying) {
+            // Contract breach (another layer changed in between): best effort like `writeInline`.
+            s.target.deinit(a);
+            return h.recompute();
+        }
+        const next = s.target.decode();
+        const change = h.changeTo(next) orelse return s.target.deinit(a);
+        h.applyTarget(next, change, s.target);
+    }
+
+    fn abortInline(ptr: *anyopaque) void {
+        const h: *StyleHost = @ptrCast(@alignCast(ptr));
+        const s = h.staged.?;
+        h.staged = null;
+        const a = h.cx.allocator;
+        s.inline_decl.deinit(a);
+        s.target.deinit(a);
+        if (s.created_ext) {
+            a.destroy(h.node.style.ext.?);
+            h.node.style.ext = null;
+        }
     }
 
     /// Strip field from component inline layer (non-null in fields), fall back to lower layer.
@@ -3410,11 +5157,13 @@ const StyleHost = struct {
         while (at > 0 and @backingInt(h.layers.items[at - 1].kind) > @backingInt(layer.kind)) at -= 1;
         try h.layers.insert(h.cx.allocator, at, layer);
         layer.host = h;
+        h.revision +%= 1;
     }
 
     fn remove(h: *StyleHost, layer: *StyleLayer) void {
         for (h.layers.items, 0..) |l, i| if (l == layer) {
             _ = h.layers.orderedRemove(i);
+            h.revision +%= 1;
             return;
         };
     }
@@ -3439,6 +5188,16 @@ const StyleHost = struct {
         }
     }
 
+    /// The layers' icon_color over the element's tint: a declared one paints fixed; none restores
+    /// the element's whole tint mode (currentColor included), not just its color.
+    fn applyIconColor(h: *const StyleHost, icon_color: ?Color) void {
+        if (icon_color) |c| {
+            _ = h.node.setTint(c);
+        } else if (h.tint_base) |mode| {
+            _ = h.node.setTintMode(mode);
+        }
+    }
+
     /// Cascade: merge all layers per order.
     fn cascade(h: *const StyleHost) BoxStyle {
         var out: BoxStyle = .{};
@@ -3447,8 +5206,21 @@ const StyleHost = struct {
     }
 
     /// Recalc target; change exists? apply to node (change = new vs old target diff, reset property
-    /// back to baseline).
+    /// back to baseline). OOM leaves node and target untouched (stale: the next write catches up).
+    ///
+    /// Best effort, for effects and callbacks that cannot report errors: an update that fails
+    /// is never half-applied, and `stale` makes the next write to any layer of this host retry
+    /// it. Mount paths use `recomputeFallible`.
     fn recompute(h: *StyleHost) void {
+        h.recomputeFallible() catch {
+            std.log.warn("ui.view: style update dropped (out of memory)", .{});
+            h.stale = true;
+        };
+    }
+
+    /// `recompute` reporting allocation failure: the new target lands completely, or node and
+    /// target stay as they were (`error.OutOfMemory`).
+    fn recomputeFallible(h: *StyleHost) error{OutOfMemory}!void {
         // Demand recalc during apply (unreachable theory: restyleBox writes only this node): note,
         // apply end delegates to next write.
         if (h.applying) {
@@ -3456,6 +5228,13 @@ const StyleHost = struct {
             return;
         }
         const next = h.cascade();
+        const change = h.changeTo(next) orelse return;
+        const d = try h.reserveTarget(next);
+        h.applyTarget(next, change, d);
+    }
+
+    /// Change from the applied target to `next`; null when nothing changes.
+    fn changeTo(h: *StyleHost, next: BoxStyle) ?StyleChange {
         const last = h.computed.decode();
         if (std.debug.runtime_safety) h.checkConflicts(last);
         const change = StyleChange.between(last, next);
@@ -3463,13 +5242,28 @@ const StyleHost = struct {
             // No change to apply: first apply done (else later when other layer changes these
             // fields, misidentify immediate).
             for (h.layers.items) |l| l.applied_once = true;
-            return;
+            return null;
         }
-        const d = BoxDecl.encode(h.cx.allocator, next) catch {
-            std.log.warn("ui.view: style update dropped (out of memory)", .{});
-            h.stale = true;
-            return;
-        };
+        return change;
+    }
+
+    /// Every allocation applying `next` needs, made before the node changes: its encoding and,
+    /// when it uses ext fields, the node's ext block (restyleBox's only allocation; applyTo would
+    /// otherwise drop those fields silently while the target recorded them as applied).
+    fn reserveTarget(h: *StyleHost, next: BoxStyle) error{OutOfMemory}!BoxDecl {
+        const d = if (dev_preview) blk: {
+            const i = h.preview_target_index ^ 1;
+            h.preview_targets[i] = next;
+            break :blk BoxDecl.fromBorrowed(&h.preview_targets[i]);
+        } else try BoxDecl.encode(h.cx.allocator, next);
+        errdefer d.deinit(h.cx.allocator);
+        if (next.needsExt()) _ = try h.node.style.ensureExtFallible(h.cx.allocator);
+        return d;
+    }
+
+    /// Apply a reserved target (`d` encodes `next`, takes ownership). Cannot fail.
+    fn applyTarget(h: *StyleHost, next: BoxStyle, change: StyleChange, d: BoxDecl) void {
+        const last = h.computed.decode();
         h.stale = false;
         // Fields immediate (skip transition): value from "first-apply layer" or animation layer.
         // Judge by cascade winner per layer (high to low,
@@ -3491,11 +5285,27 @@ const StyleHost = struct {
         h.applying = true;
         defer h.applying = was_applying;
         restyleBox(h.node, &Baseline.defaults, last, next, .{ .changed = change.changed & ~instant }, change, h.cx.allocator);
-        if (change.has("icon_color")) _ = h.node.setTint(next.icon_color orelse h.tint0 orelse Color.WHITE);
+        if (change.has("icon_color")) h.applyIconColor(next.icon_color);
         h.computed.deinit(h.cx.allocator);
         h.computed = d;
+        if (dev_preview and d.store == .dense) {
+            if (d.store.dense == &h.preview_targets[0]) h.preview_target_index = 0;
+            if (d.store.dense == &h.preview_targets[1]) h.preview_target_index = 1;
+        }
+        h.revision +%= 1;
     }
 };
+
+// Tests distinguish preview-only replay bridges from reactive style effects
+// present in both configurations (for example Skeleton's loop). Production
+// still calls the original Scope API; this metadata has no release storage.
+fn createStyleEffect(scope: *Scope, context: anytype, comptime effect_fn: anytype, preview_only: bool) !void {
+    if (comptime @import("builtin").is_test) {
+        const Effect = @import("reactive/effect.zig").Effect(@TypeOf(context), effect_fn);
+        const effect = try Effect.createInScope(scope, context);
+        scope.owner.graph.getNode(@bitCast(effect.base.graph_node_raw)).?.test_preview_style_infrastructure = dev_preview and preview_only;
+    } else try scope.createEffect(context, effect_fn);
+}
 
 fn BoxRuntime(comptime Spec: type, comptime dir: ?Direction, comptime capture_base: bool, comptime static_spec: anytype) type {
     const is_static = @TypeOf(static_spec) != void;
@@ -3508,6 +5318,7 @@ fn BoxRuntime(comptime Spec: type, comptime dir: ?Direction, comptime capture_ba
         scope: *Scope,
         spec: if (is_static) void else Spec,
         theme: ?*Signal(*const ThemeTokens),
+        style_generation: if (dev_preview) *Signal(u64) else void,
         ix: Interact,
         /// This style one layer in node's style host (element own style / component root stack).
         layer: StyleLayer,
@@ -3518,11 +5329,14 @@ fn BoxRuntime(comptime Spec: type, comptime dir: ?Direction, comptime capture_ba
         /// v.loop: node's generation handle (scope first? check then unlink hook) & hook hung flag.
         loop_handle: if (has_loop) core.NodeHandle else void = undefined,
         loop_on: bool = false,
+        /// The effect's first run (part of the mount) completed.
+        effect_started: bool = false,
 
         fn start(spec: Spec, scope: *Scope, cx: *Cx, node: *Node, sources: ConditionSources) !void {
             // Include inactive branches and every recipe variant before entering the void effect.
             if (specNeedsExt(spec)) _ = try node.style.ensureExtFallible(cx.allocator);
-            const theme_sig = if (comptime specThemed(Spec)) try cx.themeSignal(rootScopeOf(scope)) else null;
+            const style_sig = if (dev_preview) try cx.styleGenerationSignal() else {};
+            const theme_sig = if (comptime specThemed(Spec)) try cx.themeSignal() else null;
             const hovered = if (specHoverNow(spec, cx.tokens)) try hooks.useHover(scope, node) else null;
             const pressed = if (specActiveNow(spec, cx.tokens)) try hooks.usePressed(scope, cx, node) else null;
             const conds = comptime specConditions(Spec);
@@ -3534,6 +5348,7 @@ fn BoxRuntime(comptime Spec: type, comptime dir: ?Direction, comptime capture_ba
                 .scope = scope,
                 .spec = if (is_static) {} else spec,
                 .theme = theme_sig,
+                .style_generation = style_sig,
                 .ix = .{
                     .hovered = hovered,
                     .pressed = pressed,
@@ -3566,8 +5381,8 @@ fn BoxRuntime(comptime Spec: type, comptime dir: ?Direction, comptime capture_ba
                     if (initial.icon_color) |c| _ = node.setTint(c);
                     // Node merge-by-tuple init display; split post animation layer differs, align
                     // here.
-                    if (comptime has_loop) host.recompute();
-                } else host.recompute();
+                    if (comptime has_loop) try host.recomputeFallible();
+                } else try host.recomputeFallible();
             } else {
                 try host.add(&st.layer);
                 if (comptime has_loop) try host.add(&st.anim_layer);
@@ -3579,14 +5394,28 @@ fn BoxRuntime(comptime Spec: type, comptime dir: ?Direction, comptime capture_ba
                 try scope.onCleanup(Self, st, detachLoop);
             }
             const has_state = comptime conds.any();
-            if (hovered == null and pressed == null and !has_state and specSourcesStaticNow(spec)) {
+            if (!dev_preview and hovered == null and pressed == null and !has_state and specSourcesStaticNow(spec)) {
                 // Data source all static now (component-received static prop) & no hover needed:
                 // style only changes with theme, hang theme replay, no effect.
-                if (capture_base) st.apply(cx.tokens, false);
+                if (capture_base) try st.applyFallible(cx.tokens, false);
                 if (comptime !specThemed(Spec)) return;
                 return st.link.attach(scope, cx, node, replay);
             }
-            try scope.createEffect(st, run);
+            // The first run (synchronous, inside createEffect) resolves the states present at
+            // mount (pins, disabled / invalid ... already on): still the initial render, so they
+            // land without a transition. Later changes transition, whether or not the first run
+            // changed anything. The first run is part of the mount: it applies all or nothing
+            // and its error fails createEffect (see `run`).
+            const was_applied = st.layer.applied_once;
+            st.layer.applied_once = false;
+            try createStyleEffect(scope, st, run, hovered == null and pressed == null and !has_state and specSourcesStaticNow(spec));
+            st.layer.applied_once = was_applied or st.layer.applied_once;
+            try st.checkInitialStyle(host);
+        }
+
+        fn checkInitialStyle(self: *const Self, host: *const StyleHost) !void {
+            if (self.layer.allocation_failed or host.stale) return error.OutOfMemory;
+            if (comptime has_loop) if (self.anim_layer.allocation_failed) return error.OutOfMemory;
         }
 
         fn replay(r: *ViewThemeReplay, t: *const ThemeTokens) void {
@@ -3640,8 +5469,19 @@ fn BoxRuntime(comptime Spec: type, comptime dir: ?Direction, comptime capture_ba
             return s;
         }
 
-        fn run(self: *Self) void {
-            self.apply(if (self.theme) |sig| sig.get() else self.cx.tokens, true);
+        /// First run (inside mount): fallible, the error fails the mount. Later runs (a
+        /// dependency changed) cannot report errors: `apply` is best effort, never half-applied,
+        /// and the next run resolves the whole style again.
+        fn run(self: *Self) error{OutOfMemory}!void {
+            // Dev preview: every run tracks the style generation so a hot reload re-runs it.
+            if (dev_preview) _ = self.style_generation.get();
+            const t = if (self.theme) |sig| sig.get() else self.cx.tokens;
+            if (!self.effect_started) {
+                try self.applyFallible(t, true);
+                self.effect_started = true;
+                return;
+            }
+            self.apply(t, true);
         }
 
         fn apply(self: *Self, t: *const ThemeTokens, comptime tracked: bool) void {
@@ -3665,6 +5505,21 @@ fn BoxRuntime(comptime Spec: type, comptime dir: ?Direction, comptime capture_ba
                 resolveBox(self.spec, t, tracked, self.ix);
             if (dir) |d| next.direction = d;
             self.layer.set(next);
+        }
+
+        /// `apply` for mount: the layers and node change completely or not at all.
+        fn applyFallible(self: *Self, t: *const ThemeTokens, comptime tracked: bool) error{OutOfMemory}!void {
+            const spec = if (is_static) static_spec else self.spec;
+            if (comptime has_loop) {
+                self.syncLoop(specLoopOnNow(spec));
+                var author = resolveBoxFor(.author, spec, t, tracked, self.ix);
+                if (dir) |d| author.direction = d;
+                const anim = resolveBoxFor(.animation, spec, t, tracked, self.ix);
+                return StyleLayer.setLayersFallible(2, .{ &self.layer, &self.anim_layer }, .{ author, anim });
+            }
+            var next = resolveBox(spec, t, tracked, self.ix);
+            if (dir) |d| next.direction = d;
+            return self.layer.setFallible(next);
         }
 
         fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
@@ -3692,7 +5547,8 @@ fn BoxRuntime(comptime Spec: type, comptime dir: ?Direction, comptime capture_ba
                     std.log.warn("ui.view.loop: node already runs another loop; only one loop per node", .{});
                     return;
                 }
-                self.node.addBeforeRender(tick);
+                // tick re-applies this node's own style layers and marks it dirty.
+                self.node.addBeforeRenderScoped(tick, .dirty_marking);
                 if (!hasHook(self.node)) {
                     // Hook ring full (8): not record on, next apply re-try, not permanent silent
                     // freeze.
@@ -3896,6 +5752,9 @@ fn markStyleChanges(node: *Node, change: StyleChange) void {
         }
     }
     if (layout) node.markSizingDirty() else if (repaint) node.markRenderDirty();
+    // Text color / size / weight on a box are inherited (size / weight by layout too): texts and
+    // descendants reading them are otherwise clean and would reuse cached measurements / commands.
+    node.markInheritedTextDirty(.{ .color = change.has("text_color"), .metrics = change.has("font_size") or change.has("font_weight") });
     // This also discards baked display-list caches; layout invalidation alone does not.
     if (composite) node.markCompositePropDirty() else if (interaction) node.markInteractionDirty();
     if (change.has("z_index")) node.markOrderDirty();
@@ -3908,14 +5767,23 @@ fn inNames(comptime name: []const u8, comptime names: []const []const u8) bool {
 
 // ---------- Text Style ----------
 
+/// A whole TextStyle (function, value, styleBy) states every inheritable text property itself.
+fn declaredWhole(s: TextStyle) TextStyle {
+    var out = s;
+    out.color_set = true;
+    out.font_size_set = true;
+    out.font_weight_set = true;
+    return out;
+}
+
 fn defaultText(t: *const ThemeTokens) TextStyle {
     return .{ .color = t.tokens.color.fg_primary, .font_size = t.tokens.font_size.lg };
 }
 
 /// Text style: from theme default text style, stack in order. Whole style (function, TextStyle
-/// value, styleBy)
-/// swap current; css & style literal only change their declared field; v.when(cond, css or literal)
-/// stack when true.
+/// value, styleBy returning TextStyle)
+/// swap current; css, style literal and styleBy returning a partial struct only change their
+/// declared fields; v.when(cond, css or literal) stack when true.
 /// hovered: text node's own hover (build when style has _hover; null = unhovered).
 fn resolveText(spec: anytype, t: *const ThemeTokens, comptime tracked: bool, hovered: ?*Signal(bool)) TextStyle {
     const T = @TypeOf(spec);
@@ -3929,13 +5797,22 @@ fn resolveText(spec: anytype, t: *const ThemeTokens, comptime tracked: bool, hov
 
 fn layerText(base: TextStyle, spec: anytype, t: *const ThemeTokens, comptime tracked: bool, hovered: ?*Signal(bool)) TextStyle {
     const T = @TypeOf(spec);
-    if (comptime isStyleFn(T, TextStyle)) return spec(t);
-    if (T == TextStyle) return spec;
+    // A whole TextStyle (function, value, styleBy) states its color, size and weight itself.
+    if (comptime isStyleFn(T, TextStyle)) return declaredWhole(spec(t));
+    if (T == TextStyle) return declaredWhole(spec);
     if (comptime partKind(T)) |k| {
         switch (k) {
             .style_by => {
-                if (T.Out != TextStyle) @compileError("ui.view.styleBy on text: f must return TextStyle");
-                return T.f(readSource(T.Arg, spec.src, tracked), t);
+                if (comptime styleValueSource(T)) |V| {
+                    if (V != TextStyle) @compileError("ui.view: a BoxStyle source on text");
+                    return declaredWhole(readSource(TextStyle, spec, tracked));
+                }
+                // A partial text struct (`struct { font_size: f32, … }`) layers only its fields,
+                // like a style literal: text that leaves color / size / weight out keeps
+                // inheriting them.
+                if (comptime T.Out != TextStyle and @typeInfo(T.Out) == .@"struct") return css_mod.textFrom(T.f(readSource(T.Arg, spec.src, tracked), t), base, t);
+                if (T.Out != TextStyle) @compileError("ui.view.styleBy on text: f must return TextStyle or a partial text struct");
+                return declaredWhole(T.f(readSource(T.Arg, spec.src, tracked), t));
             },
             .css => {
                 const s = T.text(base, t);
@@ -3950,7 +5827,10 @@ fn layerText(base: TextStyle, spec: anytype, t: *const ThemeTokens, comptime tra
             .loop => @compileError("ui.view.text: v.loop animates boxes; put the text in a box and animate that"),
             .states_by => @compileError("ui.view.text: v.statesBy applies to boxes; text takes styleBy / cva"),
             .param => @compileError("ui.view.text: a parameterized style applies to boxes; style the text with a plain style or recipe, or put the parameterized style in box="),
-            .cva => return T.R.resolveText(readVariants(T, spec, tracked), base, t),
+            .cva => {
+                if (comptime cvaHasLayers(T)) @compileError("ui.view.text: .merge(layers) applies to boxes");
+                return T.R.resolveText(readVariants(T, spec, tracked), base, t);
+            },
             else => unreachable,
         }
     }
@@ -4004,10 +5884,33 @@ fn TextPlan(comptime Props: type) type {
         const transitions = if (has_style) specTransitions(Spec) else &[_]recipe_entry.TransitionEntry{};
 
         fn attach(props: Props, scope: *Scope, cx: *Cx, node: *Node) !void {
-            if (comptime transitions.len > 0) node.applyTransition(cx.allocator, transitions);
+            if (comptime transitions.len > 0) try node.applyTransition(cx.allocator, transitions);
             switch (mode) {
                 .plain => {},
                 .theme_hook => {
+                    if (dev_preview) {
+                        const State = struct {
+                            node: *Node,
+                            theme: *Signal(*const ThemeTokens),
+                            generation: *Signal(u64),
+                            fn run(st: *@This()) void {
+                                _ = st.generation.get();
+                                const t = st.theme.get();
+                                if (!has_style) return applyTextStyle(st.node, defaultText(t));
+                                const spec = comptime spec_field.?.defaultValue().?;
+                                applyTextStyle(st.node, resolveText(spec, t, true, null));
+                            }
+                            fn destroy(ptr: *anyopaque, a: std.mem.Allocator) void {
+                                a.destroy(@as(*@This(), @ptrCast(@alignCast(ptr))));
+                            }
+                        };
+                        const theme_sig = try cx.themeSignal();
+                        const generation = try cx.styleGenerationSignal();
+                        const st = try scope.allocator.create(State);
+                        st.* = .{ .node = node, .theme = theme_sig, .generation = generation };
+                        try scope.adoptResource(@ptrCast(st), State.destroy);
+                        return createStyleEffect(scope, st, State.run, true);
+                    }
                     node.meta.per_frame.hooks.on_theme = struct {
                         fn hook(n: *Node, t: *const ThemeTokens, _: std.mem.Allocator) void {
                             if (!has_style) return applyTextStyle(n, defaultText(t));
@@ -4022,9 +5925,11 @@ fn TextPlan(comptime Props: type) type {
                         cx: *Cx,
                         spec: Spec,
                         theme: *Signal(*const ThemeTokens),
+                        style_generation: if (dev_preview) *Signal(u64) else void,
                         hovered: ?*Signal(bool) = null,
                         link: ThemeLink = undefined,
                         fn run(st: *@This()) void {
+                            if (dev_preview) _ = st.style_generation.get();
                             applyTextStyle(st.node, resolveText(st.spec, st.theme.get(), true, st.hovered));
                         }
                         fn replay(r: *ViewThemeReplay, t: *const ThemeTokens) void {
@@ -4036,16 +5941,16 @@ fn TextPlan(comptime Props: type) type {
                             allocator.destroy(@as(*@This(), @ptrCast(@alignCast(ptr))));
                         }
                     };
-                    const theme_sig = try cx.themeSignal(rootScopeOf(scope));
+                    const theme_sig = try cx.themeSignal();
                     // Style has _hover: build hover signal on text node (link hover color).
                     const hovered: ?*Signal(bool) = if (comptime textHover(Spec)) try hooks.useHover(scope, node) else null;
                     const st = try scope.allocator.create(State);
-                    st.* = .{ .node = node, .cx = cx, .spec = props.style, .theme = theme_sig, .hovered = hovered };
+                    st.* = .{ .node = node, .cx = cx, .spec = props.style, .theme = theme_sig, .style_generation = if (dev_preview) try cx.styleGenerationSignal() else {}, .hovered = hovered };
                     try scope.adoptResource(@ptrCast(st), State.destroy);
                     // Data source all static now & no hover: only changes with theme, hang theme
                     // replay, no effect.
-                    if (hovered == null and specStaticNow(props.style, cx.tokens)) return st.link.attach(scope, cx, node, State.replay);
-                    try scope.createEffect(st, State.run);
+                    if (!dev_preview and hovered == null and specStaticNow(props.style, cx.tokens)) return st.link.attach(scope, cx, node, State.replay);
+                    try createStyleEffect(scope, st, State.run, hovered == null and specStaticNow(props.style, cx.tokens));
                 },
             }
         }
@@ -4141,7 +6046,8 @@ fn applyAttrs(node: *Node, props: anytype) void {
     if (@hasField(P, "on_hover")) hooks.setHoverHandler(node, true, props.on_hover);
     if (@hasField(P, "on_leave")) hooks.setHoverHandler(node, false, props.on_leave);
     // Semantic tag (.button / .input ...): hit, a11y & keyboard activate per tag.
-    if (@hasField(P, "tag")) node.tag = props.tag;
+    // Tag is structure (a11y / hit roles): a forwarded component parameter is read at mount.
+    if (@hasField(P, "tag")) node.tag = if (@TypeOf(props.tag) == types.ElementTag or @typeInfo(@TypeOf(props.tag)) == .enum_literal) props.tag else sourceOf(types.ElementTag, "ui.view .tag", props.tag).peek();
     // Focusable (Tab order / click focus); can be bool source (exit Tab order when disabled), see
     // bindFocus.
     if (@hasField(P, "window_region")) node.behavior.interaction.window_region = coerceLiteral(@import("system_sdk").window_chrome.Region, props.window_region);
@@ -4328,7 +6234,10 @@ fn bindTypedEventsAt(comptime slot: enum { bubble, capture }, scope: *Scope, nod
     // It's child of caller scope,
     // release with root node -- table neither outlive node nor outlive handler context in caller
     // scope.
-    const owner = if (slot == .capture) (node.meta.ownership.scope.scope orelse scope) else scope;
+    // Replayable component attrs own this adapter in their attachment scope.
+    // Keeping it in persistent setup would retain every old root until final
+    // instance disposal. Legacy components keep their root-scope ownership.
+    const owner = if (slot == .capture and componentInstance(node) == null) (node.meta.ownership.scope.scope orelse scope) else scope;
     const t = try owner.allocator.create(Table);
     t.* = .{ .node = node };
     try owner.adoptResource(@ptrCast(t), Table.destroy);
@@ -4409,14 +6318,36 @@ fn bindFocus(scope: *Scope, cx: *Cx, node: *Node, props: anytype) !void {
         const R = @TypeOf(props.focus_ring);
         if (R == bool) {
             if (props.focus_ring) try hooks.useFocusRing(scope, cx, node, .{});
+        } else if (comptime @typeInfo(R) == .optional or R == @TypeOf(null)) {
+            // `?FocusRingConfig` literal: null = no ring.
+            if (@as(?hooks.FocusRingConfig, props.focus_ring)) |config| try hooks.useFocusRing(scope, cx, node, config);
         } else if (comptime isReactiveSource(R)) {
-            const src = sourceOf(hooks.FocusRingConfig, "ui.view .focus_ring", props.focus_ring);
-            try hooks.useFocusRing(scope, cx, node, src.peek());
-            if (!src.isStatic()) try bind_mod.bind(scope, src, .{ .cx = cx, .node = node }, struct {
-                fn apply(c: anytype, config: hooks.FocusRingConfig) void {
-                    hooks.updateFocusRingConfig(c.cx, c.node, config);
+            if (comptime reactive.SourceValueOf(R) == ?hooks.FocusRingConfig) {
+                // A component forwarding `focusRing: ?FocusRingConfig`: whether there is a ring is
+                // structure, decided at mount (null = none); the config of a present ring follows
+                // the source.
+                const src = sourceOf(?hooks.FocusRingConfig, "ui.view .focus_ring", props.focus_ring);
+                if (src.peek()) |config| {
+                    try hooks.useFocusRing(scope, cx, node, config);
+                    if (!src.isStatic()) try bind_mod.bind(scope, src, .{ .cx = cx, .node = node }, struct {
+                        fn apply(c: anytype, config_now: ?hooks.FocusRingConfig) void {
+                            if (config_now) |cfg| hooks.updateFocusRingConfig(c.cx, c.node, cfg);
+                        }
+                    }.apply);
                 }
-            }.apply);
+            } else if (comptime reactive.SourceValueOf(R) == bool) {
+                // A component parameter forwarded as focusRing={on}: decided at mount (the ring
+                // is a hook on the node, not a style), so read once.
+                if (sourceOf(bool, "ui.view .focus_ring", props.focus_ring).peek()) try hooks.useFocusRing(scope, cx, node, .{});
+            } else {
+                const src = sourceOf(hooks.FocusRingConfig, "ui.view .focus_ring", props.focus_ring);
+                try hooks.useFocusRing(scope, cx, node, src.peek());
+                if (!src.isStatic()) try bind_mod.bind(scope, src, .{ .cx = cx, .node = node }, struct {
+                    fn apply(c: anytype, config: hooks.FocusRingConfig) void {
+                        hooks.updateFocusRingConfig(c.cx, c.node, config);
+                    }
+                }.apply);
+            }
         } else try hooks.useFocusRing(scope, cx, node, coerceLiteral(hooks.FocusRingConfig, props.focus_ring));
     }
 }
@@ -4524,6 +6455,10 @@ fn isComponent(comptime T: type) bool {
         (@hasDecl(T, "mount") or @hasDecl(T, "viewMount"));
 }
 
+fn isPreviewFmt(comptime T: type) bool {
+    return @typeInfo(T) == .@"struct" and @hasDecl(T, "zenit_preview_fmt");
+}
+
 fn isFmt(comptime T: type) bool {
     return @typeInfo(T) == .@"struct" and @hasDecl(T, "zenit_view_fmt");
 }
@@ -4574,15 +6509,17 @@ fn requireSingle(comptime T: type, comptime who: []const u8) void {
     @compileError(who ++ ": needs a single-node element, got " ++ @typeName(T));
 }
 
-/// Scope tree root: theme signal hangs here, lifecycle cover all subscriber
-/// (cx.themeSignal cache release with scope making it, hang short-live child scope dangle).
-fn rootScopeOf(scope: *Scope) *Scope {
-    var s = scope;
-    while (s.parent) |p| s = p;
-    return s;
-}
-
 test {
     _ = @import("view_tests.zig");
     _ = @import("css.zig");
+}
+
+/// Inspect exact sparse declarations, including withdrawn/null fields and layer
+/// order, for the semantic differential. No callback or host pointer is exposed.
+pub fn visitTemplateStyleDecls(node: *Node, ctx: anytype, comptime visit: anytype) void {
+    if (comptime !@import("builtin").is_test) @compileError("template style projection is test-only");
+    if (StyleHost.of(node)) |host| {
+        for (host.layers.items) |layer| visit(ctx, layer.kind, layer.decl);
+        visit(ctx, LayerKind.inline_, host.computed);
+    }
 }

@@ -321,7 +321,8 @@ pub fn projectNodeAs(
         .h = local_rect.h,
     });
     const has_click_route = node.behavior.events.on_click != null or node.behavior.events.on_event != null;
-    const has_step_route = node.behavior.events.on_key_down != null or node.behavior.events.on_event != null;
+    const has_logical_step = if (props.value_range) |range| range.context != null and range.step != null else false;
+    const has_step_route = has_logical_step or node.behavior.events.on_key_down != null or node.behavior.events.on_event != null;
     const toggle_role = role == .checkbox or role == .switch_control or role == .radio or
         role == .menuitemcheckbox or role == .menuitemradio;
     const step_role = role == .slider or role == .spinbutton;

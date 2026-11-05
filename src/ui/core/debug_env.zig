@@ -3,7 +3,7 @@
 const std = @import("std");
 
 pub fn devtoolsHitDebugEnabled() bool {
-    const raw = std.c.getenv("ZENIT_DEVTOOLS_HIT_DEBUG") orelse return false;
+    const raw = @import("zenit_environment").getNative("ZENIT_DEVTOOLS_HIT_DEBUG") orelse return false;
     const value = std.mem.span(raw);
     if (value.len == 0) return true;
     return !std.mem.eql(u8, value, "0");
@@ -21,7 +21,7 @@ var wants_frame_debug_enabled_cache: ?bool = null;
 
 pub fn readBoolEnvCached(cache: *?bool, env_name: [:0]const u8) bool {
     if (cache.*) |v| return v;
-    const raw = std.c.getenv(env_name) orelse {
+    const raw = @import("zenit_environment").getNative(env_name) orelse {
         cache.* = false;
         return false;
     };

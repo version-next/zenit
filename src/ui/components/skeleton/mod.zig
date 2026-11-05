@@ -70,6 +70,7 @@ test "Skeleton: 外层报 loading（只报一次），骨架块按变体与尺�
     try std.testing.expect(a11y.busy);
     try std.testing.expectEqualStrings("polite", a11y.live.?);
     try std.testing.expectEqual(@as(usize, 1), sk.children.items.len);
+    // Explicit height overrides the 12px design default; circular uses radius.dialog.
     const bone = sk.children.items[0];
     try std.testing.expect(bone.behavior.interaction.a11y == null);
     f.cx.layout();
@@ -81,7 +82,7 @@ test "Skeleton: 外层报 loading（只报一次），骨架块按变体与尺�
     f.cx.layout();
     const dot = circle.children.items[0];
     try std.testing.expectEqual(@as(f32, 48), dot.rectFromWorldOrFallback().h);
-    try std.testing.expectEqual(@as(f32, 24), dot.style.effectiveRadius());
+    try std.testing.expectEqual(@as(f32, 12), dot.style.effectiveRadius());
 }
 
 test "Skeleton: multiple" {
@@ -120,8 +121,9 @@ test "Skeleton: shimmer 按帧时钟在基色与高亮色之间往返；关掉�
     const bone = sk.children.items[0];
     try std.testing.expect(bone.hasBeforeRenderHooks());
     const t = f.cx.tokens;
-    const base = Color.lerp(t.tokens.color.fg_disabled, t.tokens.color.bg_primary, 0.7);
-    const high = Color.lerp(t.tokens.color.fg_disabled, t.tokens.color.bg_primary, 0.85);
+    // COMPONENTS.json Skeleton / *: semantic skeleton surface.
+    const base = t.tokens.color.skeleton;
+    const high = Color.lerp(base, t.tokens.color.bg_primary, 0.25);
     render_engine.current_frame_time_ms = styles.shimmer_period_ms * 0.25; // sin = 1: highlight end
     runFrameHooks(bone);
     try std.testing.expect(Color.eql(high, bone.getBackground()));

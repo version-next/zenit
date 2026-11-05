@@ -1,5 +1,5 @@
 //! Interactive Storybook coverage for the real `ui.widgets.Select` component.
-//! The visual contract comes from Pencil node `puQEf`; no specimen here is a
+//! Default field dimensions follow Pencil node `RYMhT`; no specimen here is a
 //! hand-drawn replacement for the component.
 
 const std = @import("std");
@@ -36,11 +36,11 @@ const Styles = struct {
     fn specimen(_: *const ui.theme.Values) ui.BoxStyle {
         return .{ .width = .{ .px = 352 }, .gap = 6 };
     }
-    fn title(_: *const ui.theme.Values) ui.TextStyle {
-        return .{ .font_size = 12, .font_weight = 600, .line_height = 1.2, .color = ui.Color.hex(0x1A1A1A) };
+    fn title(t: *const ui.theme.Values) ui.TextStyle {
+        return .{ .font_size = 12, .font_weight = 600, .line_height = 1.2, .color = t.tokens.color.fg_primary };
     }
-    fn caption(_: *const ui.theme.Values) ui.TextStyle {
-        return .{ .font_size = 11, .font_weight = 600, .line_height = 1.2, .color = ui.Color.hex(0x787878) };
+    fn caption(t: *const ui.theme.Values) ui.TextStyle {
+        return .{ .font_size = 11, .font_weight = 600, .line_height = 1.2, .color = t.tokens.color.fg_secondary };
     }
 };
 
@@ -82,13 +82,18 @@ const multiple_search_xs_options = withIds(&search_options, "story.select.multip
 pub fn build(scope: *ui.Scope, cx: *ui.Cx) !*ui.Node {
     return v.render(scope, cx, v.col(.{ .style = Styles.family, .test_id = "story.select.family" }, .{
         v.text(.{ .style = Styles.title }, "Select"),
+        specimen("Selected / disabled option", W.Select(.{ .options = &[_]W.SelectOption{
+            .{ .value = "one", .label = "Option one" },                         .{ .value = "two", .label = "Option two" },
+            .{ .value = "disabled", .label = "Unavailable", .disabled = true },
+        }, .value = "two", .width = 260 })),
+        specimen("MultiSelect / overflow", W.Select(.{ .options = &options, .mode = .multiple, .values = &[_][]const u8{ "one", "two", "three", "four" }, .max_visible_tags = 2, .selection_footer = true, .width = 260 })),
 
         specimen("With icon", v.attrs(.{ .parts = .{
             .trigger = "story.select.with-icon",
             .panel = "story.select.with-icon.panel",
             .chevron_down = "story.select.with-icon.chevron",
         } }, W.Select(.{
-            .size = .lg, // puQEf design is LG; Select default unified to md
+            .size = .md, // RYMhT default field is 32px.
             .options = &icon_options_ids,
             .leading_icon = ui.icons.globe,
         }))),
@@ -103,7 +108,7 @@ pub fn build(scope: *ui.Scope, cx: *ui.Cx) !*ui.Node {
             .chevron_up = "story.select.clearable.chevron-up",
             .chevron_down = "story.select.clearable.chevron-down",
         } }, W.Select(.{
-            .size = .lg, // puQEf design is LG; Select default unified to md
+            .size = .md, // RYMhT default field is 32px.
             .options = &options,
             .clearable = true,
             .value = "one",
@@ -116,7 +121,7 @@ pub fn build(scope: *ui.Scope, cx: *ui.Cx) !*ui.Node {
             .append_slot = "story.select.search.append",
             .search_input = "story.select.search.input",
         } }, W.Select(.{
-            .size = .lg, // puQEf design is LG; Select default unified to md
+            .size = .md, // RYMhT default field is 32px.
             .options = &search_options_ids,
             .searchable = true,
             .placeholder = "Search options...",
@@ -128,7 +133,7 @@ pub fn build(scope: *ui.Scope, cx: *ui.Cx) !*ui.Node {
             .trigger = "story.select.multiple-lg",
             .panel = "story.select.multiple-lg.panel",
         } }, W.Select(.{
-            .size = .lg, // puQEf design is LG; Select default unified to md
+            .size = .lg, // Keep explicit 40px LG coverage alongside RYMhT defaults.
             .options = &multiple_lg_options,
             .mode = .multiple,
             .values = &[_][]const u8{ "one", "two" },
@@ -141,7 +146,7 @@ pub fn build(scope: *ui.Scope, cx: *ui.Cx) !*ui.Node {
             .append_slot = "story.select.multiple-search-lg.append",
             .search_input = "story.select.multiple-search-lg.input",
         } }, W.Select(.{
-            .size = .lg, // puQEf design is LG; Select default unified to md
+            .size = .md, // RYMhT default field is 32px.
             .options = &multiple_search_lg_options,
             .mode = .multiple,
             .searchable = true,
@@ -191,5 +196,10 @@ pub fn build(scope: *ui.Scope, cx: *ui.Cx) !*ui.Node {
             .searchable = true,
             .values = &[_][]const u8{"one"},
         }))),
+        specimen("MultiSelect open", v.attrs(.{ .parts = .{ .trigger = "story.select.multi-open", .panel = "story.select.multi-open.panel" } }, W.Select(.{ .options = &[_]W.SelectOption{
+            .{ .value = "design", .label = "Design" },                          .{ .value = "engineering", .label = "Engineering" },
+            .{ .value = "marketing", .label = "Marketing" },                    .{ .value = "sales", .label = "Sales" },
+            .{ .value = "disabled", .label = "Unavailable", .disabled = true },
+        }, .mode = .multiple, .values = &[_][]const u8{ "design", "engineering" }, .selection_footer = true, .open = true, .width = 260 }))),
     }));
 }

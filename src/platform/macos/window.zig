@@ -19,7 +19,8 @@ pub const MacOSWindow = struct {
     extern fn macos_is_dark_mode() c_int;
     extern fn macos_create_window(width: c_int, height: c_int, title: [*:0]const u8) ?*anyopaque;
     extern fn macos_create_window_borderless(width: c_int, height: c_int, title: [*:0]const u8) ?*anyopaque;
-    extern fn macos_make_key_window(window_ptr: *anyopaque) void;
+    extern fn macos_activate_window(window_ptr: *anyopaque) void;
+    extern fn macos_restore_key_window(window_ptr: *anyopaque) void;
 
     extern fn macos_get_metal_view(window_ptr: *anyopaque) ?*anyopaque;
     extern fn macos_get_metal_layer(view_ptr: *anyopaque) ?*anyopaque;
@@ -32,7 +33,7 @@ pub const MacOSWindow = struct {
     extern fn macos_live_window_count() u32;
     extern fn macos_get_drawable_size(view_ptr: *anyopaque, width: *c_int, height: *c_int) void;
     extern fn macos_get_mouse_position(window_ptr: *anyopaque, x: *f32, y: *f32) void;
-    extern fn macos_get_mouse_move_event(window_ptr: *anyopaque, x: *f32, y: *f32, dx: *f32, dy: *f32, modifiers: *u32, sequence: *u64) c_int;
+    extern fn macos_get_mouse_move_event(window_ptr: *anyopaque, x: *f32, y: *f32, dx: *f32, dy: *f32, modifiers: *u32, sequence: *u64, left: *c_int) c_int;
     extern fn macos_get_input_queue_metrics(mouse_move_coalesced: *u64, ime_preedit_coalesced: *u64) void;
     extern fn macos_current_modifier_flags() u32;
     extern fn macos_is_mouse_button_pressed(window_ptr: *anyopaque, button: c_int) c_int;
@@ -52,6 +53,8 @@ pub const MacOSWindow = struct {
     extern fn macos_consume_drag_event(window_ptr: *anyopaque, token: *const anyopaque) c_int;
     extern fn macos_get_drag_event(window_ptr: *anyopaque, x: *f32, y: *f32, kind: *u8, paths_buf: [*]u8, paths_buf_len: c_int, payload_kind: *u8, source_token: *u64, operation: *u8, paths_truncated: *u8) c_int;
     extern fn macos_set_render_callback(window_ptr: *anyopaque, callback: ?*const fn (?*anyopaque) callconv(.c) void, ctx: ?*anyopaque) void;
+    extern fn macos_set_surface_background(view_ptr: *anyopaque, r: f32, g: f32, b: f32, a: f32) void;
+    extern fn macos_set_live_resize_tick_callback(window_ptr: *anyopaque, callback: ?*const fn (?*anyopaque) callconv(.c) void, ctx: ?*anyopaque) void;
     extern fn macos_request_redraw(window_ptr: *anyopaque) void;
     extern fn macos_is_live_resize(window_ptr: *anyopaque) c_int;
     extern fn macos_get_mouse_button_event_ex(window_ptr: ?*anyopaque, x: *f32, y: *f32, button: *c_int, pressed: *c_int, modifiers: *u32, sequence: *u64) c_int;
@@ -80,6 +83,8 @@ pub const MacOSWindow = struct {
     extern fn macos_pump_app_events_timeout(timeout_ms: c_uint) void;
     extern fn macos_should_quit() c_int;
     extern fn macos_consume_app_became_active() c_int;
+    extern fn macos_consume_app_reopen() c_int;
+    extern fn macos_set_app_reopen_handled(handled: c_int) void;
     extern fn macos_check_window_should_close(window_ptr: *anyopaque) c_int;
     extern fn macos_reset_window_should_close(window_ptr: *anyopaque) void;
     extern fn macos_update_window_mouse(window_ptr: *anyopaque) void;
@@ -337,6 +342,23 @@ pub const MacOSWindow = struct {
         macos_set_render_callback(self.window_ptr, callback, ctx);
     }
 
+    /// Color shown where no presented frame covers the surface (the strip a
+    /// growing live resize exposes before the new-size frame lands).
+    pub fn setSurfaceBackground(self: *MacOSWindow, r: f32, g: f32, b: f32, a: f32) void {
+        macos_set_surface_background(self.view_ptr, r, g, b, a);
+    }
+
+    /// Live-resize refresh ticker callback. Distinct from the setFrameSize
+    /// render callback so the host can keep both to one frame per period.
+    /// Null falls back to the render callback.
+    pub fn setLiveResizeTickCallback(
+        self: *MacOSWindow,
+        callback: ?*const fn (?*anyopaque) callconv(.c) void,
+        ctx: ?*anyopaque,
+    ) void {
+        macos_set_live_resize_tick_callback(self.window_ptr, callback, ctx);
+    }
+
     /// Request redraw
     pub fn requestRedraw(self: *MacOSWindow) void {
         macos_request_redraw(self.window_ptr);
@@ -376,6 +398,10 @@ pub const MacOSWindow = struct {
         dx: f32,
         dy: f32,
         modifiers: Modifiers,
+        /// Presence marker in the ordered motion stream: the pointer is no longer over this
+        /// window's visible content (left it, or another window now covers it). x/y repeat the
+        /// last position. The SDK reports it as `pointer_left`.
+        left: bool = false,
     };
 
     pub fn getMouseMoveEvent(self: *MacOSWindow) ?MouseMoveEvent {
@@ -385,7 +411,8 @@ pub const MacOSWindow = struct {
         var dx: f32 = 0;
         var dy: f32 = 0;
         var modifiers: u32 = 0;
-        if (macos_get_mouse_move_event(self.window_ptr, &x, &y, &dx, &dy, &modifiers, &sequence) == 0) return null;
+        var left: c_int = 0;
+        if (macos_get_mouse_move_event(self.window_ptr, &x, &y, &dx, &dy, &modifiers, &sequence, &left) == 0) return null;
         return .{
             .sequence = sequence,
             .x = x,
@@ -393,6 +420,7 @@ pub const MacOSWindow = struct {
             .dx = dx,
             .dy = dy,
             .modifiers = Modifiers.fromRaw(modifiers),
+            .left = left != 0,
         };
     }
 
@@ -603,6 +631,34 @@ pub const MacOSWindow = struct {
         macos_set_text_input_enabled(self.window_ptr, @intFromBool(enabled));
     }
 
+    extern fn macos_set_reserved_key_chords(window_ptr: *anyopaque, chords: [*]const u32, count: u32) void;
+
+    /// Modifier bits of a packed reserved chord (`ZENIT_CHORD_*` in window_bridge.m).
+    pub const ReservedChordMask = struct {
+        pub const shift: u32 = 1;
+        pub const control: u32 = 2;
+        pub const option: u32 = 4;
+        pub const command: u32 = 8;
+    };
+
+    /// Packed entry: macOS virtual keycode | (modifier mask << 16).
+    pub fn packReservedChord(keycode: u16, shift: bool, control: bool, option: bool, command: bool) u32 {
+        var m: u32 = 0;
+        if (shift) m |= ReservedChordMask.shift;
+        if (control) m |= ReservedChordMask.control;
+        if (option) m |= ReservedChordMask.option;
+        if (command) m |= ReservedChordMask.command;
+        return @as(u32, keycode) | (m << 16);
+    }
+
+    /// Replace the window's reserved chords (at most 32; empty clears). A
+    /// reserved keyDown is delivered as a key event but not interpreted by
+    /// the input method (no text from it). See window_bridge.m.
+    pub fn setReservedKeyChords(self: *MacOSWindow, packed_chords: []const u32) void {
+        const n: u32 = @intCast(@min(packed_chords.len, 32));
+        macos_set_reserved_key_chords(self.window_ptr, packed_chords.ptr, n);
+    }
+
     /// Discard current IME composition (close candidate window + clear marked text); call on widget
     /// blur
     pub fn discardIme(self: *MacOSWindow) void {
@@ -617,12 +673,28 @@ pub const MacOSWindow = struct {
     /// Activate this window and establish its Metal view as the first
     /// responder. This is the public programmatic counterpart of a user click.
     pub fn activate(self: *MacOSWindow) void {
-        macos_make_key_window(self.window_ptr);
+        macos_activate_window(self.window_ptr);
+    }
+
+    /// Close completion may restore an unclaimed key window, never desktop activation.
+    pub fn restoreFocus(self: *MacOSWindow) void {
+        macos_restore_key_window(self.window_ptr);
     }
 
     extern fn macos_add_child_window(parent_ptr: *anyopaque, child_ptr: *anyopaque) void;
     extern fn macos_remove_child_window(parent_ptr: *anyopaque, child_ptr: *anyopaque) void;
     extern fn macos_get_centering_geometry(child_ptr: *anyopaque, parent_ptr: *anyopaque, host_x: *f64, host_y: *f64, host_w: *f64, host_h: *f64, panel_w: *f64, panel_h: *f64, vis_x: *f64, vis_y: *f64, vis_w: *f64, vis_h: *f64) c_int;
+    extern fn macos_window_geometry(window_ptr: *anyopaque, screen: u64, out: *[9]f64) c_int;
+    extern fn macos_restore_window_frame(window_ptr: *anyopaque, frame: *const [4]f64) void;
+    /// Logical outer frame, visible screen frame, stable display number.
+    pub fn previewGeometry(self: *MacOSWindow, screen: u64) ?[9]f64 {
+        var out: [9]f64 = undefined;
+        if (macos_window_geometry(self.window_ptr, screen, &out) == 0) return null;
+        return out;
+    }
+    pub fn restorePreviewFrame(self: *MacOSWindow, frame: [4]f64) void {
+        macos_restore_window_frame(self.window_ptr, &frame);
+    }
     extern fn macos_set_window_origin(window_ptr: *anyopaque, x: f64, y: f64) void;
     extern fn macos_set_resign_key_callback(window_ptr: *anyopaque, cb: ?*const fn (?*anyopaque, c_int) callconv(.c) void, ctx: ?*anyopaque) void;
 
@@ -934,6 +1006,19 @@ pub const MacOSWindow = struct {
     /// activation)
     pub fn consumeAppBecameActive() bool {
         return macos_consume_app_became_active() != 0;
+    }
+
+    /// Consume "app reopened while no window was visible" (Dock click, launching the running
+    /// app again). Only raised while some window registered `setAppReopenHandled(true)`.
+    pub fn consumeAppReopen() bool {
+        return macos_consume_app_reopen() != 0;
+    }
+
+    /// Register (true) or withdraw (false) one window's application reopen handler. While any is
+    /// registered, a reopen with no visible window is left to the application instead of
+    /// AppKit's default (restore minimized windows).
+    pub fn setAppReopenHandled(handled: bool) void {
+        macos_set_app_reopen_handled(@intFromBool(handled));
     }
 
     /// Query whether system is in dark mode

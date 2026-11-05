@@ -19,7 +19,41 @@ static const float TAB_LENS_ABER_ASPECT = 1.2;     // the foreground backdrop te
 // The aberration amount follows the level linearly from -5 (k 0) to 3.68 (k 1): a fading lens's
 // fringes reverse below k 0.58 (native per-frame glassForeground inputAberrationAmount)
 #define TAB_LENS_ABER_LEVEL(k) ((-5.0 + 8.68 * (k)) / 3.68)
-static const float KNOB_INNER_ASYM = 0.15;
+
+// Composite variants. A specialized Metal build (backdrop_blur.glassVariantKey)
+// defines these to false for features the drawn glass provably does not use,
+// so their code compiles out of the native path; the default (and the HLSL
+// generated from this file) keeps every path. GLASS_LEGACY false removes the
+// non-native material.
+#ifndef GLASS_GROUP
+#define GLASS_GROUP true
+#endif
+#ifndef GLASS_ARROW
+#define GLASS_ARROW true
+#endif
+#ifndef GLASS_TAB_LENS
+#define GLASS_TAB_LENS true
+#endif
+#ifndef GLASS_PER_CORNER
+#define GLASS_PER_CORNER true
+#endif
+#ifndef GLASS_A11Y
+#define GLASS_A11Y true
+#endif
+#ifndef GLASS_VEIL_CURVE
+#define GLASS_VEIL_CURVE true
+#endif
+#ifndef GLASS_KNOB
+#define GLASS_KNOB true
+#endif
+#ifndef GLASS_LEGACY
+#define GLASS_LEGACY true
+#endif
+
+// A loop the HLSL keeps rolled: tools/metal_to_hlsl.py defines it as [loop] (empty here). FXC's
+// ps_5_0 (D3D11) unrolls the tab lens's seven-tap loops and inlines every field lookup in them,
+// which doubled the D3D11 compile (T14: 11 -> 5 s); D3D12's ps_5_1 takes the same time either way.
+#define GLASS_ROLLED_LOOP [loop]
 
 struct GlassUniforms {
     float2 texel_size;
@@ -60,11 +94,11 @@ struct GlassUniforms {
     float4 knob_rim_dark;       // slider / toggle knob lens rim: dark accent line colour (sRGB) and alpha
     float4 knob_rim_light;      // x = bright line lift (sRGB), yz = axis toward the dark side (normal space), w = line width (logical px); w = 0 disables
     float4 a11y_params;         // accessibility (native_tint_backdrop.swift -reduceTransparency / -increaseContrast): x = mode (0 off, 1 reduce transparency, 2 increase contrast), y = untinted body base (sRGB), z = body slope over backdrop luma, w = backdrop chroma kept
-    float4 corner_radii;        // single glass per-corner radii TL, TR, BR, BL (logical px; x < 0 = uniform corner_radius)
+    float4 corner_radii;        // single glass per-corner radii TL, TR, BR, BL (logical px, fitted to rect_size; corner_radius = largest)
     float4 arrow_params;        // popover arrow (single glass): x = edge (0 none, 1 bottom, 2 top, 3 left, 4 right), y = offset along the edge, z = extent, w = tip radius (logical px)
     float4 base_veil;           // partial Glass.tint (tintColor alpha < 1): surface veil of the untinted share (sRGB); a < 0 = none (veil branch uses glass_tint)
     float4 veil_curve[5];       // single glass veil as a backdrop-luma transfer curve: 17 knots (sRGB, input k/16) in [0..17), [17] = enabled
-    float4 tab_lens_params[6];  // iOS tab-bar selection lens ([2]: knob lens filter inputs {displacement amount A, SDF height H, inner refraction |R|, inner refraction height h}, pt; [3..5]: knob key highlight colour matrix rows {r, g, b, offset}) (single glass): [0].x > 0 marks the material; [0].y variant (0 tab, 1 slider thumb, 2 switch knob, see lens_sample_depth); [0].z aberration scale (1 = the tab lens's, 0 = none); knobs: [1].rgb key rim colour, [1].w fill rim value
+    float4 tab_lens_params[6];  // iOS tab-bar selection lens ([2]: knob lens filter inputs {displacement amount A, SDF height H, inner refraction |R|, inner refraction height h}, pt; [3..5]: knob key highlight colour matrix rows {r, g, b, offset}) (single glass): [0].x > 0 marks the material; [0].y variant (0 tab, 1 slider thumb, 2 switch knob, see lens_sample_point); [0].z aberration scale (1 = the tab lens's, 0 = none); knobs: [1].rgb key rim colour, [1].w fill rim value
 };
 cbuffer GlassUniformsBuffer : register(b0, space0) { GlassUniforms u; };
 Texture2D<float4> blur_tex : register(t0, space1);
@@ -73,6 +107,7 @@ Texture2D<float4> soft_tex : register(t2, space1);
 Texture2D<float4> coarse_tex : register(t3, space1);
 Texture2D<float4> alternate_main_tex : register(t4, space1);
 SamplerState smp : register(s0, space2);
+StructuredBuffer<float4> tab_lens_table : register(t1, space0);
 
 
 struct GlassVertexOutput {
@@ -244,76 +279,103 @@ float3 linear_to_srgb(float3 c) {
     return ((c > 0.0031308) ? (1.055 * pow(c, ((float3)(1.0 / 2.4))) - 0.055) : (c * 12.92));
 }
 
-// RGB -> luminance.
-// iOS tab lens: depth (pt inside the contour, along its normal) of the point each pixel `i` pt
-// inside the contour samples. Measured on the native held lens (iOS 26.5 Simulator) over
-// sinusoidal gratings at 48 and 96 pt, aberration off (ios/GlassProbe override + field2.py);
-// the same at the long edges and at the caps, so it is a field of the distance alone:
-//   0.3-2 pt: the rim samples 19-41 pt deep (glassBackground inner refraction: the bright strip),
-//   2.3-8 pt: back at 4.2 -> 1.95 -> 4.2 pt (the backdrop just past the contour where the lens
-//             overhangs: the dark band; the platter where it does not),
-//   past ~8.2 pt the samples jump deep again (43 pt, back to the pixel's own depth by ~12 pt): where
-//   the lens overhangs the platter its inside still shows the platter (native, held on Home: 210
-//   three pt off the platter's end). The native draws this zone under a near-opaque glass face
-//   (grating contrast 12 / 85); under the lens our backdrop is the bare platter (the plain tabs
-//   are cut out, the accent portal is drawn above the glass), so the deep sample alone matches.
-static const float TAB_LENS_DEPTH[25] = {
-    0.0, 1.03, 19.2, 22.9, 27.3, 32.5, 40.6, 4.15, 3.76, 3.21, 2.70, 2.36, 2.09,
-    2.01, 1.95, 1.95, 2.01, 2.12, 2.33, 2.49, 2.80, 3.14, 3.56, 3.89, 4.23 };
-float tab_lens_sample_depth(float i);
+// iOS tab lens: where each pixel of the held lens samples the backdrop, measured on the native
+// lens (iOS 26.5 Simulator, held on Library and dragged half way to Radio: the same field within
+// 0.1 pt) over sinusoidal gratings, x and y, 48 and 96 pt, four phases each, aberration off
+// (ios/lens_field2d.py: per pixel the backdrop point it shows, to 0.05 pt). The field is a
+// function of the pixel's depth i under the contour (supercircle SDF) and of its normal's angle
+// a (0 at the caps, 90 along the long edges), not of the depth alone:
+//   along the long edges the rim samples 17-40 pt deep (the bright strip), a band samples 1.6-4 pt
+//     deep (the dark band where the lens overhangs), then the samples run deep again;
+//   toward the shoulders the band narrows (1.9-7.9 pt at 90, 3.3-6.3 at 72, 4.0-5.5 at 69) and
+//     closes at 67-68: the band's end. There the samples run 10-30 pt deep and up to 15 pt toward
+//     the cap, smoothly;
+//   around the caps (a < 50) the field is smooth, no fold: 10 pt deep at the contour, 1.6 at 4 pt
+//     in, back to 10 by 12 pt.
+// The old depth-only table (the long edges' profile everywhere) folded the band around the
+// shoulders and caps: the band's end a rounded, sharply outlined blob instead of the native's
+// taper. The field is two smooth sheets and the window between them: OUTER (the field without the
+// band) and BAND (the dark band's), each a displacement {Dn: inward along the normal, T: along the
+// contour toward the nearer cap} (pt) every 3 deg and 1/3 pt to 24 pt (medians of the native
+// pixels, lightly smoothed; the table's sheets {OUTER, BAND}); the pixel takes BAND for
+// fold.x <= i < fold.y (the table's fold edges, every degree, so the folds stay sharp
+// in i and move smoothly along the contour; the band closes at 67-68 deg like an ellipse's end,
+// its half width ~ sqrt(a - 67.4): the native's rounded tip). Past 24 pt it fades to none by 36 (the
+// interior, about 1 pt).
+#define TAB_LENS_FIELD_NA 31
+#define TAB_LENS_FIELD_NI 73
+// The table (src/render/tab_lens_field_table.zig, generated by ios/lens_field2d.py) is uploaded once
+// into fragment buffer 1: entry a * NI + i the two sheets {OUTER Dn, T, BAND Dn, T} at 3a deg,
+// i / 3 pt; entry TAB_LENS_FOLD_BASE + d the band's edges {lo, hi} at d deg. A buffer rather than a
+// constant array: FXC's compile time grows with an embedded array (25 s for this one on D3D12,
+// past the D3D11 device's timeout), and the field keeps one source.
+#define TAB_LENS_FOLD_BASE (TAB_LENS_FIELD_NA * TAB_LENS_FIELD_NI)
 
-// The lens's displacement source (warpSDF: CASDFGlassDisplacementEffect of height 36, read off
-// the screen from an archived copy of the native layer, ios GlassProbe show_warp): the map value
-// along the inward normal at distance d (pt) from the contour, every 0.5 pt; isotropic (the same
-// at the long edges and the caps) and the same for every lens of that height.
-static const float WARP_MAP_36[73] = { 0.932, 0.835, 0.767, 0.714, 0.673, 0.635, 0.600, 0.569, 0.541, 0.518, 0.490, 0.471, 0.447, 0.427, 0.408, 0.388, 0.371, 0.353, 0.339, 0.322, 0.308, 0.294, 0.280, 0.267, 0.255, 0.243, 0.231, 0.220, 0.208, 0.196, 0.188, 0.176, 0.169, 0.161, 0.151, 0.141, 0.135, 0.125, 0.120, 0.114, 0.104, 0.098, 0.092, 0.086, 0.080, 0.075, 0.069, 0.063, 0.059, 0.055, 0.049, 0.047, 0.041, 0.039, 0.035, 0.031, 0.027, 0.024, 0.024, 0.020, 0.018, 0.016, 0.014, 0.012, 0.012, 0.008, 0.008, 0.008, 0.004, 0.004, 0.000, 0.000, 0.000 };
-float warp_map(float d, float sdf_height) {
-    float x = clamp(d * 36.0 / max(sdf_height, 1.0), 0.0, 35.999) * 2.0;
-    int k0 = int(floor(x));
-    return lerp(WARP_MAP_36[k0], WARP_MAP_36[k0 + 1], x - float(k0));
-}
-
-// Knob lens (kp = {displacement amount A, SDF height H, inner refraction |R|, its height h}, the
-// native filter inputs): glassBackground's inner refraction samples the layers below it at depth
-// j = i + 2/3 |R| (1 - i/h)^2 (i < h; the held UISlider, A = 0, measures exactly this), and below
-// it the displacement layer shows the backdrop at j - A warp_map(j), clamped to the lens (the
-// held tab lens with inner refraction ablated measures A x map, A = 9, and the composition
-// reproduces the full field). The control's own track, drawn through the lens's portal under
-// glassBackground, takes the same mapping.
-// ny: the contour normal's y (+1 along the bottom): the inner refraction reaches 15 % deeper
-// along the bottom and 15 % less along the top (portal field of the held UISwitch: top / bottom
-// 8.2 / 11.7 pt at 0.33 pt in, 6.0 / 8.7 at 1 pt; their mean is the symmetric formula).
-float knob_formula_depth(float i, float4 kp, float ny) {
-    float j = i < kp.w ? i + 0.6666667 * kp.z * (1.0 + KNOB_INNER_ASYM * ny) * (1.0 - i / kp.w) * (1.0 - i / kp.w) : i;
-    return max(j - kp.x * warp_map(j, kp.y), 0.0);
-}
-
-// v: 0 tab lens (its measured table), 1 slider thumb, 2 switch knob, 3 macOS knob (the knob
-// formula with kp = their filter inputs); hh = the lens's half height (pt)
-float lens_sample_depth(float i, float v, float hh, float4 kp, float ny) {
-    if (v > 0.5) return knob_formula_depth(i, kp, ny);
-    return tab_lens_sample_depth(i);
+// The field at depth i (pt, >= 0) and normal angle a (deg), bilinear in each sheet.
+float2 tab_lens_field_at(StructuredBuffer<float4> tab, float i, float a) {
+    float fa = clamp(a / 3.0, 0.0, float(TAB_LENS_FIELD_NA - 1) - 1e-3);
+    float fi = clamp(i * 3.0, 0.0, float(TAB_LENS_FIELD_NI - 1) - 1e-3);
+    int a0 = int(fa);
+    int i0 = int(fi);
+    float ta = fa - float(a0);
+    float ti = fi - float(i0);
+    int r0 = a0 * TAB_LENS_FIELD_NI + i0;
+    int r1 = r0 + TAB_LENS_FIELD_NI;
+    float4 v = lerp(lerp(tab[r0], tab[r0 + 1], ti), lerp(tab[r1], tab[r1 + 1], ti), ta);
+    float fd = clamp(a, 0.0, 89.999);
+    int d0 = int(fd);
+    float2 fold = lerp(tab[TAB_LENS_FOLD_BASE + d0].xy, tab[TAB_LENS_FOLD_BASE + d0 + 1].xy, fd - float(d0));
+    float2 f = (i >= fold.x && i < fold.y) ? v.zw : v.xy;
+    return f * saturate(1.0 - (i - 24.0) / 12.0);
 }
 
 // The field at materialize level k (0..1): the native lens scales every displacement input by k
 // on its way in and out (displacement 9k, inner refraction -17.5k over 7k pt; per-frame filter
 // inputs over a tap, ios GlassProbe material trace), so the band narrows as well as weakens:
-// shift(i) = k * (S(i / k) - i / k).
-float tab_lens_shift(float i, float k, float v, float hh, float4 kp, float ny) {
+// field_k(i) = k field(i / k).
+// Outside the contour (i < 0) the lens is not there: no displacement (the foreground's taps that
+// land past the contour see the backdrop itself, as the native's do).
+float2 tab_lens_field(StructuredBuffer<float4> tab, float i, float a, float k) {
     float ke = max(k, 1e-3);
-    float ik = i / ke;
-    return k * (lens_sample_depth(ik, v, hh, kp, ny) - ik);
+    return i < 0.0 ? ((float2)(0.0)) : k * tab_lens_field_at(tab, i / ke, a);
 }
 
-float tab_lens_sample_depth(float i) {
-    if (i <= 0.0) return i;
-    float k = i * 3.0;
-    if (k >= 24.0) {
-        if (i < 8.17) return lerp(TAB_LENS_DEPTH[24], 43.0, (i - 8.0) / 0.17);
-        return i < 12.0 ? lerp(43.0, 12.0, (i - 8.17) / (12.0 - 8.17)) : i;
-    }
-    int k0 = int(floor(k));
-    return lerp(TAB_LENS_DEPTH[k0], TAB_LENS_DEPTH[k0 + 1], k - float(k0));
+// The normal's angle (deg: 0 at the caps, 90 along the long edges) and the unit vector along the
+// contour toward the nearer cap, for a lens-centred point q and its outward normal n.
+float tab_lens_angle(float2 n) {
+    return atan2(abs(n.y), abs(n.x)) * 57.29578;
+}
+float2 tab_lens_tangent(float2 q, float2 n) {
+    return float2((q.x >= 0.0 ? 1.0 : -1.0) * abs(n.y), (q.y >= 0.0 ? -1.0 : 1.0) * abs(n.x));
+}
+
+// Reconstruction of the tab lens. Its measured field folds (tab_lens_field along the long edges:
+// 34 -> 3.3 pt deep within a third of a pt at 2 pt, 3.5 -> 39 pt at 8 pt), so one
+// point sample per pixel makes every fold a pixel-quantized step, copied once per aberration tap:
+// a stair-stepped, banded rim fringe. Core Animation never point-samples it twice: glassForeground
+// resamples the lens it has already rasterized with seven bilinear taps, so the fringe's edges come
+// out about 0.6-0.8 pt wide (10-90 %, Simulator 3x) and smooth along the curve. Here every tap of a
+// pixel with a fold within reach, and the lens body where the fold is within reach of the pixel
+// itself, is taken through a tent, the same in pt at any scale: half-width TAB_LENS_FG_H for the
+// taps (one pixel at least; calibrated on the held lens's fringe), TAB_LENS_BODY_H for the body (the
+// device's own pixel, 1/3 pt: the native body is a 3x point sample; half a pixel at least).
+// The tent: eight Latin-hypercube points (TAB_LENS_FG_X, tent quantiles), each with its own depth
+// (folds inside the tent are averaged, not stepped) and, for the taps, its own wavelength
+// stratum inside its tap (TAB_LENS_FG_T, uniform over the tap's third of the spectrum and
+// symmetric: each tap keeps its mean wavelength and weight). Away from the folds the body stays a
+// sharp point sample (its interior shows the platter and, above it, the accent portal).
+static const float TAB_LENS_FG_H = 0.55;
+static const float TAB_LENS_BODY_H = 0.3;
+static const float TAB_LENS_FG_X[8] = { -0.6464, -0.3876, -0.2094, -0.0646, 0.0646, 0.2094, 0.3876, 0.6464 };
+static const float TAB_LENS_FG_T[8] = { -0.4375, -0.3125, -0.1875, -0.0625, 0.0625, 0.1875, 0.3125, 0.4375 };
+
+// Whether a filter of support w (pt, across the contour) at depth i (pt), normal angle a maps onto
+// more than twice its width of the backdrop: the sample point moves by more than 2 w across it,
+// so a point sample would alias (the folds; the dark band's gentle 1.2-1.9x minification does not).
+bool tab_lens_steep(StructuredBuffer<float4> tab, float i, float a, float w, float k) {
+    float2 f0 = tab_lens_field(tab, i - 0.5 * w, a, k);
+    float2 f1 = tab_lens_field(tab, i + 0.5 * w, a, k);
+    return length(float2(f1.x - f0.x + w, f1.y - f0.y)) > 2.0 * w;
 }
 
 float luma(float3 c) {
@@ -676,7 +738,8 @@ GroupSample group_union(float2 p, float s, int count) {
 
 float4 native_glass(GlassVertexOutput vin,
                     Texture2D<float4> blur_tex, Texture2D<float4> sharp_tex,
-                    Texture2D<float4> soft_tex, Texture2D<float4> coarse_tex, Texture2D<float4> alternate_main_tex, SamplerState smp) {
+                    Texture2D<float4> soft_tex, Texture2D<float4> coarse_tex, Texture2D<float4> alternate_main_tex, SamplerState smp,
+                    StructuredBuffer<float4> tab_lens_table) {
     float  s       = max(u.scale_factor, 0.1);
     float2 rect_px = max(u.rect_size * s, ((float2)(2.0)));
     float2 half_px = rect_px * 0.5;
@@ -699,9 +762,10 @@ float4 native_glass(GlassVertexOutput vin,
     float H = u.native_params.y * s;
     float T = u.native_params.z * s;
     float edge_mix = clamp(u.native_params.w, 0.0, 1.0);
-    int shape_count = int(round(u.group_params.x));
+    int shape_count = GLASS_GROUP ? int(round(u.group_params.x)) : 0;
+    bool has_arrow = GLASS_ARROW && u.arrow_params.x > 0.5;
     float4 cr4 = clamp(u.corner_radii * s, 0.0, mh);
-    bool per_corner = shape_count == 0 && u.arrow_params.x < 0.5 && u.corner_radii.x >= 0.0
+    bool per_corner = GLASS_PER_CORNER && shape_count == 0 && (!GLASS_ARROW || u.arrow_params.x < 0.5)
         && (abs(cr4.x - cr4.y) + abs(cr4.y - cr4.z) + abs(cr4.z - cr4.w)) > 0.01;
     float  d;
     float2 out_n;
@@ -732,7 +796,7 @@ float4 native_glass(GlassVertexOutput vin,
         shape_level = lerp(u.shape_level[gs.b].x, u.shape_level[gs.a].x, wa);
         d = gs.d;
         out_n = gs.n;
-    } else if (u.arrow_params.x > 0.5) {
+    } else if (has_arrow) {
         // popover: union silhouette; the lens / normalisation follow the body
         d = sdf_popover(p, half_px, cr, u.arrow_params, s);
         float e = 0.5;
@@ -746,7 +810,7 @@ float4 native_glass(GlassVertexOutput vin,
         float crp = corner_pick(p, cr4);
         d = sdf_rr(p, half_px, crp);
         out_n = sdf_grad(p, half_px, crp);
-    } else if (shape_count == 0 && u.tab_lens_params[0].x > 0.0) {
+    } else if (GLASS_TAB_LENS && shape_count == 0 && u.tab_lens_params[0].x > 0.0) {
         float3 tl_sd = sdf_tab_lens(p, half_px, cr);
         d = tl_sd.x;
         out_n = tl_sd.yz;
@@ -773,7 +837,7 @@ float4 native_glass(GlassVertexOutput vin,
     // Increase Contrast: a ~1 pt dark outline centred on the contour (native rows
     // at 2x: 130 / 13 / 133 across the edge on white); its outer half lies outside
     // the shape, where the material itself is not drawn.
-    bool a11y_ic = u.a11y_params.x > 1.5;
+    bool a11y_ic = GLASS_A11Y && u.a11y_params.x > 1.5;
     float a11y_ow = 1.0 * s;
     bool a11y_tinted = tint_mode < 0.5 && glass_tint.a > 0.01;
     if (mask < 0.001) {
@@ -801,7 +865,7 @@ float4 native_glass(GlassVertexOutput vin,
     // The native bevel starts a quarter logical pixel outside the antialiased
     // contour (phase captures: Zenit's d(o) matched native d(o + 0.5 px @2x)).
     float disp = native_lens_displacement(max(inset - 0.25 * s, 0.0), B, H, T) * rl;
-    bool tab_lens = shape_count == 0 && u.tab_lens_params[0].x > 0.0;
+    bool tab_lens = GLASS_TAB_LENS && shape_count == 0 && u.tab_lens_params[0].x > 0.0;
     // The tab lens fades as a whole with its materialize level (knob_rim_dark.w, 1 when shown):
     // its displacement and its coverage, so the content under it shows through as it was drawn
     // instead of being resampled until the lens switches off.
@@ -812,6 +876,9 @@ float4 native_glass(GlassVertexOutput vin,
     float tl_cover = tab_lens ? saturate(tl_level / 0.25) : 1.0;
     float tl_field_inset = inset;
     float2 tl_axis = out_n;
+    // the tab lens field's coordinates: the normal's angle and the direction toward the nearer cap
+    float tl_ang = tab_lens_angle(tl_axis);
+    float2 tl_tan = tab_lens_tangent(p, tl_axis);
     // lens variant (tab_lens_params[0].y: 0 tab, 1 slider thumb, 2 switch knob), its half height
     // in pt, and its aberration relative to the tab lens's (glassForeground aberrationAmount and
     // edgeStart: 3.68 / -14 on the tab, 1.95 / -7.4 slider, 2.02 / -7.7 switch: [0].z)
@@ -820,7 +887,7 @@ float4 native_glass(GlassVertexOutput vin,
     float tl_ab = max(u.tab_lens_params[0].z, 0.0);
     float2 ps;
     // Knobs: Core Animation's displacement chain. The tab lens keeps its field measured on the
-    // device (tab_lens_sample_depth): its interior also shows the bar's content through two portal
+    // device (tab_lens_field): its interior also shows the bar's content through two portal
     // layers (one under the glass, one over glassBackground, magnified about the lens centre),
     // which the chain alone does not have (it loses to the table on Simulator captures: 4.87 vs
     // 4.40 held on Library, 5.55 vs 4.77 held on Home).
@@ -833,11 +900,14 @@ float4 native_glass(GlassVertexOutput vin,
         disp = length(ps - p);
     } else {
         if (tab_lens) {
-            // knob lenses: the measured / fitted field along the contour's normal
-            float i_px = tl_field_inset / s;
-            disp = tab_lens_shift(i_px, tl_level, tl_v, tl_hh, u.tab_lens_params[2], tl_axis.y) * s;
+            // the tab lens: its measured field (tab_lens_field)
+            float2 f = tab_lens_field(tab_lens_table, tl_field_inset / s, tl_ang, tl_level);
+            float2 off = (tl_tan * f.y - tl_axis * f.x) * s;
+            ps = p + off;
+            disp = length(off);
+        } else {
+            ps = p - tl_axis * disp;
         }
-        ps = p - tl_axis * disp;
     }
     float2 uv_s = cuv_off + (ps / rect_px + 0.5) * cuv_scale;
     float2 uv_lo = u.valid_uv.xy + u.texel_size * 0.5;
@@ -846,7 +916,7 @@ float4 native_glass(GlassVertexOutput vin,
 
     // ── blur mix (source-space normalized inset) ──
     float inset_s = shape_count > 0 ? max(-group_union(ps, s, shape_count).d, 0.0)
-                  : u.arrow_params.x > 0.5 ? max(-sdf_popover(ps, half_px, cr, u.arrow_params, s), 0.0)
+                  : has_arrow ? max(-sdf_popover(ps, half_px, cr, u.arrow_params, s), 0.0)
                   : max(-sdf_rr(ps, half_px, per_corner ? corner_pick(ps, cr4) : cr), 0.0);
     float rho = saturate(inset_s / mh);
     float2 grad = gradient_blur_level(node_uv, bl);
@@ -876,43 +946,140 @@ float4 native_glass(GlassVertexOutput vin,
         float4 alternate = alternate_main_tex.SampleLevel(smp, local_blur_uv, 0);
         main_gamma = lerp(main_gamma, alternate.rgb / max(alternate.a, 1e-3), saturate(u.native_chroma.w));
     }
+    // Tab lens: where the field folds within reach of the body's tent (TAB_LENS_BODY_H,
+    // tab_lens_steep over its support), the transmitted sample is taken through it.
+    float tl_fh = max(TAB_LENS_FG_H, 1.0 / s);
+    float tl_bh = max(TAB_LENS_BODY_H, 0.5 / s);
+    // The tent's points take the signed depth (-d): on a pixel the contour crosses, the lens
+    // colour is the mean over the points inside it (the mask supplies the coverage), not the
+    // colour at the contour itself.
+    float tl_sd = -d / s;
+    if (tab_lens && !tl_exact
+        && tab_lens_steep(tab_lens_table, max(tl_sd, 0.0), tl_ang, 2.0 * tl_bh, tl_level)) {
+        float3 ss_fine = ((float3)(0.0)), ss_main = ((float3)(0.0));
+        float3 ss_fine_all = ((float3)(0.0)), ss_main_all = ((float3)(0.0));
+        float ss_n = 0.0;
+        for (int k = 0; k < 8; k++) {
+            float2 o = float2(TAB_LENS_FG_X[k], TAB_LENS_FG_X[(k * 3 + 5) & 7]) * tl_bh;   // pt
+            float ik = tl_sd - dot(o, tl_axis);
+            // weight 1 inside the lens, 0 outside. Every point is sampled and weighted, with no
+            // data-dependent `continue`: on the D3D12 driver (FXC ps_5_1) the earlier "skip if
+            // outside and enough points remain" loop kept no point at all on contour pixels
+            // (count 0 where D3D11 / Metal kept ~49 of 56), and 0 / 0 left a grey NaN ring.
+            float wk = ik >= 0.0 ? 1.0 : 0.0;
+            ik = max(ik, 0.0);
+            float2 fk2 = tab_lens_field(tab_lens_table, ik, tl_ang, tl_level);
+            float2 pk = p + (o + tl_tan * fk2.y - tl_axis * fk2.x) * s;
+            float2 uvk = clamp(cuv_off + (pk / rect_px + 0.5) * cuv_scale, uv_lo, uv_hi);
+            float2 lbk = u.native_gamma.w > 0.5 ? u.coarse_uv.xy + (pk / rect_px + 0.5) * u.coarse_uv.zw : blur_uv(uvk);
+            float4 bk = blur_tex.SampleLevel(smp, lbk, 0);
+            float4 sk = ((u.optic_params.y > 0.5 || u.native_blur.x > 0.0) && gi_gate > 0.0)
+                ? soft_tex.SampleLevel(smp, lbk, 0) : sharp_tex.SampleLevel(smp, uvk, 0);
+            float3 bck = bk.rgb / max(bk.a, 1e-3);
+            float3 fk = lerp(bck, sk.rgb / max(sk.a, 1e-3), saturate(sk.a));
+            ss_fine += wk * fk;
+            ss_main += wk * bck;
+            ss_fine_all += fk;
+            ss_main_all += bck;
+            ss_n += wk;
+        }
+        // the mean over the inside points; none inside (the pixel only grazes the lens): all eight
+        fine_gamma = ss_n > 0.5 ? ss_fine / ss_n : ss_fine_all * 0.125;
+        main_gamma = ss_n > 0.5 ? ss_main / ss_n : ss_main_all * 0.125;
+        if (u.native_gamma.w > 0.5 && u.native_chroma.w > 0.0 && gi_gate > 0.0) {
+            float4 alternate = alternate_main_tex.SampleLevel(smp, local_blur_uv, 0);
+            main_gamma = lerp(main_gamma, alternate.rgb / max(alternate.a, 1e-3), saturate(u.native_chroma.w));
+        }
+    }
     float3 e = lerp(fine_gamma, main_gamma, m);
-    if (tab_lens && disp != 0.0) {
+    if (tab_lens && (disp != 0.0 || (!tl_exact && mask > 0.0))) {
         // Dispersion = the lens's glassForeground (QuartzCore glass_foreground_sdf, read from the
         // disassembled shader and its uniforms on a CARenderer replay of the archived iOS lens):
         // a constant aberration amount A (3.684 pt on the tab lens) along a = Rot(-15 deg) n,
-        // n = the contour normal mixed half-way with the elliptical radial direction
-        // (gradientOvalization 0.5), applied swapped and negated, (-a.y, -a.x). Seven samples at
+        // n = the contour normal, applied swapped, (a.y, a.x): glass_foreground_base offsets its
+        // samples by (dmat.zw . a, dmat.xy . a), dmat = diag(1 / W, 1 / H) of its backdrop texture.
+        // (This was negated before; the held lens over the 16 pt fourphase grating shows the sign:
+        // corr(dL/dx, R - B) in the top / bottom bands is -0.49 / +0.60 native, -0.48 / +0.61 now,
+        // +0.43 / -0.59 negated, and the gray-128 fringe order flips with it.) Seven samples at
         // t A for t = -1 .. 1 in thirds: R averages the + side with weights t, B the - side with
         // weights -t, G the middle five with weights 1 - |t|. The layer then fades out with the
         // depth: alpha = 1 - depth / 14 (edgeStart -14 -> edgeEnd 0, edgeOpacity 1 -> 0). Its
         // backdrop is the lens so far, so each sample takes the lens field at its own point.
         float tl_i = tl_field_inset / s;
         float tl_A = TAB_LENS_ABER_AMOUNT * tl_ab * TAB_LENS_ABER_LEVEL(tl_level);
-        float2 tl_half = max(half_px / s, ((float2)(1.0)));
-        float2 tl_q = p / s;
-        float2 tl_rad = normalize(float2(tl_q.x, tl_q.y * tl_half.x / tl_half.y) + float2(1e-5, 0.0));
-        float2 tl_n = normalize(lerp(tl_axis, tl_rad, TAB_LENS_ABER_OVAL) + float2(1e-5, 0.0));
+        // (The direction is the plain contour normal: the element's gradientOvalization tilts the
+        // highlights' normal, not the fringe's. Ovalized, the long edges' fringe went lopsided,
+        // wide and strong left of the centre, faint right of it, where the native's is the same
+        // 1 pt blue line all along; over gray 128 the chroma error drops 5.6 -> 4.5.)
+        float2 tl_n = normalize(tl_axis + float2(1e-5, 0.0));
         float2 tl_a = float2(tl_n.x * TAB_LENS_ABER_COS - tl_n.y * TAB_LENS_ABER_SIN,
                              tl_n.x * TAB_LENS_ABER_SIN + tl_n.y * TAB_LENS_ABER_COS);
         // The swap goes through the backdrop texture's uv scale (dmat = 1 / its size, pt), so x
         // takes W / H and y H / W: the lens's foreground backdrop is wider than tall (W / H 1.22
         // on a CARenderer replay; 1.18 from the Simulator's long-edge / cap shifts 2.65 / 1.9).
-        float2 tl_dir = float2(-tl_a.y * TAB_LENS_ABER_ASPECT, -tl_a.x / TAB_LENS_ABER_ASPECT);
+        float2 tl_dir = float2(tl_a.y * TAB_LENS_ABER_ASPECT, tl_a.x / TAB_LENS_ABER_ASPECT);
+        // A pixel any of whose taps has a fold within the tent takes all seven through it (see
+        // TAB_LENS_FG), so filtered and point-sampled taps never meet inside one pixel's spectrum.
+        // Each tap shows the lens at its own point: its depth, normal and field coordinates come
+        // from the contour there (the shoulders turn within a tap's reach).
+        bool tl_ss_px = false;
+        float tl_tdep[7];
+        float tl_tang[7];
+        float tl_tkap[7];
+        float2 tl_tn[7];
+        float2 tl_ttan[7];
+        if (!tl_exact) {
+            GLASS_ROLLED_LOOP for (int tl_n7 = 0; tl_n7 < 7; tl_n7++) {
+                float2 q = p + tl_dir * (tl_A * (float(tl_n7) / 3.0 - 1.0)) * s;
+                float3 sq = sdf_tab_lens(q, half_px, cr);
+                tl_tdep[tl_n7] = -sq.x / s;
+                tl_tn[tl_n7] = sq.yz;
+                tl_tang[tl_n7] = tab_lens_angle(sq.yz);
+                tl_ttan[tl_n7] = tab_lens_tangent(q, sq.yz);
+                // how fast the normal turns along the contour here (deg per pt toward the cap): the
+                // tap's points take their own angle, so a fold that closes along the contour (the
+                // band's end) is filtered across the tap's spread like one across the depth
+                float3 sq2 = sdf_tab_lens(q + tl_ttan[tl_n7] * (0.5 * s), half_px, cr);
+                tl_tkap[tl_n7] = (tab_lens_angle(sq2.yz) - tl_tang[tl_n7]) * 2.0;
+                tl_ss_px = tl_ss_px || tab_lens_steep(tab_lens_table, max(tl_tdep[tl_n7], 0.0), tl_tang[tl_n7], 2.0 * tl_fh, tl_level);
+            }
+        }
         float3 tl_acc = ((float3)(0.0));
-        for (int tl_n7 = 0; tl_n7 < 7; tl_n7++) {
+        GLASS_ROLLED_LOOP for (int tl_n7 = 0; tl_n7 < 7; tl_n7++) {
             float tl_t = float(tl_n7) / 3.0 - 1.0;
             float2 tl_off = tl_dir * (tl_A * tl_t);                      // pt
+            float3 tl_w = float3(max(tl_t, 0.0) * 0.5, (1.0 - abs(tl_t)) / 3.0, max(-tl_t, 0.0) * 0.5);
+            if (tl_ss_px) {
+                float3 tl_ss = ((float3)(0.0)), tl_ss_all = ((float3)(0.0));
+                float tl_sn = 0.0;
+                for (int k = 0; k < 8; k++) {
+                    float2 o = float2(TAB_LENS_FG_X[k], TAB_LENS_FG_X[(k * 3 + 5) & 7]) * tl_fh;   // pt
+                    float wk = tl_sd - dot(o, tl_axis) >= 0.0 ? 1.0 : 0.0;   // inside the lens
+                    float2 ok = tl_dir * (tl_A * (tl_t + TAB_LENS_FG_T[(k * 5 + 2) & 7] / 3.0));
+                    // the point's depth: the tap's own, moved by the point's offset from the tap
+                    // (sub-pixel and wavelength stratum) along the tap's normal
+                    float ik = tl_tdep[tl_n7] - dot(o + ok - tl_off, tl_tn[tl_n7]);
+                    float ak = tl_tang[tl_n7] + tl_tkap[tl_n7] * dot(o + ok - tl_off, tl_ttan[tl_n7]);
+                    float2 fk2 = tab_lens_field(tab_lens_table, ik, ak, tl_level);
+                    float2 pk = p + (o + ok + tl_ttan[tl_n7] * fk2.y - tl_tn[tl_n7] * fk2.x) * s;
+                    float4 ck = sharp_tex.SampleLevel(smp, clamp(cuv_off + (pk / rect_px + 0.5) * cuv_scale, uv_lo, uv_hi), 0);
+                    float3 cc = ck.rgb / max(ck.a, 1e-3);
+                    tl_ss += wk * cc;
+                    tl_ss_all += cc;
+                    tl_sn += wk;
+                }
+                tl_acc += tl_w * (tl_sn > 0.5 ? tl_ss / tl_sn : tl_ss_all * 0.125);
+                continue;
+            }
             float2 tl_p;
             if (tl_exact) {
                 tl_p = lens_sample_point(p / s + tl_off, half_px / s, cr / s, tl_level, tl_kin, tl_v > 2.5 ? 0.0 : 0.5) * s;
             } else {
-                float tl_ii = tl_i - dot(tl_off, tl_axis);               // the offset point's depth
-                tl_p = p + tl_off * s - tl_axis * (tab_lens_shift(tl_ii, tl_level, tl_v, tl_hh, u.tab_lens_params[2], tl_axis.y) * s);
+                float2 f = tab_lens_field(tab_lens_table, tl_tdep[tl_n7], tl_tang[tl_n7], tl_level);
+                tl_p = p + (tl_off + tl_ttan[tl_n7] * f.y - tl_tn[tl_n7] * f.x) * s;
             }
             float2 tl_uv = clamp(cuv_off + (tl_p / rect_px + 0.5) * cuv_scale, uv_lo, uv_hi);
             float4 tl_c = sharp_tex.SampleLevel(smp, tl_uv, 0);
-            float3 tl_w = float3(max(tl_t, 0.0) * 0.5, (1.0 - abs(tl_t)) / 3.0, max(-tl_t, 0.0) * 0.5);
             tl_acc += tl_w * (tl_c.rgb / max(tl_c.a, 1e-3));
         }
         float tl_fade = saturate(1.0 - tl_i / max(TAB_LENS_ABER_EDGE * tl_ab, 1e-3));
@@ -997,7 +1164,7 @@ float4 native_glass(GlassVertexOutput vin,
     // (like the blur bank) and replaces the affine base coating of every untinted member.
     // Knots sit at backdrop gray 0, 16, ..., 256 (Y = 16k / 255, the measured grid); beyond
     // the ends the end segments extrapolate, so an affine curve equals the blend for any Y.
-    bool veil_curved = u.veil_curve[4].y > 0.5;
+    bool veil_curved = GLASS_VEIL_CURVE && u.veil_curve[4].y > 0.5;
     float3 e_curved = e_veil;
     if (veil_curved) {
         float Yv = dot(e, float3(0.2126, 0.7152, 0.0722));
@@ -1069,7 +1236,10 @@ float4 native_glass(GlassVertexOutput vin,
             float2 tk_half = max(half_px / s, ((float2)(1.0)));
             float2 tk_rad = normalize(float2(p.x / s, p.y / s * tk_half.x / tk_half.y) + float2(1e-5, 0.0));
             float2 tk_n = normalize(lerp(out_n, tk_rad, TAB_LENS_ABER_OVAL) + float2(1e-5, 0.0));
-            float tk_band = lerp(i_px < 1.0 ? 1.0 : 0.0, saturate(1.0 - i_px), 0.8);
+            // (its step(t < 1) is taken as the pixel's coverage of the 1 pt band, its footprint
+            // across the contour |n.x| + |n.y| px: a point-sampled step stair-steps along the rim)
+            float tk_step = saturate((1.0 - i_px) * s / max(abs(out_n.x) + abs(out_n.y), 1.0) + 0.5);
+            float tk_band = lerp(tk_step, saturate(1.0 - i_px), 0.8);
             float tk_key = tk_band * saturate(dot(tk_n, float2(-0.70710678, -0.70710678)));
             float tk_fill = tk_band * saturate(dot(tk_n, float2(0.70710678, 0.70710678)));
             float tk_a = saturate(tk_key + tk_fill) * u.knob_rim_dark.w;
@@ -1188,7 +1358,7 @@ float4 native_glass(GlassVertexOutput vin,
     // a tinted glass shows its tint (×0.985 RT, backdrop-independent), plain glass
     // a fixed-luma frost (RT 242; IC 234 + 14·Y) keeping 16 % / 10 % of the
     // backdrop chroma. RT keeps the material rim; IC replaces it with the outline.
-    if (u.a11y_params.x > 0.5) {
+    if (GLASS_A11Y && u.a11y_params.x > 0.5) {
         float3 bd = clamp(main_gamma, 0.0, 1.0);
         float Yb = dot(bd, float3(0.2126, 0.7152, 0.0722));
         float3 body = a11y_tinted
@@ -1214,7 +1384,7 @@ float4 native_glass(GlassVertexOutput vin,
     // rim instead of the material rim — a dark accent-coloured line on the
     // upper-left half hugging the contour (~0.75 pt), a bright neutral line on
     // the lower half 0.5 pt inside (+35..43 sRGB).
-    if (shape_count == 0 && u.knob_rim_light.w > 0.0) {
+    if (GLASS_KNOB && shape_count == 0 && u.knob_rim_light.w > 0.0) {
         float o = inset / s;
         float w = u.knob_rim_light.w;
         // axis (0,0) = full ring (Increase Contrast: dark accent outline all round)
@@ -1258,8 +1428,8 @@ float4 native_glass(GlassVertexOutput vin,
 }
 
 float4 glass_fragment_main(GlassVertexOutput vin) : SV_Target {
-    if (round(u.surface_params.x) == 5.0 && u.native_params.x > 0.0)
-        return native_glass(vin, blur_tex, sharp_tex, soft_tex, coarse_tex, alternate_main_tex, smp);
+    if (!GLASS_LEGACY || (round(u.surface_params.x) == 5.0 && u.native_params.x > 0.0))
+        return native_glass(vin, blur_tex, sharp_tex, soft_tex, coarse_tex, alternate_main_tex, smp, tab_lens_table);
     // -- Parameter preprocessing (all clamped, prevent jump/invalid into compute) --
     float gi  = clamp(u.glass_intensity,         0.0,  2.0);
     // gi gate: glass_intensity=0 commits
@@ -1297,16 +1467,23 @@ float4 glass_fragment_main(GlassVertexOutput vin) : SV_Target {
     float2 cuv_scale = max(u.content_uv.zw, ((float2)(1e-4)));
     float2 node_uv   = (vin.uv - cuv_off) / cuv_scale;
     float2 p         = (node_uv - 0.5) * rect_px;
+    // Per-corner glass: the contour (and its normal) takes this quadrant's radius; the material
+    // terms keep cr, the largest corner. corner_radii arrive fitted to the rect (CPU shapeRadii),
+    // so a uniform set takes the uniform path bit for bit.
+    float4 cr4 = clamp(u.corner_radii * s, 0.0, mh);
+    bool per_corner = u.arrow_params.x < 0.5
+        && (abs(cr4.x - cr4.y) + abs(cr4.y - cr4.z) + abs(cr4.z - cr4.w)) > 0.01;
+    float  crp  = per_corner ? corner_pick(p, cr4) : cr;
 
     // ── SDF & mask ─────────────────────────────────────────────────
-    float  d    = sdf_rr(p, half_px, cr);
+    float  d    = sdf_rr(p, half_px, crp);
     float  aa   = max(zenit_fwidth(d) * 0.5, 0.5);
     float  mask = 1.0 - smoothstep(-aa, aa, d);
     if (mask < 0.001) discard;
     float  inset = max(-d, 0.0);
 
     // -- 2D edge normal (outward) --
-    float2 out_n = sdf_grad(p, half_px, cr);
+    float2 out_n = sdf_grad(p, half_px, crp);
 
     // ── Glass Surface sampling ─────────────────────────────────────
     float  top_bezel_w = clamp(mh * top_bezel_ratio, min(2.0 * s, mh), mh);
@@ -1446,13 +1623,13 @@ float4 glass_fragment_main(GlassVertexOutput vin) : SV_Target {
         // section bevel. The old plate ray treated them like straight walls,
         // so nearby backdrop lines never reached the inside curved contour.
         // Blend across the straight/corner join and taper toward the flat body.
-        float2 corner_q = abs(p) - half_px + cr;
-        float2 curve_mix = smoothstep(((float2)(0.0)), ((float2)(max(cr * 0.25, s))), corner_q);
-        if (half_px.x - cr < s) curve_mix.x = 1.0;
-        if (half_px.y - cr < s) curve_mix.y = 1.0;
+        float2 corner_q = abs(p) - half_px + crp;
+        float2 curve_mix = smoothstep(((float2)(0.0)), ((float2)(max(crp * 0.25, s))), corner_q);
+        if (half_px.x - crp < s) curve_mix.x = 1.0;
+        if (half_px.y - crp < s) curve_mix.y = 1.0;
         float curved_contour = curve_mix.x * curve_mix.y;
         float sidewall_support = 1.0 - smoothstep(6.0 * s, 12.0 * s, inset);
-        float curvature_path = 1.0 + min(top_bezel_w / max(cr, 4.0 * s), 1.0)
+        float curvature_path = 1.0 + min(top_bezel_w / max(crp, 4.0 * s), 1.0)
             * curved_contour * (diffuse_coating ? lerp(sidewall_support, t_top, coating_aperture) : sidewall_support);
         disp_r *= curvature_path;
         disp_g *= curvature_path;

@@ -225,6 +225,78 @@ pub fn invalidateSubtreePayloadCache(self: *Node) void {
     }
 }
 
+/// Write the cross-frame own-content cache (same materialization contract as
+/// cacheSubtreePayloadCommands; every item belongs to this node).
+pub fn cacheOwnPayloadCommands(
+    self: *Node,
+    allocator: Allocator,
+    commands: []const DisplayItem,
+    transform_id: u32,
+    effect_id: u32,
+    clip_id: u32,
+    world_bounds: ComputedRect,
+) ?*CachedRenderSlice {
+    const cache_allocator = if (self.world_ref) |w| w.render_cache_allocator orelse allocator else allocator;
+    // A node without own paint (pure layout box) is cached as "empty" so it is not
+    // re-recorded either.
+    var fresh = if (commands.len == 0) CachedRenderSlice{
+        .commands = &.{},
+        .scroll_offset_x = 0,
+        .scroll_offset_y = 0,
+        .content_version = self.meta.per_frame.caches.versions.content,
+        .composite_version = self.meta.per_frame.caches.versions.composite,
+        .world_bounds = world_bounds,
+        .allocator = cache_allocator,
+    } else buildCachedRenderSlice(
+        cache_allocator,
+        commands,
+        0,
+        0,
+        @intCast(commands.len),
+        0,
+        0,
+        0,
+        0,
+        0,
+        &.{},
+        self.meta.per_frame.caches.versions.content,
+        self.meta.per_frame.caches.versions.composite,
+        std.math.maxInt(u32),
+        world_bounds,
+        Transform2D{},
+    ) orelse {
+        invalidateOwnPayloadCache(self);
+        return null;
+    };
+    fresh.cached_transform_id = transform_id;
+    fresh.cached_effect_id = effect_id;
+    fresh.cached_clip_id = clip_id;
+    invalidateOwnPayloadCache(self);
+    self.meta.per_frame.caches.commands.own_payload = fresh;
+    return &self.meta.per_frame.caches.commands.own_payload.?;
+}
+
+/// Dirty bits about to be cleared on a node that is not rendered this frame (hidden / zero-size /
+/// paint-skipped subtree): its cross-frame command caches no longer match its state. Clean nodes
+/// keep their caches.
+pub fn dropCachesForUnrenderedClean(self: *Node) void {
+    const d = self.frame_state.state_bits.dirty;
+    if (!(d.core.render or d.core.subtree_render or d.core.layout or d.core.subtree_layout or
+        d.pipeline.composite or d.pipeline.subtree_composite)) return;
+    invalidateSubtreePayloadCache(self);
+    invalidateOwnPayloadCache(self);
+    invalidateRenderCache(self);
+    invalidatePromotedRenderCache(self);
+    @import("render_engine/retained_memo.zig").dropMemo(self);
+}
+
+pub fn invalidateOwnPayloadCache(self: *Node) void {
+    if (self.meta.per_frame.caches.commands.own_payload) |*cache| {
+        cache.deinit();
+        self.meta.per_frame.caches.commands.own_payload = null;
+    }
+}
+
 pub fn invalidatePromotedRenderCache(self: *Node) void {
     if (self.meta.per_frame.caches.commands.promoted) |*cache| {
         if (node_mod.shouldLogBracketNode(self.id)) {

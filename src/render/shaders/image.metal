@@ -16,27 +16,34 @@ struct Uniforms {
     float scale_factor; // DPI scale factor (Retina=2.0).
     uint clip_shape_kind;
     float4 clip_rect;
-    float clip_radius;
+    float4 clip_radii; // TL, TR, BR, BL (logical px)
     uint clip_fill_rule;
     uint clip_point_count;
     uint clip_contour_count;
+    uint clip_pad; // keeps the polygon arrays 16-byte aligned (cbuffer register)
     uint clip_polygon_end_points[8];
     float2 clip_polygon_points[32];
+    // Second shape clip (shape_clip_pair.zig): kind 0 none, 1 rounded rect, 2 ellipse;
+    // logical px like clip_rect. Coverage multiplies the primary shape clip's.
+    float4 clip2_rect;
+    float4 clip2_radii; // TL, TR, BR, BL
+    uint clip2_shape_kind;
 };
 
-/// Per-instance data (one per image) - 64 bytes.
+/// Per-instance data (one per image) - 128 bytes.
 struct ImageInstanceData {
     float4 rect; // x, y, width, height (logical pixels).
     float4 uv_rect; // u0, v0, u1, v1 (texture coordinate range).
     float4 tint_color; // Tint color RGBA (1,1,1,1 = no tint).
     float4 transform_linear; // a, b, c, d (logical pixel affine).
+    float4 corner_radii; // Corner radii TL, TR, BR, BL (logical pixels; a rounded layer's mask).
     float2 transform_translation; // tx, ty (logical pixel affine).
-    float corner_radius; // Corner radius.
     float opacity; // Opacity (0-1).
     float source_premultiplied; // Whether source is premultiplied alpha texture (offscreen layer composite).
     float sampling_max_u;
     float sampling_max_v;
-    float sampling_padding;
+    float sampling_padding0;
+    float sampling_padding1;
     float4 rect_clip; // x, y, w, h (logical pixels); zero-size = disabled.
 };
 
@@ -58,6 +65,13 @@ struct ImageVertexOutput {
 float sdf_rounded_rect_image(float2 p, float2 size, float radius) {
     float2 d = abs(p) - size + radius;
     return min(max(d.x, d.y), 0.0) + length(max(d, float2(0.0))) - radius;
+}
+
+/// Overflow clip with per-corner radii (TL, TR, BR, BL): the quadrant picks the corner, so a
+/// uniform radius evaluates exactly as the single-radius distance.
+float sdf_rounded_rect_corners_image(float2 p, float2 size, float4 radii) {
+    const float r = (p.x < 0.0) ? ((p.y < 0.0) ? radii.x : radii.w) : ((p.y < 0.0) ? radii.y : radii.z);
+    return sdf_rounded_rect_image(p, size, r);
 }
 
 float sdf_ellipse_image(float2 p, float2 radius_xy) {
@@ -135,7 +149,7 @@ float rect_clip_alpha(float2 screen_pos, float4 rect_clip, float scale_factor) {
     return smoothstep(clip_aa, -clip_aa, clip_sdf);
 }
 
-float shape_clip_alpha(float2 screen_pos, constant Uniforms& uniforms) {
+float primary_shape_clip_alpha(float2 screen_pos, constant Uniforms& uniforms) {
     if (uniforms.clip_shape_kind == 0u) {
         return 1.0;
     }
@@ -144,8 +158,8 @@ float shape_clip_alpha(float2 screen_pos, constant Uniforms& uniforms) {
     const float2 clip_size = uniforms.clip_rect.zw * uniforms.scale_factor * 0.5;
     float clip_sdf = 1.0;
     if (uniforms.clip_shape_kind == 1u) {
-        const float clip_radius = uniforms.clip_radius * uniforms.scale_factor;
-        clip_sdf = sdf_rounded_rect_image(screen_pos - clip_center, clip_size, clip_radius);
+        const float4 clip_radii = uniforms.clip_radii * uniforms.scale_factor;
+        clip_sdf = sdf_rounded_rect_corners_image(screen_pos - clip_center, clip_size, clip_radii);
     } else if (uniforms.clip_shape_kind == 2u) {
         clip_sdf = sdf_ellipse_image(screen_pos - clip_center, clip_size);
     } else if (uniforms.clip_shape_kind == 3u) {
@@ -178,6 +192,23 @@ float shape_clip_alpha(float2 screen_pos, constant Uniforms& uniforms) {
     }
     const float clip_aa = max(fwidth(clip_sdf) * 0.5, 0.5);
     return smoothstep(clip_aa, -clip_aa, clip_sdf);
+}
+
+float partner_shape_clip_alpha(float2 screen_pos, constant Uniforms& uniforms) {
+    if (uniforms.clip2_shape_kind == 0u) {
+        return 1.0;
+    }
+    const float2 clip_center = (uniforms.clip2_rect.xy + uniforms.clip2_rect.zw * 0.5) * uniforms.scale_factor;
+    const float2 clip_size = uniforms.clip2_rect.zw * uniforms.scale_factor * 0.5;
+    const float clip_sdf = uniforms.clip2_shape_kind == 2u
+        ? sdf_ellipse_image(screen_pos - clip_center, clip_size)
+        : sdf_rounded_rect_corners_image(screen_pos - clip_center, clip_size, uniforms.clip2_radii * uniforms.scale_factor);
+    const float clip_aa = max(fwidth(clip_sdf) * 0.5, 0.5);
+    return smoothstep(clip_aa, -clip_aa, clip_sdf);
+}
+
+float shape_clip_alpha(float2 screen_pos, constant Uniforms& uniforms) {
+    return primary_shape_clip_alpha(screen_pos, uniforms) * partner_shape_clip_alpha(screen_pos, uniforms);
 }
 
 float clip_alpha(float2 screen_pos, float4 rect_clip, constant Uniforms& uniforms) {
@@ -250,7 +281,7 @@ fragment float4 image_fragment_main(
     sampler smp [[sampler(0)]]
 ) {
     ImageInstanceData inst = instances[in.instance_id];
-    const float corner_radius = inst.corner_radius * uniforms.scale_factor;
+    const float4 corner_radii = inst.corner_radii * uniforms.scale_factor;
 
     // Sample texture.
     float2 uv = in.uv;
@@ -264,8 +295,8 @@ fragment float4 image_fragment_main(
     float coverage = 1.0;
 
     // Rounded corner clipping.
-    if (corner_radius > 0.0) {
-        float sdf = sdf_rounded_rect_image(in.local_pos, in.size, corner_radius);
+    if (any(corner_radii > 0.0)) {
+        float sdf = sdf_rounded_rect_corners_image(in.local_pos, in.size, corner_radii);
         float aa = fwidth(sdf) * 0.5;
         coverage *= smoothstep(aa, -aa, sdf);
     }

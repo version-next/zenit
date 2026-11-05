@@ -28,6 +28,32 @@ function Write-AgentTrace {
     catch { Write-Warning ("Diagnostic trace append failed: " + $_.Exception.Message) }
   }
 }
+# Smart App Control (or another Application Control policy) can refuse the
+# first launch of a freshly downloaded, unsigned executable while its cloud
+# reputation lookup is pending (Win32 error 4551); later launches of the same
+# file succeed. Retry only that refusal, and record when it happened (file age
+# since download, attempt, delay) so the evidence shows the policy, not the app.
+function Start-ProcessWithPolicyRetry([System.Diagnostics.Process]$proc, [string]$traceDir) {
+  # Observed on the T14 (2026-10-25): the verdict is per file hash. Some builds
+  # pass on the first launch, others stay blocked for minutes, so a short retry
+  # covers a pending lookup and a persistent block fails with a clear reason.
+  $deadline = [DateTime]::UtcNow.AddSeconds(20)
+  for ($attempt = 1; ; $attempt++) {
+    try { return $proc.Start() }
+    catch {
+      $inner = $_.Exception
+      while ($inner -and -not ($inner -is [System.ComponentModel.Win32Exception])) { $inner = $inner.InnerException }
+      if (-not $inner -or $inner.NativeErrorCode -ne 4551) { throw }
+      if ([DateTime]::UtcNow -ge $deadline) { throw "Application Control policy (Smart App Control) keeps blocking $($proc.StartInfo.FileName) after $attempt attempts; this build's file hash has a block verdict, rebuild to change it" }
+      $file = Get-Item -LiteralPath $proc.StartInfo.FileName -ErrorAction SilentlyContinue
+      $age = if ($file) { [Math]::Round(([DateTime]::UtcNow - $file.LastWriteTimeUtc).TotalSeconds, 1) } else { -1 }
+      $line = "application-control-block exe=$($proc.StartInfo.FileName) attempt=$attempt file_age_s=$age at=$([DateTime]::UtcNow.ToString('o'))"
+      if ($traceDir) { $line | Write-AgentTrace -Path (Join-Path $traceDir 'agent-trace.log') }
+      Write-Warning $line
+      Start-Sleep -Milliseconds ([Math]::Min(2000 * $attempt, 8000))
+    }
+  }
+}
 function Invoke-Retrying([scriptblock]$call) {
   $deadline = [DateTime]::UtcNow.AddSeconds(90)
   for ($attempt = 1; ; $attempt++) {
@@ -350,7 +376,9 @@ while ($true) {
   try {
     if ($job.kind -eq 'probe') {
       $exeName = [string]$job.exe_name
-      if ($exeName -notin @('zenit-windows-font-smoke.exe', 'zenit-windows-drop-contract.exe', 'zenit-windows-gpu-resources-contract.exe', 'zenit-windows-d3d11-contract.exe', 'zenit-windows-window-chrome.exe')) { throw 'Unknown native probe' }
+      if ($exeName -notin @('zenit-windows-font-smoke.exe', 'zenit-windows-drop-contract.exe', 'zenit-windows-gpu-resources-contract.exe', 'zenit-windows-d3d11-contract.exe', 'zenit-windows-window-chrome.exe', 'zenit-windows-hover-probe.exe')) { throw 'Unknown native probe' }
+      # The hover probe moves the worker's cursor and foreground: only in a batch that allowed it.
+      if ($exeName -eq 'zenit-windows-hover-probe.exe' -and -not $job.allow_foreground) { throw 'Hover probe requires an allow-foreground batch' }
       $exe = Join-Path $dir $exeName
       Get-JobArtifact $job $exeName $exe
       $proc = New-Object System.Diagnostics.Process
@@ -366,7 +394,7 @@ while ($true) {
       $proc.StartInfo.StandardErrorEncoding = New-Object System.Text.UTF8Encoding($false)
       $started = $false
       try {
-        if (-not $proc.Start()) { throw 'Native probe did not start' }
+        if (-not (Start-ProcessWithPolicyRetry $proc $dir)) { throw 'Native probe did not start' }
         $started = $true
         $stdout = $proc.StandardOutput.ReadToEndAsync()
         $stderr = $proc.StandardError.ReadToEndAsync()
@@ -441,6 +469,7 @@ while ($true) {
       $proc = New-Object System.Diagnostics.Process
       $proc.StartInfo.FileName = $exe
       if ($job.custom_titlebar) { $proc.StartInfo.Arguments = '--zenit-custom-titlebar' }
+      elseif ($job.native_titlebar) { $proc.StartInfo.Arguments = '--native-titlebar' }
       $proc.StartInfo.UseShellExecute = $false
       $proc.StartInfo.CreateNoWindow = $true
       $proc.StartInfo.RedirectStandardOutput = $true
@@ -448,7 +477,7 @@ while ($true) {
       $proc.StartInfo.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)
       $proc.StartInfo.StandardErrorEncoding = New-Object System.Text.UTF8Encoding($false)
       foreach ($name in $childEnv.Keys) { $proc.StartInfo.EnvironmentVariables[$name] = [string]$childEnv[$name] }
-      if (-not $proc.Start()) { throw 'E2E app did not start' }
+      if (-not (Start-ProcessWithPolicyRetry $proc $dir)) { throw 'E2E app did not start' }
       $appStdout = $proc.StandardOutput.ReadToEndAsync()
       $appStderr = $proc.StandardError.ReadToEndAsync()
       try {
@@ -487,7 +516,7 @@ while ($true) {
         if ($job.local_suite.env.ZENIT_E2E_SUITE_TIMEOUT_MS) { $suiteTimeoutMs = [double]$job.local_suite.env.ZENIT_E2E_SUITE_TIMEOUT_MS }
         $script:suiteDeadline = [DateTime]::UtcNow.AddMilliseconds($suiteTimeoutMs + 120000)
         $script:suiteJobDir = $dir
-        if (-not $suiteProc.Start()) { throw 'E2E suite did not start' }
+        if (-not (Start-ProcessWithPolicyRetry $suiteProc $dir)) { throw 'E2E suite did not start' }
         $suiteStdout = $suiteProc.StandardOutput.ReadToEndAsync()
         $suiteStderr = $suiteProc.StandardError.ReadToEndAsync()
         'local suite started' | Write-AgentTrace -Path (Join-Path $dir 'agent-trace.log')

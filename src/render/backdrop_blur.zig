@@ -5,6 +5,7 @@ const std = @import("std");
 const gpu = @import("gpu");
 const TextureLease = @import("offscreen_texture.zig").TextureLease;
 const debug_env = @import("debug_env.zig");
+const corner_radii = @import("zenit_corner_radii");
 
 /// Warn once per resource on pass skip (avoid per-frame spam); always returns false for `orelse
 /// return warnPassSkipped(...)`
@@ -21,6 +22,7 @@ fn warnPassSkipped(comptime what: []const u8) bool {
 
 const blur_shader_source: []const u8 = @import("shader_sources.zig").blur;
 const glass_shader_source: []const u8 = @import("shader_sources.zig").glass;
+const tab_lens_field = @import("tab_lens_field.zig");
 
 /// Frames needed for blur chain raise hysteresis (inter-frame lag; see
 /// PersistentGpuCache.blur_level_slots). Constraints on both ends:
@@ -211,8 +213,9 @@ pub const GlassUniforms = extern struct {
     /// Accessibility: {mode 0 off / 1 reduce-transparency / 2 increase-contrast, untinted base hue,
     /// background luminance slope, preserve background hue}
     a11y_params: [4]f32 = .{ 0, 0, 0, 0 },
-    /// Single-glass corner radii TL/TR/BR/BL (world logical px); x<0 = uniform corner_radius
-    corner_radii: [4]f32 = .{ -1, -1, -1, -1 },
+    /// Single-glass corner radii TL/TR/BR/BL (world logical px), already fitted to `rect_size`
+    /// (`shapeRadii`); `corner_radius` is their largest corner.
+    corner_radii: [4]f32 = .{ 0, 0, 0, 0 },
     /// Popover arrow (single glass): {edge 0 none / 1 bottom / 2 top / 3 left / 4 right, along-edge
     /// offset, protrude len, tip round} (world logical px)
     arrow_params: [4]f32 = .{ 0, 0, 0, 0 },
@@ -395,36 +398,132 @@ fn buildBlurPipeline(encoder: anytype) bool {
             };
         }
     }
+    buildBankBatch(encoder, &shader, &vertex_func);
     return true;
 }
 
 fn buildGlassPipeline(encoder: anytype) bool {
-    const device = encoder.sdf_renderer.device;
-    var glass_shader = gpu.Backend.ShaderModule.initFromSource(device, glass_shader_source) catch |e| {
+    // Every composite reads the table (fragment buffer 1): no pipeline without it.
+    if (encoder.persistent.tab_lens_field == null) {
+        encoder.persistent.tab_lens_field = tab_lens_field.create(std.heap.page_allocator, encoder.sdf_renderer.device) catch |e| {
+            std.log.err("[glass] tab lens field buffer failed: {}", .{e});
+            return false;
+        };
+    }
+    encoder.persistent.glass_pipeline = compileGlassPipeline(encoder.sdf_renderer.device, glass_shader_source) orelse return false;
+    return true;
+}
+
+fn compileGlassPipeline(device: anytype, source: []const u8) ?gpu.Backend.RenderPipeline {
+    var glass_shader = gpu.Backend.ShaderModule.initFromSource(device, source) catch |e| {
         std.log.err("[glass] shader compile failed: {}", .{e});
-        return false;
+        return null;
     };
     defer glass_shader.deinit();
     var glass_vtx = glass_shader.getFunction("glass_vertex_main") catch |e| {
         std.log.err("[glass] getFunction(glass_vertex_main) failed: {}", .{e});
-        return false;
+        return null;
     };
     defer glass_vtx.deinit();
     var glass_frag = glass_shader.getFunction("glass_fragment_main") catch |e| {
         std.log.err("[glass] getFunction(glass_fragment_main) failed: {}", .{e});
-        return false;
+        return null;
     };
     defer glass_frag.deinit();
-    encoder.persistent.glass_pipeline = gpu.Backend.createRenderPipeline(device, .{
+    return gpu.Backend.createRenderPipeline(device, .{
         .vertex_function = &glass_vtx,
         .fragment_function = &glass_frag,
         .color_attachment_formats = &[_]gpu.TextureFormat{gpu.color_format},
         .blend_state = null,
     }) catch |e| {
         std.log.err("[glass] PSO failed: {}", .{e});
-        return false;
+        return null;
     };
-    return true;
+}
+
+/// Feature macros of glass.metal a composite variant can compile out, in
+/// GlassVariantKey bit order.
+pub const glass_variant_macros = [_][]const u8{ "GLASS_GROUP", "GLASS_ARROW", "GLASS_TAB_LENS", "GLASS_PER_CORNER", "GLASS_A11Y", "GLASS_VEIL_CURVE", "GLASS_KNOB", "GLASS_LEGACY" };
+pub const glass_variant_all: u16 = (1 << glass_variant_macros.len) - 1;
+
+/// Features of glass.metal the composite with these uniforms can reach: a bit
+/// is clear only when the shader's own condition for that feature is false
+/// for every pixel (each test is the shader's condition or a superset of it).
+pub fn glassVariantKey(u: *const GlassUniforms) u16 {
+    var key: u16 = 0;
+    const native = @round(u.surface_params[0]) == 5.0 and u.native_params[0] > 0.0;
+    if (!native) return glass_variant_all;
+    if (!(@round(u.group_params[0]) < 0.5)) key |= 1 << 0; // shape_count > 0 (NaN: keep)
+    if (!(u.arrow_params[0] < 0.5)) key |= 1 << 1; // arrow_params.x > 0.5 / not < 0.5
+    if (!(u.tab_lens_params[0][0] <= 0.0)) key |= 1 << 2; // tab_lens_params[0].x > 0
+    const c = u.corner_radii;
+    if (!(c[0] == c[1] and c[1] == c[2] and c[2] == c[3])) key |= 1 << 3; // per-corner radii
+    if (!(u.a11y_params[0] <= 0.5)) key |= 1 << 4; // a11y_params.x > 0.5 (and > 1.5)
+    if (!(u.veil_curve[4][1] <= 0.5)) key |= 1 << 5; // veil_curve[4].y > 0.5
+    if (!(u.knob_rim_light[3] <= 0.0)) key |= 1 << 6; // knob_rim_light.w > 0
+    // BlurGradient stays in every variant: compiling it out changed the
+    // compiled code of the remaining path (up to 181/255 on antialiased
+    // corners of glassappkit), so it is not an exact specialization.
+    return key; // native: the legacy material (bit 7) never runs
+}
+
+/// The composite pipeline for `key`: a variant with the unused features
+/// compiled out once it is built, the general one until then (Metal). A
+/// variant is built once per key on a background thread, so a first use
+/// never stalls a frame; the general pipeline gives the same pixels
+/// (byte-identical captures of every glass story), so the switch is not
+/// visible. ZENIT_GLASS_GENERAL_ONLY=1 keeps the general pipeline (A/B
+/// control); ZENIT_GLASS_VARIANT_SYNC=1 builds on first use instead.
+fn glassPipelineFor(encoder: anytype, key: u16) ?*gpu.Backend.RenderPipeline {
+    const general: ?*gpu.Backend.RenderPipeline = if (encoder.persistent.glass_pipeline) |*p| p else null;
+    if (comptime gpu.backend_kind != .metal or !@hasField(@TypeOf(encoder.persistent.*), "glass_variants")) return general;
+    if (key == glass_variant_all or debug_env.flag("ZENIT_GLASS_GENERAL_ONLY")) return general;
+    const cache = encoder.persistent;
+    for (cache.glass_variants[0..cache.glass_variant_count]) |v| if (v.key == key) {
+        if (v.state.load(.acquire) != GlassVariant.ready) return general;
+        return if (v.pipeline) |*p| p else general;
+    };
+    if (cache.glass_variant_count >= cache.glass_variants.len) return general;
+    const slot = std.heap.page_allocator.create(GlassVariant) catch return general;
+    slot.* = .{ .key = key };
+    cache.glass_variants[cache.glass_variant_count] = slot;
+    cache.glass_variant_count += 1;
+    if (debug_env.flag("ZENIT_GLASS_VARIANT_SYNC")) {
+        buildGlassVariant(encoder.sdf_renderer.device, slot);
+    } else {
+        slot.thread = std.Thread.spawn(.{}, buildGlassVariant, .{ encoder.sdf_renderer.device, slot }) catch blk: {
+            buildGlassVariant(encoder.sdf_renderer.device, slot);
+            break :blk null;
+        };
+    }
+    if (slot.state.load(.acquire) != GlassVariant.ready) return general;
+    return if (slot.pipeline) |*p| p else general;
+}
+
+const GlassVariant = @import("command_encoder/persistent_gpu_cache.zig").GlassVariant;
+
+/// Compile the variant `slot.key` (any thread: Metal device calls are
+/// thread-safe) and publish it. A failed build stays failed; the general
+/// pipeline serves it.
+fn buildGlassVariant(device: anytype, slot: *GlassVariant) void {
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    for (glass_variant_macros, 0..) |name, bit| {
+        w.print("#define {s} {s}\n", .{ name, if (slot.key & (@as(u16, 1) << @intCast(bit)) != 0) "true" else "false" }) catch {
+            slot.state.store(GlassVariant.failed, .release);
+            return;
+        };
+    }
+    const prefix = w.buffered();
+    const source = std.heap.page_allocator.alloc(u8, prefix.len + glass_shader_source.len) catch {
+        slot.state.store(GlassVariant.failed, .release);
+        return;
+    };
+    defer std.heap.page_allocator.free(source);
+    @memcpy(source[0..prefix.len], prefix);
+    @memcpy(source[prefix.len..], glass_shader_source);
+    slot.pipeline = compileGlassPipeline(device, source);
+    slot.state.store(if (slot.pipeline != null) GlassVariant.ready else GlassVariant.failed, .release);
 }
 
 /// Allocate one Kawase uniform slot; null if exhausted.
@@ -467,7 +566,8 @@ fn debugGlassBlit(
     h: u32,
     slot_idx: usize,
 ) void {
-    if (!@import("zenit_environment").has("ZENIT_DEBUG_GLASS")) return;
+    if (!@import("zenit_environment").flag("ZENIT_DEBUG_GLASS")) return;
+    if (!flushBanks(encoder)) return;
     const slot = &encoder.persistent.debug_glass_slots[slot_idx];
     const dw = @min(w, 64);
     const dh = @min(h, 64);
@@ -495,7 +595,7 @@ fn debugGlassBlit(
     }
 }
 
-fn restoreRenderTargetPass(
+pub fn restoreRenderTargetPass(
     encoder: anytype,
     restore_rt: gpu.Backend.TextureBinding,
     image_renderer: anytype,
@@ -559,6 +659,24 @@ pub fn validUv(off_x: u32, off_y: u32, valid_w: u32, valid_h: u32, tex_w: u32, t
     return .{ x0, y0, @max(x0, x1_raw), @max(y0, y1_raw) };
 }
 
+/// encoder.copyTextureRegion, batched with the bank passes when possible
+/// (blur.metal copy_bank; same validation as the render copy).
+fn bankCopyRegion(encoder: anytype, source: gpu.Backend.TextureBinding, sx: u32, sy: u32, width: u32, height: u32, destination: gpu.Backend.TextureBinding, dx: u32, dy: u32, clear: bool) !void {
+    const valid = !source.eql(destination) and width > 0 and height > 0 and
+        sx <= source.width and width <= source.width - sx and sy <= source.height and height <= source.height - sy and
+        dx <= destination.width and width <= destination.width - dx and dy <= destination.height and height <= destination.height - dy;
+    if (comptime bank_batch_enabled) if (valid and bankBatchReady(encoder) and source.samePixelFormat(destination)) {
+        const copy = BankCopy{
+            .rect = .{ dx, dy, dx + width, dy + height },
+            .offset = .{ @as(i32, @intCast(sx)) - @as(i32, @intCast(dx)), @as(i32, @intCast(sy)) - @as(i32, @intCast(dy)) },
+            .clear = @intFromBool(clear),
+        };
+        if (recordBank(encoder, .{ .kind = .copy, .src = source, .dst = destination, .uniforms = .{ .copy = copy } })) return;
+    };
+    if (!flushBanks(encoder)) return error.RenderCopyFailed;
+    return encoder.copyTextureRegion(source, sx, sy, width, height, destination, dx, dy, clear);
+}
+
 pub fn executeKawasePass(
     encoder: anytype,
     kind: KawasePassKind,
@@ -586,6 +704,9 @@ pub fn executeKawasePass(
     // Slot budgets single-frame blur chain; data via setFragmentBytes (copied at encode, no
     // in-flight overwrite by next frame).
     _ = acquireKawaseUniformSlot(encoder) orelse return warnPassSkipped("kawase uniform slots exhausted");
+    if (dst_w == dst_texture.width and dst_h == dst_texture.height and
+        recordBank(encoder, .{ .kind = if (kind == .downsample) .kawase_down else .kawase_up, .src = src_texture, .dst = dst_texture, .uniforms = .{ .kawase = uniforms } })) return true;
+    if (!flushBanks(encoder)) return warnPassSkipped("kawase render pass");
 
     var dst_view = dst_texture.createView();
     const pass = encoder.gpu_command_encoder.?.beginRenderPass(.{
@@ -805,6 +926,217 @@ test "bank regions: need rect covers group members, lens reach and merge bulge" 
     try std.testing.expect(nativeLensReach(1, 0) >= 1.118);
 }
 
+// ---- Bank batch (Metal) ----
+//
+// On Apple GPUs every render encoder costs the CPU ~4 us of driver setup
+// (renderCommandEncoderWithDescriptor configures the tile framebuffer), more
+// when cache-cold inside a frame, and a native glass began 11 of them for its
+// banks alone (quarter update, main/fine Gaussians, ambient reductions and
+// Gaussian): `sample` put ~80% of the glass CPU time there. The bank passes
+// are therefore recorded and encoded as draws into render passes without
+// attachments, whose fragment functions write their targets
+// (shaders/blur.metal *_bank, bit-identical to the attachment passes): every
+// pass that does not depend on another one of the same encoder shares it, so
+// a glass needs one encoder per dependency level (about 6) instead of one
+// per pass. The render passes remain for the other backends and as the
+// fallback; ZENIT_GLASS_RENDER_BANKS=1 forces them (A/B and checks).
+
+const bank_batch_enabled = gpu.backend_kind == .metal;
+
+/// Fragment-side form of the render pass's clear + scissor.
+pub const BankRegion = extern struct {
+    bounds: [4]u32,
+    keep_outside: u32,
+    _padding: [3]u32 = .{ 0, 0, 0 },
+};
+
+/// The texels a render pass with this region writes: its scissor, or the
+/// whole target when the region is null or empty (no scissor is set then).
+pub fn bankRegion(region: ?PixelRegion, width: u32, height: u32, load_op: gpu.LoadOp) BankRegion {
+    const sc: [4]u32 = if (region) |r| (r.scissor(width, height) orelse .{ 0, 0, width, height }) else .{ 0, 0, width, height };
+    return .{ .bounds = .{ sc[0], sc[1], sc[0] + sc[2], sc[1] + sc[3] }, .keep_outside = @intFromBool(load_op == .load) };
+}
+
+/// Kernel-side form of a render copy (blur.metal copy_bank).
+pub const BankCopy = extern struct {
+    /// Destination rect x0, y0, x1, y1.
+    rect: [4]u32,
+    /// Source texel = destination texel + offset.
+    offset: [2]i32,
+    clear: u32,
+    _padding: u32 = 0,
+};
+
+pub const BankKind = enum(u8) { gaussian, area, kawase_down, kawase_up, copy };
+
+/// One recorded pass: its fragment function (blur.metal *_bank), source,
+/// target, and the bytes of its uniforms (buffer 0) and region (buffer 1).
+pub const BankDraw = struct {
+    kind: BankKind,
+    src: gpu.Backend.TextureBinding,
+    dst: gpu.Backend.TextureBinding,
+    uniforms: union {
+        gaussian: GaussianUniforms,
+        area: GaussianAreaUniforms,
+        kawase: KawaseUniforms,
+        copy: BankCopy,
+    } = undefined,
+    region: BankRegion = undefined,
+    /// Dependency level: one more than every earlier draw it must follow.
+    level: u32 = 0,
+
+    fn uniformBytes(d: *const BankDraw) []const u8 {
+        return switch (d.kind) {
+            .gaussian => std.mem.asBytes(&d.uniforms.gaussian),
+            .area => std.mem.asBytes(&d.uniforms.area),
+            .kawase_down, .kawase_up => std.mem.asBytes(&d.uniforms.kawase),
+            .copy => std.mem.asBytes(&d.uniforms.copy),
+        };
+    }
+};
+
+/// Recorded passes per batch; a full batch is encoded early (still correct).
+pub const bank_batch_capacity = 32;
+
+/// The batch being recorded. Thread-local: one render thread encodes a
+/// glass from its first bank pass to its flush.
+threadlocal var bank_draws: [bank_batch_capacity]BankDraw = undefined;
+threadlocal var bank_draw_count: usize = 0;
+
+/// Whether `later` must be encoded after `earlier`: it reads what earlier
+/// writes, or writes what earlier reads or writes.
+pub fn bankDepends(earlier: *const BankDraw, later: *const BankDraw) bool {
+    return later.src.eql(earlier.dst) or later.dst.eql(earlier.src) or later.dst.eql(earlier.dst);
+}
+
+/// Level of a draw appended after `draws`.
+pub fn bankLevel(draws: []const BankDraw, draw: *const BankDraw) u32 {
+    var level: u32 = 0;
+    for (draws) |*earlier| if (bankDepends(earlier, draw)) {
+        level = @max(level, earlier.level + 1);
+    };
+    return level;
+}
+
+test "bank levels follow read/write, write/read and write/write order only" {
+    const B = gpu.Backend.TextureBinding.testBinding;
+    const region = bankRegion(null, 4, 4, .clear);
+    const q = B(1, 4, 4);
+    var draws: [7]BankDraw = undefined;
+    const specs = [_][2]u64{
+        .{ 10, 2 }, // half <- main target
+        .{ 2, 1 }, // quarter <- half (reads what the first wrote)
+        .{ 1, 3 }, // main H <- quarter
+        .{ 1, 4 }, // fine H <- quarter: independent of main H
+        .{ 3, 5 }, // main V <- main H
+        .{ 1, 2 }, // ambient half reuses the released half texture: after its read
+        .{ 4, 3 }, // fine V into main H's texture: after main V reads it
+    };
+    const expected = [_]u32{ 0, 1, 2, 2, 3, 2, 4 };
+    for (specs, 0..) |spec, i| {
+        draws[i] = .{ .kind = .gaussian, .src = if (spec[0] == 1) q else B(spec[0], 4, 4), .dst = if (spec[1] == 1) q else B(spec[1], 4, 4), .region = region };
+        draws[i].level = bankLevel(draws[0..i], &draws[i]);
+        try std.testing.expectEqual(expected[i], draws[i].level);
+    }
+}
+
+fn bankBatchReady(encoder: anytype) bool {
+    if (comptime !bank_batch_enabled or !@hasField(@TypeOf(encoder.persistent.*), "bank_batch")) return false;
+    if (debug_env.flag("ZENIT_GLASS_RENDER_BANKS")) return false;
+    // Built with the blur pipelines (buildBlurPipeline); null: the render
+    // passes serve.
+    return encoder.persistent.bank_batch.pipelines[0] != null;
+}
+
+/// Fragment function of each BankKind.
+pub const bank_functions = [_][]const u8{ "gaussian_filter_gamma_bank", "gaussian_downsample_gamma_bank", "kawase_downsample_bank", "kawase_upsample_bank", "copy_bank" };
+
+/// The bank batch pipelines, from the blur shader module. A failure is
+/// logged once and leaves the render passes serving.
+fn buildBankBatch(encoder: anytype, shader: *gpu.Backend.ShaderModule, vertex_fn: *gpu.Backend.ShaderFunction) void {
+    if (comptime !bank_batch_enabled or !@hasField(@TypeOf(encoder.persistent.*), "bank_batch")) return;
+    const bb = &encoder.persistent.bank_batch;
+    var built: [bank_functions.len]?gpu.Backend.RenderPipeline = @splat(null);
+    for (bank_functions, 0..) |name, i| {
+        var fragment = shader.getFunction(name) catch break;
+        defer fragment.deinit();
+        built[i] = gpu.Backend.createRenderPipeline(encoder.sdf_renderer.device, .{
+            .vertex_function = vertex_fn,
+            .fragment_function = &fragment,
+            .color_attachment_formats = &.{},
+            .blend_state = null,
+        }) catch break;
+    }
+    for (built) |p| if (p == null) {
+        for (&built) |*q| if (q.*) |*pipeline| pipeline.deinit();
+        std.log.err("[glass] bank batch pipelines failed; the render passes serve (reported once)", .{});
+        return;
+    };
+    bb.pipelines = built;
+}
+
+/// Record one bank pass (encoded by flushBanks). False: not batched, the
+/// caller encodes its render pass.
+fn recordBank(encoder: anytype, draw: BankDraw) bool {
+    if (!bankBatchReady(encoder)) return false;
+    if (bank_draw_count == bank_batch_capacity and !flushBanks(encoder)) return false;
+    var d = draw;
+    d.level = bankLevel(bank_draws[0..bank_draw_count], &d);
+    bank_draws[bank_draw_count] = d;
+    bank_draw_count += 1;
+    return true;
+}
+
+/// Encode the recorded bank passes, one attachment-less render pass per
+/// dependency level. Called before any other pass begins and before their
+/// results are used. False: some were not encoded (their targets hold no
+/// result); the caller treats the banks as failed.
+pub fn flushBanks(encoder: anytype) bool {
+    if (comptime !bank_batch_enabled or !@hasField(@TypeOf(encoder.persistent.*), "bank_batch")) return true;
+    const draws = bank_draws[0..bank_draw_count];
+    bank_draw_count = 0;
+    if (draws.len == 0) return true;
+    const bb = &encoder.persistent.bank_batch;
+    var sampler = encoder.persistent.blur_sampler orelse return false;
+    var levels: u32 = 0;
+    for (draws) |*d| levels = @max(levels, d.level + 1);
+    var ok = true;
+    for (0..levels) |level| {
+        var w: u32 = 1;
+        var h: u32 = 1;
+        for (draws) |*d| if (d.level == level) {
+            w = @max(w, d.dst.width);
+            h = @max(h, d.dst.height);
+        };
+        var pass = encoder.gpu_command_encoder.?.beginAttachmentlessRenderPass(w, h) catch {
+            ok = false;
+            continue;
+        };
+        encoder.pass_count += 1;
+        encoder.pass_sites[6] += 1;
+        pass.setFragmentSampler(0, &sampler);
+        for (draws) |*d| if (d.level == level) {
+            pass.setPipeline(&bb.pipelines[@backingInt(d.kind)].?);
+            pass.setFragmentBytes(0, d.uniformBytes());
+            if (d.kind == .gaussian or d.kind == .area) pass.setFragmentBytes(1, std.mem.asBytes(&d.region));
+            pass.setFragmentTextureBinding(0, d.src);
+            pass.setFragmentTextureBinding(1, d.dst);
+            pass.setViewport(0, 0, @floatFromInt(d.dst.width), @floatFromInt(d.dst.height), 0, 1);
+            pass.setScissorRect(0, 0, d.dst.width, d.dst.height);
+            pass.draw(3, 1, 0, 0);
+        };
+        pass.end();
+    }
+    if (!ok) {
+        // The frame quarter may have missed its update: drop it.
+        if (comptime @hasField(@TypeOf(encoder.*), "glass_quarter")) if (encoder.glass_quarter) |bank| {
+            _ = encoder.offscreen_pool.releaseForReuseInFrame(bank.lease);
+            encoder.glass_quarter = null;
+        };
+    }
+    return ok;
+}
+
 pub fn executeGaussianPass(
     encoder: anytype,
     src: gpu.Backend.TextureBinding,
@@ -817,10 +1149,24 @@ pub fn executeGaussianPass(
     /// Output texels the consumer reads; null = the whole target.
     region: ?PixelRegion,
 ) !bool {
+    return executeGaussianUniformsPass(encoder, src, dst, width, height, gaussianUniforms(sigma, width, height, vertical, valid), region);
+}
+
+/// executeGaussianPass with precomputed uniforms (e.g. foldGaussianTail).
+fn executeGaussianUniformsPass(
+    encoder: anytype,
+    src: gpu.Backend.TextureBinding,
+    dst: gpu.Backend.TextureBinding,
+    width: u32,
+    height: u32,
+    uniforms: GaussianUniforms,
+    region: ?PixelRegion,
+) !bool {
     var pipeline = encoder.persistent.gaussian_gamma_pipeline orelse return warnPassSkipped("Gaussian pipeline");
     var sampler = encoder.persistent.blur_sampler orelse return warnPassSkipped("Gaussian sampler");
     _ = acquireKawaseUniformSlot(encoder) orelse return warnPassSkipped("Gaussian uniform slots exhausted");
-    const uniforms = gaussianUniforms(sigma, width, height, vertical, valid);
+    if (recordBank(encoder, .{ .kind = .gaussian, .src = src, .dst = dst, .uniforms = .{ .gaussian = uniforms }, .region = bankRegion(region, width, height, .clear) })) return true;
+    if (!flushBanks(encoder)) return false;
     var view = dst.createView();
     defer view.destroy();
     var pass = encoder.gpu_command_encoder.?.beginRenderPass(.{
@@ -863,6 +1209,361 @@ fn gaussianTextureXY(encoder: anytype, source: gpu.Backend.TextureBinding, width
     return output;
 }
 
+// ---- Native (per-glass, margin-bounded) banks ----
+//
+// macOS gives each independent glass its own CABackdropLayer (scale 0.25,
+// i.e. a quarter of the physical grid) that captures the glass bounds
+// widened by `marginWidth` and nothing else: content past the margin has no
+// influence at all (scripts/glass_native_model/native_glass_sampling.swift).
+// A glass container shares one backdrop over the union of its members.
+// The regular banks below are therefore computed from this glass's own
+// capture, every Gaussian clamped (edge-extended) to the margin rect.
+
+/// CABackdropLayer.marginWidth of an independent regular NSGlassEffectView,
+/// in pt, from its smaller dimension (macOS 26.4; dumped at 47 sizes from 24
+/// to 800 pt, exact to 0.01 pt and independent of the corner radius). Up to
+/// 64 pt it equals the outer refraction amount (0.2·d); larger glass also has
+/// the bleed (wide) blur: 0.625·d + 8, capped at 83, then the bleed height
+/// 0.35·d. Clear glass has no margin (and its banks never reach this path).
+pub fn nativeBackdropMargin(min_dim: f32) f32 {
+    if (!(min_dim > 0)) return 0;
+    if (min_dim <= 64) return 0.2 * min_dim;
+    return @max(0.35 * min_dim, @min(83.0, 0.625 * min_dim + 8.0));
+}
+
+test "native backdrop margin matches the dumped CABackdropLayer marginWidth" {
+    const cases = [_][2]f32{
+        .{ 24, 4.8 }, .{ 36, 7.2 },   .{ 52, 10.4 },  .{ 64, 12.8 },   .{ 65, 48.625 }, .{ 80, 58 },
+        .{ 96, 68 },  .{ 100, 70.5 }, .{ 104, 73 },   .{ 110, 76.75 }, .{ 118, 81.75 }, .{ 120, 83 },
+        .{ 180, 83 }, .{ 237, 83 },   .{ 238, 83.3 }, .{ 250, 87.5 },  .{ 400, 140 },   .{ 600, 210 },
+    };
+    for (cases) |c| try std.testing.expectApproxEqAbs(c[1], nativeBackdropMargin(c[0]), 1e-3);
+    try std.testing.expectEqual(@as(f32, 0), nativeBackdropMargin(0));
+}
+
+/// The rect a glass's backdrop covers before its margin: the node rect, or the
+/// bounding box of the group members (one backdrop per container). World
+/// logical px.
+pub fn nativeBackdropBounds(node: [4]f32, raw_world: [4]f32, world_scale: f32, shapes: []const GroupShape) [4]f32 {
+    if (shapes.len == 0) return node;
+    var x0: f32 = std.math.inf(f32);
+    var y0: f32 = std.math.inf(f32);
+    var x1: f32 = -std.math.inf(f32);
+    var y1: f32 = -std.math.inf(f32);
+    for (shapes) |sh| {
+        if (!(sh.w > 0 and sh.h > 0)) continue;
+        const wx = raw_world[0] + sh.x * world_scale;
+        const wy = raw_world[1] + sh.y * world_scale;
+        x0 = @min(x0, wx);
+        y0 = @min(y0, wy);
+        x1 = @max(x1, wx + sh.w * world_scale);
+        y1 = @max(y1, wy + sh.h * world_scale);
+    }
+    if (!(x1 > x0 and y1 > y0)) return node;
+    return .{ x0, y0, x1 - x0, y1 - y0 };
+}
+
+/// How far `bounds` reaches past `node` on its farthest side (0 when inside).
+pub fn nativeBoundsOverflow(node: [4]f32, bounds: [4]f32) f32 {
+    return @max(@max(@max(node[0] - bounds[0], node[1] - bounds[1]), @max(bounds[0] + bounds[2] - node[0] - node[2], bounds[1] + bounds[3] - node[1] - node[3])), 0);
+}
+
+/// Smallest rect on the window's 4-physical-pixel grid that holds `rect`
+/// (logical px in, logical px out).
+pub fn nativeGridCaptureRect(rect: [4]f32, scale: f32) [4]f32 {
+    const x0 = @floor(rect[0] * scale / 4) * 4;
+    const y0 = @floor(rect[1] * scale / 4) * 4;
+    const x1 = @ceil((rect[0] + rect[2]) * scale / 4) * 4;
+    const y1 = @ceil((rect[1] + rect[3]) * scale / 4) * 4;
+    return .{ x0 / scale, y0 / scale, (x1 - x0) / scale, (y1 - y0) / scale };
+}
+
+test "native grid capture rect lands on the 4 px window grid and holds the rect" {
+    const scales = [_]f32{ 1, 2, 3 };
+    const rects = [_][4]f32{ .{ 10.3, -7.7, 41.2, 13.9 }, .{ 0, 0, 640, 480 }, .{ -83, 120.5, 166.25, 36 } };
+    for (scales) |s| for (rects) |r| {
+        const g = nativeGridCaptureRect(r, s);
+        for ([_]f32{ g[0] * s, g[1] * s, (g[0] + g[2]) * s, (g[1] + g[3]) * s }) |v| try std.testing.expectApproxEqAbs(@round(v / 4) * 4, v, 1e-3);
+        try std.testing.expect(g[0] <= r[0] + 1e-4 and g[1] <= r[1] + 1e-4);
+        try std.testing.expect(g[0] + g[2] >= r[0] + r[2] - 1e-4 and g[1] + g[3] >= r[1] + r[3] - 1e-4);
+    };
+}
+
+/// Quarter texels (of a capture whose texel (0,0) sits on the window's 4 px
+/// grid) inside the margin rect `rect_px` (capture px): whole cells, even
+/// bounds (so the eighth grid halves it exactly), within `valid`. null when
+/// empty.
+pub fn nativeMarginRegion(rect_px: [4]f32, valid: PixelRegion) ?PixelRegion {
+    if (!std.math.isFinite(rect_px[0]) or !std.math.isFinite(rect_px[1]) or !std.math.isFinite(rect_px[2]) or !std.math.isFinite(rect_px[3])) return null;
+    const lim: f32 = 1 << 24;
+    const r = PixelRegion{
+        .x0 = @as(i32, @intFromFloat(std.math.clamp(@floor(rect_px[0] / 8), -lim, lim))) * 2,
+        .y0 = @as(i32, @intFromFloat(std.math.clamp(@floor(rect_px[1] / 8), -lim, lim))) * 2,
+        .x1 = @as(i32, @intFromFloat(std.math.clamp(@ceil((rect_px[0] + rect_px[2]) / 8), -lim, lim))) * 2,
+        .y1 = @as(i32, @intFromFloat(std.math.clamp(@ceil((rect_px[1] + rect_px[3]) / 8), -lim, lim))) * 2,
+    };
+    const out = PixelRegion{
+        .x0 = @max(r.x0, (valid.x0 + 1) & ~@as(i32, 1)),
+        .y0 = @max(r.y0, (valid.y0 + 1) & ~@as(i32, 1)),
+        .x1 = @min(r.x1, valid.x1 & ~@as(i32, 1)),
+        .y1 = @min(r.y1, valid.y1 & ~@as(i32, 1)),
+    };
+    if (out.x1 <= out.x0 or out.y1 <= out.y0) return null;
+    return out;
+}
+
+test "native margin region: even, whole quarter cells, inside the copied texels" {
+    const valid = PixelRegion{ .x0 = 3, .y0 = 0, .x1 = 61, .y1 = 40 };
+    const r = nativeMarginRegion(.{ 13, -20, 200, 90 }, valid).?;
+    try std.testing.expectEqual(PixelRegion{ .x0 = 4, .y0 = 0, .x1 = 54, .y1 = 18 }, r);
+    try std.testing.expect(nativeMarginRegion(.{ 1000, 0, 10, 10 }, valid) == null);
+}
+
+/// Separable pass rows (horizontal pass) needed by a vertical pass whose
+/// taps are clamped to `bound`: the output columns, the rows within reach,
+/// clamped into the bound (a fully outside output reads its edge row).
+pub fn boundedInputRegion(output: PixelRegion, reach: u32, bound: PixelRegion) PixelRegion {
+    const k: i32 = @intCast(reach + 2);
+    return .{
+        .x0 = output.x0,
+        .x1 = output.x1,
+        .y0 = std.math.clamp(output.y0 - k, bound.y0, bound.y1 - 1),
+        .y1 = std.math.clamp(output.y1 + k, bound.y0 + 1, bound.y1),
+    };
+}
+
+/// Exact shortening of a Gaussian whose taps are clamped to [lo, hi) along
+/// its axis, for outputs in [o0, o1): from every output, the taps at the
+/// largest output-to-edge distance and beyond read the same edge texel, so
+/// their total weight moves onto that distance. A huge ambient kernel over a
+/// small margin rect then reads only the rect.
+pub fn foldGaussianTail(u: *GaussianUniforms, o0: i32, o1: i32, lo: i32, hi: i32) void {
+    const reach: u32 = @intCast(@max(@max(hi - 1 - o0, o1 - 1 - lo), 0));
+    if (reach >= u.radius) return;
+    var tail: f32 = 0;
+    for (u.weights[reach .. u.radius + 1]) |*w| {
+        tail += w.*;
+        w.* = 0;
+    }
+    u.weights[reach] = tail;
+    u.radius = reach;
+}
+
+test "folded Gaussian tail equals the full clamped convolution" {
+    // CPU reference of gaussian_filter_gamma's per-tap sum on a clamped line.
+    const line = [_]f32{ 0.9, 0.1, 0.4, 0.8, 0.3, 0.7, 0.2, 0.6, 0.5, 1.0 };
+    const lo: i32 = 2;
+    const hi: i32 = 8;
+    const eval = struct {
+        fn f(u: GaussianUniforms, x: i32, l: []const f32, a: i32, b: i32) f32 {
+            var sum: f32 = 0;
+            var i: i32 = -@as(i32, @intCast(u.radius));
+            while (i <= u.radius) : (i += 1) {
+                const t = std.math.clamp(x + i, a, b - 1);
+                sum += u.weights[@abs(i)] * l[@intCast(t)];
+            }
+            return sum;
+        }
+    }.f;
+    const full = gaussianUniforms(9, 10, 1, false, .{ 0, 0, 1, 1 });
+    var folded = full;
+    foldGaussianTail(&folded, 0, 10, lo, hi);
+    try std.testing.expect(folded.radius < full.radius);
+    var x: i32 = 0;
+    while (x < 10) : (x += 1) try std.testing.expectApproxEqAbs(eval(full, x, &line, lo, hi), eval(folded, x, &line, lo, hi), 1e-5);
+}
+
+/// Separable Gaussian whose taps are clamped to `bound` (texels of a
+/// width×height source): computes `wanted` (texels of the output, the source
+/// decimated by `factor` on both axes) and the rows feeding it, with both
+/// kernels shortened exactly (foldGaussianTail). Each output texel still
+/// integrates the full-resolution source; a factor above 1 only evaluates
+/// fewer of them (the horizontal pass keeps every source row). The
+/// horizontal-pass texture goes to `held`, released by the caller after the
+/// banks are encoded, so no later bank reuses it within the batch (that would
+/// order it after this pass's read, one more encoder).
+fn boundedGaussianTexture(encoder: anytype, source: gpu.Backend.TextureBinding, width: u32, height: u32, sigma: [2]f32, bound: PixelRegion, wanted: PixelRegion, factor: u32, held: *HeldLeases) !?TextureLease {
+    std.debug.assert(factor >= 1 and width % factor == 0 and height % factor == 0);
+    const device = encoder.sdf_renderer.device;
+    const out_w = width / factor;
+    const out_h = height / factor;
+    const f: i32 = @intCast(factor);
+    const output = PixelRegion{
+        .x0 = std.math.clamp(wanted.x0, 0, @as(i32, @intCast(out_w))),
+        .y0 = std.math.clamp(wanted.y0, 0, @as(i32, @intCast(out_h))),
+        .x1 = std.math.clamp(wanted.x1, 0, @as(i32, @intCast(out_w))),
+        .y1 = std.math.clamp(wanted.y1, 0, @as(i32, @intCast(out_h))),
+    };
+    if (output.x1 <= output.x0 or output.y1 <= output.y0) return null;
+    const valid = validUv(@intCast(bound.x0), @intCast(bound.y0), @intCast(bound.x1 - bound.x0), @intCast(bound.y1 - bound.y0), width, height);
+    // The horizontal pass output: decimated columns, every source row.
+    const col0 = @divFloor(bound.x0, f);
+    const col1 = @divFloor(bound.x1 + f - 1, f);
+    const valid_v = validUv(@intCast(col0), @intCast(bound.y0), @intCast(col1 - col0), @intCast(bound.y1 - bound.y0), out_w, height);
+    const tmp = encoder.offscreen_pool.acquireWithFormat(device, out_w, height, encoder.frame_index, .rgba16_float) orelse return null;
+    held.add(encoder, tmp);
+    const out = encoder.offscreen_pool.acquireWithFormat(device, out_w, out_h, encoder.frame_index, .rgba16_float) orelse return null;
+    var keep = false;
+    defer if (!keep) {
+        _ = encoder.offscreen_pool.releaseForReuseInFrame(out);
+    };
+    const tb = encoder.offscreen_pool.binding(tmp) orelse return null;
+    const ob = encoder.offscreen_pool.binding(out) orelse return null;
+    // Output texel o samples source position f·o + f/2, inside [f·o, f·(o+1)).
+    var v = gaussianUniforms(sigma[1], out_w, height, true, valid_v);
+    foldGaussianTail(&v, output.y0 * f, output.y1 * f, bound.y0, bound.y1);
+    const rows = boundedInputRegion(.{ .x0 = output.x0, .y0 = output.y0 * f, .x1 = output.x1, .y1 = output.y1 * f }, v.radius, bound);
+    var h = gaussianUniforms(sigma[0], width, height, false, valid);
+    foldGaussianTail(&h, output.x0 * f, output.x1 * f, bound.x0, bound.x1);
+    if (!try executeGaussianUniformsPass(encoder, source, tb, out_w, height, h, rows)) return null;
+    if (!try executeGaussianUniformsPass(encoder, tb, ob, out_w, out_h, v, output)) return null;
+    keep = true;
+    return out;
+}
+
+/// Output decimation (relative to the quarter grid) of a glass's wide bank:
+/// the coarse-grid rule of the window banks (ambientBankFactor: at least 8
+/// output texels per sigma), limited to factors that divide the quarter grid
+/// so the bank keeps the capture's normalized UV.
+pub fn nativeAmbientDecimation(sigma_physical: f32, quarter_w: u32, quarter_h: u32) u32 {
+    var f = ambientBankFactor(sigma_physical, quarter_w, quarter_h) / 4;
+    while (f > 1 and (quarter_w % f != 0 or quarter_h % f != 0)) f /= 2;
+    return f;
+}
+
+test "native ambient decimation follows the coarse-grid rule and divides the quarter grid" {
+    // Regular ambient (384 px) over a 64-px-bucketed capture: eighth of the quarter.
+    try std.testing.expectEqual(@as(u32, 8), nativeAmbientDecimation(384, 112, 64));
+    try std.testing.expectEqual(@as(u32, 1), nativeAmbientDecimation(40, 112, 64));
+    // Not divisible by 8: the largest factor that is.
+    try std.testing.expectEqual(@as(u32, 2), nativeAmbientDecimation(384, 114, 64));
+    // Small captures stop before the grid falls below 8 texels.
+    try std.testing.expectEqual(@as(u32, 4), nativeAmbientDecimation(384, 32, 32));
+}
+
+/// Leases released together once the bank batch holding their passes is
+/// encoded.
+const HeldLeases = struct {
+    leases: [8]TextureLease = undefined,
+    count: usize = 0,
+    fn add(self: *HeldLeases, encoder: anytype, lease: TextureLease) void {
+        if (self.count == self.leases.len) {
+            // Cannot happen with the fixed bank set; never leak.
+            _ = encoder.offscreen_pool.releaseForReuseInFrame(lease);
+            return;
+        }
+        self.leases[self.count] = lease;
+        self.count += 1;
+    }
+    fn release(self: *HeldLeases, encoder: anytype) void {
+        for (self.leases[0..self.count]) |lease| _ = encoder.offscreen_pool.releaseForReuseInFrame(lease);
+        self.count = 0;
+    }
+};
+
+/// Exact area reduction of `source` to width×height (gaussian_downsample_gamma,
+/// cells of at most 4 texels), writing only `region`.
+fn areaTexture(encoder: anytype, source: gpu.Backend.TextureBinding, width: u32, height: u32, input_gamma: bool, region: ?PixelRegion) !?TextureLease {
+    const output = encoder.offscreen_pool.acquireWithFormat(encoder.sdf_renderer.device, width, height, encoder.frame_index, .rgba16_float) orelse return null;
+    var keep = false;
+    defer if (!keep) {
+        _ = encoder.offscreen_pool.releaseForReuseInFrame(output);
+    };
+    const ob = encoder.offscreen_pool.binding(output) orelse return null;
+    if (!areaPass(encoder, source, input_gamma, ob, region, .clear)) return null;
+    keep = true;
+    return output;
+}
+
+pub const NativeBanks = struct {
+    main: TextureLease,
+    fine: TextureLease,
+    ambient: ?TextureLease,
+    alternate: ?TextureLease,
+};
+
+/// The native regular banks of one glass from its own capture `capture`
+/// (texel (0,0) on the window's 4 px grid; `copied` = texels holding
+/// backdrop): its quarter reduction, and the main / fine / wide / grid-alias
+/// Gaussians over it, every tap clamped to the margin rect `margin_px`
+/// (capture px). `need_px` (capture px) bounds what the composite reads.
+/// Leaves the banks unencoded only on failure (null; nothing kept).
+fn nativeCaptureBanks(encoder: anytype, capture: gpu.Backend.TextureBinding, copied: PixelRegion, margin_px: [4]f32, need_px: [4]f32, sigmas: struct { main: f32, fine: f32, ambient: f32, alternate: bool }) !?NativeBanks {
+    const q_w = capture.width / 4;
+    const q_h = capture.height / 4;
+    if (q_w < 2 or q_h < 2 or capture.width % 8 != 0 or capture.height % 8 != 0) return null;
+    // Whole quarter cells of backdrop.
+    const valid_q = PixelRegion{ .x0 = @divFloor(copied.x0 + 3, 4), .y0 = @divFloor(copied.y0 + 3, 4), .x1 = @divFloor(copied.x1, 4), .y1 = @divFloor(copied.y1, 4) };
+    const mq = nativeMarginRegion(margin_px, valid_q) orelse return null;
+    const out_q = bilinearFootprint(need_px, capture.width, capture.height, q_w, q_h);
+    var held: HeldLeases = .{};
+    defer held.release(encoder);
+    var kept: HeldLeases = .{};
+    var ok = false;
+    defer if (!ok) kept.release(encoder);
+
+    const quarter = try areaTexture(encoder, capture, q_w, q_h, false, mq) orelse return null;
+    const q = encoder.offscreen_pool.binding(quarter) orelse {
+        _ = encoder.offscreen_pool.releaseForReuseInFrame(quarter);
+        return null;
+    };
+    // Bank 4x box + bilinear reconstruction already holds 4 px² of variance.
+    const qsigma = struct {
+        fn of(sigma_px: f32, factor: f32) f32 {
+            return @sqrt(@max(0, sigma_px * sigma_px - factor * factor / 4.0)) / factor;
+        }
+    }.of;
+    const main_s = qsigma(sigmas.main, 4);
+    const main = try boundedGaussianTexture(encoder, q, q_w, q_h, .{ main_s, main_s }, mq, out_q, 1, &held) orelse {
+        _ = encoder.offscreen_pool.releaseForReuseInFrame(quarter);
+        return null;
+    };
+    kept.add(encoder, main);
+    var alternate: ?TextureLease = null;
+    if (sigmas.alternate) {
+        const e_w = q_w / 2;
+        const e_h = q_h / 2;
+        const me = PixelRegion{ .x0 = @divExact(mq.x0, 2), .y0 = @divExact(mq.y0, 2), .x1 = @divExact(mq.x1, 2), .y1 = @divExact(mq.y1, 2) };
+        const eighth = try areaTexture(encoder, q, e_w, e_h, true, me) orelse {
+            _ = encoder.offscreen_pool.releaseForReuseInFrame(quarter);
+            return null;
+        };
+        held.add(encoder, eighth);
+        const eb = encoder.offscreen_pool.binding(eighth) orelse {
+            _ = encoder.offscreen_pool.releaseForReuseInFrame(quarter);
+            return null;
+        };
+        const alt_s = qsigma(sigmas.main, 8);
+        alternate = try boundedGaussianTexture(encoder, eb, e_w, e_h, .{ alt_s, alt_s }, me, bilinearFootprint(need_px, capture.width, capture.height, e_w, e_h), 1, &held) orelse {
+            _ = encoder.offscreen_pool.releaseForReuseInFrame(quarter);
+            return null;
+        };
+        kept.add(encoder, alternate.?);
+    }
+    const fine_s = qsigma(sigmas.fine, 4);
+    const fine = if (fine_s > 0.01) blk: {
+        held.add(encoder, quarter);
+        const f = try boundedGaussianTexture(encoder, q, q_w, q_h, .{ fine_s, fine_s }, mq, out_q, 1, &held) orelse return null;
+        break :blk f;
+    } else quarter;
+    kept.add(encoder, fine);
+    var ambient: ?TextureLease = null;
+    if (sigmas.ambient > 0) {
+        // Very wide: evaluated on a coarser output grid (the window banks'
+        // rule), which removes most of the quarter-grid kernel's work on large
+        // glass. Its bank fit includes the quarter grid's own 4 px² (area box
+        // and bilinear, sqrt(σ²+4)); the coarser bilinear adds (16/6)(f²−1).
+        const f = nativeAmbientDecimation(sigmas.ambient, q_w, q_h);
+        const ff: f32 = @floatFromInt(f);
+        const a = @sqrt(@max(0, sigmas.ambient * sigmas.ambient - 16.0 / 6.0 * (ff * ff - 1))) / 4;
+        ambient = try boundedGaussianTexture(encoder, q, q_w, q_h, .{ a, a }, mq, bilinearFootprint(need_px, capture.width, capture.height, q_w / f, q_h / f), f, &held) orelse return null;
+        kept.add(encoder, ambient.?);
+    }
+    if (!flushBanks(encoder)) return null;
+    ok = true;
+    return .{ .main = main, .fine = fine, .ambient = ambient, .alternate = alternate };
+}
+
 /// One fixed two-source-pixel gamma area reduction over the entire window.
 /// Every bank shares the same window origin; no material crop defines its UV.
 fn halfGammaTexture(encoder: anytype, source: gpu.Backend.TextureBinding, input_gamma: bool, region: ?PixelRegion) !?TextureLease {
@@ -874,16 +1575,36 @@ fn halfGammaTexture(encoder: anytype, source: gpu.Backend.TextureBinding, input_
         _ = encoder.offscreen_pool.releaseForReuseInFrame(output);
     };
     const ob = encoder.offscreen_pool.binding(output) orelse return null;
-    var pipeline = encoder.persistent.gaussian_box_gamma_pipeline orelse return null;
-    var sampler = encoder.persistent.blur_sampler orelse return null;
+    if (!halfGammaPass(encoder, source, input_gamma, ob, region, .clear)) return null;
+    keep = true;
+    return output;
+}
+
+/// One halfGammaTexture reduction into `ob` (floor(source / 2) texels),
+/// writing only `region`; `.load` keeps every other texel of `ob`.
+fn halfGammaPass(encoder: anytype, source: gpu.Backend.TextureBinding, input_gamma: bool, ob: gpu.Backend.TextureBinding, region: ?PixelRegion, load_op: gpu.LoadOp) bool {
+    std.debug.assert(ob.width == @max(1, source.width / 2) and ob.height == @max(1, source.height / 2));
+    return areaPass(encoder, source, input_gamma, ob, region, load_op);
+}
+
+/// One gamma area reduction of `source` into all of `ob` (cells of at most 4
+/// source texels per axis), writing only `region`; `.load` keeps the rest.
+fn areaPass(encoder: anytype, source: gpu.Backend.TextureBinding, input_gamma: bool, ob: gpu.Backend.TextureBinding, region: ?PixelRegion, load_op: gpu.LoadOp) bool {
+    const width = ob.width;
+    const height = ob.height;
+    std.debug.assert(source.width <= 4 * width and source.height <= 4 * height);
+    var pipeline = encoder.persistent.gaussian_box_gamma_pipeline orelse return false;
+    var sampler = encoder.persistent.blur_sampler orelse return false;
     const u = GaussianAreaUniforms{
         .source_size = .{ @floatFromInt(source.width), @floatFromInt(source.height) },
         .output_size = .{ @floatFromInt(width), @floatFromInt(height) },
         .input_gamma = if (input_gamma) 1 else 0,
     };
+    if (recordBank(encoder, .{ .kind = .area, .src = source, .dst = ob, .uniforms = .{ .area = u }, .region = bankRegion(region, width, height, load_op) })) return true;
+    if (!flushBanks(encoder)) return false;
     var view = ob.createView();
     defer view.destroy();
-    var pass = encoder.gpu_command_encoder.?.beginRenderPass(.{ .color_attachments = &.{.{ .view = view, .load_op = .clear, .store_op = .store }} }) catch return null;
+    var pass = encoder.gpu_command_encoder.?.beginRenderPass(.{ .color_attachments = &.{.{ .view = view, .load_op = load_op, .store_op = .store }} }) catch return false;
     encoder.pass_count += 1;
     encoder.pass_sites[6] += 1;
     pass.setPipeline(&pipeline);
@@ -894,8 +1615,7 @@ fn halfGammaTexture(encoder: anytype, source: gpu.Backend.TextureBinding, input_
     if (region) |r| if (r.scissor(width, height)) |sc| pass.setScissorRect(sc[0], sc[1], sc[2], sc[3]);
     pass.draw(3, 1, 0, 0);
     pass.end();
-    keep = true;
-    return output;
+    return true;
 }
 
 /// Output size of one halfGammaTexture reduction.
@@ -975,10 +1695,115 @@ fn ambientBankTexture(encoder: anytype, quarter: gpu.Backend.TextureBinding, rt_
     }
     const fitted = @sqrt(sigma_physical * sigma_physical + 4.0);
     const factor_f: f32 = @floatFromInt(factor);
+    stage(encoder, .glass_ambient_gauss);
     return try gaussianTextureXY(encoder, input, input.width, input.height, .{
         nativeBankSigma(fitted, rt_w, input.width, factor_f),
         nativeBankSigma(fitted, rt_h, input.height, factor_f),
     }, validUv(0, 0, input.width, input.height, input.width, input.height), null);
+}
+
+/// The frame's quarter-grid bank (quarterGammaTexture of the main target over
+/// the whole window), kept up to date across the glass composites of one
+/// frame (encoder.glass_quarter).
+pub const FrameQuarter = struct {
+    lease: TextureLease,
+    /// Main target it reduces (identity and size).
+    rt: gpu.Backend.TextureBinding,
+};
+
+/// Output texels of an area reduction (gaussian_downsample_gamma, src_w x
+/// src_h -> width x height) whose source reads can touch `src`: the inverse
+/// of areaSourceRegion. Clamped to the output.
+pub fn areaOutputRegion(src: PixelRegion, src_w: u32, src_h: u32, width: u32, height: u32) PixelRegion {
+    const cx = @as(f32, @floatFromInt(src_w)) / @as(f32, @floatFromInt(width));
+    const cy = @as(f32, @floatFromInt(src_h)) / @as(f32, @floatFromInt(height));
+    // Output o reads source [floor(o·c) − 1, floor(o·c) + 5): it meets
+    // [s0, s1) iff s0 − 4 ≤ o·c < s1 + 1.
+    const r = PixelRegion{
+        .x0 = @as(i32, @intFromFloat(@floor(@as(f32, @floatFromInt(src.x0 - 4)) / cx))) - 1,
+        .y0 = @as(i32, @intFromFloat(@floor(@as(f32, @floatFromInt(src.y0 - 4)) / cy))) - 1,
+        .x1 = @as(i32, @intFromFloat(@ceil(@as(f32, @floatFromInt(src.x1 + 1)) / cx))) + 1,
+        .y1 = @as(i32, @intFromFloat(@ceil(@as(f32, @floatFromInt(src.y1 + 1)) / cy))) + 1,
+    };
+    return .{
+        .x0 = std.math.clamp(r.x0, 0, @as(i32, @intCast(width))),
+        .y0 = std.math.clamp(r.y0, 0, @as(i32, @intCast(height))),
+        .x1 = std.math.clamp(r.x1, 0, @as(i32, @intCast(width))),
+        .y1 = std.math.clamp(r.y1, 0, @as(i32, @intCast(height))),
+    };
+}
+
+test "area output region holds every output whose source reads meet the region" {
+    const cases = [_][4]u32{ .{ 2200, 2000, 1100, 1000 }, .{ 1100, 1000, 550, 500 }, .{ 1925, 1751, 962, 875 }, .{ 7, 5, 3, 2 } };
+    const regions = [_]PixelRegion{ .{ .x0 = 409, .y0 = 0, .x1 = 812, .y1 = 257 }, .{ .x0 = 0, .y0 = 0, .x1 = 1, .y1 = 1 }, .{ .x0 = 3, .y0 = 2, .x1 = 4, .y1 = 3 }, .{ .x0 = -40, .y0 = 1990, .x1 = 30, .y1 = 2100 } };
+    for (cases) |c| for (regions) |src| {
+        const out = areaOutputRegion(src, c[0], c[1], c[2], c[3]);
+        var x: i32 = 0;
+        while (x < @as(i32, @intCast(c[2]))) : (x += 1) {
+            var y: i32 = 0;
+            while (y < @as(i32, @intCast(c[3]))) : (y += 1) {
+                const reads = areaSourceRegion(.{ .x0 = x, .y0 = y, .x1 = x + 1, .y1 = y + 1 }, c[0], c[1], c[2], c[3]);
+                const meets = reads.x0 < src.x1 and src.x0 < reads.x1 and reads.y0 < src.y1 and src.y0 < reads.y1;
+                if (meets) try std.testing.expect(regionHas(out, x, y));
+            }
+        }
+    };
+}
+
+/// The frame's quarter bank, brought up to date with the main target: the
+/// first glass of a frame reduces the whole window; later ones recompute
+/// only the quarter texels whose source can include a pixel drawn since
+/// (encoder.glass_bank_dirty), keeping every other texel (load). Each texel
+/// is the same pass of the same inputs as a whole-window reduction, so the
+/// bank equals quarterGammaTexture(rt, null) bit for bit. null when the
+/// encoder keeps no frame state or allocation fails (caller reduces itself).
+fn frameQuarter(encoder: anytype, rt: gpu.Backend.TextureBinding) !?TextureLease {
+    if (comptime !@hasField(@TypeOf(encoder.*), "glass_quarter")) return null;
+    if (debug_env.flag("ZENIT_GLASS_NO_FRAME_QUARTER")) return null;
+    // Dirty bounds are window coordinates: only a target covering the whole
+    // window maps them to its pixels.
+    const extent = encoder.glass_bank_extent;
+    if (@abs(@as(f32, @floatFromInt(rt.width)) - extent[0]) > 1 or @abs(@as(f32, @floatFromInt(rt.height)) - extent[1]) > 1) return null;
+    const half_w = halfSize(rt.width);
+    const half_h = halfSize(rt.height);
+    const quarter_w = halfSize(half_w);
+    const quarter_h = halfSize(half_h);
+    if (encoder.glass_quarter) |bank| if (bank.rt.eql(rt) and bank.rt.width == rt.width and bank.rt.height == rt.height) {
+        const q = encoder.offscreen_pool.binding(bank.lease) orelse return null;
+        defer {
+            encoder.glass_bank_dirty = encoder.glass_open_group;
+        }
+        const d = encoder.glass_bank_dirty orelse return bank.lease;
+        const scale = encoder.glass_bank_scale;
+        const dirty = PixelRegion{
+            .x0 = @as(i32, @intFromFloat(std.math.clamp(@floor(d[0] * scale), -1e6, 1e6))) - 1,
+            .y0 = @as(i32, @intFromFloat(std.math.clamp(@floor(d[1] * scale), -1e6, 1e6))) - 1,
+            .x1 = @as(i32, @intFromFloat(std.math.clamp(@ceil((d[0] + d[2]) * scale), -1e6, 1e6))) + 1,
+            .y1 = @as(i32, @intFromFloat(std.math.clamp(@ceil((d[1] + d[3]) * scale), -1e6, 1e6))) + 1,
+        };
+        const half_out = areaOutputRegion(dirty, rt.width, rt.height, half_w, half_h);
+        const quarter_out = areaOutputRegion(half_out, half_w, half_h, quarter_w, quarter_h);
+        if (quarter_out.scissor(quarter_w, quarter_h) == null) return bank.lease;
+        const half_in = areaSourceRegion(quarter_out, half_w, half_h, quarter_w, quarter_h);
+        const half = try halfGammaTexture(encoder, rt, false, half_in) orelse return null;
+        defer _ = encoder.offscreen_pool.releaseForReuseInFrame(half);
+        const hb = encoder.offscreen_pool.binding(half) orelse return null;
+        if (!halfGammaPass(encoder, hb, true, q, quarter_out, .load)) {
+            // The bank may now be partly written: drop it.
+            encoder.glass_quarter = null;
+            _ = encoder.offscreen_pool.releaseForReuseInFrame(bank.lease);
+            return null;
+        }
+        return bank.lease;
+    };
+    if (encoder.glass_quarter) |old| {
+        _ = encoder.offscreen_pool.releaseForReuseInFrame(old.lease);
+        encoder.glass_quarter = null;
+    }
+    const quarter = try quarterGammaTexture(encoder, rt, null) orelse return null;
+    encoder.glass_quarter = .{ .lease = quarter, .rt = rt };
+    encoder.glass_bank_dirty = encoder.glass_open_group;
+    return quarter;
 }
 
 /// The measured compact fine bank is a 4x box followed by gamma bilinear
@@ -1214,10 +2039,13 @@ pub fn executeGlassComposite(
     native_chroma_profile: [4]f32,
     native_tint_response: [4]f32,
     group: GroupUniformInput,
+    /// Texels of dst the composite quad samples (compositeReadRegion); the
+    /// pass writes only these. null = the whole target.
+    read_region: ?PixelRegion,
 ) !bool {
     // Returns false = skipped (dst unwritten). Caller must revert to blur_tex composite, cannot
     // treat unrendered glass_tex as result else glass region is garbage.
-    var pipeline = encoder.persistent.glass_pipeline orelse return warnPassSkipped("glass pipeline");
+    if (encoder.persistent.glass_pipeline == null) return warnPassSkipped("glass pipeline");
     var sampler_state = encoder.persistent.blur_sampler orelse return warnPassSkipped("glass sampler");
 
     const uniforms = GlassUniforms{
@@ -1269,6 +2097,8 @@ pub fn executeGlassComposite(
     // overwrite race by next frame.
     // Count kept for diagnostics only.
     _ = acquireGlassUniformSlot(encoder);
+    // Before the pass begins: a first use compiles its variant.
+    const pipeline = glassPipelineFor(encoder, glassVariantKey(&uniforms)) orelse return warnPassSkipped("glass pipeline");
 
     var dst_view = dst_texture.createView();
     const pass = encoder.gpu_command_encoder.?.beginRenderPass(.{
@@ -1287,7 +2117,7 @@ pub fn executeGlassComposite(
     dst_view.destroy();
 
     var mutable_pass = pass;
-    mutable_pass.setPipeline(&pipeline);
+    mutable_pass.setPipeline(pipeline);
     mutable_pass.setFragmentBytes(0, std.mem.asBytes(&uniforms));
     mutable_pass.setFragmentTextureBinding(0, src_texture);
     mutable_pass.setFragmentTextureBinding(1, sharp_texture);
@@ -1295,9 +2125,16 @@ pub fn executeGlassComposite(
     mutable_pass.setFragmentTextureBinding(3, coarse_texture);
     mutable_pass.setFragmentTextureBinding(4, alternate_main_texture);
     mutable_pass.setFragmentSampler(0, &sampler_state);
+    mutable_pass.setFragmentBuffer(tab_lens_field.slot, &encoder.persistent.tab_lens_field.?, 0);
     mutable_pass.setViewport(0, 0, @floatFromInt(tex_w), @floatFromInt(tex_h), 0, 1);
+    var scissor: ?[4]u32 = if (read_region) |r| (r.scissor(tex_w, tex_h) orelse .{ 0, 0, 0, 0 }) else null;
     if (comptime gpu.backend_kind == .metal) {
-        if (legacyGlassScissor(tex_w, tex_h, &uniforms)) |sc| mutable_pass.setScissorRect(sc[0], sc[1], sc[2], sc[3]);
+        if (legacyGlassScissor(tex_w, tex_h, &uniforms)) |sc| scissor = if (scissor) |r| intersectScissor(r, sc) else sc;
+    }
+    if (scissor) |sc| {
+        // An empty intersection still needs a valid (non-zero) rect: nothing
+        // is read, so one texel stays harmless.
+        if (sc[2] == 0 or sc[3] == 0) mutable_pass.setScissorRect(0, 0, 1, 1) else mutable_pass.setScissorRect(sc[0], sc[1], sc[2], sc[3]);
     }
     mutable_pass.draw(3, 1, 0, 0);
     mutable_pass.end();
@@ -1467,7 +2304,8 @@ pub const GroupUniformInput = struct {
     arrow: [4]f32 = .{ 0, 0, 0, 0 },
     knob_rim_dark: [4]f32 = .{ 0, 0, 0, 0 },
     knob_rim_light: [4]f32 = .{ 0, 0, 0, 0 },
-    corner_radii: [4]f32 = .{ -1, -1, -1, -1 },
+    /// Single-glass corner radii fitted to the glass rect (world logical px; see shapeRadii)
+    corner_radii: [4]f32 = .{ 0, 0, 0, 0 },
     a11y: [4]f32 = .{ 0, 0, 0, 0 },
 };
 
@@ -1503,7 +2341,6 @@ pub const BackdropBlurParams = struct {
     w: f32,
     h: f32,
     blur_radius: f32,
-    corner_radius: f32,
     glass_tint: [4]f32,
     /// See ResolvedGlassParams.tint_mode / base_veil.
     tint_mode: f32 = 0,
@@ -1546,8 +2383,10 @@ pub const BackdropBlurParams = struct {
     arrow: [4]f32 = .{ 0, 0, 0, 0 },
     knob_rim_dark: [4]f32 = .{ 0, 0, 0, 0 },
     knob_rim_light: [4]f32 = .{ 0, 0, 0, 0 },
-    /// Corner radii TL/TR/BR/BL (logical px); x<0 = uniform corner_radius
-    corner_radii: [4]f32 = .{ -1, -1, -1, -1 },
+    /// Glass shape corner radii TL/TR/BR/BL (logical px) as written on the owner, so the same
+    /// values its overflow clip and hit shape read. Raw: every consumer fits them to the rect it
+    /// evaluates the shape over through `shapeRadii`.
+    corner_radii: [4]f32,
     /// Accessibility params (see GlassUniforms.a11y_params)
     a11y: [4]f32 = .{ 0, 0, 0, 0 },
     /// Capture doesn't expand, blur clamps edge (sample only within node rect background)
@@ -1666,10 +2505,33 @@ test "native geometry: round shared physical edges, not origin and extent separa
 /// Metal normal quality maintains semantics: skip blur is no-draw (ZENIT_NO_BLUR control group,
 /// empty capture regions depend on this).
 /// Per-frame glass cost (render thread). App renderer reads and resets for FrameStats.
-pub var perf: struct { glass_count: u32 = 0, glass_ns: u64 = 0 } = .{};
+pub const stage_count = @typeInfo(gpu.PassTag).@"enum".field_names.len;
+/// Per-frame glass CPU accounting; `stage_ns` splits glass_ns by the pass
+/// stage being encoded (indexed by gpu.PassTag; `.other` = bookkeeping).
+pub var perf: struct { glass_count: u32 = 0, glass_ns: u64 = 0, stage_ns: [stage_count]u64 = @splat(0) } = .{};
+var stage_cur: gpu.PassTag = .other;
+var stage_t0: ?@import("zenit_time").Instant = null;
+
+/// Enter a glass encode stage: tags the passes begun from here on (GPU
+/// attribution) and charges the CPU time since the previous stage mark.
+fn stage(encoder: anytype, tag: gpu.PassTag) void {
+    gpu.setPassTag(tag);
+    if (stage_t0) |t0| if (profileNow(encoder)) |now| {
+        perf.stage_ns[@backingInt(stage_cur)] += now.since(t0);
+        stage_t0 = now;
+    };
+    stage_cur = tag;
+}
 
 pub fn applyBackdropBlur(encoder: anytype, p: BackdropBlurParams) !void {
     const start = profileNow(encoder);
+    stage_t0 = start;
+    stage_cur = .other;
+    gpu.setPassTag(.other);
+    defer {
+        stage(encoder, .other);
+        stage_t0 = null;
+    }
     defer if (start) |t0| if (profileNow(encoder)) |t1| {
         perf.glass_count += 1;
         perf.glass_ns += t1.since(t0);
@@ -1677,8 +2539,10 @@ pub fn applyBackdropBlur(encoder: anytype, p: BackdropBlurParams) !void {
     return applyBackdropBlurImpl(encoder, p);
 }
 
-fn applyBackdropBlurImpl(encoder: anytype, p: BackdropBlurParams) !void {
-    if (p.w <= 0 or p.h <= 0 or p.blur_radius < 0.5) return;
+fn applyBackdropBlurImpl(encoder: anytype, params: BackdropBlurParams) !void {
+    encoder.last_glass_capture = null;
+    if (params.w <= 0 or params.h <= 0 or params.blur_radius < 0.5) return;
+    const p = withFittedGroupRadii(params);
     // Any reduced tier can always present the material layer; full quality
     // falls back to it only on D3D12 (where blur pipeline failure latches basic).
     const fallback_allowed = encoder.visual_quality != .full or comptime gpu.is_direct3d;
@@ -1687,6 +2551,78 @@ fn applyBackdropBlurImpl(encoder: anytype, p: BackdropBlurParams) !void {
     if (encoder.render_pass == null) return error.MissingRenderPass;
     try encoder.flushAllPending();
     try drawMaterialLayer(encoder, p, .basic);
+}
+
+/// Whether the single-glass shape model carries one corner radius: the popover silhouette with its
+/// arrow and the tab lens (glass.metal sdf_popover / sdf_tab_lens). A non-uniform request then
+/// resolves to its largest fitted corner on every consumer (GlassBox mirrors it for the content
+/// clip and hit shape: glass_box singleRadiusShape).
+pub fn singleRadiusShape(arrow: [4]f32, tab_lens: [24]f32) bool {
+    return arrow[0] > 0.5 or tab_lens[0] > 0;
+}
+
+/// The single glass's corner radii, scaled by `s` (owner units to the consumer's units) and fitted
+/// to the `w` x `h` rect that consumer evaluates the shape over: the shader shape (world rect),
+/// the material veil (draw rect) and the composite fallback (composite quad) all use it.
+pub fn shapeRadii(p: anytype, s: f32, w: f32, h: f32) [4]f32 {
+    const radii = corner_radii.scale(p.corner_radii, s);
+    return if (singleRadiusShape(p.arrow, p.tab_lens)) corner_radii.normalizeUniform(radii, w, h) else corner_radii.normalize(radii, w, h);
+}
+
+/// GlassGroup members carry one radius each; fit it to the member's final rect (after
+/// glassEffectUnion merges, so an oversized union radius rounds the union, not a member).
+pub fn fitGroupRadii(shapes: []GroupShape) void {
+    for (shapes) |*sh| sh.radius = corner_radii.normalizeUniform(@splat(sh.radius), sh.w, sh.h)[0];
+}
+
+fn withFittedGroupRadii(p: BackdropBlurParams) BackdropBlurParams {
+    var out = p;
+    fitGroupRadii(out.group_shapes[0..@min(out.group_count, max_group_shapes)]);
+    return out;
+}
+
+test "shapeRadii: the glass shape fits its corners like every clip, per corner" {
+    const nan = std.math.nan(f32);
+    const none: [4]f32 = @splat(0);
+    const no_lens: [24]f32 = @splat(0);
+    const Shape = struct { corner_radii: [4]f32, arrow: [4]f32 = .{ 0, 0, 0, 0 }, tab_lens: [24]f32 = @as([24]f32, @splat(0)) };
+    // Negative / NaN corners are square corners, never a request for a uniform radius.
+    try std.testing.expectEqual([4]f32{ 0, 20, 0, 0 }, shapeRadii(Shape{ .corner_radii = .{ -4, 20, 0, 0 } }, 1, 100, 40));
+    try std.testing.expectEqual([4]f32{ 0, 20, 0, 0 }, shapeRadii(Shape{ .corner_radii = .{ nan, 20, 0, 0 } }, 1, 100, 40));
+    // Oversized corners cap at half the shorter side of the evaluated rect, in its units.
+    try std.testing.expectEqual([4]f32{ 20, 0, 0, 0 }, shapeRadii(Shape{ .corner_radii = .{ 9999, 0, 0, 0 } }, 1, 100, 40));
+    try std.testing.expectEqual([4]f32{ 40, 0, 0, 0 }, shapeRadii(Shape{ .corner_radii = .{ 9999, 0, 0, 0 } }, 2, 200, 80));
+    try std.testing.expectEqual([4]f32{ 20, 20, 20, 20 }, shapeRadii(Shape{ .corner_radii = @splat(std.math.inf(f32)) }, 1, 100, 40));
+    // Degenerate rects carry no radius.
+    try std.testing.expectEqual(none, shapeRadii(Shape{ .corner_radii = @splat(9999) }, 1, 0, 40));
+    // In-range radii pass through bit for bit (existing glass keeps its exact pixels).
+    try std.testing.expectEqual([4]f32{ 12, 0, 6, 3 }, shapeRadii(Shape{ .corner_radii = .{ 12, 0, 6, 3 } }, 1, 120, 60));
+    // Single-radius shape models resolve a non-uniform request to the largest fitted corner.
+    try std.testing.expectEqual([4]f32{ 20, 20, 20, 20 }, shapeRadii(Shape{ .corner_radii = .{ 9999, 0, 0, 0 }, .arrow = .{ 1, 0, 10.8, 5.25 } }, 1, 100, 40));
+    var lens = no_lens;
+    lens[0] = 1;
+    try std.testing.expectEqual([4]f32{ 12, 12, 12, 12 }, shapeRadii(Shape{ .corner_radii = .{ 12, 0, -1, 4 }, .tab_lens = lens }, 1, 100, 40));
+}
+
+test "fitGroupRadii: members fit their own final rect" {
+    const base: GroupShape = .{ .x = 0, .y = 0, .w = 80, .h = 44, .radius = 0, .lens = @splat(0), .tint = @splat(0), .specular_opacity = 0, .rim = @splat(0), .tint_response = @splat(0) };
+    var shapes = [_]GroupShape{ base, base, base, base };
+    shapes[0].radius = 9999;
+    shapes[1].radius = std.math.nan(f32);
+    shapes[2].radius = -3;
+    shapes[3].radius = 10;
+    fitGroupRadii(&shapes);
+    try std.testing.expectEqual(@as(f32, 22), shapes[0].radius);
+    try std.testing.expectEqual(@as(f32, 0), shapes[1].radius);
+    try std.testing.expectEqual(@as(f32, 0), shapes[2].radius);
+    try std.testing.expectEqual(@as(f32, 10), shapes[3].radius);
+    // A union widened past its first member keeps the oversized request: it rounds the union.
+    var u = base;
+    u.radius = 9999;
+    mergeUnionInto(&u, 0, 0, 80, 120, false);
+    var one = [_]GroupShape{u};
+    fitGroupRadii(&one);
+    try std.testing.expectEqual(@as(f32, 40), one[0].radius);
 }
 
 /// Glass material veil of the frosted / basic tiers: each GlassGroup member
@@ -1712,8 +2648,9 @@ fn drawMaterialLayer(encoder: anytype, p: BackdropBlurParams, quality: @import("
     }
     var tint = vq.opaqueTint(p.glass_tint);
     tint[3] = vq.materialAlpha(quality, p.tint_mode < 0.5 and p.glass_tint[3] > 0.005, reduce_transparency);
-    const radii: [4]f32 = if (p.corner_radii[0] >= 0) p.corner_radii else .{ p.corner_radius, p.corner_radius, p.corner_radius, p.corner_radius };
-    try drawBasicMaterial(encoder, p, off, .{ 0, 0, if (p.draw_w > 0) p.draw_w else p.w, if (p.draw_h > 0) p.draw_h else p.h }, tint, radii);
+    const w = if (p.draw_w > 0) p.draw_w else p.w;
+    const h = if (p.draw_h > 0) p.draw_h else p.h;
+    try drawBasicMaterial(encoder, p, off, .{ 0, 0, w, h }, tint, shapeRadii(p, 1, w, h));
 }
 
 /// Opaque basic-quality material for a group member: its tint, or the
@@ -1733,7 +2670,6 @@ fn drawBasicMaterial(encoder: anytype, p: BackdropBlurParams, off: [2]f32, rect:
     }
     const ir = encoder.image_renderer orelse return error.MissingImageRenderer;
     const id = try ir.solidFallbackTexture();
-    const radius = @max(@max(radii[0], radii[1]), @max(radii[2], radii[3]));
     if (p.use_draw_transform) {
         // Member offsets are local (pre-transform) units: fold them into the
         // translation, x' = tx + a·dx + c·dy.
@@ -1744,9 +2680,11 @@ fn drawBasicMaterial(encoder: anytype, p: BackdropBlurParams, off: [2]f32, rect:
         t[5] += t[1] * dx + t[3] * dy;
         const lw = rect[2] * p.w / (if (p.draw_w > 0) p.draw_w else p.w);
         const lh = rect[3] * p.h / (if (p.draw_h > 0) p.draw_h else p.h);
-        try ir.addImageUVWithTransform(id, lw, lh, .{ 0, 0, 1, 1 }, color, radius, 1, t, false);
+        try ir.addImageUVWithTransform(id, lw, lh, .{ 0, 0, 1, 1 }, color, radii, 1, t, false);
     } else {
-        try ir.addImageUV(id, p.draw_x + off[0] + rect[0], p.draw_y + off[1] + rect[1], rect[2], rect[3], .{ 0, 0, 1, 1 }, color, radius, 1, p.rotate);
+        const x = p.draw_x + off[0] + rect[0];
+        const y = p.draw_y + off[1] + rect[1];
+        try ir.addImageUVWithTransform(id, rect[2], rect[3], .{ 0, 0, 1, 1 }, color, radii, 1, @TypeOf(ir.*).affineRectRotate(x, y, rect[2], rect[3], p.rotate), false);
     }
     try ir.flush(encoder.render_pass.?);
 }
@@ -1795,33 +2733,11 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
     else
         active_rt;
 
-    // ---- 1. Flush + end current render pass ----
-    if (@import("zenit_environment").has("ZENIT_DEBUG_GLASS")) {
-        const pending_paths: usize = if (encoder.persistent.path_renderer) |*pr| pr.vertices.items.len else 0;
-        const pending_img: usize = if (encoder.image_renderer) |imr| imr.instances.items.len else 0;
-        const pending_icon: usize = if (encoder.icon_renderer) |icr| icr.instances.items.len else 0;
-        std.debug.print("[glasspend] frame={d} owner={d} sdf={d} img={d} icon={d} txt={d} path={d} dt=({d:.3},{d:.3},{d:.3},{d:.3},{d:.2},{d:.2})\n", .{
-            encoder.frame_index, p.glass_owner_id,    encoder.sdf_renderer.instances.items.len, pending_img,         pending_icon,        encoder.text_renderer.getPendingInstanceCount(), pending_paths,
-            p.draw_transform[0], p.draw_transform[1], p.draw_transform[2],                      p.draw_transform[3], p.draw_transform[4], p.draw_transform[5],
-        });
-    }
-    try encoder.sdf_renderer.flush(encoder.render_pass.?);
-    if (encoder.image_renderer) |imr| try imr.flush(encoder.render_pass.?);
-    if (encoder.icon_renderer) |icr| try icr.flush(encoder.render_pass.?);
-    try encoder.text_renderer.flush(encoder.render_pass.?);
-    encoder.render_pass.?.end();
-    // Never retain an ended pass. Objective-C may immediately reuse that raw
-    // address for the next blit encoder, which was the GlassBox crash.
-    encoder.render_pass = null;
-    defer if (encoder.render_pass == null) {
-        _ = restoreRenderTargetPass(encoder, restore_rt, ir, s);
-    };
-
     // Capture source always main RT: glass inside overlay/composited surface (absolute nodes,
     // animated promote, etc.) only has subtree content in surface texture,
     // sampling it doesn't get backdrop behind glass. Overlay composites after main content, main RT
     // now shows true image behind glass; sample in world coords, no offscreen offset.
-    if (@import("zenit_environment").has("ZENIT_DEBUG_GLASS")) {
+    if (@import("zenit_environment").flag("ZENIT_DEBUG_GLASS")) {
         std.debug.print("[glassenc] frame={d} owner={d} depth={d}\n", .{ encoder.frame_index, p.glass_owner_id, encoder.offscreen_depth });
     }
     const blur_off: [2]f32 = if (sampling_main) .{ 0, 0 } else encoder.offscreenOffset();
@@ -1897,11 +2813,32 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
     for (group_expand) |e| shadow_pad = @max(shadow_pad, e + 2);
     // capture_clamp: only node rect itself, blur edge-clamps extend (backgroundExtensionEffect:
     // blur area top/bottom stays full color, no bleed beyond).
-    const pad: f32 = if (debug_env.flag("ZENIT_GLASS_NOPAD") or p.capture_clamp) 0 else @max(@max(geom_pad, blur_pad), shadow_pad);
-    const cap_x = node_x - pad;
-    const cap_y = node_y - pad;
-    const cap_w = node_w + pad * 2;
-    const cap_h = node_h + pad * 2;
+    const base_pad: f32 = if (debug_env.flag("ZENIT_GLASS_NOPAD") or p.capture_clamp) 0 else @max(@max(geom_pad, blur_pad), shadow_pad);
+    // Native regular material (measured banks incl. the wide one): every bank
+    // is computed from this glass's own capture, like CABackdropLayer, which
+    // captures the glass bounds widened by its marginWidth and samples nothing
+    // beyond (nativeBackdropMargin). The window-sized bank path remains behind
+    // ZENIT_GLASS_WINDOW_BANKS=1 (A/B and fallback).
+    const bounded_banks = native_gaussian and p.native_blur[1] > 0 and !debug_env.flag("ZENIT_GLASS_WINDOW_BANKS");
+    const native_bounds = nativeBackdropBounds(.{ node_x, node_y, node_w, node_h }, raw_world, world_scale, p.group_shapes[0..@min(p.group_count, max_group_shapes)]);
+    const native_margin: f32 = if (bounded_banks) nativeBackdropMargin(@min(native_bounds[2], native_bounds[3])) else 0;
+    const pad: f32 = if (bounded_banks and !p.capture_clamp)
+        @max(base_pad, native_margin + nativeBoundsOverflow(.{ node_x, node_y, node_w, node_h }, native_bounds))
+    else
+        base_pad;
+    var cap_x = node_x - pad;
+    var cap_y = node_y - pad;
+    var cap_w = node_w + pad * 2;
+    var cap_h = node_h + pad * 2;
+    if (bounded_banks) {
+        // Banks reduce the capture by exactly 4: its origin and size sit on the
+        // window's 4-pixel grid (the native backdrop grid is window-fixed).
+        const g = nativeGridCaptureRect(.{ cap_x + blur_off[0], cap_y + blur_off[1], cap_w, cap_h }, cap_s);
+        cap_x = g[0] - blur_off[0];
+        cap_y = g[1] - blur_off[1];
+        cap_w = g[2];
+        cap_h = g[3];
+    }
     const sample_x = cap_x + blur_off[0];
     const sample_y = cap_y + blur_off[1];
     // Clip frame must match sample source: sampling main RT when currentRectClip is surface-local
@@ -1918,12 +2855,17 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
             p.x, p.y, p.w, p.h, p.draw_x, p.draw_y, p.draw_w, p.draw_h, p.use_draw_transform, blur_off[0], blur_off[1], encoder.offscreen_depth, clip,
         });
     }
-    const capture_region = @TypeOf(encoder.*).computeBackdropCaptureRegion(sample_x, sample_y, cap_w, cap_h, cap_s, capture_clip, current_rt.width, current_rt.height) orelse {
-        _ = restoreRenderTargetPass(encoder, restore_rt, ir, s);
-        return false;
-    };
+    const capture_region = @TypeOf(encoder.*).computeBackdropCaptureRegion(sample_x, sample_y, cap_w, cap_h, cap_s, capture_clip, current_rt.width, current_rt.height) orelse return false;
+    // The composite only writes inside the capture rect (pad covers the
+    // shadow); the CPU patch reuses these pixels (command_encoder.glass_capture).
+    if (!sampling_main) encoder.last_glass_capture = .{ capture_region.src_x, capture_region.src_y, capture_region.copy_w, capture_region.copy_h };
     const tex_w = capture_region.tex_w;
     const tex_h = capture_region.tex_h;
+    // The capture's texel (0,0) must sit on the window's 4 px grid (exact for
+    // integral scales; otherwise the window-sized banks serve).
+    const bounded = bounded_banks and
+        @mod(@as(i64, capture_region.src_x) - @as(i64, capture_region.dst_x), 4) == 0 and
+        @mod(@as(i64, capture_region.src_y) - @as(i64, capture_region.dst_y), 4) == 0;
     // The blit origin is quantized to physical pixels. Derive this subrect from
     // that origin, not the fractional requested padding, to preserve background
     // registration and avoid filtering the already antialiased shape a second time.
@@ -1940,7 +2882,9 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
     if (p.a11y[0] > 1.5 and p.group_count == 0) {
         for (&group_in.expand) |*e| e.* = @max(e.*, world_scale);
     }
-    if (p.corner_radii[0] >= 0) group_in.corner_radii = .{ p.corner_radii[0] * world_scale, p.corner_radii[1] * world_scale, p.corner_radii[2] * world_scale, p.corner_radii[3] * world_scale };
+    // The shader evaluates the glass shape over the world rect (node_w x node_h, world logical px).
+    const world_radii = shapeRadii(p, world_scale, node_w, node_h);
+    group_in.corner_radii = world_radii;
     if (p.arrow[0] > 0.5) {
         group_in.arrow = .{ p.arrow[0], p.arrow[1] * world_scale, p.arrow[2] * world_scale, p.arrow[3] * world_scale };
         // Arrow tip exactly on node edge: expand composite quad that side +1 logical px, leave
@@ -1999,6 +2943,134 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
         group_in.expand = group_expand;
     }
 
+    // Quad that replays the baked glass texture (step 8). Fixed here, before
+    // the glass pass, so that pass computes only the texels this quad samples.
+    const comp_draw_x = if (encoder.offscreen_depth > 0)
+        p.draw_x - encoder.offscreen_stack[encoder.offscreen_depth - 1].x
+    else
+        p.draw_x;
+    const comp_draw_y = if (encoder.offscreen_depth > 0)
+        p.draw_y - encoder.offscreen_stack[encoder.offscreen_depth - 1].y
+    else
+        p.draw_y;
+    const raw_composite_w = if (p.use_draw_transform) p.w else if (p.draw_w > 0) p.draw_w else p.w;
+    const raw_composite_h = if (p.use_draw_transform) p.h else if (p.draw_h > 0) p.draw_h else p.h;
+    const composite_w = raw_composite_w * node_w / @max(raw_world[2], 1e-4);
+    const composite_h = raw_composite_h * node_h / @max(raw_world[3], 1e-4);
+    var composite_transform: [6]f32 = if (p.use_draw_transform)
+        encoder.localizeDrawTransformForCurrentTarget(p.draw_transform)
+    else
+        .{ 1, 0, 0, 1, comp_draw_x, comp_draw_y };
+    composite_transform[4] += (node_x - raw_world[0]) * local_w / @max(raw_world[2], 1e-4);
+    composite_transform[5] += (node_y - raw_world[1]) * local_h / @max(raw_world[3], 1e-4);
+    const content_quad_uv: [4]f32 = .{ content_uv[0], content_uv[1], content_uv[0] + content_uv[2], content_uv[1] + content_uv[3] };
+    const baked_quad = bakedCompositeQuad(composite_w, composite_h, content_quad_uv, .{ tex_w, tex_h }, composite_transform, p.native_params[0] > 0, group_in.expand, node_w, node_h, content_uv);
+
+    // Under a frame damage scissor the target outside it still shows the
+    // presented frame. The composite writes only inside its capture rect: one
+    // that misses the scissor changes nothing. One that reaches it must
+    // capture entirely inside (FrameDamage.prepareEffects grows the damage
+    // over every touched backdrop); otherwise it would sample presented
+    // pixels, so it is counted and never kept for reuse.
+    var damage_violation = false;
+    if (encoder.frame_damage_scissor) |d| {
+        const cx0 = capture_region.src_x;
+        const cy0 = capture_region.src_y;
+        const cx1 = cx0 + capture_region.copy_w;
+        const cy1 = cy0 + capture_region.copy_h;
+        const disjoint = cx1 <= d[0] or cy1 <= d[1] or cx0 >= d[0] + d[2] or cy0 >= d[1] + d[3];
+        // A glass inside an offscreen layer writes the layer, which may be
+        // composited elsewhere: only the main target's own glass can skip.
+        if (disjoint and !sampling_main) return true;
+        if (cx0 < d[0] or cy0 < d[1] or cx1 > d[0] + d[2] or cy1 > d[1] + d[3]) {
+            damage_violation = true;
+            if (!disjoint) encoder.frame_damage_violations += 1;
+            if (!disjoint) std.log.err("[frame-damage] glass owner={d} captures ({d},{d},{d}x{d}) beyond damage ({d},{d},{d}x{d}); node=({d:.1},{d:.1},{d:.1}x{d:.1}) pad={d:.1}", .{ p.glass_owner_id, cx0, cy0, capture_region.copy_w, capture_region.copy_h, d[0], d[1], d[2], d[3], node_x, node_y, node_w, node_h, pad });
+        }
+    }
+
+    // ---- 0. Cross-frame reuse (glass_reuse.zig) ----
+    // The composite is a function of the capture rect's pixels and of this
+    // glass's paint item. When both repeat, the texture the last composite
+    // produced is drawn again: no capture, bank or composite pass, and the
+    // render pass stays open.
+    var retained: ?TextureLease = null;
+    var retained_read: PixelRegion = undefined;
+    reuse: {
+        if (damage_violation) break :reuse;
+        const hook = encoder.glass_reuse orelse break :reuse;
+        const item = encoder.dispatch_item orelse break :reuse;
+        const found = hook.key(hook.ctx, item, .{ capture_region.src_x, capture_region.src_y, capture_region.copy_w, capture_region.copy_h }, cap_s, &encoder.glass_frame_keys) orelse break :reuse;
+        const key: ?u64 = if (found.key) |base| blk: {
+            var h = std.hash.Wyhash.init(base);
+            const ints = [_]u32{ capture_region.src_x, capture_region.src_y, capture_region.dst_x, capture_region.dst_y, capture_region.copy_w, capture_region.copy_h, tex_w, tex_h, @backingInt(encoder.visual_quality) };
+            h.update(std.mem.sliceAsBytes(&ints));
+            const clip = capture_clip orelse [4]f32{ -1, -1, -1, -1 };
+            const floats = [_]f32{ s, cap_s, clip[0], clip[1], clip[2], clip[3] };
+            h.update(std.mem.sliceAsBytes(&floats));
+            const k = h.final();
+            break :blk if (k == 0) 1 else k;
+        } else null;
+        encoder.glass_frame_keys.put(found.index, key);
+        const k = key orelse break :reuse;
+        // Only the default native material on the main target: its output is
+        // fully determined once the bounded banks succeed (see bank_ok).
+        if (sampling_main or encoder.offscreen_depth != 0 or frosted or !bounded or encoder.cpu_flat_target != null or
+            encoder.persistent.glass_pipeline == null or p.glass_owner_id == std.math.maxInt(u32)) break :reuse;
+        // Kept: the texels the replay quad samples, at their own size.
+        const read = compositeReadRegion(baked_quad.uv, tex_w, tex_h);
+        if (read.x1 <= read.x0 or read.y1 <= read.y0) break :reuse;
+        const rw: u32 = @intCast(read.x1 - read.x0);
+        const rh: u32 = @intCast(read.y1 - read.y0);
+        // A backdrop that keeps changing is composited anew each frame. Its
+        // kept texture, if any, stays for an in-place update once the backdrop
+        // settles; unused for RETAINED_IDLE_NS it returns to the pool.
+        if (!encoder.persistent.glass_history.settled(p.glass_owner_id, k, encoder.frame_index)) break :reuse;
+        const got = encoder.offscreen_pool.acquireRetainedGlass(device, p.glass_owner_id, k, rw, rh, encoder.frame_index) orelse break :reuse;
+        if (@import("glass_reuse.zig").debugEnabled()) std.debug.print("[glass-reuse] owner={d} tex={d}x{d} kept={d}x{d} hit={}\n", .{ p.glass_owner_id, tex_w, tex_h, rw, rh, got.content_matches });
+        if (!got.content_matches) {
+            retained = got.lease;
+            retained_read = read;
+            break :reuse;
+        }
+        try drawGlassTexture(encoder, ir, got.lease, read, tex_w, tex_h, baked_quad, p);
+        // Still on screen: keep this glass's luminance reading and chain depth
+        // history from being taken by another glass (their LRU is by frame).
+        for (&encoder.persistent.luminance_slots) |*slot| if (slot.key == p.glass_owner_id) {
+            slot.last_used_frame = encoder.frame_index;
+        };
+        for (&encoder.persistent.blur_level_slots) |*slot| if (slot.key == p.glass_owner_id) {
+            slot.last_used_frame = encoder.frame_index;
+        };
+        encoder.glass_reuse_hits += 1;
+        return true;
+    }
+
+    // ---- 1. Flush + end current render pass ----
+    if (@import("zenit_environment").flag("ZENIT_DEBUG_GLASS")) {
+        const pending_paths: usize = if (encoder.persistent.path_renderer) |*pr| pr.vertices.items.len else 0;
+        const pending_img: usize = if (encoder.image_renderer) |imr| imr.instances.items.len else 0;
+        const pending_icon: usize = if (encoder.icon_renderer) |icr| icr.instances.items.len else 0;
+        std.debug.print("[glasspend] frame={d} owner={d} sdf={d} img={d} icon={d} txt={d} path={d} dt=({d:.3},{d:.3},{d:.3},{d:.3},{d:.2},{d:.2})\n", .{
+            encoder.frame_index, p.glass_owner_id,    encoder.sdf_renderer.instances.items.len, pending_img,         pending_icon,        encoder.text_renderer.getPendingInstanceCount(), pending_paths,
+            p.draw_transform[0], p.draw_transform[1], p.draw_transform[2],                      p.draw_transform[3], p.draw_transform[4], p.draw_transform[5],
+        });
+    }
+    try encoder.sdf_renderer.flush(encoder.render_pass.?);
+    if (encoder.image_renderer) |imr| try imr.flush(encoder.render_pass.?);
+    if (encoder.icon_renderer) |icr| try icr.flush(encoder.render_pass.?);
+    try encoder.text_renderer.flush(encoder.render_pass.?);
+    encoder.render_pass.?.end();
+    // Never retain an ended pass. Objective-C may immediately reuse that raw
+    // address for the next blit encoder, which was the GlassBox crash.
+    encoder.render_pass = null;
+    defer if (encoder.render_pass == null) {
+        _ = restoreRenderTargetPass(encoder, restore_rt, ir, s);
+    };
+    // Runs before the restore above: recorded bank passes are encoded on
+    // every exit (no-op when already flushed).
+    defer _ = flushBanks(encoder);
+
     const level0 = encoder.offscreen_pool.acquire(device, tex_w, tex_h, encoder.frame_index) orelse return false;
     const level0_binding = encoder.offscreen_pool.binding(level0) orelse {
         _ = encoder.offscreen_pool.releaseForReuseInFrame(level0);
@@ -2006,8 +3078,9 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
     };
 
     // ---- 2. Pixel-region capture (render-only on Metal) ----
+    stage(encoder, .glass_capture);
     // One clear+copy pass also clears uncaptured padding for edge glass.
-    encoder.copyTextureRegion(current_rt, capture_region.src_x, capture_region.src_y, capture_region.copy_w, capture_region.copy_h, level0_binding, capture_region.dst_x, capture_region.dst_y, !capture_region.coversFullTexture()) catch {
+    bankCopyRegion(encoder, current_rt, capture_region.src_x, capture_region.src_y, capture_region.copy_w, capture_region.copy_h, level0_binding, capture_region.dst_x, capture_region.dst_y, !capture_region.coversFullTexture()) catch {
         _ = encoder.offscreen_pool.releaseForReuseInFrame(level0);
         return false;
     };
@@ -2098,6 +3171,7 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
     else
         max_levels;
 
+    stage(encoder, .glass_kawase);
     for (0..level_cap) |i| {
         const lw = @max(1, w_chain[i] / 2);
         const lh = @max(1, h_chain[i] / 2);
@@ -2151,7 +3225,7 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
         slot.raise_streak = next.streak;
         slot.raise_backoff = next.backoff;
     }
-    if (@import("zenit_environment").has("ZENIT_DEBUG_GLASS")) {
+    if (@import("zenit_environment").flag("ZENIT_DEBUG_GLASS")) {
         const dbg_streak: u32 = if (level_slot) |ls| ls.raise_streak else 0;
         const dbg_backoff: u32 = if (level_slot) |ls| ls.raise_backoff else 0;
         std.debug.print("[glasschain] frame={d} owner={d} levels={d}/{d} cap={d} streak={d} backoff={d} boost={d:.2}\n", .{ encoder.frame_index, p.glass_owner_id, actual_levels, max_levels, level_cap, dbg_streak, dbg_backoff, offset_boost });
@@ -2164,6 +3238,7 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
     // else large panel luminance would change with blur chain depth. Slot matched by draw rect
     // quantize key (no match: LRU reuse oldest unused); single staging shared 'last-encoder wins'
     // is scroll-swap bug root.
+    stage(encoder, .glass_luminance);
     if (actual_levels > 0 and !encoder.persistent.luminance_locked) lum: {
         const deep = tex_chain[actual_levels];
         // Just checked in loop, but no unreachable (ReleaseFast UB): missing skips brightness
@@ -2230,7 +3305,7 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
                 .label = "Zenit.LuminanceStaging",
                 .size = .{ .width = 64, .height = 64 },
                 .format = gpu.color_format,
-                .usage = .{ .copy_dst = true, .copy_src = true, .render_attachment = true },
+                .usage = .{ .copy_dst = true, .copy_src = true, .render_attachment = true, .storage_binding = gpu.backend_kind == .metal },
                 .memory = .host_upload,
             }) catch null;
         }
@@ -2248,7 +3323,7 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
                 break :lum;
             }
             const copied = blk: {
-                encoder.copyTextureRegion(deep_binding, 0, 0, dw, dh, staging.binding(), 0, 0, false) catch break :blk false;
+                bankCopyRegion(encoder, deep_binding, 0, 0, dw, dh, staging.binding(), 0, 0, false) catch break :blk false;
                 break :blk true;
             };
             if (copied) {
@@ -2272,6 +3347,7 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
     // rather than allocating and copying an identical texture. Native Gaussian
     // success replaces that input and supplies its own fine bank instead.
     // Unavailable (no chain / pool pressure) -> composite gets level0.
+    stage(encoder, .glass_kawase);
     var soft_tex: ?TextureLease = null;
     const single_level_soft = actual_levels == 1 and p.native_params[0] > 0;
     if (actual_levels > 1 and p.native_params[0] > 0) soft: {
@@ -2282,7 +3358,7 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
             break :soft;
         };
         const copied = blk: {
-            encoder.copyTextureRegion(src_binding, 0, 0, w_chain[1], h_chain[1], dst_binding, 0, 0, false) catch break :blk false;
+            bankCopyRegion(encoder, src_binding, 0, 0, w_chain[1], h_chain[1], dst_binding, 0, 0, false) catch break :blk false;
             break :blk true;
         };
         if (!copied) {
@@ -2321,7 +3397,7 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
     if (actual_levels > 1) for (2..actual_levels + 1) |i| {
         _ = encoder.offscreen_pool.releaseForReuseInFrame(tex_chain[i]);
     };
-    if (@import("zenit_environment").has("ZENIT_DEBUG_GLASS")) {
+    if (@import("zenit_environment").flag("ZENIT_DEBUG_GLASS")) {
         std.debug.print("[glassup] frame={d} owner={d} up={d}/{d}\n", .{ encoder.frame_index, p.glass_owner_id, upsample_ran, if (actual_levels > 0) actual_levels - 1 else 0 });
     }
     // actual_levels==0 degrade: no downsample levels, sharp and blur both level0 (Metal: two
@@ -2338,10 +3414,48 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
     defer if (coarse_tex) |lease| {
         _ = encoder.offscreen_pool.releaseForReuseInFrame(lease);
     };
+    // soft_tex is the frame's shared quarter bank (compact fine): never released here.
+    var soft_shared = false;
+    // Banks' UV rect of the glass: window-normalized for the window banks,
+    // the capture's own for the bounded ones.
+    var coarse_uv: [4]f32 = .{ node_x * cap_s / @as(f32, @floatFromInt(current_rt.width)), node_y * cap_s / @as(f32, @floatFromInt(current_rt.height)), node_w * cap_s / @as(f32, @floatFromInt(current_rt.width)), node_h * cap_s / @as(f32, @floatFromInt(current_rt.height)) };
     // Regular alone has the measured ambient Gaussian bank. tint_mode cannot
     // identify the variant: clear and regular share surface mode, and tinted
     // regular uses absorption mode.
-    if (native_gaussian and p.native_blur[1] > 0) native_grid: {
+    // The bounded banks ran in full: the composite is the reusable function of its inputs.
+    var bank_ok = false;
+    if (bounded) bounded: {
+        // Capture px = window px - origin (a multiple of 4).
+        const ox = @as(f32, @floatFromInt(@as(i64, capture_region.src_x) - @as(i64, capture_region.dst_x)));
+        const oy = @as(f32, @floatFromInt(@as(i64, capture_region.src_y) - @as(i64, capture_region.dst_y)));
+        const margin_px = native_margin * cap_s;
+        const margin_rect: [4]f32 = .{ native_bounds[0] * cap_s - ox - margin_px, native_bounds[1] * cap_s - oy - margin_px, native_bounds[2] * cap_s + 2 * margin_px, native_bounds[3] * cap_s + 2 * margin_px };
+        const need = nativeBankNeedRect(.{ node_x * cap_s - ox, node_y * cap_s - oy, node_w * cap_s, node_h * cap_s }, group_in, p.native_params, cap_s);
+        const copied = PixelRegion{
+            .x0 = @intCast(capture_region.dst_x),
+            .y0 = @intCast(capture_region.dst_y),
+            .x1 = @intCast(capture_region.dst_x + capture_region.copy_w),
+            .y1 = @intCast(capture_region.dst_y + capture_region.copy_h),
+        };
+        stage(encoder, .glass_quarter);
+        const banks = try nativeCaptureBanks(encoder, level0_binding, copied, margin_rect, need, .{
+            .main = p.blur_radius * cap_s,
+            .fine = (if (p.native_blur[0] > 0) p.native_blur[0] else p.center_thickness) * cap_s,
+            .ambient = p.native_blur[1] * cap_s,
+            .alternate = p.native_chroma[3] > 0,
+        }) orelse break :bounded;
+        if (!blur_tex.eql(level0)) _ = encoder.offscreen_pool.releaseForReuseInFrame(blur_tex);
+        if (soft_tex) |st| _ = encoder.offscreen_pool.releaseForReuseInFrame(st);
+        blur_tex = banks.main;
+        soft_tex = banks.fine;
+        alternate_main_tex = banks.alternate;
+        main_grid_mix = if (banks.alternate != null) p.native_chroma[3] else 0;
+        blur_is_resampled = false;
+        coarse_tex = banks.ambient;
+        native_gamma = .{ 1, 1, if (coarse_tex != null) 1 else 0, 1 };
+        coarse_uv = content_uv;
+        bank_ok = true;
+    } else if (native_gaussian and p.native_blur[1] > 0) native_grid: {
         // Window-sized banks, computed only where the composite reads them.
         const rt_w = current_rt.width;
         const rt_h = current_rt.height;
@@ -2374,14 +3488,21 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
         const eighth_region = bank_input(out_e, alternate_xy);
         if (p.native_chroma[3] > 0) quarter_region = quarter_region.unite(areaSourceRegion(eighth_region, quarter_w, quarter_h, eighth_w, eighth_h));
 
-        const quarter = try quarterGammaTexture(encoder, current_rt, quarter_region) orelse break :native_grid;
-        var quarter_kept = false;
+        stage(encoder, .glass_quarter);
+        // The quarter grid is a pure function of the main target: the frame
+        // keeps one and brings it up to date for what was drawn since
+        // (frameQuarter); the per-glass reduction remains for encoders
+        // without frame state.
+        const shared_quarter = try frameQuarter(encoder, current_rt);
+        const quarter = shared_quarter orelse (try quarterGammaTexture(encoder, current_rt, quarter_region) orelse break :native_grid);
+        var quarter_kept = shared_quarter != null;
         defer if (!quarter_kept) {
             _ = encoder.offscreen_pool.releaseForReuseInFrame(quarter);
         };
         const source = encoder.offscreen_pool.binding(quarter) orelse break :native_grid;
         std.debug.assert(source.width == quarter_w and source.height == quarter_h);
         const valid = validUv(0, 0, source.width, source.height, source.width, source.height);
+        stage(encoder, .glass_gauss_main);
         const main = try gaussianTextureXY(encoder, source, source.width, source.height, main_xy, valid, out_q) orelse break :native_grid;
         var committed = false;
         defer if (!committed) {
@@ -2394,11 +3515,14 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
             if (alternate) |lease| _ = encoder.offscreen_pool.releaseForReuseInFrame(lease);
         };
         if (p.native_chroma[3] > 0) {
+            stage(encoder, .glass_eighth);
             const eighth = try halfGammaTexture(encoder, source, true, eighth_region) orelse break :native_grid;
             defer _ = encoder.offscreen_pool.releaseForReuseInFrame(eighth);
             const input = encoder.offscreen_pool.binding(eighth) orelse break :native_grid;
+            stage(encoder, .glass_gauss_alt);
             alternate = try gaussianTextureXY(encoder, input, input.width, input.height, alternate_xy, validUv(0, 0, input.width, input.height, input.width, input.height), out_e) orelse break :native_grid;
         }
+        stage(encoder, .glass_gauss_fine);
         const fine = if (fine_x > 0.01 or fine_y > 0.01)
             try gaussianTextureXY(encoder, source, source.width, source.height, .{ fine_x, fine_y }, valid, out_q) orelse break :native_grid
         else
@@ -2406,6 +3530,15 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
         defer if (!committed and !fine.eql(quarter)) {
             _ = encoder.offscreen_pool.releaseForReuseInFrame(fine);
         };
+        // The ambient bank shares the whole-window gamma box. Its width is
+        // very large; retain its independently fitted source sigma. Recorded
+        // before the banks are encoded so its passes share their encoders.
+        stage(encoder, .glass_ambient_half);
+        const ambient = try ambientBankTexture(encoder, source, rt_w, rt_h, ambient_sigma);
+        defer if (!committed) if (ambient) |lease| {
+            _ = encoder.offscreen_pool.releaseForReuseInFrame(lease);
+        };
+        if (!flushBanks(encoder)) break :native_grid;
         // Commit main and fine together: an allocation/pass failure leaves the
         // original linear-sRGB Kawase fallback intact. Never hand an encoded
         // float intermediate to that fallback with gamma flags unset.
@@ -2413,19 +3546,17 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
         if (soft_tex) |st| _ = encoder.offscreen_pool.releaseForReuseInFrame(st);
         blur_tex = main;
         soft_tex = fine;
-        quarter_kept = fine.eql(quarter);
+        soft_shared = shared_quarter != null and fine.eql(quarter);
+        quarter_kept = quarter_kept or fine.eql(quarter);
         committed = true;
         alternate_main_tex = alternate;
         main_grid_mix = if (alternate != null) p.native_chroma[3] else 0;
         blur_is_resampled = false;
         native_gamma = .{ 1, 1, 0, 1 };
-        if (p.native_blur[1] > 0) {
-            // The ambient bank shares the whole-window gamma box. Its width
-            // is very large; retain its independently fitted source sigma.
-            coarse_tex = try ambientBankTexture(encoder, source, rt_w, rt_h, ambient_sigma);
-        }
+        coarse_tex = ambient;
         native_gamma[2] = if (coarse_tex != null) 1 else 0;
     } else if (native_gaussian) {
+        stage(encoder, .glass_fallback);
         const valid = validUv(capture_region.dst_x, capture_region.dst_y, capture_region.copy_w, capture_region.copy_h, tex_w, tex_h);
         // Capture texture itself sRGB-encoded values (not _sRGB target): gaussian directly in
         // encoding, no encode pass needed.
@@ -2449,6 +3580,8 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
             }
         }
     }
+    // Every bank pass is encoded before the composite reads the banks.
+    if (!flushBanks(encoder)) return false;
 
     // ---- 6. Glass composite ----
     // Fallback (no glass pipeline / glass_tex fetch failed): composite back to RT must be blur
@@ -2468,19 +3601,23 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
     var composite_has_baked_shape_mask = false;
     // Whether level0 already early-returned (see 'fairness under pool pressure' comment below).
     var level0_released = false;
+    stage(encoder, .glass_composite);
     if (encoder.persistent.glass_pipeline != null and !frosted) glass: {
+        // Only a composite of the full bank set is kept for reuse (the kept
+        // texture stays unprimed otherwise: a miss next frame).
+        if (!(bank_ok and actual_levels == max_levels)) retained = null;
         if (encoder.offscreen_pool.acquire(device, tex_w, tex_h, encoder.frame_index)) |glass_tex| {
             // Binding missing or composite skipped -> release glass_tex fallback to blur_tex
             // composite; never use unrendered glass_tex as result.
             const blur_binding = encoder.offscreen_pool.binding(blur_tex) orelse {
                 _ = encoder.offscreen_pool.releaseForReuseInFrame(glass_tex);
-                if (@import("zenit_environment").has("ZENIT_DEBUG_GLASS"))
+                if (@import("zenit_environment").flag("ZENIT_DEBUG_GLASS"))
                     std.debug.print("[glass-fallback] blur_binding missing owner={d}\n", .{p.glass_owner_id});
                 break :glass;
             };
             const glass_binding = encoder.offscreen_pool.binding(glass_tex) orelse {
                 _ = encoder.offscreen_pool.releaseForReuseInFrame(glass_tex);
-                if (@import("zenit_environment").has("ZENIT_DEBUG_GLASS"))
+                if (@import("zenit_environment").flag("ZENIT_DEBUG_GLASS"))
                     std.debug.print("[glass-fallback] glass_binding missing owner={d}\n", .{p.glass_owner_id});
                 break :glass;
             };
@@ -2503,7 +3640,7 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
                 tex_h,
                 node_w,
                 node_h,
-                p.corner_radius * world_scale,
+                corner_radii.max(world_radii),
                 p.glass_tint,
                 p.glass_intensity,
                 p.specular_opacity,
@@ -2537,7 +3674,7 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
                 p.tab_lens,
                 p.native_params,
                 p.native_blur,
-                .{ node_x * cap_s / @as(f32, @floatFromInt(current_rt.width)), node_y * cap_s / @as(f32, @floatFromInt(current_rt.height)), node_w * cap_s / @as(f32, @floatFromInt(current_rt.width)), node_h * cap_s / @as(f32, @floatFromInt(current_rt.height)) },
+                coarse_uv,
                 p.native_blur_profile,
                 native_gamma,
                 p.native_rim,
@@ -2545,10 +3682,11 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
                 p.native_chroma_profile,
                 p.native_tint_response,
                 group_in,
+                compositeReadRegion(baked_quad.uv, tex_w, tex_h),
             );
             if (!ran) {
                 _ = encoder.offscreen_pool.releaseForReuseInFrame(glass_tex);
-                if (@import("zenit_environment").has("ZENIT_DEBUG_GLASS"))
+                if (@import("zenit_environment").flag("ZENIT_DEBUG_GLASS"))
                     std.debug.print("[glass-fallback] composite not ran owner={d}\n", .{p.glass_owner_id});
                 break :glass;
             }
@@ -2556,16 +3694,23 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
                 _ = encoder.offscreen_pool.releaseForReuseInFrame(blur_tex);
             }
             if (soft_tex) |st| {
-                _ = encoder.offscreen_pool.releaseForReuseInFrame(st);
+                if (!soft_shared) _ = encoder.offscreen_pool.releaseForReuseInFrame(st);
                 soft_tex = null;
             }
             composite_tex = glass_tex;
+            // Keep what the replay quad samples: the next frame with the same
+            // key draws it again (drawGlassTexture).
+            if (retained) |lease| keep: {
+                const kept = encoder.offscreen_pool.binding(lease) orelse break :keep;
+                encoder.copyTextureRegion(glass_binding, @intCast(retained_read.x0), @intCast(retained_read.y0), kept.width, kept.height, kept, 0, 0, false) catch break :keep;
+                _ = encoder.offscreen_pool.markRetainedPrimed(lease);
+            }
             composite_tint = .{ 1, 1, 1, 1 };
             composite_has_baked_shape_mask = true;
             // Debug: composite output center region -> debug slot 1
             debugGlassBlit(encoder, glass_binding, (tex_w -| 64) / 2, (tex_h -| 64) / 2, tex_w, tex_h, 1);
         } else {
-            if (@import("zenit_environment").has("ZENIT_DEBUG_GLASS"))
+            if (@import("zenit_environment").flag("ZENIT_DEBUG_GLASS"))
                 std.debug.print("[glass-fallback] glass_tex acquire failed owner={d} {d}x{d}\n", .{ p.glass_owner_id, tex_w, tex_h });
         }
     }
@@ -2574,7 +3719,9 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
         composite_tex = level0;
         blur_is_resampled = false;
     }
-    if (soft_tex) |st| _ = encoder.offscreen_pool.releaseForReuseInFrame(st);
+    if (soft_tex) |st| if (!soft_shared) {
+        _ = encoder.offscreen_pool.releaseForReuseInFrame(st);
+    };
     // WARNING: **fairness** under pool pressure: reaching here means composite either succeeded or
     // already degraded. In both cases level0 (the full-resolution capture, this function's largest
     // texture) is no longer needed: success already sampled it, fallback never used it.
@@ -2597,20 +3744,13 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
     }
 
     // ---- 7. Restore render pass ----
+    stage(encoder, .glass_restore);
     if (!restoreRenderTargetPass(encoder, restore_rt, ir, s)) {
         _ = encoder.offscreen_pool.releaseForReuseInFrame(composite_tex);
         return false;
     }
 
     // ---- 8. Composite to RT ----
-    const comp_draw_x = if (encoder.offscreen_depth > 0)
-        p.draw_x - encoder.offscreen_stack[encoder.offscreen_depth - 1].x
-    else
-        p.draw_x;
-    const comp_draw_y = if (encoder.offscreen_depth > 0)
-        p.draw_y - encoder.offscreen_stack[encoder.offscreen_depth - 1].y
-    else
-        p.draw_y;
     const composite_binding = encoder.offscreen_pool.binding(composite_tex) orelse {
         // Pass restored; missing binding gives up blur composite this frame (region stays
         // background).
@@ -2622,13 +3762,7 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
         _ = encoder.offscreen_pool.releaseForReuseInFrame(composite_tex);
         return false;
     };
-    const composite_corner_radius: f32 = if (composite_has_baked_shape_mask) 0 else p.corner_radius;
-    var comp_uv: [4]f32 = .{
-        content_uv[0],
-        content_uv[1],
-        content_uv[0] + content_uv[2],
-        content_uv[1] + content_uv[3],
-    };
+    var comp_uv = content_quad_uv;
     if (!composite_has_baked_shape_mask and blur_is_resampled) {
         // The blur-only fallback samples a repacked Kawase texture too.
         // Keep the same background position when the glass pass is unavailable.
@@ -2641,28 +3775,15 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
             (comp_uv[3] - capture_valid_uv[1]) / valid_h,
         };
     }
-    const raw_composite_w = if (p.use_draw_transform) p.w else if (p.draw_w > 0) p.draw_w else p.w;
-    const raw_composite_h = if (p.use_draw_transform) p.h else if (p.draw_h > 0) p.draw_h else p.h;
-    const composite_w = raw_composite_w * node_w / @max(raw_world[2], 1e-4);
-    const composite_h = raw_composite_h * node_h / @max(raw_world[3], 1e-4);
-    var composite_transform: [6]f32 = if (p.use_draw_transform)
-        encoder.localizeDrawTransformForCurrentTarget(p.draw_transform)
+    // Without the glass pass (blur-only fallback) the composite mask carries the shape, per corner.
+    const composite_corner_radii: [4]f32 = if (composite_has_baked_shape_mask)
+        .{ 0, 0, 0, 0 }
     else
-        .{ 1, 0, 0, 1, comp_draw_x, comp_draw_y };
-    composite_transform[4] += (node_x - raw_world[0]) * local_w / @max(raw_world[2], 1e-4);
-    composite_transform[5] += (node_y - raw_world[1]) * local_h / @max(raw_world[3], 1e-4);
-    // The native SDF already rasterizes coverage outside the exact node rect.
-    // Include that texel fringe when replaying it; an exact quad would hard-clip
-    // fractional straight edges even though their baked mask is antialiased.
-    var composite_quad = if (composite_has_baked_shape_mask and p.native_params[0] > 0)
-        expandGlassCompositeFringe(composite_w, composite_h, comp_uv, .{ tex_w, tex_h }, composite_transform)
+        shapeRadii(p, 1, composite_w, composite_h);
+    const composite_quad = if (composite_has_baked_shape_mask)
+        baked_quad
     else
         GlassCompositeQuad{ .width = composite_w, .height = composite_h, .uv = comp_uv, .transform = composite_transform };
-    if (composite_has_baked_shape_mask and (group_in.expand[0] > 0 or group_in.expand[1] > 0 or group_in.expand[2] > 0 or group_in.expand[3] > 0)) {
-        // GlassGroup shadow/overflow members drawn in glass texture pad: quad expands per-side in
-        // world logical px (no overflow texture).
-        composite_quad = expandGlassCompositeBy(composite_quad, group_in.expand, .{ composite_w / @max(node_w, 1e-3), composite_h / @max(node_h, 1e-3) }, .{ content_uv[2] / @max(node_w, 1e-3), content_uv[3] / @max(node_h, 1e-3) });
-    }
     if (frosted and p.group_count > 0) {
         // Each member shows the blurred backdrop through its own rounded shape.
         const qw = composite_quad.width;
@@ -2681,9 +3802,9 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
             const uv = [4]f32{ composite_quad.uv[0] + fx * uw, composite_quad.uv[1] + fy * uh, composite_quad.uv[0] + (fx + fw) * uw, composite_quad.uv[1] + (fy + fh) * uh };
             const radius = sh.radius * qw / p.w;
             if (p.use_draw_transform) {
-                try ir.addImageUVWithTransform(comp_id, fw * qw, fh * qh, uv, composite_tint, radius, 1.0, t, true);
+                try ir.addImageUVWithTransform(comp_id, fw * qw, fh * qh, uv, composite_tint, @splat(radius), 1.0, t, true);
             } else {
-                try ir.addImageUVPremultiplied(comp_id, t[4], t[5], fw * qw, fh * qh, uv, composite_tint, radius, 1.0, p.rotate);
+                try ir.addImageUVPremultiplied(comp_id, t[4], t[5], fw * qw, fh * qh, uv, composite_tint, @splat(radius), 1.0, p.rotate);
             }
         }
     } else if (p.use_draw_transform) {
@@ -2693,7 +3814,7 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
             composite_quad.height,
             composite_quad.uv,
             composite_tint,
-            composite_corner_radius,
+            composite_corner_radii,
             1.0,
             composite_quad.transform,
             true,
@@ -2707,7 +3828,7 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
             composite_quad.height,
             composite_quad.uv,
             composite_tint,
-            composite_corner_radius,
+            composite_corner_radii,
             1.0,
             p.rotate,
         );
@@ -2717,6 +3838,106 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
     _ = encoder.offscreen_pool.releaseForReuseInFrame(composite_tex);
     if (frosted) try drawMaterialLayer(encoder, p, .frosted);
     return true;
+}
+
+/// Draw a retained glass composite again (cross-frame reuse): exactly what
+/// step 8 of tryBackdropBlur draws for a baked composite, in the open pass,
+/// after the batches painted before the glass.
+fn drawGlassTexture(encoder: anytype, ir: anytype, lease: TextureLease, read: PixelRegion, tex_w: u32, tex_h: u32, full_quad: GlassCompositeQuad, p: BackdropBlurParams) !void {
+    // The kept texture holds texels read.x0.. of the composite texture: the
+    // same texel-space sample positions, expressed in its own normalized space.
+    var quad = full_quad;
+    const rw: f64 = @floatFromInt(read.x1 - read.x0);
+    const rh: f64 = @floatFromInt(read.y1 - read.y0);
+    for (0..2) |c| {
+        const u: f64 = full_quad.uv[2 * c];
+        const v: f64 = full_quad.uv[2 * c + 1];
+        quad.uv[2 * c] = @floatCast((u * @as(f64, @floatFromInt(tex_w)) - @as(f64, @floatFromInt(read.x0))) / rw);
+        quad.uv[2 * c + 1] = @floatCast((v * @as(f64, @floatFromInt(tex_h)) - @as(f64, @floatFromInt(read.y0))) / rh);
+    }
+    const pass = encoder.render_pass.?;
+    try encoder.sdf_renderer.flush(pass);
+    try ir.flush(pass);
+    if (encoder.icon_renderer) |icr| try icr.flush(pass);
+    try encoder.text_renderer.flush(pass);
+    const binding = encoder.offscreen_pool.binding(lease) orelse return error.GlassReuseBindingLost;
+    const id = try ir.registerTextureBinding(binding, @intCast(read.x1 - read.x0), @intCast(read.y1 - read.y0));
+    defer ir.unregisterTextureBinding(id);
+    if (p.use_draw_transform) {
+        try ir.addImageUVWithTransform(id, quad.width, quad.height, quad.uv, .{ 1, 1, 1, 1 }, .{ 0, 0, 0, 0 }, 1.0, quad.transform, true);
+    } else {
+        try ir.addImageUVPremultiplied(id, quad.transform[4], quad.transform[5], quad.width, quad.height, quad.uv, .{ 1, 1, 1, 1 }, .{ 0, 0, 0, 0 }, 1.0, p.rotate);
+    }
+    try ir.flush(pass);
+}
+
+/// The quad replaying a baked glass texture: the node rect, widened by the
+/// one-texel native fringe and by GlassGroup overflow/shadow pad.
+pub fn bakedCompositeQuad(w: f32, h: f32, uv: [4]f32, texture_size: [2]u32, transform: [6]f32, native: bool, expand: [4]f32, node_w: f32, node_h: f32, content_uv: [4]f32) GlassCompositeQuad {
+    var q = if (native)
+        expandGlassCompositeFringe(w, h, uv, texture_size, transform)
+    else
+        GlassCompositeQuad{ .width = w, .height = h, .uv = uv, .transform = transform };
+    if (expand[0] > 0 or expand[1] > 0 or expand[2] > 0 or expand[3] > 0) {
+        // GlassGroup shadow/overflow members drawn in glass texture pad: quad expands per-side in
+        // world logical px (no overflow texture).
+        q = expandGlassCompositeBy(q, expand, .{ w / @max(node_w, 1e-3), h / @max(node_h, 1e-3) }, .{ content_uv[2] / @max(node_w, 1e-3), content_uv[3] / @max(node_h, 1e-3) });
+    }
+    return q;
+}
+
+/// Texels a quad sampling `uv` (u0, v0, u1, v1) of a width x height texture
+/// can read with bilinear filtering and clamp-to-edge addressing, plus one
+/// texel of margin for interpolation rounding. Clamped to the texture.
+pub fn compositeReadRegion(uv: [4]f32, width: u32, height: u32) PixelRegion {
+    const w: f32 = @floatFromInt(width);
+    const h: f32 = @floatFromInt(height);
+    const lo_u = @min(uv[0], uv[2]);
+    const hi_u = @max(uv[0], uv[2]);
+    const lo_v = @min(uv[1], uv[3]);
+    const hi_v = @max(uv[1], uv[3]);
+    const fx0 = std.math.clamp(@floor(lo_u * w - 0.5) - 1, -1, w);
+    const fy0 = std.math.clamp(@floor(lo_v * h - 0.5) - 1, -1, h);
+    const fx1 = std.math.clamp(@floor(hi_u * w - 0.5) + 3, 0, w + 1);
+    const fy1 = std.math.clamp(@floor(hi_v * h - 0.5) + 3, 0, h + 1);
+    return .{
+        .x0 = @max(@as(i32, @intFromFloat(fx0)), 0),
+        .y0 = @max(@as(i32, @intFromFloat(fy0)), 0),
+        .x1 = @min(@as(i32, @intFromFloat(fx1)), @as(i32, @intCast(width))),
+        .y1 = @min(@as(i32, @intFromFloat(fy1)), @as(i32, @intCast(height))),
+    };
+}
+
+fn intersectScissor(a: [4]u32, b: [4]u32) [4]u32 {
+    const x0 = @max(a[0], b[0]);
+    const y0 = @max(a[1], b[1]);
+    const x1 = @min(a[0] + a[2], b[0] + b[2]);
+    const y1 = @min(a[1] + a[3], b[1] + b[3]);
+    return .{ x0, y0, x1 -| x0, y1 -| y0 };
+}
+
+test "composite read region holds every bilinear texel of the sampled uv range" {
+    const sizes = [_][2]u32{ .{ 832, 2368 }, .{ 64, 64 }, .{ 1001, 333 } };
+    const uvs = [_][4]f32{ .{ 0.19, 0.07, 0.96, 0.93 }, .{ 0, 0, 1, 1 }, .{ -0.01, 0.2, 0.5, 1.02 }, .{ 0.4999, 0.5, 0.5001, 0.5 } };
+    for (sizes) |sz| for (uvs) |uv| {
+        const r = compositeReadRegion(uv, sz[0], sz[1]);
+        var i: u32 = 0;
+        while (i <= 256) : (i += 1) {
+            const t = @as(f32, @floatFromInt(i)) / 256;
+            const u = uv[0] + (uv[2] - uv[0]) * t;
+            const v = uv[1] + (uv[3] - uv[1]) * t;
+            const tx = u * @as(f32, @floatFromInt(sz[0])) - 0.5;
+            const ty = v * @as(f32, @floatFromInt(sz[1])) - 0.5;
+            const mx: i64 = @intCast(sz[0] - 1);
+            const my: i64 = @intCast(sz[1] - 1);
+            // Clamp-to-edge: out-of-range taps read the border texel.
+            const x0 = std.math.clamp(@as(i64, @intFromFloat(@floor(tx))), 0, mx);
+            const x1 = std.math.clamp(@as(i64, @intFromFloat(@floor(tx))) + 1, 0, mx);
+            const y0 = std.math.clamp(@as(i64, @intFromFloat(@floor(ty))), 0, my);
+            const y1 = std.math.clamp(@as(i64, @intFromFloat(@floor(ty))) + 1, 0, my);
+            try std.testing.expect(regionHas(r, x0, y0) and regionHas(r, x1, y1));
+        }
+    };
 }
 
 /// Expand composite quad four sides by `expand` (left, top, right, bottom; world logical px) to fit

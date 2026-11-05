@@ -96,13 +96,14 @@ pub const TooltipBuilder = struct {
         result.content.behavior.interaction.a11y = .{ .role = .tooltip };
         result.content.setHitTestVisible(false);
         result.content.setBackgroundRaw(styles.tooltipContentBackground(p.background, t));
-        result.content.style.padding = styles.tooltip_content_padding;
-        result.content.style.border = .{ .radius = styles.tooltip_radius };
+        result.content.style.padding = styles.tooltipPadding(t);
+        result.content.style.border = .{ .radius = styles.tooltipRadius(t) };
 
         const content_ext = try result.content.style.ensureExtFallible(allocator);
         content_ext.clearShadows();
-        content_ext.hit_shape = .{ .rounded_rect = styles.tooltip_radius };
-        content_ext.clip_shape = .{ .rounded_rect = styles.tooltip_radius };
+        content_ext.setShadow(t.tokens.shadow.sm);
+        content_ext.hit_shape = .{ .rounded_rect = styles.tooltipRadius(t) };
+        content_ext.clip_shape = .{ .rounded_rect = styles.tooltipRadius(t) };
 
         // Built and mounted: after that, released with wrapper if binding fails. Hangs under
         // Popover's scope (content in portal).

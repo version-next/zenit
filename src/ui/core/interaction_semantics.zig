@@ -1,4 +1,5 @@
 const std = @import("std");
+const corner_radii = @import("zenit_corner_radii");
 const node_mod = @import("node.zig");
 const types = @import("types.zig");
 
@@ -103,10 +104,11 @@ fn defaultHitShape(node: *const Node) HitShapeSpec {
     if (componentNameEquals(node, "Spinner")) {
         return .ellipse;
     }
-    const radius = node.style.effectiveRadius();
+    const r = node.rectFromWorldOrFallback();
+    const radii = corner_radii.normalize(node.style.effectiveRadii(), r.w, r.h);
+    if (!uniformRadii(radii)) return .{ .rounded_corners = radii };
+    const radius = radii[0];
     if (radius > 0.01) {
-        // Read rect via global hook.
-        const r = node.rectFromWorldOrFallback();
         const half_w = r.w / 2;
         const half_h = r.h / 2;
         if (@abs(r.w - r.h) < 0.01 and radius >= @min(half_w, half_h) - 0.5) {
@@ -117,10 +119,18 @@ fn defaultHitShape(node: *const Node) HitShapeSpec {
     return .rect;
 }
 
+/// Same classification as `defaultHitShape` (minus the Spinner/circle special cases, which only
+/// concern hit targets): non-uniform radii clip per corner (attached group items keep their square
+/// inner corners), uniform radii clip with one radius.
 fn defaultClipShape(node: *const Node) ClipShapeSpec {
-    const radius = node.style.effectiveRadius();
-    if (radius > 0.01) return .{ .rounded_rect = radius };
+    const radii = node.style.effectiveRadii();
+    if (!uniformRadii(radii)) return .{ .rounded_corners = radii };
+    if (radii[0] > 0.01) return .{ .rounded_rect = radii[0] };
     return .rect;
+}
+
+fn uniformRadii(r: [4]f32) bool {
+    return @abs(r[0] - r[1]) < 0.01 and @abs(r[1] - r[2]) < 0.01 and @abs(r[2] - r[3]) < 0.01;
 }
 
 fn componentNameEquals(node: *const Node, expected: []const u8) bool {

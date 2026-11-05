@@ -12,9 +12,9 @@
       "bindings": [],
       "storage_layouts": {},
       "source_sha256": "ae2659a0b5e07a61334d35b3156fdbe00fd682b1a977054cf016cb4196a65e9d",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "kawase_vertex_main.glsl",
-      "spirv_sha256": "7a527eb225a9304be0dd8affce303a87b154a785bfcf2f2b7641a4d20a52342e",
+      "spirv_sha256": "5cb600c5eaf51e2051ffc96378357ea89cb4711f8689f7d50f771d1589e07bbe",
       "glsl_sha256": "0ac4b16b18e4b94ed40ad58bca1952633ca2c3137dff11589059fe101169caa2",
       "first_instance_uniform": null,
       "texture_units": [],
@@ -52,9 +52,9 @@
       ],
       "storage_layouts": {},
       "source_sha256": "ae2659a0b5e07a61334d35b3156fdbe00fd682b1a977054cf016cb4196a65e9d",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "kawase_downsample.glsl",
-      "spirv_sha256": "e7803a6cefc03291144c32266b63aa341c91dd9456d757a53a87b535bce06fce",
+      "spirv_sha256": "f729926474cd9b98d583ae1c542a142f2256cf7663275f7b7db0bf09dbba70e2",
       "glsl_sha256": "1bbe6298ab4837343c9d58a00e2eea00c28df2356d9632cbac51a00f3424f328",
       "first_instance_uniform": null,
       "texture_units": [
@@ -109,9 +109,9 @@
       ],
       "storage_layouts": {},
       "source_sha256": "ae2659a0b5e07a61334d35b3156fdbe00fd682b1a977054cf016cb4196a65e9d",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "kawase_upsample.glsl",
-      "spirv_sha256": "a0309d6318e6bd5b45cfbab2f5c7a6141a1b39a84322a7990116a8bed498dec4",
+      "spirv_sha256": "4fc8a477d8e6d80194eb80bb45e95dce5e5a451efed92fd3e7956c0828353678",
       "glsl_sha256": "5b15fa79e13d2504dea5a86757e07ba4b8f115ef3874ce40bd4b70e7eda51d28",
       "first_instance_uniform": null,
       "texture_units": [
@@ -166,9 +166,9 @@
       ],
       "storage_layouts": {},
       "source_sha256": "ae2659a0b5e07a61334d35b3156fdbe00fd682b1a977054cf016cb4196a65e9d",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "gaussian_blur.glsl",
-      "spirv_sha256": "4b278b7c39ea8088310d7e7a574af268d20056903a3fd1868edcf9c1ba29388b",
+      "spirv_sha256": "dee54606ee4104df6693213c3c5570947024abb29755949f2f344ca25f8c685f",
       "glsl_sha256": "67851b1b4bb3a1699704987a70cf756eeecee02ba2a2fd6b710a9c7b8ede933d",
       "first_instance_uniform": null,
       "texture_units": [
@@ -223,9 +223,9 @@
       ],
       "storage_layouts": {},
       "source_sha256": "ae2659a0b5e07a61334d35b3156fdbe00fd682b1a977054cf016cb4196a65e9d",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "gaussian_downsample.glsl",
-      "spirv_sha256": "0ea74ee699c9037f0cc4a9cff3ad97f3e0caebcc00c9926567d30898c8e96f49",
+      "spirv_sha256": "ca812896a969aa1dab90c4113a32eaac7f20e9d68236304e2f9eba217a84958a",
       "glsl_sha256": "0b5dc451553f295f5e138cf32b9bba9d44e90d9b47fc630c83a33787ff3eaeb7",
       "first_instance_uniform": null,
       "texture_units": [
@@ -280,9 +280,9 @@
       ],
       "storage_layouts": {},
       "source_sha256": "ae2659a0b5e07a61334d35b3156fdbe00fd682b1a977054cf016cb4196a65e9d",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "gaussian_encode.glsl",
-      "spirv_sha256": "abaee06fd6cef1f034ab5a3bf6af26934d6b6d5aed25902df86354945d2a5822",
+      "spirv_sha256": "b6a49eead9fe123702f6e40152213872e1c84d875b2d8da40446f8e3ba4b33b9",
       "glsl_sha256": "3cd3ba347ce401bf32b5ad2f5ed2457a1991600de01cd987ded4b43d9b49c26b",
       "first_instance_uniform": null,
       "texture_units": [
@@ -330,9 +330,9 @@
       ],
       "storage_layouts": {},
       "source_sha256": "ae2659a0b5e07a61334d35b3156fdbe00fd682b1a977054cf016cb4196a65e9d",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "gaussian_decode.glsl",
-      "spirv_sha256": "9f3d970e634515eacd15b0728066dd98f99eadebb7f3fc15ae5e9e8562f2fed6",
+      "spirv_sha256": "37e1d295cfbad9834e6f5eccd4ef8115a3fc895c2eeec8aabe86ae6edf48df59",
       "glsl_sha256": "700feee0664e9be3c2b517ac5e7bd7f7eb8f0a015aa0b4f2156ddba118341ed7",
       "first_instance_uniform": null,
       "texture_units": [
@@ -379,9 +379,9 @@
       ],
       "storage_layouts": {},
       "source_sha256": "ae2659a0b5e07a61334d35b3156fdbe00fd682b1a977054cf016cb4196a65e9d",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "gaussian_filter_gamma.glsl",
-      "spirv_sha256": "423e92773ae7de859e5e8453300abdf1f7ee8bbcdcd1d80c179960906a6e7c21",
+      "spirv_sha256": "6198f8d5bf5cad6b31167b9c0dc61a11085ab9d9ff62d4ee327d1d6534b4c77f",
       "glsl_sha256": "134017918ed23888cf95e117d72c4d1869db1c2f36cf126eab2415be1bece8d8",
       "first_instance_uniform": null,
       "texture_units": [
@@ -436,9 +436,9 @@
       ],
       "storage_layouts": {},
       "source_sha256": "ae2659a0b5e07a61334d35b3156fdbe00fd682b1a977054cf016cb4196a65e9d",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "gaussian_downsample_gamma.glsl",
-      "spirv_sha256": "c266892e9633d88b740e306071592224ba67af6c29892f3990b4145734b2bfd7",
+      "spirv_sha256": "bd6805bd5c14fb7cadfdb00a3ba0339ce3e7ec190427a861b2b1925a83368fa3",
       "glsl_sha256": "ce8dfafdccecb0dec96956bc37bdaf7f2f14ad46abb0470773acd9b6c6ab6803",
       "first_instance_uniform": null,
       "texture_units": [
@@ -470,10 +470,10 @@
       "stage": "vertex",
       "bindings": [],
       "storage_layouts": {},
-      "source_sha256": "38cb96380e71c67ee12c36204b2abd648af7970f3289a8a62b6342d2969c96ef",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "bc8d5de069c010f54654ab9426cea4729da2d37618a89bc3a7f40a7f1941160b",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "blend_vertex_main.glsl",
-      "spirv_sha256": "9c38af892aaf1c6a48344395601d410c794f8ca606c791747d4e8d582c3e9dee",
+      "spirv_sha256": "913599c1c5b634d9daa7acf5cc8f42d35c710d9772da2263cf14df3ceb4bc596",
       "glsl_sha256": "4ffa89dd5536114c0cddb18070f98f62e5fd907da5739df25287b9de09745e7c",
       "first_instance_uniform": null,
       "texture_units": [],
@@ -491,7 +491,7 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 144,
+          "min_size": 176,
           "stride": 0
         },
         {
@@ -517,11 +517,11 @@
         }
       ],
       "storage_layouts": {},
-      "source_sha256": "38cb96380e71c67ee12c36204b2abd648af7970f3289a8a62b6342d2969c96ef",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "bc8d5de069c010f54654ab9426cea4729da2d37618a89bc3a7f40a7f1941160b",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "blend_fragment_main.glsl",
-      "spirv_sha256": "727593c40ffb07e96e4cde813129996d851241ac5f88edbdba15bc7391712038",
-      "glsl_sha256": "a715ffe5cc550b6d33e9646c643ccf1e74c0063b5771d055a4cb7e3e48b6da7e",
+      "spirv_sha256": "2b5b2542bb56cbb846d9b7df4a438de40559d693b495e9bcf0df550601a07d04",
+      "glsl_sha256": "21d5888d0d792ae3cee06d04ea7f9bb6055d54519f9ab80c5b9b30b9962bbcb9",
       "first_instance_uniform": null,
       "texture_units": [
         {
@@ -544,9 +544,9 @@
       "gl_resources": {
         "ubos": [
           {
-            "type": "_432",
+            "type": "_467",
             "name": "BlendUniforms",
-            "block_size": 144,
+            "block_size": 176,
             "set": 0,
             "binding": 0
           }
@@ -570,18 +570,18 @@
           "group": 0,
           "binding": 1,
           "kind": 0,
-          "min_size": 736,
+          "min_size": 752,
           "stride": 0
         }
       ],
       "storage_layouts": {
         "PathVertexIn": 28
       },
-      "source_sha256": "5c6b4148743fe16ebffe105c25e5e27107520dba3fef84ff9a843388e05c4d16",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "c2ab4e5a32686e5c1274805c31f72c3b552a5eee12fb50907004e4e71798bca3",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "path_vertex_main.glsl",
-      "spirv_sha256": "b38043436120e0e5187641024ce4e6a0a1dc4d45b277e38cbc679db2db116441",
-      "glsl_sha256": "3f25768106b9eed15f286816486a492b1ec59a23419030da5675167d391cdca8",
+      "spirv_sha256": "238ac04789b859e3b03462d734eeadc0596fde138fd25e9b704fac8c78d1ebe3",
+      "glsl_sha256": "6982509e9d3b9aa9fbbfbbd18d6f484c9c43966ace5a87cad611b720f040e057",
       "first_instance_uniform": null,
       "texture_units": [],
       "gl_resources": {
@@ -589,7 +589,7 @@
           {
             "type": "_67",
             "name": "PathParams",
-            "block_size": 736,
+            "block_size": 752,
             "set": 0,
             "binding": 1
           }
@@ -615,24 +615,24 @@
           "group": 0,
           "binding": 1,
           "kind": 0,
-          "min_size": 736,
+          "min_size": 752,
           "stride": 0
         }
       ],
       "storage_layouts": {},
-      "source_sha256": "5c6b4148743fe16ebffe105c25e5e27107520dba3fef84ff9a843388e05c4d16",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "c2ab4e5a32686e5c1274805c31f72c3b552a5eee12fb50907004e4e71798bca3",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "path_fragment_main.glsl",
-      "spirv_sha256": "8ab681200756fe79484dd6464a508495344d67f06bc478598e24f7b2341cceb0",
-      "glsl_sha256": "49bbb120125dcd96b29e775b022290ae83cf8aef4afd1b63cd75e9babf9acfdb",
+      "spirv_sha256": "402bda394f3763484076a7c13af465f1aae411d36009fb3cd27026f8bcbe3e9e",
+      "glsl_sha256": "2f579daf2545189571ed7667d567623004402369eb6f73ea773109412d2ed059",
       "first_instance_uniform": null,
       "texture_units": [],
       "gl_resources": {
         "ubos": [
           {
-            "type": "_94",
+            "type": "_101",
             "name": "PathParams",
-            "block_size": 736,
+            "block_size": 752,
             "set": 0,
             "binding": 1
           }
@@ -649,7 +649,7 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 336,
+          "min_size": 352,
           "stride": 0
         },
         {
@@ -657,32 +657,32 @@
           "binding": 1,
           "kind": 2,
           "min_size": 0,
-          "stride": 112
+          "stride": 128
         }
       ],
       "storage_layouts": {
-        "ImageInstanceData": 112
+        "ImageInstanceData": 128
       },
-      "source_sha256": "c469d1c98c1cc2f033a1cb5554bb85bc4f1dcc94c7fb68bc8d9b1fd111ca7cf0",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "4ffb48c5cd324513d774c859f819d4e6bcc697b758e5a5fb5fa770113416ce2c",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "image_vertex_main.glsl",
-      "spirv_sha256": "07ffd7ceacfc8ec58e31f382d64d6acf457c5901fb5dd97f4bf3d0be4de5c09d",
-      "glsl_sha256": "4d2f278418499f1b89d4cc43fbc3b9ec692d904f4be178cba177a8455fde8079",
+      "spirv_sha256": "27cbdc7f6bf4ad6bac642866af2c35e6dc072d5ff6871b9024620cc960341eb5",
+      "glsl_sha256": "fcce44cee159b9eadf902b91c3af7698c79b1edc534986ccc6dca6f5cfddef3d",
       "first_instance_uniform": "zenit_first_instance",
       "texture_units": [],
       "gl_resources": {
         "ubos": [
           {
-            "type": "_107",
+            "type": "_100",
             "name": "ImageParams",
-            "block_size": 336,
+            "block_size": 352,
             "set": 0,
             "binding": 0
           }
         ],
         "ssbos": [
           {
-            "type": "_24",
+            "type": "_23",
             "name": "instances",
             "readonly": true,
             "block_size": 0,
@@ -701,7 +701,7 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 336,
+          "min_size": 352,
           "stride": 0
         },
         {
@@ -720,11 +720,11 @@
         }
       ],
       "storage_layouts": {},
-      "source_sha256": "c469d1c98c1cc2f033a1cb5554bb85bc4f1dcc94c7fb68bc8d9b1fd111ca7cf0",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "4ffb48c5cd324513d774c859f819d4e6bcc697b758e5a5fb5fa770113416ce2c",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "image_fragment_main.glsl",
-      "spirv_sha256": "8baa9e455d0478a0fe21f5528035f36f1a69620544dbc9b4c2bc3b6cb3ffe321",
-      "glsl_sha256": "a4f1d17dfdd6df60eda94b0c63ad177d634d15a57c51efab76736661d402fa53",
+      "spirv_sha256": "19454b644007e9b63f45b5729da887b66d0da5c44508cdc0a4ccb7e881d56a9d",
+      "glsl_sha256": "c980f6b820f373726936b06f5c99865cfe3cb80ea79c4332325910e5a42d06fc",
       "first_instance_uniform": null,
       "texture_units": [
         {
@@ -739,9 +739,9 @@
       "gl_resources": {
         "ubos": [
           {
-            "type": "_775",
+            "type": "_810",
             "name": "ImageParams",
-            "block_size": 336,
+            "block_size": 352,
             "set": 0,
             "binding": 0
           }
@@ -758,7 +758,7 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 336,
+          "min_size": 352,
           "stride": 0
         },
         {
@@ -777,11 +777,11 @@
         }
       ],
       "storage_layouts": {},
-      "source_sha256": "c469d1c98c1cc2f033a1cb5554bb85bc4f1dcc94c7fb68bc8d9b1fd111ca7cf0",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "4ffb48c5cd324513d774c859f819d4e6bcc697b758e5a5fb5fa770113416ce2c",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "image_unmasked_fragment_main.glsl",
-      "spirv_sha256": "dfc6d01d1a68ac613c0f3f027a2d1a6a064ba0f9effba160ea0ac3d0a5aa8377",
-      "glsl_sha256": "95c256d4bccbabbb4d1c46f3742afd7fe81605e91132d92614ded827ad272810",
+      "spirv_sha256": "b00d9b7f9ec420b87ee320b149907c5d11eaec884e4e56fdb4254a4a706c6aed",
+      "glsl_sha256": "ff3fe24739fa1977c6e318c68ccce17132055ce04672616a07a228b169ec2a17",
       "first_instance_uniform": null,
       "texture_units": [
         {
@@ -796,9 +796,9 @@
       "gl_resources": {
         "ubos": [
           {
-            "type": "_775",
+            "type": "_810",
             "name": "ImageParams",
-            "block_size": 336,
+            "block_size": 352,
             "set": 0,
             "binding": 0
           }
@@ -813,9 +813,9 @@
       "bindings": [],
       "storage_layouts": {},
       "source_sha256": "d32be116f46978b2b50ab6c0568e9d9929aadec581e9df45b9f10f10ba1e4ad6",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "damage_clear_vertex_main.glsl",
-      "spirv_sha256": "64c0deea61a57d43bb9676798584efdc5626b7954cc9357623f726f7bd59cb59",
+      "spirv_sha256": "7a3a453dc07ffacfc9ef2bdc944c21057d94ba3b65a68f640a054b442dd7539f",
       "glsl_sha256": "7351bc4b1739ba156b4468f57714feb4565e44dff760e693573d2cbd13002642",
       "first_instance_uniform": null,
       "texture_units": [],
@@ -831,9 +831,9 @@
       "bindings": [],
       "storage_layouts": {},
       "source_sha256": "d32be116f46978b2b50ab6c0568e9d9929aadec581e9df45b9f10f10ba1e4ad6",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "damage_clear_fragment_main.glsl",
-      "spirv_sha256": "3afaecf17073762baf13d7e894ba530a1f1855609da7f21e3a31a89f2342cbdc",
+      "spirv_sha256": "bfcefadf6d4da83f60a61bb3820077423753854055f2b717e33fc2e2e2c2cfea",
       "glsl_sha256": "45bca33e5f8d4cc4862d50052edad37413730329311707ebbf53a1538c8a25d1",
       "first_instance_uniform": null,
       "texture_units": [],
@@ -851,7 +851,7 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 336,
+          "min_size": 352,
           "stride": 0
         },
         {
@@ -865,11 +865,11 @@
       "storage_layouts": {
         "IconInstanceData": 64
       },
-      "source_sha256": "854b7fc8cfe30dcc95f4010c2f54542de8f2cb22e167bb2cd0611b897c91dfd0",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "67b8e753150d0467ec170bc99b6d0af80b51dd29844f67a39ddda4e65eb23f67",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "icon_vertex_main.glsl",
-      "spirv_sha256": "3069124cd3e64202f6512e64bc75204061e260a9aa023b1025a11724c08b5865",
-      "glsl_sha256": "936b5690c54ec35fdb811cf37a2c8cf5e89e9668434473ec325176cb9b612434",
+      "spirv_sha256": "9eb542c977bd67a997248836e9c5633e1690af035ded5da0af673613354d09d8",
+      "glsl_sha256": "6f95067bfb4a093962d1b95116eac97716c989df252b27edf82b0cb13e0d9a6d",
       "first_instance_uniform": "zenit_first_instance",
       "texture_units": [],
       "gl_resources": {
@@ -877,7 +877,7 @@
           {
             "type": "_91",
             "name": "Params",
-            "block_size": 336,
+            "block_size": 352,
             "set": 0,
             "binding": 0
           }
@@ -903,7 +903,7 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 336,
+          "min_size": 352,
           "stride": 0
         },
         {
@@ -931,11 +931,11 @@
       "storage_layouts": {
         "IconInstanceData": 64
       },
-      "source_sha256": "854b7fc8cfe30dcc95f4010c2f54542de8f2cb22e167bb2cd0611b897c91dfd0",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "67b8e753150d0467ec170bc99b6d0af80b51dd29844f67a39ddda4e65eb23f67",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "icon_fragment_main.glsl",
-      "spirv_sha256": "f9b643f5bd210c9af010533620a4ab01ca9535959a65d363b3eed8ba6b5e44f3",
-      "glsl_sha256": "70200d89806f64fc0c0444eefae26d464cc70ddfc5893d794e27ea55e23ab024",
+      "spirv_sha256": "79a14d6c9cb5c9ef297b94da3798a5eefa44b0872bb1cc0bb538b714833286f6",
+      "glsl_sha256": "ac3407a78fcc8be73627bbeadb30256a2dd2bbe215cb749723114893748faa03",
       "first_instance_uniform": null,
       "texture_units": [
         {
@@ -950,16 +950,16 @@
       "gl_resources": {
         "ubos": [
           {
-            "type": "_798",
+            "type": "_834",
             "name": "Params",
-            "block_size": 336,
+            "block_size": 352,
             "set": 0,
             "binding": 0
           }
         ],
         "ssbos": [
           {
-            "type": "_770",
+            "type": "_806",
             "name": "instances",
             "readonly": true,
             "block_size": 0,
@@ -978,7 +978,7 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 336,
+          "min_size": 384,
           "stride": 0
         },
         {
@@ -992,11 +992,11 @@
       "storage_layouts": {
         "GlyphInstance": 80
       },
-      "source_sha256": "2a28de192787634feab592a94e9b05a832f731f2bb9750179286fa248e55e539",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "25cdc2cf8a3cc09ada8e5032c110216466402dd5b44b6e6fac0d5f05f25ff88e",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "text_vertex_main.glsl",
-      "spirv_sha256": "27c6d2a0ac2e68e6d622360065272eed4bd67839ee94552ded7300797afa5a31",
-      "glsl_sha256": "f639b8c12e214e4e99a55eb4286ebd4b01332cedcc2ea0c9f646272f691d2d68",
+      "spirv_sha256": "4b5065290926544213bf559a053659694c65d768cf29fe6a7268c9f5ad4bcc2d",
+      "glsl_sha256": "f96018b41aa075e9e1c9a0db91362bf2503a7274c6deb1a7b265f6f971773400",
       "first_instance_uniform": "zenit_first_instance",
       "texture_units": [],
       "gl_resources": {
@@ -1004,7 +1004,7 @@
           {
             "type": "_97",
             "name": "Params",
-            "block_size": 336,
+            "block_size": 384,
             "set": 0,
             "binding": 0
           }
@@ -1030,7 +1030,7 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 336,
+          "min_size": 384,
           "stride": 0
         },
         {
@@ -1065,11 +1065,11 @@
       "storage_layouts": {
         "GlyphInstance": 80
       },
-      "source_sha256": "2a28de192787634feab592a94e9b05a832f731f2bb9750179286fa248e55e539",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "25cdc2cf8a3cc09ada8e5032c110216466402dd5b44b6e6fac0d5f05f25ff88e",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "text_fragment_main.glsl",
-      "spirv_sha256": "b5b6e506df59e01549b041b10fc63f95f666aec7ea3c99e6f351479998e78958",
-      "glsl_sha256": "50a059b741308903172d5e7620256f74e09d2e9a4b43d8472e7c76f5a8140281",
+      "spirv_sha256": "f07c5675a7502fc9dce6ddca7f299fe97096edf17c639dd440e4b76c0599c404",
+      "glsl_sha256": "d664eae1d9c4a82eb55f161fb4c5c7c41102904130b0bce9fe730120059c7544",
       "first_instance_uniform": null,
       "texture_units": [
         {
@@ -1092,16 +1092,16 @@
       "gl_resources": {
         "ubos": [
           {
-            "type": "_800",
+            "type": "_820",
             "name": "Params",
-            "block_size": 336,
+            "block_size": 384,
             "set": 0,
             "binding": 0
           }
         ],
         "ssbos": [
           {
-            "type": "_770",
+            "type": "_886",
             "name": "instances",
             "readonly": true,
             "block_size": 0,
@@ -1120,7 +1120,7 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 340,
+          "min_size": 360,
           "stride": 0
         },
         {
@@ -1134,11 +1134,11 @@
       "storage_layouts": {
         "InstanceData": 176
       },
-      "source_sha256": "9faff780a58ca41b82537cb7ff767ad613b5d456ba064de9042a3455a589c078",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "e02199be78a7a3dd2911d70ba93b891759f675b95e9c3507ed8ca70e7435f180",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "sdf_tiled_rect_vertex_main.glsl",
-      "spirv_sha256": "ce13cda8f1eba9ed6951e3dbefe84e478c180f117d7982de6ded0c92e9ccec41",
-      "glsl_sha256": "222a108c6b21c5d16645019c6c05aeb3bc57b449892080e3364f10f522541a10",
+      "spirv_sha256": "9e057dcc40662b9a6ba5c5387c6e85673c802b9c8fe0f5321101dc0a2c82626d",
+      "glsl_sha256": "4424370569a1e6d46eb859297e79508b396e5719f6bd85d9d53bf8ef3447a85c",
       "first_instance_uniform": "zenit_first_instance",
       "texture_units": [],
       "gl_resources": {
@@ -1146,7 +1146,7 @@
           {
             "type": "_144",
             "name": "Params",
-            "block_size": 340,
+            "block_size": 360,
             "set": 0,
             "binding": 0
           }
@@ -1172,7 +1172,7 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 340,
+          "min_size": 360,
           "stride": 0
         },
         {
@@ -1194,11 +1194,11 @@
         "InstanceData": 176,
         "ShadowParam": 32
       },
-      "source_sha256": "9faff780a58ca41b82537cb7ff767ad613b5d456ba064de9042a3455a589c078",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "e02199be78a7a3dd2911d70ba93b891759f675b95e9c3507ed8ca70e7435f180",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "sdf_vertex_main.glsl",
-      "spirv_sha256": "5a9d44fa57c6ab4b8fa158c5c65fa6c1fa72a18bf845a15508129066b305aaaf",
-      "glsl_sha256": "071a06ca24faf4057ddd2e4fab4985bee9247f0e3d7edcf966c2f7386b77a5fe",
+      "spirv_sha256": "fb501c647e422dffd9b39d44087e35a118add617575b8d2c119e471486f31419",
+      "glsl_sha256": "c615fc22d6358ff6ec3d612f468a294d6e9b23e65cefa907576a170a42d75a94",
       "first_instance_uniform": "zenit_first_instance",
       "texture_units": [],
       "gl_resources": {
@@ -1206,7 +1206,7 @@
           {
             "type": "_144",
             "name": "Params",
-            "block_size": 340,
+            "block_size": 360,
             "set": 0,
             "binding": 0
           }
@@ -1240,7 +1240,7 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 340,
+          "min_size": 360,
           "stride": 0
         },
         {
@@ -1262,11 +1262,11 @@
         "InstanceData": 176,
         "ShadowParam": 32
       },
-      "source_sha256": "9faff780a58ca41b82537cb7ff767ad613b5d456ba064de9042a3455a589c078",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "e02199be78a7a3dd2911d70ba93b891759f675b95e9c3507ed8ca70e7435f180",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "sdf_shadow_ring_vertex_main.glsl",
-      "spirv_sha256": "28e1b3c90fe6061eed4a6f0f2c57648e87d7eb6368fccb56660fc30103f3abf6",
-      "glsl_sha256": "67f68fb8376aa5b041f76524319d6afa2b1d7ab3503978d58830d6e17208424f",
+      "spirv_sha256": "72da7910b97e885472e54dda4e7c28a14f2bb069d8f22f8314bf66d3cea2c117",
+      "glsl_sha256": "7ca5304b53eb7e339a2b47bb0ed89c0bc6c66a6fffe72f14cba377d9eb208195",
       "first_instance_uniform": "zenit_first_instance",
       "texture_units": [],
       "gl_resources": {
@@ -1274,7 +1274,7 @@
           {
             "type": "_144",
             "name": "Params",
-            "block_size": 340,
+            "block_size": 360,
             "set": 0,
             "binding": 0
           }
@@ -1308,7 +1308,7 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 340,
+          "min_size": 360,
           "stride": 0
         },
         {
@@ -1330,11 +1330,11 @@
         "InstanceData": 176,
         "ShadowParam": 32
       },
-      "source_sha256": "9faff780a58ca41b82537cb7ff767ad613b5d456ba064de9042a3455a589c078",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "e02199be78a7a3dd2911d70ba93b891759f675b95e9c3507ed8ca70e7435f180",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "sdf_dual_shadow_vertex_main.glsl",
-      "spirv_sha256": "adcaabcb574cc7a325fa30dfec295f0c7297c65e142a162c5ab8f5d3fcfffb1b",
-      "glsl_sha256": "1120969b2c222700e1c4f0513f2b83c25669e20299ab99ba175e24073a4adf3f",
+      "spirv_sha256": "ea14fac392d20bcd1b7ee598e49707954b46fc682911a4e1ff9b56408d4ad3ba",
+      "glsl_sha256": "947a88c96321e7e78ee410516ec4f4e7ed018e90b09d2a3c3d86e453acf7b071",
       "first_instance_uniform": "zenit_first_instance",
       "texture_units": [],
       "gl_resources": {
@@ -1342,7 +1342,7 @@
           {
             "type": "_144",
             "name": "Params",
-            "block_size": 340,
+            "block_size": 360,
             "set": 0,
             "binding": 0
           }
@@ -1376,7 +1376,7 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 340,
+          "min_size": 360,
           "stride": 0
         },
         {
@@ -1390,26 +1390,26 @@
       "storage_layouts": {
         "ShadowParam": 32
       },
-      "source_sha256": "9faff780a58ca41b82537cb7ff767ad613b5d456ba064de9042a3455a589c078",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "e02199be78a7a3dd2911d70ba93b891759f675b95e9c3507ed8ca70e7435f180",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "sdf_shadow_ring_fragment_main.glsl",
-      "spirv_sha256": "630f3c89c0d2b8866958623216ae44ee2a2c6c6e760cdc9b861ec9a248da7688",
-      "glsl_sha256": "f148a4894248eaf0fa0e5b0f5a9b2fc49b7ce42c5b0e2aba1a189f8915e07660",
+      "spirv_sha256": "6cd5a29dc990a9a8dd5694fd24e618795f7b1f28d0ba5c534611793f49aab8ac",
+      "glsl_sha256": "2f31ecd5ca3a1df287d0ac3ec920522266cca1590fd1034ace5e4409363f369d",
       "first_instance_uniform": null,
       "texture_units": [],
       "gl_resources": {
         "ubos": [
           {
-            "type": "_1772",
+            "type": "_1786",
             "name": "Params",
-            "block_size": 340,
+            "block_size": 360,
             "set": 0,
             "binding": 0
           }
         ],
         "ssbos": [
           {
-            "type": "_2414",
+            "type": "_2442",
             "name": "shadow_params",
             "readonly": true,
             "block_size": 0,
@@ -1428,24 +1428,24 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 340,
+          "min_size": 360,
           "stride": 0
         }
       ],
       "storage_layouts": {},
-      "source_sha256": "9faff780a58ca41b82537cb7ff767ad613b5d456ba064de9042a3455a589c078",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "e02199be78a7a3dd2911d70ba93b891759f675b95e9c3507ed8ca70e7435f180",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "sdf_dual_shadow_fragment_main.glsl",
-      "spirv_sha256": "a8f3900bec9306bd2f37bcbcb74749009055340132b7730190dc0e8d7e3faca2",
-      "glsl_sha256": "0b173a5d5a4d0e86df02dabeff7404cc4c0a464c7e8e29a23cf360862ef097f9",
+      "spirv_sha256": "7c5ba62adb6a16611935eb935e693bd3946d0d32108e2aebcf275e47eb25b760",
+      "glsl_sha256": "c3390e7bd93222a13b945b488d86d81ef3704c89bf92e60a0143fe68a7cd89fd",
       "first_instance_uniform": null,
       "texture_units": [],
       "gl_resources": {
         "ubos": [
           {
-            "type": "_1772",
+            "type": "_1786",
             "name": "Params",
-            "block_size": 340,
+            "block_size": 360,
             "set": 0,
             "binding": 0
           }
@@ -1462,7 +1462,7 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 340,
+          "min_size": 360,
           "stride": 0
         },
         {
@@ -1492,26 +1492,26 @@
         "ShadowParam": 32,
         "InstanceData": 176
       },
-      "source_sha256": "9faff780a58ca41b82537cb7ff767ad613b5d456ba064de9042a3455a589c078",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "e02199be78a7a3dd2911d70ba93b891759f675b95e9c3507ed8ca70e7435f180",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "sdf_linear_x_fragment_main.glsl",
-      "spirv_sha256": "e593050672a58812483105c24f8275499010817672b89edfb30093e9238bb131",
-      "glsl_sha256": "e1332d1c0dfa00e2a7c4bf26539417db9427e06f4a27a542e12b3156c8106acd",
+      "spirv_sha256": "82d2416b2ada2b99ae5e8f7c82fe117212ab004d2153f5b2cd79da3ef8ff2b63",
+      "glsl_sha256": "f1016a25abc7d48ed476a0468fca0cbd8f6c92534532c4743a32586b27193943",
       "first_instance_uniform": null,
       "texture_units": [],
       "gl_resources": {
         "ubos": [
           {
-            "type": "_1772",
+            "type": "_1786",
             "name": "Params",
-            "block_size": 340,
+            "block_size": 360,
             "set": 0,
             "binding": 0
           }
         ],
         "ssbos": [
           {
-            "type": "_2414",
+            "type": "_2442",
             "name": "shadow_params",
             "readonly": true,
             "block_size": 0,
@@ -1527,7 +1527,7 @@
             "binding": 2
           },
           {
-            "type": "_2923",
+            "type": "_2950",
             "name": "instances",
             "readonly": true,
             "block_size": 0,
@@ -1546,7 +1546,7 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 340,
+          "min_size": 360,
           "stride": 0
         },
         {
@@ -1576,26 +1576,26 @@
         "ShadowParam": 32,
         "InstanceData": 176
       },
-      "source_sha256": "9faff780a58ca41b82537cb7ff767ad613b5d456ba064de9042a3455a589c078",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "e02199be78a7a3dd2911d70ba93b891759f675b95e9c3507ed8ca70e7435f180",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "sdf_linear_y_fragment_main.glsl",
-      "spirv_sha256": "8c7e80be6be1cdb59c5f5d6e615d6c3f17c0ce2a011a15d459e3d83ff1408fa2",
-      "glsl_sha256": "a7633590835be96f18c3efe14d6296c3aba51ea36a96a0f777c81bc7d1aad541",
+      "spirv_sha256": "b8f3cf72a49cbc2a3fc3e3a9a39ac38c7af462b856e789432f8e14b2e545d88b",
+      "glsl_sha256": "bc1335ffacbf12586d8b36f78edea25926783039e6de26e5a27457b44128702a",
       "first_instance_uniform": null,
       "texture_units": [],
       "gl_resources": {
         "ubos": [
           {
-            "type": "_1772",
+            "type": "_1786",
             "name": "Params",
-            "block_size": 340,
+            "block_size": 360,
             "set": 0,
             "binding": 0
           }
         ],
         "ssbos": [
           {
-            "type": "_2414",
+            "type": "_2442",
             "name": "shadow_params",
             "readonly": true,
             "block_size": 0,
@@ -1611,7 +1611,7 @@
             "binding": 2
           },
           {
-            "type": "_2923",
+            "type": "_2950",
             "name": "instances",
             "readonly": true,
             "block_size": 0,
@@ -1630,7 +1630,7 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 340,
+          "min_size": 360,
           "stride": 0
         },
         {
@@ -1644,26 +1644,26 @@
       "storage_layouts": {
         "InstanceData": 176
       },
-      "source_sha256": "9faff780a58ca41b82537cb7ff767ad613b5d456ba064de9042a3455a589c078",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "e02199be78a7a3dd2911d70ba93b891759f675b95e9c3507ed8ca70e7435f180",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "sdf_inset_rect_fragment_main.glsl",
-      "spirv_sha256": "d07b1cca5bdd6094eb8cf16a149b15b1ff1238e7d2a659f48fb1da45a91fe2d2",
-      "glsl_sha256": "c60280d0bb1fe3d4835b5f4bc33927784f5ca25ae1c596269bbd6c7e4e13b18a",
+      "spirv_sha256": "608b65f23644379d5d7992555bd64add094c53ca0fb08d45e12d45873d6c78f3",
+      "glsl_sha256": "357f0742af145ffb1fed84d10c3fcc07f45903dba8f167a609afc7953cfd4a19",
       "first_instance_uniform": null,
       "texture_units": [],
       "gl_resources": {
         "ubos": [
           {
-            "type": "_1764",
+            "type": "_1778",
             "name": "Params",
-            "block_size": 340,
+            "block_size": 360,
             "set": 0,
             "binding": 0
           }
         ],
         "ssbos": [
           {
-            "type": "_2898",
+            "type": "_2925",
             "name": "instances",
             "readonly": true,
             "block_size": 0,
@@ -1682,7 +1682,7 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 340,
+          "min_size": 360,
           "stride": 0
         },
         {
@@ -1712,26 +1712,26 @@
         "ShadowParam": 32,
         "InstanceData": 176
       },
-      "source_sha256": "9faff780a58ca41b82537cb7ff767ad613b5d456ba064de9042a3455a589c078",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "e02199be78a7a3dd2911d70ba93b891759f675b95e9c3507ed8ca70e7435f180",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "sdf_fragment_main.glsl",
-      "spirv_sha256": "8082f0dda745354ace51425fbc497bdbc0ed8de9bf8ea2a2a8d3337cab2b2f68",
-      "glsl_sha256": "0ca1604c2be8d24828f113ca82ce42f4d18a181be965d7488b88ab55900c9c4f",
+      "spirv_sha256": "af46396b8da8bc4045b8c922ddbbbf810dd6efd9c9185448e3280446dd9a5311",
+      "glsl_sha256": "4429dfcf51b34ddbfb275a14c622190dca9b6d49e05142f75ebb2637b64caa84",
       "first_instance_uniform": null,
       "texture_units": [],
       "gl_resources": {
         "ubos": [
           {
-            "type": "_1772",
+            "type": "_1786",
             "name": "Params",
-            "block_size": 340,
+            "block_size": 360,
             "set": 0,
             "binding": 0
           }
         ],
         "ssbos": [
           {
-            "type": "_2414",
+            "type": "_2442",
             "name": "shadow_params",
             "readonly": true,
             "block_size": 0,
@@ -1747,7 +1747,7 @@
             "binding": 2
           },
           {
-            "type": "_2922",
+            "type": "_2949",
             "name": "instances",
             "readonly": true,
             "block_size": 0,
@@ -1766,7 +1766,7 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 340,
+          "min_size": 360,
           "stride": 0
         },
         {
@@ -1788,19 +1788,19 @@
         "GradientStop": 32,
         "InstanceData": 176
       },
-      "source_sha256": "9faff780a58ca41b82537cb7ff767ad613b5d456ba064de9042a3455a589c078",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "e02199be78a7a3dd2911d70ba93b891759f675b95e9c3507ed8ca70e7435f180",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "sdf_body_fragment_main.glsl",
-      "spirv_sha256": "0c6367c91b38d9d4236d76d36099929716ab99a1e9242a163ef5bc86c6dae420",
-      "glsl_sha256": "15903e739fc76a133d04e6903a86b6707751298533a1c0a4a8601cfb4eadc8e9",
+      "spirv_sha256": "fd2f663bf54db0964fa4c7e4678d1a6547b88603e4f8e1378cad7b9928919320",
+      "glsl_sha256": "c7f5ca10cbec1d51b0637d02ac6247d06814f549acbb795f6cd9af583dd47e63",
       "first_instance_uniform": null,
       "texture_units": [],
       "gl_resources": {
         "ubos": [
           {
-            "type": "_1764",
+            "type": "_1778",
             "name": "Params",
-            "block_size": 340,
+            "block_size": 360,
             "set": 0,
             "binding": 0
           }
@@ -1815,7 +1815,7 @@
             "binding": 2
           },
           {
-            "type": "_2897",
+            "type": "_2924",
             "name": "instances",
             "readonly": true,
             "block_size": 0,
@@ -1834,7 +1834,7 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 340,
+          "min_size": 360,
           "stride": 0
         },
         {
@@ -1856,26 +1856,26 @@
         "ShadowParam": 32,
         "InstanceData": 176
       },
-      "source_sha256": "9faff780a58ca41b82537cb7ff767ad613b5d456ba064de9042a3455a589c078",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "e02199be78a7a3dd2911d70ba93b891759f675b95e9c3507ed8ca70e7435f180",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "sdf_outer_shadow_fragment_main.glsl",
-      "spirv_sha256": "052c377792ef5b6ad13de0d80da69b5c8b1c1175a9520d98c4ccd2a4d17707ef",
-      "glsl_sha256": "68a68841360ed97bd549af837d209592f94897a0df6077853c1503b9bf198d1f",
+      "spirv_sha256": "e38ff9f756c87c8589ad03794334692936c3ec58ca09d06defdf3179f876401d",
+      "glsl_sha256": "dc8d694a4df319d2b694f3b631da36b4cc793fe636d97f9e8877637c93cecd46",
       "first_instance_uniform": null,
       "texture_units": [],
       "gl_resources": {
         "ubos": [
           {
-            "type": "_1764",
+            "type": "_1778",
             "name": "Params",
-            "block_size": 340,
+            "block_size": 360,
             "set": 0,
             "binding": 0
           }
         ],
         "ssbos": [
           {
-            "type": "_2406",
+            "type": "_2434",
             "name": "shadow_params",
             "readonly": true,
             "block_size": 0,
@@ -1883,7 +1883,7 @@
             "binding": 3
           },
           {
-            "type": "_2897",
+            "type": "_2924",
             "name": "instances",
             "readonly": true,
             "block_size": 0,
@@ -1902,7 +1902,7 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 340,
+          "min_size": 360,
           "stride": 0
         },
         {
@@ -1916,26 +1916,26 @@
       "storage_layouts": {
         "InstanceData": 176
       },
-      "source_sha256": "9faff780a58ca41b82537cb7ff767ad613b5d456ba064de9042a3455a589c078",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "e02199be78a7a3dd2911d70ba93b891759f675b95e9c3507ed8ca70e7435f180",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "sdf_inset_layer_fragment_main.glsl",
-      "spirv_sha256": "10616b0dad01a09db58e54337d08c21f00ca5927a273b1f2cc98e81ae45ca8b5",
-      "glsl_sha256": "9abdb313502222619b2184b5d549e9ecad7bad3708ee9db1485f65842380446d",
+      "spirv_sha256": "c5f6b468d3cb7420c16aae9389a7eb6d32cdb552b4e9c0c0b92837ad2af9aac4",
+      "glsl_sha256": "8e352d749497cb19b32aa8942515660d609572c92e9fd3826aa26ad62ffdb608",
       "first_instance_uniform": null,
       "texture_units": [],
       "gl_resources": {
         "ubos": [
           {
-            "type": "_1764",
+            "type": "_1778",
             "name": "Params",
-            "block_size": 340,
+            "block_size": 360,
             "set": 0,
             "binding": 0
           }
         ],
         "ssbos": [
           {
-            "type": "_2897",
+            "type": "_2924",
             "name": "instances",
             "readonly": true,
             "block_size": 0,
@@ -1954,7 +1954,7 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 340,
+          "min_size": 360,
           "stride": 0
         },
         {
@@ -1968,26 +1968,26 @@
       "storage_layouts": {
         "InstanceData": 176
       },
-      "source_sha256": "9faff780a58ca41b82537cb7ff767ad613b5d456ba064de9042a3455a589c078",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "e02199be78a7a3dd2911d70ba93b891759f675b95e9c3507ed8ca70e7435f180",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "sdf_border_layer_fragment_main.glsl",
-      "spirv_sha256": "805c3414391e8c68496cc7722a73790b569d4a168e97ca6196b620d9d8de0d76",
-      "glsl_sha256": "3bbab9cbaf99bf3f12c19084ffb8416bac14653babea8d386fd34d441f76496b",
+      "spirv_sha256": "414e7163549d3f604b7c469a49c529f73ef4f4a148f26b9a92b6b702d546576d",
+      "glsl_sha256": "1e2e667eac6d89429b6c1eb2feff2e96b8a38e811632921cc5f9f4660a67e19d",
       "first_instance_uniform": null,
       "texture_units": [],
       "gl_resources": {
         "ubos": [
           {
-            "type": "_1764",
+            "type": "_1778",
             "name": "Params",
-            "block_size": 340,
+            "block_size": 360,
             "set": 0,
             "binding": 0
           }
         ],
         "ssbos": [
           {
-            "type": "_2897",
+            "type": "_2924",
             "name": "instances",
             "readonly": true,
             "block_size": 0,
@@ -2006,24 +2006,24 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 340,
+          "min_size": 360,
           "stride": 0
         }
       ],
       "storage_layouts": {},
-      "source_sha256": "9faff780a58ca41b82537cb7ff767ad613b5d456ba064de9042a3455a589c078",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "e02199be78a7a3dd2911d70ba93b891759f675b95e9c3507ed8ca70e7435f180",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "sdf_rounded_clip_rect_fragment_main.glsl",
-      "spirv_sha256": "e0df1b637319cc5889df49ab75e82dab86b857f7209dbb632c0e573afa8d3eef",
-      "glsl_sha256": "2b93323c900b1b41c7b5e9e3239fd2452fea1961d898df86a5e343e4e5e34b9b",
+      "spirv_sha256": "fffcad5bda64fe36b00cf5e22d22e1d207894c011d6ab8befd1ffd38735c57a0",
+      "glsl_sha256": "1984acd0feee9c8feef0a57c8aaae248a1c9022114eba8cda9052b97f8486bd3",
       "first_instance_uniform": null,
       "texture_units": [],
       "gl_resources": {
         "ubos": [
           {
-            "type": "_1778",
+            "type": "_1792",
             "name": "Params",
-            "block_size": 340,
+            "block_size": 360,
             "set": 0,
             "binding": 0
           }
@@ -2040,24 +2040,24 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 340,
+          "min_size": 360,
           "stride": 0
         }
       ],
       "storage_layouts": {},
-      "source_sha256": "9faff780a58ca41b82537cb7ff767ad613b5d456ba064de9042a3455a589c078",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "e02199be78a7a3dd2911d70ba93b891759f675b95e9c3507ed8ca70e7435f180",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "sdf_rect_fragment_main.glsl",
-      "spirv_sha256": "6f4a0c16aa4a21e430c46390a264e7e79caeea73f11a6107503b99ca96519a1e",
-      "glsl_sha256": "c8d39db91578e16b980ae248b49d94719ae0e6b5794db708a73a0761ae6adb37",
+      "spirv_sha256": "bcc114e06a6fc1b13c44b96ac429cb9d187662e9052bbd00fb2a310b879bd342",
+      "glsl_sha256": "e2f69714938c911e73e917b7ccc68c78b1dd65556fc6aff9a4237223921f2822",
       "first_instance_uniform": null,
       "texture_units": [],
       "gl_resources": {
         "ubos": [
           {
-            "type": "_1778",
+            "type": "_1792",
             "name": "Params",
-            "block_size": 340,
+            "block_size": 360,
             "set": 0,
             "binding": 0
           }
@@ -2074,24 +2074,24 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 340,
+          "min_size": 360,
           "stride": 0
         }
       ],
       "storage_layouts": {},
-      "source_sha256": "9faff780a58ca41b82537cb7ff767ad613b5d456ba064de9042a3455a589c078",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "e02199be78a7a3dd2911d70ba93b891759f675b95e9c3507ed8ca70e7435f180",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "sdf_solid_fragment_main.glsl",
-      "spirv_sha256": "845a75fcc66a24f96add6df45f1245fbd7f2a88cbafa681594651cad63262a1d",
-      "glsl_sha256": "b5df9511e7da6662fc7f107429b8110781454c3a6d40bcbd8837064e5d56221d",
+      "spirv_sha256": "bedd9a928f75b6c55e0a2550ad73bbd4c6c99456fae3200a54cb15c63cd94aef",
+      "glsl_sha256": "a67d1cd53b0f0e1719d46d6e63532941bfcaa3c5f5766305f3587fdc269bec0c",
       "first_instance_uniform": null,
       "texture_units": [],
       "gl_resources": {
         "ubos": [
           {
-            "type": "_1778",
+            "type": "_1792",
             "name": "Params",
-            "block_size": 340,
+            "block_size": 360,
             "set": 0,
             "binding": 0
           }
@@ -2108,24 +2108,24 @@
           "group": 0,
           "binding": 0,
           "kind": 0,
-          "min_size": 340,
+          "min_size": 360,
           "stride": 0
         }
       ],
       "storage_layouts": {},
-      "source_sha256": "9faff780a58ca41b82537cb7ff767ad613b5d456ba064de9042a3455a589c078",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "e02199be78a7a3dd2911d70ba93b891759f675b95e9c3507ed8ca70e7435f180",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "sdf_plain_rect_fragment_main.glsl",
-      "spirv_sha256": "79908bde0056aa2a17725221157ab48c9f4f4ee99206c075732e5888b3661ebc",
-      "glsl_sha256": "e77bd70e26f9fe898ba54887e78d021afeb0e0132eb1f1c6e3855d6f700803bc",
+      "spirv_sha256": "be7ce582862ef8740205cbc7e96393c13d1f79b51324da22f5e925837ceb663f",
+      "glsl_sha256": "2054a60ccff26d3095664f0a55853b95ff8198536e72d7df19de9edea7b81881",
       "first_instance_uniform": null,
       "texture_units": [],
       "gl_resources": {
         "ubos": [
           {
-            "type": "_271",
+            "type": "_286",
             "name": "Params",
-            "block_size": 340,
+            "block_size": 360,
             "set": 0,
             "binding": 0
           }
@@ -2139,11 +2139,11 @@
       "stage": "vertex",
       "bindings": [],
       "storage_layouts": {},
-      "source_sha256": "aac8810183ff31363b8e656630d5b177efda45156b88b5ff3892e5255bec152a",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "source_sha256": "a90696bfb7e92a108b69f313037fd705e5e6db4ff88a6152facac692101e2bd2",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "glass_vertex_main.glsl",
-      "spirv_sha256": "f0a6114c12518ab740f3c91808c17fc68d446b85c5cb7b0e8145deb9ff1b4ac9",
-      "glsl_sha256": "e685e450de348015f57d6eb846a92f9e6c78f441e2672e55148c6ab1c168f891",
+      "spirv_sha256": "8cd83bb73facc14e1352ec3fdeb94bf5278d427ce82ddf132743a48553d53238",
+      "glsl_sha256": "54813f42f539f9e2901ef73e17861b6f8b4a885387a83a93c11a97aab5cc2b97",
       "first_instance_uniform": null,
       "texture_units": [],
       "gl_resources": {
@@ -2162,6 +2162,13 @@
           "kind": 0,
           "min_size": 1664,
           "stride": 0
+        },
+        {
+          "group": 0,
+          "binding": 1,
+          "kind": 2,
+          "min_size": 0,
+          "stride": 16
         },
         {
           "group": 1,
@@ -2206,12 +2213,14 @@
           "stride": 0
         }
       ],
-      "storage_layouts": {},
-      "source_sha256": "aac8810183ff31363b8e656630d5b177efda45156b88b5ff3892e5255bec152a",
-      "compiler_sha256": "72e3c48aee4bbb9cf02d1dcc338c82437df7d7426d1679c2b1a97091b8c72a54",
+      "storage_layouts": {
+        "float4": 16
+      },
+      "source_sha256": "a90696bfb7e92a108b69f313037fd705e5e6db4ff88a6152facac692101e2bd2",
+      "compiler_sha256": "bb5bb31fad83ac2bf6695d93e55c058f59e1e2ec332a775bcf1740ff6af89b23",
       "source": "glass_fragment_main.glsl",
-      "spirv_sha256": "f79f028c860b46af1ac56ec39aad55d47f54c82e5d6ace0dcbdade1bdef5c19a",
-      "glsl_sha256": "7e45546b2dda1989077943810a5cc0f3261ba1738d13ad3edfc74b9ad97b1505",
+      "spirv_sha256": "0bbc00a63f3e091a46b063521322698ae83474cfc6f55a8bee848c3dbe8b0874",
+      "glsl_sha256": "5990b6ec70833092c22d3496baf9eaeb1b94976c617eca94b9e6f8aebe100ef7",
       "first_instance_uniform": null,
       "texture_units": [
         {
@@ -2258,14 +2267,23 @@
       "gl_resources": {
         "ubos": [
           {
-            "type": "_1529",
+            "type": "_1467",
             "name": "GlassUniformsBuffer",
             "block_size": 1664,
             "set": 0,
             "binding": 0
           }
         ],
-        "ssbos": []
+        "ssbos": [
+          {
+            "type": "_82",
+            "name": "tab_lens_table",
+            "readonly": true,
+            "block_size": 0,
+            "set": 0,
+            "binding": 1
+          }
+        ]
       }
     }
   ],

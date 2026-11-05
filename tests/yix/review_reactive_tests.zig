@@ -1,5 +1,6 @@
 const std = @import("std");
 const ui = @import("ui");
+const graph_assertions = @import("graph_assertions.zig");
 const fixture = @import("_review_reactive.yix.zig");
 const testing = std.testing;
 
@@ -66,9 +67,9 @@ test "Yix pure calls and peek-only calls keep zero memo and effect overhead" {
         const store = try e.scope.createSignal(i32, 10);
         fixture.store = store;
         defer fixture.store = null;
-        const before = e.cx.owner.graph.countByKind();
+        const before = try graph_assertions.staticCounts(e.cx);
         try e.mount(component(.{}));
-        const after = e.cx.owner.graph.countByKind();
+        const after = try graph_assertions.staticCounts(e.cx);
         try testing.expectEqual(before.get(.memo), after.get(.memo));
         try testing.expectEqual(before.get(.effect), after.get(.effect));
         const initial = try testing.allocator.dupe(u8, e.text());
@@ -104,9 +105,9 @@ test "Yix null and comptime struct call results retain value passing" {
 test "Yix static recipe call remains directly applicable as style" {
     var e = try Env.init();
     defer e.deinit();
-    const before = e.cx.owner.graph.countByKind();
+    const before = try graph_assertions.staticCounts(e.cx);
     try e.mount(fixture.StaticRecipeCall(.{}));
-    const after = e.cx.owner.graph.countByKind();
+    const after = try graph_assertions.staticCounts(e.cx);
     try testing.expectEqual(@as(f32, 7), e.root.?.style.gap);
     try testing.expectEqual(before.get(.memo), after.get(.memo));
     try testing.expectEqual(before.get(.effect), after.get(.effect));

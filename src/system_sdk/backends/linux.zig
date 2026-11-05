@@ -139,6 +139,8 @@ pub const LinuxBackend = struct {
                             8 => if (comptime has_ime) {
                                 try pushEvent(queue, .{ .ime_delete_surrounding = .{ .window_id = self.window_id, .generation = self.ime_generation, .before_bytes = native.delete_before, .after_bytes = native.delete_after } });
                             } else return error.BackendFailure,
+                            // wl_pointer.leave on the content surface.
+                            9 => try pushEvent(queue, .{ .pointer_left = .{ .window_id = self.window_id } }),
                             else => return error.BackendFailure,
                         }
                         _ = self.window.popInputEvent();
@@ -530,6 +532,23 @@ test "LinuxBackend preserves native click key text release order and owns text" 
     try std.testing.expectEqual(@as(usize, 4), win.head);
     _ = try sdk.pump(0);
     try std.testing.expectEqual(@as(usize, 0), sdk.events().len);
+}
+
+test "LinuxBackend maps wl_pointer.leave to pointer_left after the button cancellation" {
+    var win: OrderedMockWindow = .{ .count = 3 };
+    win.inputs[0] = .{ .kind = 4, .x = 40, .y = 50 };
+    win.inputs[1] = .{ .kind = 1, .button = 0, .pressed = 0, .cancelled = 1, .x = 40, .y = 50 };
+    win.inputs[2] = .{ .kind = 9, .x = 40, .y = 50 };
+    var sdk = try LinuxBackend.initSystemSdk(std.testing.allocator, &win, 9);
+    defer sdk.deinit();
+    _ = try sdk.pump(0);
+    const events = sdk.events();
+    try std.testing.expectEqual(@as(usize, 3), events.len);
+    try std.testing.expect(events[0] == .mouse_move);
+    try std.testing.expect(events[1].mouse_button.cancelled);
+    try std.testing.expect(events[2] == .pointer_left);
+    try std.testing.expectEqual(@as(WindowId, 9), events[2].targetWindowId().?);
+    try std.testing.expectEqual(@as(usize, 3), win.head);
 }
 
 test "LinuxBackend retries native text after allocation failure without consuming head" {

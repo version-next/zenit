@@ -18,7 +18,7 @@ var bracket_debug_node_cache: ?u32 = null;
 
 pub fn bracketRenderDebugEnabled() bool {
     if (bracket_debug_enabled_cache) |v| return v;
-    const raw = std.c.getenv("ZENIT_TEXT_BRACKET_DEBUG");
+    const raw = @import("zenit_environment").getNative("ZENIT_TEXT_BRACKET_DEBUG");
     if (raw == null) {
         bracket_debug_enabled_cache = false;
         return false;
@@ -46,7 +46,7 @@ pub fn shouldLogBracketReplay(frame: u64, node_id: u32, start: u32, end: u32) bo
 
 pub fn bracketDebugNodeFilter() ?u32 {
     if (bracket_debug_node_cache) |v| return if (v == std.math.maxInt(u32)) null else v;
-    const raw = std.c.getenv("ZENIT_TEXT_BRACKET_NODE") orelse {
+    const raw = @import("zenit_environment").getNative("ZENIT_TEXT_BRACKET_NODE") orelse {
         bracket_debug_node_cache = std.math.maxInt(u32);
         return null;
     };

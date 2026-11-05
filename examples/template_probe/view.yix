@@ -1,0 +1,54 @@
+const ui = @import("ui");
+const std = @import("std");
+const Palette = @import("palette.zig");
+pub var format_calls: usize = 0;
+pub const FancyValue = struct {
+    pub fn format(_: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        format_calls += 1;
+        try writer.writeAll("fancy");
+    }
+};
+const S = struct {
+    pub const A = ui.css(.{ .gap = 3 });
+    pub const B = ui.css(.{ .gap = 11 });
+    const Unused = ui.css(.{ .gap = 19 });
+    pub const Title = ui.css(.{ .font_size = 13 });
+    pub const TextOnly = ui.css(.{ .line_height = 1.9 });
+    pub const HoverBox = ui.css(.{ ._hover = .{ .gap = 4 } });
+    pub const UnusedTitle = ui.css(.{ .font_size = 21 });
+};
+
+pub fn Probe(start: u32 = 0, countId: []const u8 = "lp4.count", buttonId: []const u8 = "lp4.increment", labelId: []const u8 = "lp4.label", styleId: []const u8 = "lp4.style") View {
+    var count: u32 = signal(start);
+    return (
+        <col>
+            <box testId={buttonId} onClick={count += 1}><text>Increment</text></box>
+            <text testId={countId}>value {count}</text>
+            <text testId={labelId}>Original</text>
+            <box testId={styleId} style={S.A}/>
+            <box style={S.B}/>
+        </col>
+    );
+}
+
+
+pub fn Fancy(custom: FancyValue = .{}) View {
+    return <box><text>{custom}</text><text>OriginalFancy</text></box>;
+}
+
+pub fn DerivedProbe(value: u32 = 0) View {
+    return <box><text>{value + 1}</text><text>DerivedOriginal</text></box>;
+}
+
+
+pub fn Literals(start: u32 = 4) View {
+    var count: u32 = signal(start);
+    return <box testId="literal.root" visible={true} style={.{ .gap = 2 }} onClick={count += 1}>
+        <text testId="literal.text" style={S.Title}>before {count} after</text>
+    </box>;
+}
+
+// The imported style namespace is compiled by this module but never mounted by Probe.
+pub fn PaletteCatalog() View {
+    return <box style={Palette.Unused}/>;
+}

@@ -518,6 +518,10 @@ extern "C" int zenit_d12_device_is_software(ZenitD12Device *d) {
 extern "C" void *zenit_d12_device_native(ZenitD12Device *d) {
   return d ? d->raw.p : nullptr;
 }
+// ZENIT_GPU_LEDGER is a D3D12 diagnostic; the shared wrapper labels every
+// resource, so this backend accepts and ignores the labels.
+extern "C" void zenit_d12_texture_ledger_label(ZenitD12Texture *, const char *, size_t) {}
+extern "C" void zenit_d12_buffer_ledger_label(ZenitD12Buffer *, const char *, size_t) {}
 extern "C" int zenit_d12_buffer_create(ZenitD12Device *d, uint64_t size,
                                        uint32_t usage, ZenitD12Buffer **out) {
   D11_PROF("buffer_create");
@@ -2986,6 +2990,39 @@ extern "C" int zenit_d12_render_pass_draw(ZenitD12RenderPass *p,
   unbind_srvs(c->context);
   return 0;
 }
+// Entry form of render_pass_draw (see d3d12_resources.h): the D3D11 backend
+// keeps bind groups as plain entry lists, so build them and draw.
+extern "C" int zenit_d12_render_pass_draw_entries(
+    ZenitD12RenderPass *p, ZenitD12RenderPipeline *pipeline,
+    const ZenitD12Draw *draw, const ZenitD12BindingEntry *entries,
+    const uint32_t *group_counts, uint32_t group_count) {
+  if (!p || !pipeline || !draw || draw->group_count ||
+      group_count > 4 || (group_count && !group_counts))
+    return 1;
+  ZenitD12BindGroup *groups[4] = {};
+  int status = 0;
+  uint32_t created = 0;
+  for (uint32_t g = 0, at = 0; g < group_count; at += group_counts[g], ++g) {
+    status = zenit_d12_bind_group_create(p->commands->owner, pipeline->layout,
+                                         g, entries + at, group_counts[g],
+                                         &groups[g]);
+    if (status) {
+      if (status == 1)
+        status = 6; // bind_group_create rejection: error.InvalidBindGroup
+      break;
+    }
+    ++created;
+  }
+  if (!status) {
+    ZenitD12Draw grouped = *draw;
+    grouped.groups = groups;
+    grouped.group_count = group_count;
+    status = zenit_d12_render_pass_draw(p, pipeline, &grouped);
+  }
+  for (uint32_t g = 0; g < created; ++g)
+    zenit_d12_bind_group_release(groups[g]);
+  return status;
+}
 extern "C" int zenit_d12_render_pass_end(ZenitD12RenderPass *p) {
   D11_PROF("render_pass_end");
   if (!p || !p->commands->pass)
@@ -3262,5 +3299,100 @@ extern "C" int zenit_d12_surface_size(ZenitD12Surface *s, uint32_t *width,
     return 1;
   *width = s->width;
   *height = s->height;
+  return 0;
+}
+
+// Compositor sprite atlas (src/zenit_app/sprite_host.zig): an opaque
+// composition swap chain that native/windows/compositor_sprites.cpp shows
+// through DirectComposition. Its back buffer is rendered once by the regular
+// encoder (the returned texture) and presented once; DWM keeps showing it.
+struct ZenitD12SpriteAtlas {
+  D11Com<IDXGISwapChain1> swap;
+};
+extern "C" int zenit_d12_sprite_atlas_create(ZenitD12Queue *q, uint32_t w,
+                                             uint32_t h, uint32_t format,
+                                             ZenitD12SpriteAtlas **out,
+                                             ZenitD12Texture **texture_out) {
+  if (!out || !texture_out)
+    return 1;
+  *out = nullptr;
+  *texture_out = nullptr;
+  if (!q || !w || !h || w > 16384 || h > 16384 ||
+      (format != DXGI_FORMAT_R8G8B8A8_UNORM &&
+       format != DXGI_FORMAT_B8G8R8A8_UNORM))
+    return 1;
+  D11Com<IDXGIDevice> device;
+  D11Com<IDXGIAdapter> adapter;
+  D11Com<IDXGIFactory2> factory;
+  HRESULT hr =
+      q->owner->raw->QueryInterface(IID_IDXGIDevice, (void **)device.put());
+  if (SUCCEEDED(hr))
+    hr = device->GetAdapter(adapter.put());
+  if (SUCCEEDED(hr))
+    hr = adapter->GetParent(IID_IDXGIFactory2, (void **)factory.put());
+  if (FAILED(hr))
+    return result(hr);
+  auto a = new (std::nothrow) ZenitD12SpriteAtlas;
+  if (!a)
+    return 2;
+  DXGI_SWAP_CHAIN_DESC1 d = {};
+  d.Width = w;
+  d.Height = h;
+  d.Format = (DXGI_FORMAT)format;
+  d.SampleDesc.Count = 1;
+  d.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_SHADER_INPUT;
+  // Composition swap chains: sequential flip, at least two buffers.
+  d.BufferCount = 2;
+  d.Scaling = DXGI_SCALING_STRETCH;
+  d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+  d.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+  hr = factory->CreateSwapChainForComposition(q->owner->raw, &d, nullptr,
+                                              a->swap.put());
+  auto t = SUCCEEDED(hr) ? new (std::nothrow) ZenitD12Texture : nullptr;
+  if (SUCCEEDED(hr) && !t)
+    hr = E_OUTOFMEMORY;
+  if (SUCCEEDED(hr))
+    hr = a->swap->GetBuffer(0, IID_ID3D11Resource, (void **)t->raw.put());
+  if (FAILED(hr)) {
+    if (t) {
+      t->owner = nullptr;
+      delete t;
+    }
+    delete a;
+    return result(hr);
+  }
+  t->owner = q->owner;
+  zenit_d12_device_retain(t->owner);
+  t->dimension = 2;
+  t->width = w;
+  t->height = h;
+  t->depth = t->mips = t->samples = 1;
+  t->usage = 1 | 2 | 4 | 16;
+  t->format = (DXGI_FORMAT)format;
+  *out = a;
+  *texture_out = t;
+  return 0;
+}
+// After the render commands were submitted to the atlas' queue.
+extern "C" int zenit_d12_sprite_atlas_present(ZenitD12SpriteAtlas *a) {
+  if (!a)
+    return 1;
+  return FAILED(a->swap->Present(0, 0)) ? 2 : 0;
+}
+extern "C" IUnknown *zenit_d12_sprite_atlas_content(ZenitD12SpriteAtlas *a) {
+  return a ? a->swap.p : nullptr;
+}
+extern "C" void zenit_d12_sprite_atlas_release(ZenitD12SpriteAtlas *a) {
+  delete a;
+}
+// The surface's own DirectComposition device and root visual (custom-frame
+// windows), or nulls: compositor sprites join this tree when there is one.
+extern "C" int zenit_d12_surface_composition(ZenitD12Surface *s,
+                                             IDCompositionDevice **device,
+                                             IDCompositionVisual **root) {
+  if (!s || !device || !root)
+    return 1;
+  *device = s->composition.p;
+  *root = s->composition_root.p;
   return 0;
 }

@@ -21,7 +21,7 @@ pub fn tableBorderWrapStyle(w: f32, h: f32, t: *const core.ThemeTokens) core.Box
         .height = .{ .px = h },
         .direction = .column,
         .background = t.tokens.color.bg_primary,
-        .border = .{ .width = 1, .color = t.tokens.color.border, .radius = t.tokens.radius.sm },
+        .border = .{ .overlay = true, .width = 1, .color = t.tokens.color.border, .radius = t.tokens.radius.control },
         .padding = Padding.all(1),
     };
 }
@@ -42,8 +42,10 @@ pub fn tableHeaderRowStyle(header_height: f32, t: *const core.ThemeTokens) core.
         .height = .{ .px = header_height },
         .direction = .row,
         .align_items = .center,
-        .background = t.tokens.color.bg_secondary,
-        .border = .{ .width = 1, .color = t.tokens.color.separator },
+        .background = t.tokens.color.table_header_bg,
+        .border_overlay = true,
+        .border_bottom_width = 1,
+        .border_color = t.tokens.color.border,
     };
 }
 
@@ -51,6 +53,7 @@ pub fn tableHeaderCellStyle(col: ColumnDef) core.BoxStyle {
     return .{
         .width = .{ .px = col.width },
         .height = .{ .grow = .{} },
+        .align_self = .stretch,
         .direction = .row,
         .align_items = .center,
         .justify = colJustify(col.col_align),
@@ -60,9 +63,9 @@ pub fn tableHeaderCellStyle(col: ColumnDef) core.BoxStyle {
 
 pub fn tableHeaderTextStyle(t: *const core.ThemeTokens) core.TextStyle {
     return .{
-        .color = t.tokens.color.fg_secondary,
-        .font_size = t.tokens.font_size.xs,
-        .font_weight = 600,
+        .color = t.tokens.color.fg_tertiary,
+        .font_size = t.tokens.font_size.sm,
+        .font_weight = 500,
     };
 }
 
@@ -96,10 +99,16 @@ pub fn tableRowStyle(row_bg: Color, row_height: f32) core.BoxStyle {
     };
 }
 
+/// Hoverable row: bg_active under the pointer, eased like every control (150ms ease-out). The
+/// fill replaces the row's own, and bg_hover over the page matches a striped row's bg_secondary.
+pub const rowHover = @import("../../css.zig").css(.{ .background = .bg_active });
+pub const rowFade = @import("../../css.zig").css(.{ .transition = @import("../../recipe.zig").transition("background 150ms ease-out") });
+
 pub fn tableCellStyle(col: ColumnDef) core.BoxStyle {
     return .{
         .width = .{ .px = col.width },
         .height = .{ .grow = .{} },
+        .align_self = .stretch,
         .direction = .row,
         .align_items = .center,
         .justify = colJustify(col.col_align),

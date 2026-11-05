@@ -312,7 +312,7 @@ pub const SliderBuilder = struct {
         const track = parts.track;
         const fill = parts.fill;
         const thumb = parts.thumb;
-        thumb.applyTransition(allocator, &comptime recipe_mod.transition("border-color 120ms ease-out"));
+        try thumb.applyTransition(allocator, &comptime recipe_mod.transition("border-color 120ms ease-out"));
 
         const hovered = try hooks.useHover(my_scope, track_area);
 
@@ -484,6 +484,45 @@ test "Slider: basic structure" {
 
     try root.appendChild(std.testing.allocator, result.wrapper);
     try std.testing.expectEqual(@as(f32, 50), result.value.?.peek());
+}
+
+test "Slider: re-applying an unchanged thumb offset requests no frame" {
+    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer ctx.deinit();
+    ctx.setViewport(400, 100);
+    try ctx.setTestFrameStep(16);
+    ctx.caret_flip_host = true;
+    const root = try box(ctx, .{ .width = .{ .px = 400 }, .height = .{ .px = 100 } }, .{});
+    ctx.root = root;
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const result = try Slider(.{ .min = 0, .max = 100, .value = 30, .width = 220 }).mount(scope, ctx);
+    try root.appendChild(std.testing.allocator, result.wrapper);
+    var frames: usize = 0;
+    while (ctx.wantsFrame() and frames < 60) : (frames += 1) {
+        ctx.advanceFrameClock();
+        ctx.layout();
+        _ = ctx.render();
+    }
+    try std.testing.expect(!ctx.wantsFrame());
+    // The before-render hook runs in every rendered frame and re-applies the thumb offset. With
+    // the offset unchanged it must leave the tree clean: a dirty hit scene each frame advances
+    // the scene epoch, and a live stationary pointer then re-resolves hover and requests the
+    // next frame forever (glasslab rendered 120 fps idle).
+    const Find = struct {
+        fn hooked(n: *Node) ?*Node {
+            if (n.meta.per_frame.hooks.before_render.main == sliderBeforeRender) return n;
+            for (n.children.items) |c| if (hooked(c)) |f| return f;
+            return null;
+        }
+    };
+    const track_area = Find.hooked(result.wrapper).?;
+    const rt: *SliderRuntime = @ptrCast(@alignCast(track_area.behavior.events.event_context.?));
+    const before = rt.thumb_node.style.translate_x;
+    try std.testing.expect(before != 0);
+    sliderBeforeRender(track_area);
+    try std.testing.expectEqual(before, rt.thumb_node.style.translate_x);
+    try std.testing.expect(!ctx.wantsFrame());
 }
 
 test "Slider: min > max 时 mount 不 assert，区间被规范化" {

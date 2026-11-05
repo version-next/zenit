@@ -51,6 +51,11 @@ require 'bash scripts/test_oss_boundary_contract\.sh' 'boundary gate failure han
 require 'zig build test-native' 'native macOS ObjC bridge tests (native/macos/tests)'
 require 'ZENIT_E2E_TEST_FILE: "e2e/interaction-lifecycle\.test\.ts"' 'interaction lifecycle native E2E'
 
+require 'python3 tools/window_lifetime_gate\.py --self-test' 'lifetime gate must reject incomplete, leaking and hung exits'
+require 'zig build window-chrome -Doptimize=Debug' 'lifetime fixture must use DebugAllocator'
+require 'python3 tools/window_lifetime_gate\.py \\' 'native window lifetime gate'
+require 'ZENIT_E2E_TEST_FILE: "e2e/multi-window-screenshot\.test\.ts"' 'explicit multi-window screenshot E2E'
+
 if rg -q "if:.*hashFiles\('src/bench/baselines/main.json'\)" "$WORKFLOW"; then
   echo "benchmark comparison may not silently skip when its baseline is missing" >&2
   exit 1

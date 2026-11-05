@@ -142,8 +142,16 @@ fn render(a: std.mem.Allocator, sources: []const []const u8) ![]u8 {
     return out.toOwnedSlice();
 }
 
+/// Fields a style type marks as machinery (`pub const internal_fields`) are not properties.
+fn isInternal(comptime S: type, comptime name: []const u8) bool {
+    if (!@hasDecl(S, "internal_fields")) return false;
+    for (S.internal_fields) |n| if (std.mem.eql(u8, n, name)) return true;
+    return false;
+}
+
 fn collect(a: std.mem.Allocator, entries: *std.ArrayList(Entry), comptime S: type, comptime is_box: bool, docs: std.StringHashMapUnmanaged([]const u8)) !void {
     inline for (@import("zenit_reflection").fields(S)) |f| {
+        if (comptime isInternal(S, f.name)) continue;
         const T = unwrap(f.type);
         const existing = for (entries.items) |*e| {
             if (std.mem.eql(u8, e.name, f.name)) break e;
@@ -160,7 +168,7 @@ fn collect(a: std.mem.Allocator, entries: *std.ArrayList(Entry), comptime S: typ
                 else => |c| @tagName(c),
             },
             .type_name = shortName(@typeName(T)),
-            .values = comptime valuesOf(T),
+            .values = if (comptime std.mem.eql(u8, f.name, "flex_basis")) &ui.FlexBasis.keywords else comptime valuesOf(T),
             .doc = docs.get(f.name) orelse "",
         });
     }

@@ -3,6 +3,7 @@
 const std = @import("std");
 const gpu = @import("gpu");
 const blur = @import("backdrop_blur.zig");
+const tab_lens_field = @import("tab_lens_field.zig");
 const Uniforms = blur.GlassUniforms;
 const a = std.testing.allocator;
 
@@ -12,6 +13,8 @@ const Fixture = struct {
     output: gpu.Backend.Texture,
     pipeline: gpu.Backend.RenderPipeline,
     sampler: gpu.Backend.Sampler,
+    /// The tab lens's field table (fragment buffer 1), bound on every draw like the app's.
+    field: gpu.Backend.Buffer,
     width: u32,
     height: u32,
 
@@ -45,11 +48,14 @@ const Fixture = struct {
             .blend_state = null,
         });
         errdefer pipeline.deinit();
-        const sampler = try device.createSampler(a, .{ .min_filter = .linear, .mag_filter = .linear });
-        return .{ .sharp = sharp, .blurred = blurred, .output = output, .pipeline = pipeline, .sampler = sampler, .width = width, .height = height };
+        var sampler = try device.createSampler(a, .{ .min_filter = .linear, .mag_filter = .linear });
+        errdefer sampler.destroy();
+        const field = try tab_lens_field.create(a, device);
+        return .{ .sharp = sharp, .blurred = blurred, .output = output, .pipeline = pipeline, .sampler = sampler, .field = field, .width = width, .height = height };
     }
 
     fn deinit(self: *Fixture) void {
+        self.field.destroy();
         self.sampler.destroy();
         self.pipeline.deinit();
         self.output.destroy();
@@ -116,6 +122,7 @@ const Fixture = struct {
         pass.setFragmentTextureBinding(2, self.sharp.binding());
         pass.setFragmentTextureBinding(3, self.sharp.binding());
         pass.setFragmentSampler(0, &self.sampler);
+        pass.setFragmentBuffer(tab_lens_field.slot, &self.field, 0);
         if (scissor) |sc| pass.setScissorRect(sc[0], sc[1], sc[2], sc[3]);
         pass.draw(3, 1, 0, 0);
         pass.end();
@@ -906,4 +913,282 @@ test "metal native fine grid: four pixel gamma box and bilinear reconstruction p
             try std.testing.expectApproxEqAbs(expected, @as(f32, @floatFromInt(pixels[(8 * 32 + 8 + i) * 4])), 1.0);
         }
     }
+}
+
+extern fn metal_texture_read_bgra8(texture: *anyopaque, out: [*]u8, bytes_per_row: c_uint, width: c_uint, height: c_uint) c_int;
+
+fn readRaw(texture: *const gpu.Backend.Texture, width: u32, height: u32, out: []u8) !void {
+    if (metal_texture_read_bgra8(@ptrCast(texture.raw), out.ptr, width * 8, width, height) == 0) return error.TextureReadFailed;
+}
+
+test "metal bank batch matches the render passes bit for bit" {
+    // backdrop_blur bank batch replaces the native bank render passes with
+    // fragment-write draws in render passes without attachments, several
+    // targets of different sizes per pass; their output must be the same
+    // bytes, including the clear/keep outside the region.
+    var instance = try gpu.Backend.Instance.init(a, .{});
+    defer instance.deinit();
+    const adapters = try instance.enumerateAdapters();
+    defer a.free(adapters);
+    if (adapters.len == 0) return error.MetalAdapterUnavailable;
+    var adapter = adapters[0];
+    defer adapter.deinit();
+    var dq = try adapter.requestDevice(a, .{});
+    defer dq.device.deinit();
+    defer dq.queue.deinit();
+    const device = &dq.device;
+    var module = try gpu.Backend.ShaderModule.initFromSource(device, @embedFile("shaders/blur.metal"));
+    defer module.deinit();
+    var vertex = try module.getFunction("kawase_vertex_main");
+    defer vertex.deinit();
+    var render: [4]gpu.Backend.RenderPipeline = undefined;
+    for ([_][]const u8{ "gaussian_filter_gamma", "gaussian_downsample_gamma", "gaussian_filter_gamma_bank", "gaussian_downsample_gamma_bank" }, 0..) |name, i| {
+        var fragment = try module.getFunction(name);
+        defer fragment.deinit();
+        render[i] = try gpu.Backend.createRenderPipeline(device, .{
+            .vertex_function = &vertex,
+            .fragment_function = &fragment,
+            .color_attachment_formats = if (i >= 2) &.{} else &.{.rgba16_float},
+            .blend_state = null,
+        });
+    }
+    defer for (&render) |*p| p.deinit();
+    var sampler = try device.createSampler(a, .{ .min_filter = .linear, .mag_filter = .linear });
+    defer sampler.destroy();
+
+    var prng = std.Random.DefaultPrng.init(0x6a55);
+    const random = prng.random();
+    // Quarter/eighth/ambient grids of real windows, odd sizes, long thin ones.
+    const sizes = [_][2]u32{ .{ 640, 500 }, .{ 481, 437 }, .{ 17, 15 }, .{ 35, 31 }, .{ 1100, 1000 }, .{ 962, 875 }, .{ 4096, 24 }, .{ 24, 4096 } };
+    var mismatched: usize = 0;
+    var compared: usize = 0;
+    for (sizes, 0..) |size, size_index| {
+        const w = size[0];
+        const h = size[1];
+        // Area sources twice the size (+1: odd cells).
+        const sw = w * 2 + @as(u32, @intCast(size_index % 2));
+        const sh = h * 2 + @as(u32, @intCast(size_index % 2));
+        const float_desc = gpu.TextureDescriptor{ .size = .{ .width = w, .height = h }, .format = .rgba16_float, .memory = .host_upload, .usage = .{ .texture_binding = true, .render_attachment = true, .storage_binding = true } };
+        var source = try device.createTexture(a, float_desc);
+        defer source.destroy();
+        var area_desc = float_desc;
+        area_desc.size = .{ .width = sw, .height = sh };
+        var area_source = try device.createTexture(a, area_desc);
+        defer area_source.destroy();
+        var by_render = try device.createTexture(a, float_desc);
+        defer by_render.destroy();
+        var by_batch = try device.createTexture(a, float_desc);
+        defer by_batch.destroy();
+        // A second target of another size drawn first in the same pass.
+        var other_desc = float_desc;
+        other_desc.size = .{ .width = 33, .height = 29 };
+        var other = try device.createTexture(a, other_desc);
+        defer other.destroy();
+        const big = try a.alloc(u16, @as(usize, sw) * sh * 4);
+        defer a.free(big);
+        for (big) |*v| v.* = @bitCast(@as(f16, @floatCast(random.float(f32) * 1.2)));
+        try area_source.writeRegion(0, 0, 0, sw, sh, std.mem.sliceAsBytes(big), sw * 8);
+        try source.writeRegion(0, 0, 0, w, h, std.mem.sliceAsBytes(big[0 .. @as(usize, w) * h * 4]), w * 8);
+        const prefill = try a.alloc(u16, @as(usize, w) * h * 4);
+        defer a.free(prefill);
+        for (prefill, 0..) |*v, i| v.* = @bitCast(@as(f16, @floatFromInt(i % 7)));
+        for (0..10) |case| {
+            const area = case >= 8;
+            const sigmas = [_]f32{ 0.6, 2.0, 5.2, 12.0 };
+            const sigma = sigmas[(case / 2) % 4];
+            const region: ?blur.PixelRegion = switch (case % 3) {
+                0 => null,
+                1 => .{ .x0 = @intCast(w / 7), .y0 = @intCast(h / 5), .x1 = @intCast(w - w / 9), .y1 = @intCast(h - h / 11) },
+                else => .{ .x0 = -3, .y0 = @intCast(h / 3), .x1 = @intCast(w + 5), .y1 = @intCast(h / 3 + 2) },
+            };
+            const load_op: gpu.LoadOp = if (area and case == 9) .load else .clear;
+            const gauss = blur.gaussianUniforms(sigma, w, h, case % 2 == 1, blur.validUv(0, 0, w, h, w, h));
+            const au = blur.GaussianAreaUniforms{ .source_size = .{ @floatFromInt(sw), @floatFromInt(sh) }, .output_size = .{ @floatFromInt(w), @floatFromInt(h) }, .input_gamma = if (case == 8) 1 else 0 };
+            try by_render.writeRegion(0, 0, 0, w, h, std.mem.sliceAsBytes(prefill), w * 8);
+            try by_batch.writeRegion(0, 0, 0, w, h, std.mem.sliceAsBytes(prefill), w * 8);
+            var ce = try gpu.Backend.CommandEncoder.init(&dq.queue);
+            errdefer ce.deinit();
+            {
+                var view = by_render.binding().createView();
+                defer view.destroy();
+                var pass = try ce.beginRenderPass(.{ .color_attachments = &.{.{ .view = view, .load_op = load_op, .store_op = .store }} });
+                pass.setPipeline(&render[if (area) 1 else 0]);
+                if (area) pass.setFragmentBytes(0, std.mem.asBytes(&au)) else pass.setFragmentBytes(0, std.mem.asBytes(&gauss));
+                pass.setFragmentTextureBinding(0, if (area) area_source.binding() else source.binding());
+                pass.setFragmentSampler(0, &sampler);
+                pass.setViewport(0, 0, @floatFromInt(w), @floatFromInt(h), 0, 1);
+                if (region) |r| if (r.scissor(w, h)) |sc| pass.setScissorRect(sc[0], sc[1], sc[2], sc[3]);
+                pass.draw(3, 1, 0, 0);
+                pass.end();
+            }
+            {
+                var pass = try ce.beginAttachmentlessRenderPass(@max(w, 2048), @max(h, 2048));
+                pass.setFragmentSampler(0, &sampler);
+                const other_gauss = blur.gaussianUniforms(3, 33, 29, false, blur.validUv(0, 0, 33, 29, 33, 29));
+                const other_region = blur.bankRegion(null, 33, 29, .clear);
+                pass.setPipeline(&render[2]);
+                pass.setFragmentBytes(0, std.mem.asBytes(&other_gauss));
+                pass.setFragmentBytes(1, std.mem.asBytes(&other_region));
+                pass.setFragmentTextureBinding(0, area_source.binding());
+                pass.setFragmentTextureBinding(1, other.binding());
+                pass.setViewport(0, 0, 33, 29, 0, 1);
+                pass.setScissorRect(0, 0, 33, 29);
+                pass.draw(3, 1, 0, 0);
+                const r = blur.bankRegion(region, w, h, load_op);
+                pass.setPipeline(&render[if (area) 3 else 2]);
+                if (area) pass.setFragmentBytes(0, std.mem.asBytes(&au)) else pass.setFragmentBytes(0, std.mem.asBytes(&gauss));
+                pass.setFragmentBytes(1, std.mem.asBytes(&r));
+                pass.setFragmentTextureBinding(0, if (area) area_source.binding() else source.binding());
+                pass.setFragmentTextureBinding(1, by_batch.binding());
+                pass.setViewport(0, 0, @floatFromInt(w), @floatFromInt(h), 0, 1);
+                pass.setScissorRect(0, 0, w, h);
+                pass.draw(3, 1, 0, 0);
+                pass.end();
+            }
+            var cb = try ce.finish();
+            defer cb.deinit();
+            cb.submit();
+            cb.waitUntilCompleted();
+            const x = try a.alloc(u8, @as(usize, w) * h * 8);
+            defer a.free(x);
+            const y = try a.alloc(u8, x.len);
+            defer a.free(y);
+            try readRaw(&by_render, w, h, x);
+            try readRaw(&by_batch, w, h, y);
+            var case_bad: usize = 0;
+            for (x, y) |p, q| case_bad += @intFromBool(p != q);
+            if (case_bad > 0) std.debug.print("bank batch mismatch {d}x{d} case={d}: {d} bytes\n", .{ w, h, case, case_bad });
+            mismatched += case_bad;
+            compared += x.len;
+        }
+    }
+    try std.testing.expect(compared > 0);
+    try std.testing.expectEqual(@as(usize, 0), mismatched);
+}
+
+test "metal bank batch: Kawase and copy draws match their render passes bit for bit" {
+    var instance = try gpu.Backend.Instance.init(a, .{});
+    defer instance.deinit();
+    const adapters = try instance.enumerateAdapters();
+    defer a.free(adapters);
+    if (adapters.len == 0) return error.MetalAdapterUnavailable;
+    var adapter = adapters[0];
+    defer adapter.deinit();
+    var dq = try adapter.requestDevice(a, .{});
+    defer dq.device.deinit();
+    defer dq.queue.deinit();
+    const device = &dq.device;
+    var module = try gpu.Backend.ShaderModule.initFromSource(device, @embedFile("shaders/blur.metal"));
+    defer module.deinit();
+    var vertex = try module.getFunction("kawase_vertex_main");
+    defer vertex.deinit();
+    var pipelines: [5]gpu.Backend.RenderPipeline = undefined;
+    for ([_][]const u8{ "kawase_downsample", "kawase_upsample", "kawase_downsample_bank", "kawase_upsample_bank", "copy_bank" }, 0..) |name, i| {
+        var fragment = try module.getFunction(name);
+        defer fragment.deinit();
+        pipelines[i] = try gpu.Backend.createRenderPipeline(device, .{
+            .vertex_function = &vertex,
+            .fragment_function = &fragment,
+            .color_attachment_formats = if (i >= 2) &.{} else &.{gpu.color_format},
+            .blend_state = null,
+        });
+    }
+    defer for (&pipelines) |*p| p.deinit();
+    var sampler = try device.createSampler(a, .{ .min_filter = .linear, .mag_filter = .linear });
+    defer sampler.destroy();
+    var prng = std.Random.DefaultPrng.init(0x1c0a);
+    const random = prng.random();
+    var mismatched: usize = 0;
+    var compared: usize = 0;
+    for ([_][2]u32{ .{ 576, 192 }, .{ 1024, 448 }, .{ 130, 70 }, .{ 2048, 320 }, .{ 64, 64 } }) |size| {
+        const w = size[0];
+        const h = size[1];
+        const desc = gpu.TextureDescriptor{ .size = .{ .width = w, .height = h }, .format = gpu.color_format, .memory = .host_upload, .usage = .{ .texture_binding = true, .render_attachment = true, .storage_binding = true, .copy_src = true, .copy_dst = true } };
+        var source = try device.createTexture(a, desc);
+        defer source.destroy();
+        var by_render = try device.createTexture(a, desc);
+        defer by_render.destroy();
+        var by_batch = try device.createTexture(a, desc);
+        defer by_batch.destroy();
+        const bytes = try a.alloc(u8, @as(usize, w) * h * 4);
+        defer a.free(bytes);
+        random.bytes(bytes);
+        try source.writeRegion(0, 0, 0, w, h, bytes, w * 4);
+        const prefill = try a.alloc(u8, bytes.len);
+        defer a.free(prefill);
+        for (prefill, 0..) |*v, i| v.* = @truncate(i * 13);
+        for (0..6) |case| {
+            // Kawase into a half-size target region of the same texture size
+            // (the pass covers the whole target), and copies of a sub-rect.
+            const kawase = case < 2;
+            const tw = if (kawase) w / 2 else w;
+            const th = if (kawase) h / 2 else h;
+            const valid = blur.validUv(3, 5, w - 20, h - 14, w, h);
+            const ku = blur.KawaseUniforms{ .texel_size = .{ 1.0 / @as(f32, @floatFromInt(w)), 1.0 / @as(f32, @floatFromInt(h)) }, .offset_scale = 1.5 + @as(f32, @floatFromInt(case)) * 0.7, .valid_uv = valid };
+            const sx: u32 = 7;
+            const sy: u32 = 3;
+            const cw = w / 2;
+            const ch = h / 3;
+            const dx: u32 = if (case == 5) 0 else 11;
+            const dy: u32 = if (case == 5) 0 else 2;
+            const clear = case == 2 or case == 4;
+            try by_render.writeRegion(0, 0, 0, w, h, prefill, w * 4);
+            try by_batch.writeRegion(0, 0, 0, w, h, prefill, w * 4);
+            var ce = try gpu.Backend.CommandEncoder.init(&dq.queue);
+            errdefer ce.deinit();
+            if (kawase) {
+                var view = by_render.binding().createView();
+                defer view.destroy();
+                var pass = try ce.beginRenderPass(.{ .color_attachments = &.{.{ .view = view, .load_op = .clear, .store_op = .store, .clear_value = .{ .r = 0, .g = 0, .b = 0, .a = 0 } }} });
+                pass.setPipeline(&pipelines[case]);
+                pass.setFragmentBytes(0, std.mem.asBytes(&ku));
+                pass.setFragmentTextureBinding(0, source.binding());
+                pass.setFragmentSampler(0, &sampler);
+                pass.setViewport(0, 0, @floatFromInt(tw), @floatFromInt(th), 0, 1);
+                pass.draw(3, 1, 0, 0);
+                pass.end();
+            } else {
+                try gpu.copyTextureRegion(&ce, source.binding(), sx, sy, cw, ch, by_render.binding(), dx, dy, clear);
+            }
+            {
+                var pass = try ce.beginAttachmentlessRenderPass(4096, 4096);
+                pass.setFragmentSampler(0, &sampler);
+                if (kawase) {
+                    pass.setPipeline(&pipelines[case + 2]);
+                    pass.setFragmentBytes(0, std.mem.asBytes(&ku));
+                } else {
+                    const copy = blur.BankCopy{ .rect = .{ dx, dy, dx + cw, dy + ch }, .offset = .{ @as(i32, @intCast(sx)) - @as(i32, @intCast(dx)), @as(i32, @intCast(sy)) - @as(i32, @intCast(dy)) }, .clear = @intFromBool(clear) };
+                    pass.setPipeline(&pipelines[4]);
+                    pass.setFragmentBytes(0, std.mem.asBytes(&copy));
+                }
+                pass.setFragmentTextureBinding(0, source.binding());
+                pass.setFragmentTextureBinding(1, by_batch.binding());
+                pass.setViewport(0, 0, @floatFromInt(tw), @floatFromInt(th), 0, 1);
+                pass.setScissorRect(0, 0, tw, th);
+                pass.draw(3, 1, 0, 0);
+                pass.end();
+            }
+            var cb = try ce.finish();
+            defer cb.deinit();
+            cb.submit();
+            cb.waitUntilCompleted();
+            const x = try a.alloc(u8, bytes.len);
+            defer a.free(x);
+            const y = try a.alloc(u8, bytes.len);
+            defer a.free(y);
+            try by_render.readBgra8(w, h, x, w * 4);
+            try by_batch.readBgra8(w, h, y, w * 4);
+            // Kawase passes write their whole (tw x th) viewport; compare it.
+            var case_bad: usize = 0;
+            for (0..th) |row| for (0..tw * 4) |col| {
+                const i = row * w * 4 + col;
+                case_bad += @intFromBool(x[i] != y[i]);
+            };
+            if (case_bad > 0) std.debug.print("bank kawase/copy mismatch {d}x{d} case={d}: {d} bytes\n", .{ w, h, case, case_bad });
+            mismatched += case_bad;
+            compared += @as(usize, tw) * th * 4;
+        }
+    }
+    try std.testing.expect(compared > 0);
+    try std.testing.expectEqual(@as(usize, 0), mismatched);
 }

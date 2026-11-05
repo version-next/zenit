@@ -162,6 +162,11 @@ pub const RGBA = packed struct(u32) {
 /// (font_size/weight/italic/spans) / path / icon fields.
 pub const DisplayItem = struct {
     kind: DisplayItemKind,
+    /// Content fingerprint of this lowered item (0 = unknown: consumers hash
+    /// the item themselves). Equal across frames only if every pixel the
+    /// item paints is equal: the recorded item's ItemHeader.local_fp, the
+    /// transform it was lowered through and the text resolved for it.
+    paint_digest: u64 = 0,
     /// Item's AABB in element local space (for intra-chunk clipping / partial repaint)
     local_bounds: Bounds = .{},
     /// Resource handle (texture / glyph atlas / path geometry buffer etc), u64 type-erased. Phase 4
@@ -330,6 +335,9 @@ pub const DisplayItem = struct {
     /// use_draw_transform flag + draw_transform[6] affine matrix.
     use_draw_transform: bool = false,
     draw_transform: [6]f32 = .{ 1, 0, 0, 1, 0, 0 },
+    /// begin_* surfaces: draw_transform's translation at rest (layer_tree
+    /// CompositedLayer.surface_rest_origin); null = unknown.
+    surface_rest_origin: ?[2]f32 = null,
     // Complex control payloads (push_clip.polygon / begin_blur_layer.glass) not
     // inlined; use extra_ptr to pass source union variant pointers. lowerDisplayItem
     // writes the payload pointer; dispatch casts it back to read polygon/glass fields.

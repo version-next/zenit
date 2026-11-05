@@ -7,13 +7,15 @@ struct Uniforms
     float scale_factor;
     uint clip_shape_kind;
     vec4 clip_rect;
-    float clip_radius;
+    vec4 clip_radii;
     uint clip_fill_rule;
     uint clip_point_count;
     uint clip_contour_count;
+    uint clip_pad;
     uvec4 clip_polygon_end_points[2];
     vec4 clip_polygon_points[16];
     uint frame_seed;
+    uint raster_clip_pos;
 };
 
 struct InstanceData
@@ -43,7 +45,7 @@ struct InstanceData
 layout(binding = 0, std140) uniform Params
 {
     Uniforms uniforms;
-} _1766;
+} _1780;
 
 layout(binding = 1, std430) readonly buffer instances
 {
@@ -59,313 +61,318 @@ layout(location = 0) out vec4 _entryPointOutput;
 
 void main()
 {
-    vec4 _3328 = instances_1._data[input_instance_id].corner_radii * _1766.uniforms.scale_factor;
-    float _3343 = instances_1._data[input_instance_id].border_width * _1766.uniforms.scale_factor;
-    bool _4220 = input_local_pos.y < 0.0;
-    float _4222 = _3328.x;
-    float _4224 = _3328.w;
-    float _4230 = _3328.y;
-    float _4232 = _3328.z;
-    float _4234 = (input_local_pos.x < 0.0) ? (_4220 ? _4222 : _4224) : (_4220 ? _4230 : _4232);
-    vec2 _4241 = (abs(input_local_pos) - input_size) + vec2(_4234);
-    float _4253 = (min(max(_4241.x, _4241.y), 0.0) + length(max(_4241, vec2(0.0)))) - _4234;
-    float _4468 = dFdxFine(_4253);
-    float _4470 = dFdyFine(_4253);
-    float _3422 = max(length(vec2(_4468, _4470)) * 0.5, 0.5);
-    float _4481 = -_3422;
-    float _4483 = smoothstep(_3422, _4481, _4253);
-    float _6620 = 0.0;
+    vec4 _3362 = instances_1._data[input_instance_id].corner_radii * _1780.uniforms.scale_factor;
+    float _3377 = instances_1._data[input_instance_id].border_width * _1780.uniforms.scale_factor;
+    bool _4260 = input_local_pos.y < 0.0;
+    float _4262 = _3362.x;
+    float _4264 = _3362.w;
+    float _4270 = _3362.y;
+    float _4272 = _3362.z;
+    float _4274 = (input_local_pos.x < 0.0) ? (_4260 ? _4262 : _4264) : (_4260 ? _4270 : _4272);
+    vec2 _4281 = (abs(input_local_pos) - input_size) + vec2(_4274);
+    float _4293 = (min(max(_4281.x, _4281.y), 0.0) + length(max(_4281, vec2(0.0)))) - _4274;
+    float _4508 = dFdxFine(_4293);
+    float _4510 = dFdyFine(_4293);
+    float _3456 = max(length(vec2(_4508, _4510)) * 0.5, 0.5);
+    float _4521 = -_3456;
+    float _4523 = smoothstep(_3456, _4521, _4293);
+    bvec2 _4530 = bvec2(_1780.uniforms.raster_clip_pos != 0u);
+    vec2 _4531 = vec2(_4530.x ? gl_FragCoord.xy.x : input_screen_pos.x, _4530.y ? gl_FragCoord.xy.y : input_screen_pos.y);
+    float _6695 = 0.0;
     do
     {
         if ((input_rect_clip.z < 0.0) || (input_rect_clip.w < 0.0))
         {
-            _6620 = 1.0;
+            _6695 = 1.0;
             break;
         }
-        vec2 _4561 = abs(input_screen_pos - ((input_rect_clip.xy + (input_rect_clip.zw * 0.5)) * _1766.uniforms.scale_factor)) - ((input_rect_clip.zw * _1766.uniforms.scale_factor) * 0.5);
-        float _4574 = min(max(_4561.x, _4561.y), 0.0) + length(max(_4561, vec2(0.0)));
-        float _4547 = max((abs(dFdxFine(_4574)) + abs(dFdyFine(_4574))) * 0.5, 0.5);
-        _6620 = smoothstep(_4547, -_4547, _4574);
+        vec2 _4609 = abs(_4531 - ((input_rect_clip.xy + (input_rect_clip.zw * 0.5)) * _1780.uniforms.scale_factor)) - ((input_rect_clip.zw * _1780.uniforms.scale_factor) * 0.5);
+        float _4622 = min(max(_4609.x, _4609.y), 0.0) + length(max(_4609, vec2(0.0)));
+        float _4595 = max((abs(dFdxFine(_4622)) + abs(dFdyFine(_4622))) * 0.5, 0.5);
+        _6695 = smoothstep(_4595, -_4595, _4622);
         break;
     } while(false);
-    float _6660 = 0.0;
+    float _6735 = 0.0;
     do
     {
-        if (_1766.uniforms.clip_shape_kind == 0u)
+        if (_1780.uniforms.clip_shape_kind == 0u)
         {
-            _6660 = 1.0;
+            _6735 = 1.0;
             break;
         }
-        vec2 _4634 = (_1766.uniforms.clip_rect.xy + (_1766.uniforms.clip_rect.zw * 0.5)) * _1766.uniforms.scale_factor;
-        vec2 _4641 = (_1766.uniforms.clip_rect.zw * _1766.uniforms.scale_factor) * 0.5;
-        float _6658 = 0.0;
-        if (_1766.uniforms.clip_shape_kind == 1u)
+        vec2 _4682 = (_1780.uniforms.clip_rect.xy + (_1780.uniforms.clip_rect.zw * 0.5)) * _1780.uniforms.scale_factor;
+        vec2 _4689 = (_1780.uniforms.clip_rect.zw * _1780.uniforms.scale_factor) * 0.5;
+        float _6733 = 0.0;
+        if (_1780.uniforms.clip_shape_kind == 1u)
         {
-            float _4650 = _1766.uniforms.clip_radius * _1766.uniforms.scale_factor;
-            vec2 _4807 = (abs(input_screen_pos - _4634) - _4641) + vec2(_4650);
-            _6658 = (min(max(_4807.x, _4807.y), 0.0) + length(max(_4807, vec2(0.0)))) - _4650;
+            vec4 _4698 = _1780.uniforms.clip_radii * _1780.uniforms.scale_factor;
+            vec2 _4701 = _4531 - _4682;
+            bool _4855 = _4701.y < 0.0;
+            float _4869 = (_4701.x < 0.0) ? (_4855 ? _4698.x : _4698.w) : (_4855 ? _4698.y : _4698.z);
+            vec2 _4876 = (abs(_4701) - _4689) + vec2(_4869);
+            _6733 = (min(max(_4876.x, _4876.y), 0.0) + length(max(_4876, vec2(0.0)))) - _4869;
         }
         else
         {
-            float _6659 = 0.0;
-            if (_1766.uniforms.clip_shape_kind == 2u)
+            float _6734 = 0.0;
+            if (_1780.uniforms.clip_shape_kind == 2u)
             {
-                _6659 = length((input_screen_pos - _4634) / max(_4641, vec2(0.001000000047497451305389404296875))) - 1.0;
+                _6734 = length((_4531 - _4682) / max(_4689, vec2(0.001000000047497451305389404296875))) - 1.0;
             }
             else
             {
-                if (_1766.uniforms.clip_shape_kind == 3u)
+                if (_1780.uniforms.clip_shape_kind == 3u)
                 {
-                    uint _4674 = min(_1766.uniforms.clip_point_count, 32u);
-                    uint _4677 = min(_1766.uniforms.clip_contour_count, 8u);
-                    if ((_4674 < 3u) || (_4677 == 0u))
+                    uint _4722 = min(_1780.uniforms.clip_point_count, 32u);
+                    uint _4725 = min(_1780.uniforms.clip_contour_count, 8u);
+                    if ((_4722 < 3u) || (_4725 == 0u))
                     {
-                        _6660 = 1.0;
+                        _6735 = 1.0;
                         break;
                     }
-                    vec2 _4692 = input_screen_pos - (_1766.uniforms.clip_rect.xy * _1766.uniforms.scale_factor);
-                    bool _6641 = false;
+                    vec2 _4740 = _4531 - (_1780.uniforms.clip_rect.xy * _1780.uniforms.scale_factor);
+                    bool _6716 = false;
                     do
                     {
-                        if (_1766.uniforms.clip_fill_rule == 0u)
+                        if (_1780.uniforms.clip_fill_rule == 0u)
                         {
-                            bool _6640 = false;
-                            _6640 = false;
-                            uint _4870 = 0u;
-                            bool _6762 = false;
-                            for (uint _6639 = 0u, _6650 = 0u; _6639 < _4677; _6650 = _4870, _6640 = _6762, _6639++)
+                            bool _6715 = false;
+                            _6715 = false;
+                            uint _4939 = 0u;
+                            bool _6837 = false;
+                            for (uint _6714 = 0u, _6725 = 0u; _6714 < _4725; _6725 = _4939, _6715 = _6837, _6714++)
                             {
-                                _4870 = min(_1766.uniforms.clip_polygon_end_points[_6639 / 4u][_6639 % 4u], _4674);
-                                if (_4870 <= (_6650 + 1u))
+                                _4939 = min(_1780.uniforms.clip_polygon_end_points[_6714 / 4u][_6714 % 4u], _4722);
+                                if (_4939 <= (_6725 + 1u))
                                 {
-                                    _6762 = _6640;
+                                    _6837 = _6715;
                                     continue;
                                 }
-                                bool _6653 = false;
-                                _6653 = _6640;
-                                bool _6767 = false;
-                                for (uint _6651 = _6650; _6651 < _4870; _6653 = _6767, _6651++)
+                                bool _6728 = false;
+                                _6728 = _6715;
+                                bool _6842 = false;
+                                for (uint _6726 = _6725; _6726 < _4939; _6728 = _6842, _6726++)
                                 {
-                                    uint _4886 = _6651 + 1u;
-                                    uint _4892 = (_4886 < _4870) ? _4886 : _6650;
-                                    uint _4985 = _6651 / 2u;
-                                    bvec2 _4995 = bvec2((_6651 % 2u) == 0u);
-                                    vec2 _4898 = vec2(_4995.x ? _1766.uniforms.clip_polygon_points[_4985].xy.x : _1766.uniforms.clip_polygon_points[_4985].zw.x, _4995.y ? _1766.uniforms.clip_polygon_points[_4985].xy.y : _1766.uniforms.clip_polygon_points[_4985].zw.y) * _1766.uniforms.scale_factor;
-                                    uint _5001 = _4892 / 2u;
-                                    bvec2 _5011 = bvec2((_4892 % 2u) == 0u);
-                                    vec2 _4904 = vec2(_5011.x ? _1766.uniforms.clip_polygon_points[_5001].xy.x : _1766.uniforms.clip_polygon_points[_5001].zw.x, _5011.y ? _1766.uniforms.clip_polygon_points[_5001].xy.y : _1766.uniforms.clip_polygon_points[_5001].zw.y) * _1766.uniforms.scale_factor;
-                                    float _4906 = _4904.y;
-                                    float _4908 = _4898.y;
-                                    float _4909 = _4906 - _4908;
-                                    float _4921 = _4692.y;
-                                    float _4934 = _4898.x;
-                                    if (((_4908 > _4921) != (_4906 > _4921)) && (_4692.x < ((((_4904.x - _4934) * (_4921 - _4908)) / ((abs(_4909) < 9.9999997473787516355514526367188e-05) ? ((_4909 < 0.0) ? (-9.9999997473787516355514526367188e-05) : 9.9999997473787516355514526367188e-05) : _4909)) + _4934)))
+                                    uint _4955 = _6726 + 1u;
+                                    uint _4961 = (_4955 < _4939) ? _4955 : _6725;
+                                    uint _5054 = _6726 / 2u;
+                                    bvec2 _5064 = bvec2((_6726 % 2u) == 0u);
+                                    vec2 _4967 = vec2(_5064.x ? _1780.uniforms.clip_polygon_points[_5054].xy.x : _1780.uniforms.clip_polygon_points[_5054].zw.x, _5064.y ? _1780.uniforms.clip_polygon_points[_5054].xy.y : _1780.uniforms.clip_polygon_points[_5054].zw.y) * _1780.uniforms.scale_factor;
+                                    uint _5070 = _4961 / 2u;
+                                    bvec2 _5080 = bvec2((_4961 % 2u) == 0u);
+                                    vec2 _4973 = vec2(_5080.x ? _1780.uniforms.clip_polygon_points[_5070].xy.x : _1780.uniforms.clip_polygon_points[_5070].zw.x, _5080.y ? _1780.uniforms.clip_polygon_points[_5070].xy.y : _1780.uniforms.clip_polygon_points[_5070].zw.y) * _1780.uniforms.scale_factor;
+                                    float _4975 = _4973.y;
+                                    float _4977 = _4967.y;
+                                    float _4978 = _4975 - _4977;
+                                    float _4990 = _4740.y;
+                                    float _5003 = _4967.x;
+                                    if (((_4977 > _4990) != (_4975 > _4990)) && (_4740.x < ((((_4973.x - _5003) * (_4990 - _4977)) / ((abs(_4978) < 9.9999997473787516355514526367188e-05) ? ((_4978 < 0.0) ? (-9.9999997473787516355514526367188e-05) : 9.9999997473787516355514526367188e-05) : _4978)) + _5003)))
                                     {
-                                        _6767 = !_6653;
+                                        _6842 = !_6728;
                                     }
                                     else
                                     {
-                                        _6767 = _6653;
+                                        _6842 = _6728;
                                     }
                                 }
-                                _6762 = _6653;
+                                _6837 = _6728;
                             }
-                            _6641 = _6640;
+                            _6716 = _6715;
                             break;
                         }
-                        int _6622 = 0;
-                        _6622 = 0;
-                        uint _5041 = 0u;
-                        int _6750 = 0;
-                        for (uint _6621 = 0u, _6623 = 0u; _6621 < _4677; _6623 = _5041, _6622 = _6750, _6621++)
+                        int _6697 = 0;
+                        _6697 = 0;
+                        uint _5110 = 0u;
+                        int _6825 = 0;
+                        for (uint _6696 = 0u, _6698 = 0u; _6696 < _4725; _6698 = _5110, _6697 = _6825, _6696++)
                         {
-                            _5041 = min(_1766.uniforms.clip_polygon_end_points[_6621 / 4u][_6621 % 4u], _4674);
-                            if (_5041 <= (_6623 + 1u))
+                            _5110 = min(_1780.uniforms.clip_polygon_end_points[_6696 / 4u][_6696 % 4u], _4722);
+                            if (_5110 <= (_6698 + 1u))
                             {
-                                _6750 = _6622;
+                                _6825 = _6697;
                                 continue;
                             }
-                            int _6626 = 0;
-                            _6626 = _6622;
-                            int _6757 = 0;
-                            for (uint _6624 = _6623; _6624 < _5041; _6626 = _6757, _6624++)
+                            int _6701 = 0;
+                            _6701 = _6697;
+                            int _6832 = 0;
+                            for (uint _6699 = _6698; _6699 < _5110; _6701 = _6832, _6699++)
                             {
-                                uint _5057 = _6624 + 1u;
-                                uint _5063 = (_5057 < _5041) ? _5057 : _6623;
-                                uint _5178 = _6624 / 2u;
-                                bvec2 _5188 = bvec2((_6624 % 2u) == 0u);
-                                vec2 _5069 = vec2(_5188.x ? _1766.uniforms.clip_polygon_points[_5178].xy.x : _1766.uniforms.clip_polygon_points[_5178].zw.x, _5188.y ? _1766.uniforms.clip_polygon_points[_5178].xy.y : _1766.uniforms.clip_polygon_points[_5178].zw.y) * _1766.uniforms.scale_factor;
-                                uint _5194 = _5063 / 2u;
-                                bvec2 _5204 = bvec2((_5063 % 2u) == 0u);
-                                vec2 _5075 = vec2(_5204.x ? _1766.uniforms.clip_polygon_points[_5194].xy.x : _1766.uniforms.clip_polygon_points[_5194].zw.x, _5204.y ? _1766.uniforms.clip_polygon_points[_5194].xy.y : _1766.uniforms.clip_polygon_points[_5194].zw.y) * _1766.uniforms.scale_factor;
-                                float _5077 = _5069.y;
-                                float _5079 = _4692.y;
-                                if (_5077 <= _5079)
+                                uint _5126 = _6699 + 1u;
+                                uint _5132 = (_5126 < _5110) ? _5126 : _6698;
+                                uint _5247 = _6699 / 2u;
+                                bvec2 _5257 = bvec2((_6699 % 2u) == 0u);
+                                vec2 _5138 = vec2(_5257.x ? _1780.uniforms.clip_polygon_points[_5247].xy.x : _1780.uniforms.clip_polygon_points[_5247].zw.x, _5257.y ? _1780.uniforms.clip_polygon_points[_5247].xy.y : _1780.uniforms.clip_polygon_points[_5247].zw.y) * _1780.uniforms.scale_factor;
+                                uint _5263 = _5132 / 2u;
+                                bvec2 _5273 = bvec2((_5132 % 2u) == 0u);
+                                vec2 _5144 = vec2(_5273.x ? _1780.uniforms.clip_polygon_points[_5263].xy.x : _1780.uniforms.clip_polygon_points[_5263].zw.x, _5273.y ? _1780.uniforms.clip_polygon_points[_5263].xy.y : _1780.uniforms.clip_polygon_points[_5263].zw.y) * _1780.uniforms.scale_factor;
+                                float _5146 = _5138.y;
+                                float _5148 = _4740.y;
+                                if (_5146 <= _5148)
                                 {
-                                    float _5083 = _5075.y;
-                                    int _6758 = 0;
-                                    if (_5083 > _5079)
+                                    float _5152 = _5144.y;
+                                    int _6833 = 0;
+                                    if (_5152 > _5148)
                                     {
-                                        float _5091 = _5069.x;
-                                        int _6759 = 0;
-                                        if ((((_5075.x - _5091) * (_5079 - _5077)) - ((_4692.x - _5091) * (_5083 - _5077))) > 0.0)
+                                        float _5160 = _5138.x;
+                                        int _6834 = 0;
+                                        if ((((_5144.x - _5160) * (_5148 - _5146)) - ((_4740.x - _5160) * (_5152 - _5146))) > 0.0)
                                         {
-                                            _6759 = _6626 + 1;
+                                            _6834 = _6701 + 1;
                                         }
                                         else
                                         {
-                                            _6759 = _6626;
+                                            _6834 = _6701;
                                         }
-                                        _6758 = _6759;
+                                        _6833 = _6834;
                                     }
                                     else
                                     {
-                                        _6758 = _6626;
+                                        _6833 = _6701;
                                     }
-                                    _6757 = _6758;
+                                    _6832 = _6833;
                                 }
                                 else
                                 {
-                                    float _5120 = _5075.y;
-                                    int _6760 = 0;
-                                    if (_5120 <= _5079)
+                                    float _5189 = _5144.y;
+                                    int _6835 = 0;
+                                    if (_5189 <= _5148)
                                     {
-                                        float _5128 = _5069.x;
-                                        int _6761 = 0;
-                                        if ((((_5075.x - _5128) * (_5079 - _5077)) - ((_4692.x - _5128) * (_5120 - _5077))) < 0.0)
+                                        float _5197 = _5138.x;
+                                        int _6836 = 0;
+                                        if ((((_5144.x - _5197) * (_5148 - _5146)) - ((_4740.x - _5197) * (_5189 - _5146))) < 0.0)
                                         {
-                                            _6761 = _6626 - 1;
+                                            _6836 = _6701 - 1;
                                         }
                                         else
                                         {
-                                            _6761 = _6626;
+                                            _6836 = _6701;
                                         }
-                                        _6760 = _6761;
+                                        _6835 = _6836;
                                     }
                                     else
                                     {
-                                        _6760 = _6626;
+                                        _6835 = _6701;
                                     }
-                                    _6757 = _6760;
+                                    _6832 = _6835;
                                 }
                             }
-                            _6750 = _6626;
+                            _6825 = _6701;
                         }
-                        _6641 = _6622 != 0;
+                        _6716 = _6697 != 0;
                         break;
                     } while(false);
-                    float _6643 = 0.0;
-                    uint _6644 = 0u;
-                    _6644 = 0u;
-                    _6643 = uintBitsToFloat(0x7f800000u /* inf */);
-                    uint _4709 = 0u;
-                    float _6763 = 0.0;
-                    for (uint _6642 = 0u; _6642 < _4677; _6644 = _4709, _6643 = _6763, _6642++)
+                    float _6718 = 0.0;
+                    uint _6719 = 0u;
+                    _6719 = 0u;
+                    _6718 = uintBitsToFloat(0x7f800000u /* inf */);
+                    uint _4757 = 0u;
+                    float _6838 = 0.0;
+                    for (uint _6717 = 0u; _6717 < _4725; _6719 = _4757, _6718 = _6838, _6717++)
                     {
-                        _4709 = min(_1766.uniforms.clip_polygon_end_points[_6642 / 4u][_6642 % 4u], _4674);
-                        if (_4709 <= (_6644 + 1u))
+                        _4757 = min(_1780.uniforms.clip_polygon_end_points[_6717 / 4u][_6717 % 4u], _4722);
+                        if (_4757 <= (_6719 + 1u))
                         {
-                            _6763 = _6643;
+                            _6838 = _6718;
                             continue;
                         }
-                        float _6647 = 0.0;
-                        _6647 = _6643;
-                        for (uint _6645 = _6644; _6645 < _4709; )
+                        float _6722 = 0.0;
+                        _6722 = _6718;
+                        for (uint _6720 = _6719; _6720 < _4757; )
                         {
-                            uint _4725 = _6645 + 1u;
-                            uint _4731 = (_4725 < _4709) ? _4725 : _6644;
-                            uint _5218 = _6645 / 2u;
-                            bvec2 _5228 = bvec2((_6645 % 2u) == 0u);
-                            vec2 _4737 = vec2(_5228.x ? _1766.uniforms.clip_polygon_points[_5218].xy.x : _1766.uniforms.clip_polygon_points[_5218].zw.x, _5228.y ? _1766.uniforms.clip_polygon_points[_5218].xy.y : _1766.uniforms.clip_polygon_points[_5218].zw.y) * _1766.uniforms.scale_factor;
-                            uint _5234 = _4731 / 2u;
-                            bvec2 _5244 = bvec2((_4731 % 2u) == 0u);
-                            vec2 _5253 = (vec2(_5244.x ? _1766.uniforms.clip_polygon_points[_5234].xy.x : _1766.uniforms.clip_polygon_points[_5234].zw.x, _5244.y ? _1766.uniforms.clip_polygon_points[_5234].xy.y : _1766.uniforms.clip_polygon_points[_5234].zw.y) * _1766.uniforms.scale_factor) - _4737;
-                            _6647 = min(_6647, length(_4692 - (_4737 + (_5253 * clamp(dot(_4692 - _4737, _5253) / max(dot(_5253, _5253), 9.9999997473787516355514526367188e-05), 0.0, 1.0)))));
-                            _6645++;
+                            uint _4773 = _6720 + 1u;
+                            uint _4779 = (_4773 < _4757) ? _4773 : _6719;
+                            uint _5287 = _6720 / 2u;
+                            bvec2 _5297 = bvec2((_6720 % 2u) == 0u);
+                            vec2 _4785 = vec2(_5297.x ? _1780.uniforms.clip_polygon_points[_5287].xy.x : _1780.uniforms.clip_polygon_points[_5287].zw.x, _5297.y ? _1780.uniforms.clip_polygon_points[_5287].xy.y : _1780.uniforms.clip_polygon_points[_5287].zw.y) * _1780.uniforms.scale_factor;
+                            uint _5303 = _4779 / 2u;
+                            bvec2 _5313 = bvec2((_4779 % 2u) == 0u);
+                            vec2 _5322 = (vec2(_5313.x ? _1780.uniforms.clip_polygon_points[_5303].xy.x : _1780.uniforms.clip_polygon_points[_5303].zw.x, _5313.y ? _1780.uniforms.clip_polygon_points[_5303].xy.y : _1780.uniforms.clip_polygon_points[_5303].zw.y) * _1780.uniforms.scale_factor) - _4785;
+                            _6722 = min(_6722, length(_4740 - (_4785 + (_5322 * clamp(dot(_4740 - _4785, _5322) / max(dot(_5322, _5322), 9.9999997473787516355514526367188e-05), 0.0, 1.0)))));
+                            _6720++;
                             continue;
                         }
-                        _6763 = _6647;
+                        _6838 = _6722;
                     }
-                    float _4768 = max(length(vec2(dFdxFine(input_screen_pos.x), dFdyFine(input_screen_pos.y))) * 0.5, 0.75);
-                    _6660 = smoothstep(_4768, -_4768, _6641 ? (-_6643) : _6643);
+                    float _4816 = max(length(vec2(dFdxFine(_4531.x), dFdyFine(_4531.y))) * 0.5, 0.75);
+                    _6735 = smoothstep(_4816, -_4816, _6716 ? (-_6718) : _6718);
                     break;
                 }
-                _6659 = 1.0;
+                _6734 = 1.0;
             }
-            _6658 = _6659;
+            _6733 = _6734;
         }
-        float _4790 = max((abs(dFdxFine(_6658)) + abs(dFdyFine(_6658))) * 0.5, 0.5);
-        _6660 = smoothstep(_4790, -_4790, _6658);
+        float _4838 = max((abs(dFdxFine(_6733)) + abs(dFdyFine(_6733))) * 0.5, 0.5);
+        _6735 = smoothstep(_4838, -_4838, _6733);
         break;
     } while(false);
-    vec4 _3510 = instances_1._data[input_instance_id].border_widths * _1766.uniforms.scale_factor;
-    float _3512 = _3510.x;
-    float _3514 = _3510.y;
-    float _3517 = _3510.z;
-    float _3520 = _3510.w;
-    bool _3539 = true && (_4483 > 0.0);
-    float _6701 = 0.0;
-    if (true && (((((_3512 + _3514) + _3517) + _3520) > 0.0) && true))
+    vec4 _3550 = instances_1._data[input_instance_id].border_widths * _1780.uniforms.scale_factor;
+    float _3552 = _3550.x;
+    float _3554 = _3550.y;
+    float _3557 = _3550.z;
+    float _3560 = _3550.w;
+    bool _3579 = true && (_4523 > 0.0);
+    float _6776 = 0.0;
+    if (true && (((((_3552 + _3554) + _3557) + _3560) > 0.0) && true))
     {
-        vec4 _3607 = max(_3328 - vec4(max(_3512, _3520), max(_3512, _3514), max(_3517, _3514), max(_3517, _3520)), vec4(0.0));
-        vec2 _3611 = input_local_pos - vec2((_3520 - _3514) * 0.5, (_3512 - _3517) * 0.5);
-        bool _5283 = _3611.y < 0.0;
-        float _5297 = (_3611.x < 0.0) ? (_5283 ? _3607.x : _3607.w) : (_5283 ? _3607.y : _3607.z);
-        vec2 _5304 = (abs(_3611) - max(vec2(input_size.x - ((_3514 + _3520) * 0.5), input_size.y - ((_3512 + _3517) * 0.5)), vec2(0.0))) + vec2(_5297);
-        _6701 = _4483 - smoothstep(_3422, _4481, (min(max(_5304.x, _5304.y), 0.0) + length(max(_5304, vec2(0.0)))) - _5297);
+        vec4 _3647 = max(_3362 - vec4(max(_3552, _3560), max(_3552, _3554), max(_3557, _3554), max(_3557, _3560)), vec4(0.0));
+        vec2 _3651 = input_local_pos - vec2((_3560 - _3554) * 0.5, (_3552 - _3557) * 0.5);
+        bool _5352 = _3651.y < 0.0;
+        float _5366 = (_3651.x < 0.0) ? (_5352 ? _3647.x : _3647.w) : (_5352 ? _3647.y : _3647.z);
+        vec2 _5373 = (abs(_3651) - max(vec2(input_size.x - ((_3554 + _3560) * 0.5), input_size.y - ((_3552 + _3557) * 0.5)), vec2(0.0))) + vec2(_5366);
+        _6776 = _4523 - smoothstep(_3456, _4521, (min(max(_5373.x, _5373.y), 0.0) + length(max(_5373, vec2(0.0)))) - _5366);
     }
     else
     {
-        float _6702 = 0.0;
-        if (true && (_3343 > 0.0))
+        float _6777 = 0.0;
+        if (true && (_3377 > 0.0))
         {
-            _6702 = _4483 - smoothstep(_3422, _4481, _4253 + _3343);
+            _6777 = _4523 - smoothstep(_3456, _4521, _4293 + _3377);
         }
         else
         {
-            _6702 = 0.0;
+            _6777 = 0.0;
         }
-        _6701 = _6702;
+        _6776 = _6777;
     }
-    vec4 _6933 = vec4(0.0);
-    if (_3539)
+    vec4 _7017 = vec4(0.0);
+    if (_3579)
     {
-        float _4109 = instances_1._data[input_instance_id].fill_color.w * _4483;
-        _6933 = vec4(instances_1._data[input_instance_id].fill_color.xyz * _4109, _4109) * 1.0;
+        float _4149 = instances_1._data[input_instance_id].fill_color.w * _4523;
+        _7017 = vec4(instances_1._data[input_instance_id].fill_color.xyz * _4149, _4149) * 1.0;
     }
     else
     {
-        _6933 = vec4(0.0);
+        _7017 = vec4(0.0);
     }
-    vec4 _6934 = vec4(0.0);
-    if (_3539)
+    vec4 _7018 = vec4(0.0);
+    if (_3579)
     {
-        vec2 _4132 = input_local_pos - (vec2(instances_1._data[input_instance_id].shadow_offset_x, instances_1._data[input_instance_id].shadow_offset_y) * _1766.uniforms.scale_factor);
-        bool _6238 = _4132.y < 0.0;
-        float _6252 = (_4132.x < 0.0) ? (_6238 ? _4222 : _4224) : (_6238 ? _4230 : _4232);
-        vec2 _6259 = (abs(_4132) - input_size) + vec2(_6252);
-        float _4153 = instances_1._data[input_instance_id].shadow_color.w * (_4483 * smoothstep(-max(instances_1._data[input_instance_id].shadow_blur * _1766.uniforms.scale_factor, 1.0), 0.0, (min(max(_6259.x, _6259.y), 0.0) + length(max(_6259, vec2(0.0)))) - _6252));
-        _6934 = _6933 + (vec4(instances_1._data[input_instance_id].shadow_color.xyz * _4153, _4153) * (1.0 - _6933.w));
+        vec2 _4172 = input_local_pos - (vec2(instances_1._data[input_instance_id].shadow_offset_x, instances_1._data[input_instance_id].shadow_offset_y) * _1780.uniforms.scale_factor);
+        bool _6307 = _4172.y < 0.0;
+        float _6321 = (_4172.x < 0.0) ? (_6307 ? _4262 : _4264) : (_6307 ? _4270 : _4272);
+        vec2 _6328 = (abs(_4172) - input_size) + vec2(_6321);
+        float _4193 = instances_1._data[input_instance_id].shadow_color.w * (_4523 * smoothstep(-max(instances_1._data[input_instance_id].shadow_blur * _1780.uniforms.scale_factor, 1.0), 0.0, (min(max(_6328.x, _6328.y), 0.0) + length(max(_6328, vec2(0.0)))) - _6321));
+        _7018 = _7017 + (vec4(instances_1._data[input_instance_id].shadow_color.xyz * _4193, _4193) * (1.0 - _7017.w));
     }
     else
     {
-        _6934 = _6933;
+        _7018 = _7017;
     }
-    vec4 _6935 = vec4(0.0);
-    if (true && (_6701 > 0.0))
+    vec4 _7019 = vec4(0.0);
+    if (true && (_6776 > 0.0))
     {
-        float _4181 = instances_1._data[input_instance_id].border_color.w * _6701;
-        _6935 = _6934 + (vec4(instances_1._data[input_instance_id].border_color.xyz * _4181, _4181) * (1.0 - _6934.w));
+        float _4221 = instances_1._data[input_instance_id].border_color.w * _6776;
+        _7019 = _7018 + (vec4(instances_1._data[input_instance_id].border_color.xyz * _4221, _4221) * (1.0 - _7018.w));
     }
     else
     {
-        _6935 = _6934;
+        _7019 = _7018;
     }
-    vec4 _4201 = _6935 * (_6620 * _6660);
-    if (_4201.w < 0.001000000047497451305389404296875)
+    vec4 _4241 = _7019 * (_6695 * _6735);
+    if (_4241.w < 0.001000000047497451305389404296875)
     {
         discard;
     }
-    _entryPointOutput = _4201;
+    _entryPointOutput = _4241;
 }
 

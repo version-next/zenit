@@ -35,6 +35,11 @@ pub const Buffer = struct {
         _ = self;
     }
 
+    /// See `Texture.setVolatile`.
+    pub fn setVolatile(self: *Buffer, make_volatile: bool) bool {
+        return mtl.metal_resource_set_volatile(@ptrCast(self.raw), @intFromBool(make_volatile)) != 0;
+    }
+
     pub fn destroyCountForTesting() usize {
         if (comptime !@import("builtin").is_test) @compileError("test-only ownership counter");
         return test_support.buffer_destroy_count;
@@ -113,6 +118,14 @@ pub const Texture = struct {
         return @ptrCast(self.raw);
     }
 
+    /// Volatile storage leaves the process footprint while idle and may be
+    /// discarded under memory pressure. Making it non-volatile again returns
+    /// true when the contents were discarded and must be regenerated. Only
+    /// toggle storage no submitted command is still using.
+    pub fn setVolatile(self: *Texture, make_volatile: bool) bool {
+        return mtl.metal_resource_set_volatile(@ptrCast(self.raw), @intFromBool(make_volatile)) != 0;
+    }
+
     pub fn destroy(self: *Texture) void {
         mtl.release(self.raw);
     }
@@ -170,6 +183,10 @@ pub const TextureBinding = struct {
 
     pub fn eql(self: TextureBinding, other: TextureBinding) bool {
         return self.raw == other.raw;
+    }
+
+    pub fn samePixelFormat(self: TextureBinding, other: TextureBinding) bool {
+        return mtl.metal_texture_pixel_format(self.raw) == mtl.metal_texture_pixel_format(other.raw);
     }
 
     pub fn createView(self: TextureBinding) TextureView {

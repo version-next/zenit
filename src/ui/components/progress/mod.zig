@@ -250,7 +250,8 @@ test "Progress: render emits visible fill and percent text" {
     var saw_track = false;
     var saw_fill = false;
     var saw_text = false;
-    const expected_track = Color.lerp(ctx.tokens.tokens.color.bg_tertiary, ctx.tokens.tokens.color.fg_primary, 0.06);
+    // COMPONENTS.json Progress / 65%: flat semantic track surface.
+    const expected_track = ctx.tokens.tokens.color.progress_track;
     for (commands) |cmd| {
         if (cmd.isFillRect()) {
             if (Color.eql(cmd.color.toColor(), expected_track) and cmd.geom.w >= 160 and cmd.geom.h >= 4) {

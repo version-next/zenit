@@ -106,13 +106,14 @@ test "Badge: 胶囊高度、内边距、字号与底色来自 size / status toke
     var e = try Env.init();
     defer e.deinit();
     const b = try e.mount(Badge(.{ .label = "New", .size = .md, .status = .warning }));
+    // COMPONENTS.json Badge / warning: tonal surface, 500 label weight.
     const t = theme.light.tokens;
     try std.testing.expectEqual(t.size.lg, b.style.height.px);
     try std.testing.expectEqual(t.space.space200, b.style.padding.left);
-    try std.testing.expectEqual(t.color.warning, b.getBackground());
+    try std.testing.expectEqual(t.color.warning_subtle, b.getBackground());
     const txt = label(b).?.getText().?;
     try std.testing.expectEqual(t.font_size.xs, txt.font_size);
-    try std.testing.expectEqual(@as(u16, 600), txt.font_weight);
+    try std.testing.expectEqual(@as(u16, 500), txt.font_weight);
 }
 
 test "StatusBadge: 圆点 + 标签；空标签不显示文本" {
@@ -204,12 +205,16 @@ test "Badge: 换主题后跟随新的 token 值" {
     custom.tokens.size.lg = 28;
     custom.tokens.font_size.xs = 13;
     custom.tokens.space.space200 = 10;
-    custom.tokens.color.accent = Color.hex(0x123456);
+    custom.tokens.color.accent_subtle = Color.hex(0x123456);
     e.cx.setTheme(&custom);
     try std.testing.expectEqual(@as(f32, 28), b.style.height.px);
     try std.testing.expectEqual(@as(f32, 13), label(b).?.getText().?.font_size);
     try std.testing.expectEqual(@as(f32, 10), b.style.padding.left);
-    try std.testing.expectEqual(custom.tokens.color.accent, b.getBackground());
+    // The text-bearing root keeps its API, while explicit line centering tracks
+    // both capsule height and font-size changes with the theme.
+    try std.testing.expectApproxEqAbs(@as(f32, (28.0 - 13.0 * 1.2) / 2.0), b.style.padding.top, 0.01);
+    try std.testing.expectApproxEqAbs(b.style.padding.top, b.style.padding.bottom, 0.01);
+    try std.testing.expectEqual(custom.tokens.color.accent_subtle, b.getBackground());
 }
 
 test {

@@ -28,7 +28,7 @@ fn Cache(comptime name: [:0]const u8) type {
 
         fn get() bool {
             return cached orelse blk: {
-                const v = @import("zenit_environment").has(key);
+                const v = @import("zenit_environment").flag(key);
                 cached = v;
                 break :blk v;
             };

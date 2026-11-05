@@ -35,6 +35,10 @@ static void pointer_enter(void *data, struct wl_pointer *pointer, uint32_t seria
     if (shadow_pointer_enter(w, surface, serial, (float)x / 256, (float)y / 256)) return;
     if (surface != w->surface) return;
     w->pointer_enter_serial = serial; w->pointer_focused = 1;
+    /* Hover acceptance evidence (scripts/run_linux_hover_acceptance.py): pointer focus is
+     * independent of keyboard focus (activation). */
+    if (getenv("ZENIT_WAYLAND_POINTER_TRACE")) fprintf(stderr,
+        "POINTER native enter x=%.1f y=%.1f keyboard_focused=%d\n", (float)x / 256, (float)y / 256, w->keyboard_focused);
     if (!apply_cursor(w)) fprintf(stderr, "Wayland cursor unavailable\n");
     if (!w->pointer_focused) return;
     w->input.x = (float)x / 256; w->input.y = (float)y / 256;
@@ -46,9 +50,14 @@ static void pointer_leave(void *data, struct wl_pointer *pointer, uint32_t seria
     (void)pointer; (void)serial; ZenitWaylandWindow *w = data;
     if (shadow_pointer_leave(w, surface)) return;
     if (surface != w->surface) return;
+    if (getenv("ZENIT_WAYLAND_POINTER_TRACE")) fprintf(stderr,
+        "POINTER native leave keyboard_focused=%d\n", w->keyboard_focused);
     if (w->gesture_active) emit_scroll(w, 0, 0, 5);
     w->gesture_active = 0; w->gesture_axes = 0; reset_axis_frame(w);
     w->pointer_focused = 0; w->cursor_deadline = 0; cancel_pointer_buttons(w);
+    /* Kind 9: the pointer left the surface. The last motion position is stale from here on;
+     * queued after any button cancellation so the sequence ends before hover is dropped. */
+    if (w->ordered_input) enqueue_input(w, (ZenitWaylandInputEvent){ .kind = 9, .x = w->input.x, .y = w->input.y, .modifiers = keyboard_modifiers(w) });
 }
 static void pointer_motion(void *data, struct wl_pointer *pointer, uint32_t time, wl_fixed_t x, wl_fixed_t y) {
     (void)pointer; (void)time; ZenitWaylandWindow *w = data;
@@ -119,6 +128,8 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
 static void emit_scroll(ZenitWaylandWindow *w, float dx, float dy, uint32_t phase) {
     if (getenv("ZENIT_WAYLAND_SCROLL_TRACE")) fprintf(stderr,
         "SCROLL native dx=%.4f dy=%.4f phase=%u\n", dx, dy, phase);
+    if (getenv("ZENIT_WAYLAND_POINTER_TRACE")) fprintf(stderr,
+        "POINTER native axis dy=%.4f keyboard_focused=%d\n", dy, w->keyboard_focused);
     if (w->ordered_input) {
         enqueue_input(w, (ZenitWaylandInputEvent){ .kind = 5, .x = w->input.x, .y = w->input.y,
             .dx = dx, .dy = dy, .scroll_phase = phase, .modifiers = keyboard_modifiers(w) });

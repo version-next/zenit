@@ -1,8 +1,8 @@
 const std = @import("std");
 const gpu = @import("gpu");
 const ui = @import("ui");
+const env = @import("zenit_environment");
 const AppRenderer = @import("app_renderer").AppRenderer;
-extern "kernel32" fn SetEnvironmentVariableA([*:0]const u8, ?[*:0]const u8) callconv(.winapi) c_int;
 extern fn zenit_d12_test_hidden_window_create() ?*anyopaque;
 extern fn zenit_d12_test_hidden_window_destroy(*anyopaque) void;
 extern fn zenit_d12_test_gate_create(*anyopaque, *anyopaque) *anyopaque;
@@ -34,8 +34,10 @@ pub fn run(io: std.Io) !void {
     try checkFrameDamage(io, a, hwnd, &dq.device, &dq.queue);
     try checkOpaqueTextComposite(io, a, hwnd, &dq.device, &dq.queue);
     {
-        if (SetEnvironmentVariableA("ZENIT_D3D12_SDF_GENERAL_ONLY", "1") == 0) return error.SetEnvironmentFailed;
-        defer _ = SetEnvironmentVariableA("ZENIT_D3D12_SDF_GENERAL_ONLY", null);
+        // Through setFlag: the renderer reads the switch via the cached `flag`,
+        // already read by the checks above.
+        try env.setFlag("ZENIT_D3D12_SDF_GENERAL_ONLY", "1");
+        defer env.setFlag("ZENIT_D3D12_SDF_GENERAL_ONLY", null) catch {};
         try checkFrameDamage(io, a, hwnd, &dq.device, &dq.queue);
         std.debug.print("PASS: optional SDF pipelines unavailable; general pipeline preserves full/partial UI pixel equality\n", .{});
     }
@@ -460,15 +462,15 @@ fn checkOpaqueTextComposite(io: std.Io, a: std.mem.Allocator, hwnd: *anyopaque, 
     const system_lcd = renderer.text_renderer.cleartype_enabled;
     if (system_lcd and (renderer.text_renderer.lcd_glyph_count == 0 or renderer.text_renderer.gray_glyph_count != 0)) return error.OpaqueTextNotLCD;
     if (!system_lcd and renderer.text_renderer.lcd_glyph_count != 0) return error.DisabledClearTypeUsedLCD;
-    if (SetEnvironmentVariableA("ZENIT_TEXT_BASELINE_GRAYSCALE", "1") == 0) return error.EnvironmentUpdateFailed;
-    defer _ = SetEnvironmentVariableA("ZENIT_TEXT_BASELINE_GRAYSCALE", null);
+    try env.setFlag("ZENIT_TEXT_BASELINE_GRAYSCALE", "1");
+    defer env.setFlag("ZENIT_TEXT_BASELINE_GRAYSCALE", null) catch {};
     cx.root.?.markRenderDirty();
     cx.needs_redraw = true;
     try renderer.frame(cx, 256, 128, 1.75);
     renderer.frame_sync.drain(3);
     if (renderer.text_renderer.lcd_glyph_count != 0 or renderer.text_renderer.gray_glyph_count == 0) return error.DirectGrayTextWrongMode;
     try renderer.retained_tex.?.readBgra8(448, 224, &baseline, 1792);
-    _ = SetEnvironmentVariableA("ZENIT_TEXT_BASELINE_GRAYSCALE", null);
+    try env.setFlag("ZENIT_TEXT_BASELINE_GRAYSCALE", null);
     group.style.ensureExtPanic(a).composited_group = true;
     group.markRenderDirty();
     try renderer.frame(cx, 256, 128, 1.75);

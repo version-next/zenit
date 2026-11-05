@@ -1,0 +1,72 @@
+//! Per-corner overflow clip fixture styles. Every specimen clips a square-cornered red fill with
+//! its own corner radii; the specimen itself paints nothing, so the rounded corners that show come
+//! from the overflow clip alone.
+const ui = @import("ui");
+
+style root { direction: column; gap: space600; }
+style heading { font-size: lg; font-weight: 600; color: fg-primary; }
+style lede { font-size: sm; line-height: 1.4; color: fg-secondary; }
+style grid { no-cross-stretch: true; direction: row; gap: space800; align-items: start; }
+style cell { direction: column; gap: space200; }
+style caption { font-size: xs; color: fg-secondary; }
+style attached { no-cross-stretch: true; direction: row; }
+
+/// 120x64 clip owner: overflow hidden, no paint of its own.
+style specimen { width: 120; height: 64; overflow-hidden: true; flex-shrink: 0; }
+/// Attached group items: rounded outer corners, square inner ones.
+style first { width: 80; height: 64; overflow-hidden: true; flex-shrink: 0; corner-radii: {ui.CornerRadius{ .each = .{ 16, 0, 0, 16 } }}; }
+style middle { width: 80; height: 64; overflow-hidden: true; flex-shrink: 0; }
+style last { width: 80; height: 64; overflow-hidden: true; flex-shrink: 0; corner-radii: {ui.CornerRadius{ .each = .{ 0, 16, 16, 0 } }}; }
+
+/// TL 24, TR 0, BR 10, BL 0 (asymmetric, so a corner swap or a half turn is visible).
+style corners { corner-radii: {ui.CornerRadius{ .each = .{ 24, 0, 10, 0 } }}; }
+/// Opacity layer: the rounded clip folds into the composite mask.
+style faded { opacity: 0.9; }
+/// Half turn about the centre: TL lands bottom-right on screen.
+style turned { rotate: 3.14159265; }
+/// Horizontal mirror: TL lands top-right on screen.
+style mirrored { scale-x: -1; }
+
+/// Square-cornered fill exactly covering a specimen.
+style fill { width: fill; height: fill; flex-shrink: 0; background: #e5484d; }
+/// Backdrop blur: the overflow clip becomes a rounded_clip surface (begin_rounded_clip).
+style glass { glass: {ui.GlassParams{ .backdrop_blur = 16, .glass_intensity = 0 }}; }
+/// Uniformly rounded clip around a nested specimen: an outer shape clip is active, so the inner
+/// rounded_clip takes the offscreen layer path (composite mask) instead of the shader mask.
+style outer { no-cross-stretch: true; padding: 8; corner-radius: 6; overflow-hidden: true; }
+
+/// 100x40 clip owner for nested-chain cases (no paint of its own).
+style band { width: 100; height: 40; overflow-hidden: true; flex-shrink: 0; }
+style round20 { corner-radius: 20; }
+style only_tr10 { corner-radii: {ui.CornerRadius{ .each = .{ 0, 10, 0, 0 } }}; }
+style only_tl20 { corner-radii: {ui.CornerRadius{ .each = .{ 20, 0, 0, 0 } }}; }
+style only_tr20 { corner-radii: {ui.CornerRadius{ .each = .{ 0, 20, 0, 0 } }}; }
+style only_br20 { corner-radii: {ui.CornerRadius{ .each = .{ 0, 0, 20, 0 } }}; }
+style only_tr12 { corner-radii: {ui.CornerRadius{ .each = .{ 0, 12, 0, 0 } }}; }
+style only_tr16 { corner-radii: {ui.CornerRadius{ .each = .{ 0, 16, 0, 0 } }}; }
+style only_bl12 { corner-radii: {ui.CornerRadius{ .each = .{ 0, 0, 0, 12 } }}; }
+/// Narrower left-aligned children: their shapes cross the parent's instead of sharing its rect.
+style w70 { width: 70; }
+style w80 { width: 80; }
+style w84 { width: 84; }
+/// Non-normal blend: the owner composites through the blend pipeline (multiply over the white
+/// panel leaves the red fill unchanged).
+style multiplied { blend-mode: multiply; }
+/// Pill-style oversized radius on one corner; normalises to 20 (half of 40).
+style huge_tl { corner-radii: {ui.CornerRadius{ .each = .{ 9999, 0, 0, 0 } }}; }
+
+/// Dark backdrop behind the glass-shape specimens, so the bright glass material reads against it.
+style backdrop { no-cross-stretch: true; padding: 10; background: #1b2030; flex-shrink: 0; }
+/// Bright, untextured glass material: a near-opaque white surface veil over a blurred uniform
+/// backdrop, so its silhouette (not its optics) is what shows.
+style glass_lit { glass: {ui.GlassParams{ .backdrop_blur = 16, .glass_tint = ui.Color.rgba(255, 255, 255, 235), .tint_mode = .surface }}; }
+/// A negative first corner: normalises to a square TL; TR keeps its 20pt arc.
+style neg_tl { corner-radii: {ui.CornerRadius{ .each = .{ -4, 20, 0, 0 } }}; }
+/// Pill written as an oversized uniform radius vs. the exact capsule radius (half of 40).
+style pill_huge { corner-radius: 9999; }
+style pill_exact { corner-radius: 20; }
+/// Degenerate glass owners: zero width, and thinner than any arc.
+style sliver0 { width: 0; height: 40; flex-shrink: 0; corner-radius: 9999; }
+style sliver2 { width: 2; height: 40; flex-shrink: 0; corner-radius: 9999; }
+/// Gap between the slivers so each one's footprint can be probed on the backdrop.
+style sliver_row { gap: 24; width: 100; }

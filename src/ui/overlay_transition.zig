@@ -334,6 +334,8 @@ pub const TransitionController = struct {
                     node.style.translate_x += self.slide[0] * ((1 - opacity_t) - (1 - old_t));
                     node.style.translate_y += self.slide[1] * ((1 - opacity_t) - (1 - old_t));
                 }
+                // The slide still in the translate: transient, out of the surface rest origin.
+                ext.motion_offset = if (reduce_motion) .{ 0, 0 } else .{ self.slide[0] * (1 - opacity_t), self.slide[1] * (1 - opacity_t) };
             },
             .menu_fade => node.setOpacityRaw(self.visualValue()),
             .glass_popover => {
@@ -361,24 +363,32 @@ pub const TransitionController = struct {
                 const r = node.rectFromWorldOrFallback();
                 const offset = (1.0 - motion_t) * r.h;
                 node.style.translate_y = offset;
+                // The whole slide is transient (the rest translate is 0).
+                node.style.ensureExtPanic(allocator).motion_offset = .{ 0, offset };
             },
             .slide_right => {
                 node.setOpacityRaw(if (reduce_motion) opacity_t else slideOpacity(self.progress));
                 const r = node.rectFromWorldOrFallback();
                 const offset = (1.0 - motion_t) * r.w;
                 node.style.translate_x = offset;
+                // The whole slide is transient (the rest translate is 0).
+                node.style.ensureExtPanic(allocator).motion_offset = .{ offset, 0 };
             },
             .slide_left => {
                 node.setOpacityRaw(if (reduce_motion) opacity_t else slideOpacity(self.progress));
                 const r = node.rectFromWorldOrFallback();
                 const offset = -(1.0 - motion_t) * r.w;
                 node.style.translate_x = offset;
+                // The whole slide is transient (the rest translate is 0).
+                node.style.ensureExtPanic(allocator).motion_offset = .{ offset, 0 };
             },
             .slide_top => {
                 node.setOpacityRaw(if (reduce_motion) opacity_t else slideOpacity(self.progress));
                 const r = node.rectFromWorldOrFallback();
                 const offset = -(1.0 - motion_t) * r.h;
                 node.style.translate_y = offset;
+                // The whole slide is transient (the rest translate is 0).
+                node.style.ensureExtPanic(allocator).motion_offset = .{ 0, offset };
             },
         }
         // Overlay enter/exit transitions here only touch compositor-managed
@@ -447,6 +457,24 @@ pub const TransitionController = struct {
             .entering => p * dur,
             .exiting => (1.0 - p) * dur,
         };
+    }
+
+    /// This controller at its fully shown end: an enter's last frame, an exit's first. `apply`ing
+    /// it writes exactly the open state of every property this transition animates (opacity,
+    /// scale, slide translate, motion offset, the dropdown offset relative to the node's current
+    /// opacity), so it undoes whatever the transition left on a node without a second definition
+    /// of "shown". Host-fed state (the dropdown `slide`) is kept.
+    pub fn shown(self: TransitionController) TransitionController {
+        var ctrl = self;
+        ctrl.progress = 1.0;
+        ctrl.elapsed_ms = switch (ctrl.direction) {
+            .entering => durationMs(ctrl.transition, .entering),
+            .exiting => 0,
+        };
+        ctrl.amplitude = 1;
+        ctrl.delay_remaining_ms = 0;
+        ctrl.pending_first_tick = false;
+        return ctrl;
     }
 
     pub fn isComplete(self: *const TransitionController) bool {

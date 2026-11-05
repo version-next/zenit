@@ -36,13 +36,15 @@ struct Uniforms
     float scale_factor;
     uint clip_shape_kind;
     vec4 clip_rect;
-    float clip_radius;
+    vec4 clip_radii;
     uint clip_fill_rule;
     uint clip_point_count;
     uint clip_contour_count;
+    uint clip_pad;
     uvec4 clip_polygon_end_points[2];
     vec4 clip_polygon_points[16];
     uint frame_seed;
+    uint raster_clip_pos;
 };
 
 struct ShadowParam

@@ -383,6 +383,28 @@ extern "C" IDWriteTextFormat *zenit_dwrite_create_text_format(const ZenitDWriteF
     return format;
 }
 
+// The system UI font: the message font Windows itself uses for dialogs and controls
+// (Segoe UI, or Microsoft YaHei UI / Yu Gothic UI / Malgun Gothic on CJK systems).
+// UTF-8 into out; returns its length without the terminator, 0 on failure.
+extern "C" uint32_t zenit_windows_system_ui_family(char *out, uint32_t capacity) {
+    if (!out || !capacity) return 0;
+    NONCLIENTMETRICSW metrics = {};
+    metrics.cbSize = sizeof(metrics);
+    if (!SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0) || !metrics.lfMessageFont.lfFaceName[0]) return 0;
+    int length = WideCharToMultiByte(CP_UTF8, 0, metrics.lfMessageFont.lfFaceName, -1, out, (int)capacity, nullptr, nullptr);
+    return length > 1 ? (uint32_t)(length - 1) : 0;
+}
+
+// The user's UI language as a BCP-47 name (zh-CN, ja-JP, en-US): DirectWrite picks CJK
+// fallback faces and glyph forms by it. Returns its length without the terminator, 0 on failure.
+extern "C" uint32_t zenit_windows_user_locale(char *out, uint32_t capacity) {
+    if (!out || !capacity) return 0;
+    wchar_t name[LOCALE_NAME_MAX_LENGTH];
+    if (!GetUserDefaultLocaleName(name, LOCALE_NAME_MAX_LENGTH)) return 0;
+    int length = WideCharToMultiByte(CP_UTF8, 0, name, -1, out, (int)capacity, nullptr, nullptr);
+    return length > 1 ? (uint32_t)(length - 1) : 0;
+}
+
 extern "C" uint32_t zenit_dwrite_font_family_name(const ZenitDWriteFont *font, char *out, uint32_t capacity) {
     if (!font || !font->format || !out || !capacity) return 0;
     UINT32 length = font->format->GetFontFamilyNameLength();

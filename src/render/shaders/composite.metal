@@ -10,15 +10,43 @@ struct BlendUniforms {
     float2 src_uv_scale;
     float2 inv_offset;     // local = inv · pixel + inv_offset
     float4 inv;            // a, b, c, d
-    float4 params; // opacity, blend_mode, corner_radius (layer-local physical px), mask inset (px: the clip rect inside the quad)
+    float4 params; // opacity, blend_mode, unused, mask inset (px: the clip rect inside the quad)
+    float4 corner_radii; // layer rounded mask TL, TR, BR, BL (layer-local physical px)
     float4 clip_rect; // Destination physical px rect clipping (w < 0 = none)
-    float4 clip_shape; // x = kind (0-1 rounded rect, 2 ellipse), y = radius (destination physical px)
+    float4 clip_shape; // x = kind (0-1 rounded rect, 2 ellipse)
     float4 clip_shape_rect;
+    float4 clip_shape_radii; // kind 1: TL, TR, BR, BL (destination physical px)
     float4 warp;           // lens warp (physical px): x across the rounded ends, y across the long edges (+ = toward the centre), z fade start, w fade width
     float4 src_uv_origin;  // xy = src UV of the quad's origin (grid-aligned rounded layers)
+    float4 clip2_rect;     // second shape clip (kind in clip_shape.y), destination physical px
+    float4 clip2_radii;
 };
 
-/// Destination pixel clipping coverage (rect x shape), 0.5px antialiasing band; consistent with
+/// Corner radius (TL, TR, BR, BL) of the quadrant `p` lies in, `p` relative to the rect centre.
+float zb_corner_radius(float2 p, float4 radii) {
+    return (p.x < 0.0) ? ((p.y < 0.0) ? radii.x : radii.w) : ((p.y < 0.0) ? radii.y : radii.z);
+}
+
+/// Shape clip coverage: kind 1 rounded rect, 2 ellipse, else none.
+float zb_shape_coverage(float2 pixel, uint kind, float4 rect, float4 radii) {
+    if (kind != 1u && kind != 2u) {
+        return 1.0;
+    }
+    float2 half_size = rect.zw * 0.5;
+    float2 p = pixel - (rect.xy + half_size);
+    float d;
+    if (kind == 1u) {
+        float r = min(zb_corner_radius(p, radii), min(half_size.x, half_size.y));
+        float2 q = abs(p) - half_size + r;
+        d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+    } else {
+        float2 safe = max(half_size, 0.001);
+        d = (length(p / safe) - 1.0) * min(safe.x, safe.y);
+    }
+    return clamp(0.5 - d, 0.0, 1.0);
+}
+
+/// Destination pixel clipping coverage (rect x shapes), 0.5px antialiasing band; consistent with
 /// image pipeline.
 float zb_clip_coverage(float2 pixel, constant BlendUniforms& u) {
     float coverage = 1.0;
@@ -28,21 +56,8 @@ float zb_clip_coverage(float2 pixel, constant BlendUniforms& u) {
         float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
         coverage *= clamp(0.5 - d, 0.0, 1.0);
     }
-    uint kind = uint(u.clip_shape.x);
-    if (kind == 1u || kind == 2u) {
-        float2 half_size = u.clip_shape_rect.zw * 0.5;
-        float2 p = pixel - (u.clip_shape_rect.xy + half_size);
-        float d;
-        if (kind == 1u) {
-            float r = min(u.clip_shape.y, min(half_size.x, half_size.y));
-            float2 q = abs(p) - half_size + r;
-            d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
-        } else {
-            float2 safe = max(half_size, 0.001);
-            d = (length(p / safe) - 1.0) * min(safe.x, safe.y);
-        }
-        coverage *= clamp(0.5 - d, 0.0, 1.0);
-    }
+    coverage *= zb_shape_coverage(pixel, uint(u.clip_shape.x), u.clip_shape_rect, u.clip_shape_radii);
+    coverage *= zb_shape_coverage(pixel, uint(u.clip_shape.y), u.clip2_rect, u.clip2_radii);
     return coverage;
 }
 
@@ -85,9 +100,10 @@ float3 zb_soft_light(float3 source, float3 destination) {
 float3 zb_difference(float3 source, float3 destination) { return abs(source - destination); }
 float3 zb_exclusion(float3 source, float3 destination) { return source + destination - 2.0 * source * destination; }
 
-float zb_rounded_rect_mask(float2 point, float2 size, float radius) {
-    if (radius <= 0.5) return 1.0;
+float zb_rounded_rect_mask(float2 point, float2 size, float4 radii) {
     float2 half_size = size * 0.5;
+    float radius = zb_corner_radius(point - half_size, radii);
+    if (radius <= 0.5) return 1.0;
     float2 q = abs(point - half_size) - half_size + radius;
     float distance = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
     return clamp(0.5 - distance, 0.0, 1.0);
@@ -117,13 +133,13 @@ fragment float4 blend_fragment_main(
     }
 
     // Lens warp: sample the surface shifted along the contour's normal, fading inward from the
-    // contour (the rounded rect of params.z, inset by params.w).
+    // contour (the rounded rect of corner_radii, inset by params.w).
     float2 sample_local = local;
     if (uniforms.warp.x != 0.0 || uniforms.warp.y != 0.0) {
         float2 half_size = uniforms.rect_size * 0.5;
         float2 clip_half = max(half_size - uniforms.params.w, float2(0.5));
-        float r = min(uniforms.params.z, min(clip_half.x, clip_half.y));
         float2 p = local - half_size;
+        float r = min(zb_corner_radius(p, uniforms.corner_radii), min(clip_half.x, clip_half.y));
         float2 q = abs(p) - clip_half + r;
         float inset = max(-(length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r), 0.0);
         // along the contour's normal (the displacement follows the SDF gradient: straight across
@@ -139,7 +155,7 @@ fragment float4 blend_fragment_main(
     float2 source_uv = uniforms.src_uv_origin.xy + (sample_local / uniforms.rect_size) * uniforms.src_uv_scale;
     source_uv = min(source_uv, uniforms.src_uv_origin.zw);
     float4 source_premul = source_texture.sample(texture_sampler, source_uv);
-    source_premul *= zb_rounded_rect_mask(local - uniforms.params.w, uniforms.rect_size - 2.0 * uniforms.params.w, uniforms.params.z) * zb_clip_coverage(fragment_pixel, uniforms);
+    source_premul *= zb_rounded_rect_mask(local - uniforms.params.w, uniforms.rect_size - 2.0 * uniforms.params.w, uniforms.corner_radii) * zb_clip_coverage(fragment_pixel, uniforms);
     float4 source = zb_unpremul(source_premul);
     float4 destination = zb_unpremul(destination_premul);
 

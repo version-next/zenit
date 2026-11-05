@@ -29,7 +29,7 @@ var overlay_debug_cache: ?bool = null;
 
 fn overlayDebugEnabled() bool {
     return overlay_debug_cache orelse blk: {
-        const enabled = @import("zenit_environment").has("ZENIT_DEBUG_OVERLAY");
+        const enabled = @import("zenit_environment").flag("ZENIT_DEBUG_OVERLAY");
         overlay_debug_cache = enabled;
         break :blk enabled;
     };
@@ -77,6 +77,16 @@ fn childSubtreeItems(cx: *RenderContext, child_id: u32) []const DisplayItem {
     if (start >= total) return &.{};
     const end = @min(start + count, total);
     return cx.display_list.items.items[start..end];
+}
+
+fn anyChildSubtreeSplit(cx: *RenderContext, content_slices: NodeContentSlices) bool {
+    for ([_][]const u32{ content_slices.regular_children.items, content_slices.sticky_children.items, content_slices.overlay_children.items }) |ids| {
+        for (ids) |cid| {
+            const runtime = cx.scene_runtime.getPtr(cid) orelse continue;
+            if (runtime.subtree_display_split) return true;
+        }
+    }
+    return false;
 }
 
 /// splice cache command buffer:
@@ -358,6 +368,10 @@ fn markPromotedCacheRebuilt(cx: *RenderContext, node: *Node, exec_state: *const 
         // downstream regression: clip_id previously missed stamp/compare, pure clip count shift
         // (transform/effect unchanged) could hide, replay misindexes to other node's clip rect.
         cache.cached_clip_id = exec_state.retained_ids.clip_id;
+        // Raster policy / icon snap baked into the items (render_engine
+        // dropCachesWithStaleTextRasterState). An old self segment spliced in was recorded under
+        // the same state: a cache from the other state is dropped before this frame renders.
+        cache.cached_force_linear_text = exec_state.subtree_force_linear_text;
         // glass params baked-by-value in cache's begin_blur token; param write doesn't bump
         // content_version, dirty consumed early by ancestor subtree replay, needs independent stamp
         // (GlassBox interactive hover real machine freeze root cause). maxInt sentinel = this write
@@ -430,6 +444,12 @@ pub fn finalizeNodeCachesBorrowed(
     }
 
     if (exec_plan.should_write_legacy_overflow_cache) {
+        // A child split between the prebuild prefix and the paint-pass tail has no single range
+        // to copy: a cache assembled now would replay without its prefix part. Keep none.
+        if (anyChildSubtreeSplit(cx, content_slices)) {
+            node.invalidateRenderCache();
+            return;
+        }
         // Both caches use the same self-before-descendants contract. A raw
         // paint-pass tail can omit prebuilt own content or include it depending
         // on the prepass prefix, making replay append a second background.
@@ -441,6 +461,7 @@ pub fn finalizeNodeCachesBorrowed(
             exec_state.world_origin.y,
         );
         if (node.meta.per_frame.caches.commands.own) |*cache| {
+            cache.cached_force_linear_text = exec_state.subtree_force_linear_text;
             cache.self_content_command_count = assembled.self_count;
             cache.descendant_content_command_count = @intCast(assembled.commands.len - assembled.self_count);
         }

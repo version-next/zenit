@@ -221,7 +221,12 @@ def translate(metal):
         tm = re.fullmatch(r"texture2d<float>\s+(\w+)\s*\[\[texture\((\d+)\)\]\]", p)
         sm = re.fullmatch(r"sampler\s+(\w+)\s*\[\[sampler\((\d+)\)\]\]", p)
         im = re.fullmatch(r"(\w+)\s+(\w+)\s*\[\[stage_in\]\]", p)
-        if tm:
+        # A read-only float4 table in a fragment buffer (set once from Zig): a structured buffer
+        # at t<slot> in space 0 (the backends' fragment buffer slot, as icon.hlsl's instances).
+        bm = re.fullmatch(r"constant\s+float4\s*\*\s*(\w+)\s*\[\[buffer\(([1-9]\d*)\)\]\]", p)
+        if bm:
+            resources.append(f"StructuredBuffer<float4> {bm.group(1)} : register(t{bm.group(2)}, space0);")
+        elif tm:
             resources.append(f"Texture2D<float4> {tm.group(1)} : register(t{tm.group(2)}, space1);")
         elif sm:
             resources.append(f"SamplerState {sm.group(1)} : register(s{sm.group(2)}, space2);")
@@ -246,6 +251,10 @@ def translate(metal):
         # Vertex output attributes.
         s = re.sub(r"(\bfloat4\s+\w+)\s*\[\[position\]\]", r"\1 : SV_Position", s)
         s = re.sub(r"\[\[\w+(\(\d+\))?\]\]", lambda m: (_ for _ in ()).throw(TranslationError(f"attribute left: {m.group(0)}")), s)
+        # Loops Metal marks GLASS_ROLLED_LOOP stay rolled in HLSL (see glass.metal).
+        s = s.replace("#define GLASS_ROLLED_LOOP\n", "#define GLASS_ROLLED_LOOP [loop]\n")
+        # Helpers take the fragment buffer's table as a parameter (Metal has no global buffers).
+        s = re.sub(r"\bconstant\s+float4\s*\*\s*(?=\w)", "StructuredBuffer<float4> ", s)
         s = re.sub(r"\bconstant\s+(?=(float|int|uint|bool)\d?\s)", "static const ", s)
         if re.search(r"\bconstant\b", s):
             raise TranslationError("unhandled `constant` qualifier")

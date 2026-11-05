@@ -12,15 +12,14 @@ const ProgressStatus = @import("mod.zig").ProgressStatus;
 const white = Color.rgba(255, 255, 255, 255);
 const black = Color.rgba(0, 0, 0, 255);
 
-/// State -> fill color (increase contrast against white background via lerp taper point here)
+/// State -> semantic fill color.
 pub fn statusColor(s: ProgressStatus, t: *const theme.ThemeTokens) Color {
     const base = switch (s) {
         .normal => t.tokens.color.accent,
         .success => t.tokens.color.success,
         .@"error" => t.tokens.color.danger,
     };
-    // Storybook and real UI both need clearer fill contrast, avoid loss against light backgrounds.
-    return Color.lerp(base, t.tokens.color.fg_primary, 0.12);
+    return base;
 }
 
 /// Outer: track + percentage text horizontal; fill full width if no width given
@@ -30,22 +29,21 @@ style container($width: ?f32) { width: $width ?? grow; height: fit; direction: r
 style track($height: f32) {
   width: grow;
   height: $height;
-  background: mix(bg-tertiary, fg-primary, 0.06);
-  corner-radius: {$height / 2};
+  background: progress-track;
+  corner-radius: md;
   overflow-hidden: true;
 }
 
 /// Determined mode fill: capsule per percentage width; color see fillGradient
-style fill($percent: f32, $height: f32) { width: {.{ .percent = $percent }}; height: $height; corner-radius: {$height / 2}; }
+style fill($percent: f32, $height: f32) { width: {.{ .percent = $percent }}; height: $height; corner-radius: md; }
 
-/// Fill vertical three-stop gradient (simulate lighting relief): stops from state color lerped to
-/// white/black; YSS lacks gradient syntax, stay in Zig
+/// Determinate fill stays flat at the semantic state color.
 pub fn fillGradient(status: ProgressStatus, t: *const theme.ThemeTokens) ui.BoxStyle {
     const c = statusColor(status, t);
     const stops = [_]core.GradientStop{
-        .{ .color = Color.lerp(c, white, 0.25), .position = 0.0 },
+        .{ .color = c, .position = 0.0 },
         .{ .color = c, .position = 0.5 },
-        .{ .color = Color.lerp(c, black, 0.10), .position = 1.0 },
+        .{ .color = c, .position = 1.0 },
     };
     return .{ .multi_gradient = core.MultiGradient.fromSlice(&stops, .vertical) };
 }

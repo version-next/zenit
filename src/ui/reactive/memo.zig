@@ -173,6 +173,7 @@ pub fn createMemoInScope(
     const memo = try S.build(scope, context);
     errdefer S.destroy(memo, scope.allocator);
     try scope.registerResource(@ptrCast(memo), S.cleanup);
+    if (comptime @import("builtin").is_test) scope.resources.items[scope.resources.items.len - 1].test_graph_node_raw = memo.graph_node_raw;
     return memo;
 }
 
@@ -230,6 +231,7 @@ pub fn deriveInScope(
         return .{ .value = value };
     }
     try scope.registerResource(@ptrCast(memo), S.cleanup);
+    if (comptime @import("builtin").is_test) scope.resources.items[scope.resources.items.len - 1].test_graph_node_raw = memo.graph_node_raw;
     return .{ .memo = memo };
 }
 

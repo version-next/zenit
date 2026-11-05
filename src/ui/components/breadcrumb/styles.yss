@@ -10,7 +10,7 @@ style crumb { width: fit; height: fit; align-items: center; gap: 4; }
 /// cursor)
 recipe Crumb slots(link, label) {
   base {
-    link { width: fit; height: fit; padding: 2; }
+    link { width: fit; height: fit; padding: 0; }
     label { font-size: sm; }
   }
   flag current { label { color: fg-primary; } } else { link { cursor: pointer; } label { color: accent; } }

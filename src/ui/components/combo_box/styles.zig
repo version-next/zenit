@@ -3,30 +3,25 @@
 const core = @import("../../core.zig");
 const theme = core.theme;
 
-/// Pvnqs / Select option: 14px text + 8px top/bottom padding. Panel scroll
+/// RYMhT: 28px menu row with 13px body and 8px horizontal inset. Panel scroll
 /// geometry (ComboBoxState.item_h) shared with row style.
-pub const combo_item_height: f32 = 36;
+pub const combo_item_height: f32 = 28;
 
-/// Pvnqs / Select panel chrome.
+/// RYMhT popup chrome: panel radius and md elevation.
 pub fn comboPanelRadius(t: *const theme.ThemeTokens) f32 {
-    return t.tokens.radius.xl;
+    return t.tokens.radius.panel;
 }
 
 pub fn comboPanelStyle(t: *const theme.ThemeTokens) core.BoxStyle {
     const radius = comboPanelRadius(t);
     return .{
         .direction = .column,
-        .gap = 2,
+        .gap = 0,
         .padding = core.Padding.all(4),
         .background = t.tokens.color.bg_primary,
-        .border = .{ .width = 1, .color = t.tokens.color.border, .radius = radius },
+        .border = .{ .overlay = true, .width = 1, .color = t.tokens.color.border, .radius = radius },
         .corner_radius = radius,
-        .shadow = .{
-            .color = core.Color.rgba(0, 0, 0, 18),
-            .blur = 12,
-            .offset_x = 0,
-            .offset_y = 4,
-        },
+        .shadow = t.tokens.shadow.md,
     };
 }
 
@@ -35,11 +30,11 @@ pub fn comboItemStyle(t: *const theme.ThemeTokens) core.BoxStyle {
         .direction = .row,
         .width = .{ .grow = .{} },
         .height = .{ .px = combo_item_height },
-        .padding = core.Padding.symmetric(8, 12),
+        .padding = core.Padding.symmetric(0, t.tokens.space.space200),
         .justify = .space_between,
         .align_items = .center,
         .overflow_hidden = true,
-        .corner_radius = t.tokens.radius.lg,
+        .corner_radius = t.tokens.radius.control,
     };
 }
 
@@ -54,18 +49,27 @@ pub fn comboEmptyStyle(t: *const theme.ThemeTokens) core.BoxStyle {
 pub fn comboItemTextStyle(disabled: bool, t: *const theme.ThemeTokens) core.TextStyle {
     return .{
         .color = if (disabled) t.tokens.color.fg_disabled else t.tokens.color.fg_primary,
-        .font_size = 14,
+        .font_size = t.tokens.font_size.md,
     };
 }
 
 pub fn comboEmptyTextStyle(t: *const theme.ThemeTokens) core.TextStyle {
     return .{
         .color = t.tokens.color.fg_tertiary,
-        .font_size = 14,
+        .font_size = t.tokens.font_size.md,
     };
 }
 
 /// Keyboard/hover highlight row bg, driven by highlight logic at runtime
 pub fn comboHighlightBg(t: *const theme.ThemeTokens) core.Color {
-    return t.tokens.color.list_hover_bg;
+    return t.tokens.color.bg_hover;
+}
+
+pub fn optionStyle(t: *const theme.ThemeTokens, selected: bool) core.ConditionalStyle {
+    return .{
+        .base = .{ .background = t.tokens.color.transparent, .text_color = t.tokens.color.fg_primary },
+        .selected = .{ .background = t.tokens.color.list_selection_bg, .text_color = t.tokens.color.selection_fg },
+        .hover = .{ .background = if (selected) t.tokens.color.list_selection_hover_bg else t.tokens.color.bg_hover },
+        .disabled = .{ .background = t.tokens.color.transparent, .text_color = t.tokens.color.fg_disabled },
+    };
 }

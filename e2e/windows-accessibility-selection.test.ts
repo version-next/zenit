@@ -1,4 +1,11 @@
-import { clickTestId, inputState, key, query, request, screenshot, waitFor, waitForServerReady } from "./client";
+import { clickAt, clickTestId, inputState, key, query, request, screenPos, screenshot, waitFor, waitForServerReady } from "./client";
+
+/// Opens / closes a multi-select from its chevron: its centre can land on a tag's remove button
+/// (tag widths follow the system UI font).
+async function clickSelectChevron(id: string): Promise<void> {
+  const r = await screenPos(id);
+  await clickAt(r.x + r.w - 20, r.y + r.h / 2);
+}
 import { assert, getSessionDir, run, test } from "./runner";
 async function controls() {
   const result=await request("POST","/windows/native-input",{action:"uia-tree"});
@@ -72,7 +79,7 @@ test("Windows Tree Selection replaces, adds and removes independently of pointer
 });
 test("Windows Select single and multiple publish List selection and committed Add/Remove events",async()=>{
   const before=await request("POST","/windows/native-input",{action:"status"});
-  await clickTestId("nav.select"); await clickTestId("story.select.multiple-lg");
+  await clickTestId("nav.select"); await clickSelectChevron("story.select.multiple-lg");
   await waitFor(async()=> (await controls()).some((n:any)=>n.selection?.multiple && n.role===50008)?true:null,4000,50);
   let nodes=await controls(); const group=nodes.find((n:any)=>n.selection?.multiple && n.role===50008);
   const items=nodes.filter((n:any)=>n.selection_item?.container===group.automation_id);
@@ -83,7 +90,7 @@ test("Windows Select single and multiple publish List selection and committed Ad
   await setItem(one,"remove"); assert((await selectedNames(group.automation_id)).length===0,"Select empty selection not committed");
   await setItem(three,"add");
   assert((await screenshot(`${getSessionDir()}/windows-uia-selection-list.png`)).ok,"List screenshot failed");
-  await clickTestId("story.select.multiple-lg");
+  await clickSelectChevron("story.select.multiple-lg");
   await clickTestId("story.select.clearable");
   await waitFor(async()=> (await controls()).some((n:any)=>n.role===50008 && n.selection && !n.selection.multiple)?true:null,4000,50);
   nodes=await controls(); const single=nodes.find((n:any)=>n.role===50008 && n.selection && !n.selection.multiple);

@@ -71,7 +71,8 @@ static BOOL zenitHeaderVisible(NSView *view) {
 // Retain the host toolbar while NSWindow temporarily owns the fullscreen one.
 @property (nonatomic, strong) NSToolbar *savedToolbar;
 @property (nonatomic, strong) NSToolbar *installedToolbar;
-@property (nonatomic) NSWindowToolbarStyle savedToolbarStyle;
+// NSWindowToolbarStyle (macOS 11); kept as its raw value so 10.15 still loads.
+@property (nonatomic) NSInteger savedToolbarStyle;
 @property (nonatomic) BOOL savedToolbarVisible;
 @property (nonatomic, strong) ZenitHeaderBodyView *body;
 @property (nonatomic, strong) NSLock *drawableLock;
@@ -183,7 +184,8 @@ static void zenitReleaseHeaderPixels(void *info,const void *data,size_t size) { 
 - (void)prepare {
     if(self.header || self.policy==0 || !self.owner.window || self.owner.nativeCloseObserved) return;
     WindowWrapper *w=self.owner;
-    self.savedToolbar=w.window.toolbar;self.savedToolbarStyle=w.window.toolbarStyle;
+    self.savedToolbar=w.window.toolbar;
+    if(@available(macOS 11.0,*)) self.savedToolbarStyle=w.window.toolbarStyle;
     self.savedToolbarVisible=w.window.toolbar.visible;
     if(!self.drawableLock) self.drawableLock=[NSLock new];
     [self.drawableLock lock];self.generation++;self.acquisitionSerial++;self.acquisitionPending=NO;[self.drawableLock unlock];
@@ -204,10 +206,11 @@ static void zenitReleaseHeaderPixels(void *info,const void *data,size_t size) { 
     layer.opacity=1;layer.opaque=NO;layer.frame=self.header.bounds;
     [self.header.layer addSublayer:layer];self.metalLayer=layer;
     self.accessory=[NSTitlebarAccessoryViewController new];self.accessory.view=self.header;
-    self.accessory.layoutAttribute=NSLayoutAttributeTrailing;self.accessory.automaticallyAdjustsSize=NO;
+    self.accessory.layoutAttribute=NSLayoutAttributeTrailing;
+    if(@available(macOS 11.0,*)) self.accessory.automaticallyAdjustsSize=NO;
     self.installedToolbar=[[NSToolbar alloc] initWithIdentifier:@"dev.zenit.fullscreen-header"];
     w.window.toolbar=self.installedToolbar;
-    w.window.toolbarStyle=NSWindowToolbarStyleUnifiedCompact;
+    if(@available(macOS 11.0,*)) w.window.toolbarStyle=NSWindowToolbarStyleUnifiedCompact;
     w.window.toolbar.visible=YES;
     [w.window addTitlebarAccessoryViewController:self.accessory];
     self.hasPresented=NO;self.windowedPaintReady=NO;w.chromeStateGeneration++;
@@ -293,7 +296,8 @@ static void zenitReleaseHeaderPixels(void *info,const void *data,size_t size) { 
     // A consumer may replace its toolbar during our preparation/transition.
     // Restore only while the window still owns the toolbar we installed.
     if(w.window.toolbar==self.installedToolbar) {
-        w.window.toolbar=self.savedToolbar;w.window.toolbarStyle=self.savedToolbarStyle;
+        w.window.toolbar=self.savedToolbar;
+        if(@available(macOS 11.0,*)) w.window.toolbarStyle=(NSWindowToolbarStyle)self.savedToolbarStyle;
         // AppKit makes a toolbar visible when attaching it, even if hidden.
         if(self.savedToolbar) self.savedToolbar.visible=self.savedToolbarVisible;
     }

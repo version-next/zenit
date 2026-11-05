@@ -43,8 +43,10 @@ pub const Palette = struct {
     separator: Color,
     button_primary: Color,
     button_primary_hover: Color,
+    button_primary_pressed: Color = Color.TRANSPARENT,
     button_secondary: Color,
     button_secondary_hover: Color,
+    button_secondary_pressed: Color = Color.TRANSPARENT,
     reply_field: Color,
     reply_border: Color,
     close_dark: Color,
@@ -174,23 +176,42 @@ pub const dark = Palette{
     .hint_kbd_bg = hexA(0x000000, 0.22),
 };
 
-pub fn palette(t: *const theme.ThemeTokens) *const Palette {
-    return switch (t.scheme) {
-        .light => &light,
-        .dark => &dark,
-    };
+pub fn palette(t: *const theme.ThemeTokens) Palette {
+    var p = if (t.scheme == .dark) dark else light;
+    const c = t.tokens.color;
+    p.success = c.success;
+    p.@"error" = c.danger;
+    p.warning = c.warning;
+    p.info = c.info;
+    p.success_ink = c.success;
+    p.error_ink = c.danger;
+    p.warning_ink = c.warning;
+    p.info_ink = c.info;
+    p.ink = c.fg_primary;
+    p.ink_2 = c.fg_secondary;
+    p.ink_3 = c.fg_tertiary;
+    p.track = c.progress_track;
+    p.separator = c.border;
+    p.button_primary = c.button_primary_bg;
+    p.button_primary_hover = c.accent_hover;
+    p.button_primary_pressed = c.accent_pressed;
+    p.on_semantic = c.button_primary_fg;
+    p.button_secondary = c.bg_primary;
+    p.button_secondary_hover = c.bg_hover;
+    p.button_secondary_pressed = c.button_pressed_bg;
+    return p;
 }
 
 /// Dimensions (design 16.2 / 16.9).
 pub const Metrics = struct {
     pub const radius: f32 = 18;
-    pub const row_padding = core.Padding{ .top = 14, .right = 16, .bottom = 14, .left = 14 };
-    pub const row_gap: f32 = 12;
-    pub const content_gap: f32 = 3;
+    pub const row_padding = core.Padding{ .top = 12, .right = 12, .bottom = 12, .left = 12 };
+    pub const row_gap: f32 = 8;
+    pub const content_gap: f32 = 4;
     pub const title_gap: f32 = 8;
-    pub const lead_size: f32 = 32;
+    pub const lead_size: f32 = 24;
     pub const chip_radius: f32 = 10;
-    pub const glyph_size: f32 = 18;
+    pub const glyph_size: f32 = 16;
     pub const ring_size: f32 = 28;
     pub const ring_stroke: f32 = 2.8;
     pub const spinner_size: f32 = 17;
@@ -199,22 +220,22 @@ pub const Metrics = struct {
     pub const title_size: f32 = 13;
     pub const title_weight: u16 = 600;
     /// Design measured line frames: title 19 / timestamp 17 / progress metadata 15.
-    pub const title_line_height: f32 = 19.0 / 13.0;
+    pub const title_line_height: f32 = 1.4;
     pub const timestamp_line_height: f32 = 17.0 / 11.5;
     pub const meta_line_height: f32 = 15.0 / 10.5;
-    pub const body_size: f32 = 12.5;
-    pub const body_line_height: f32 = 1.35;
+    pub const body_size: f32 = 12;
+    pub const body_line_height: f32 = 1.4;
     pub const body_max_lines: u16 = 3;
     pub const timestamp_size: f32 = 11.5;
     pub const meta_size: f32 = 10.5;
     pub const ring_secs_size: f32 = 11;
     pub const avatar_initial_size: f32 = 13;
-    pub const footer_padding = core.Padding{ .top = 9, .right = 12, .bottom = 11, .left = 12 };
+    pub const footer_padding = core.Padding{ .top = 12, .right = 16, .bottom = 12, .left = 16 };
     pub const footer_gap: f32 = 8;
-    pub const separator: f32 = 0.5;
+    pub const separator: f32 = 1;
     pub const button_height: f32 = 28;
-    pub const button_radius: f32 = 8;
-    pub const button_font: f32 = 12.5;
+    pub const button_radius: f32 = 6;
+    pub const button_font: f32 = 12;
     pub const reply_height: f32 = 30;
     pub const reply_padding = core.Padding{ .top = 0, .right = 4, .bottom = 0, .left = 11 };
     pub const send_height: f32 = 22;
@@ -224,7 +245,7 @@ pub const Metrics = struct {
     pub const progress_padding = core.Padding{ .top = 5, .right = 0, .bottom = 1, .left = 0 };
     pub const life_bar: f32 = 1.5;
     pub const close_size: f32 = 20;
-    pub const close_glyph: f32 = 12;
+    pub const close_glyph: f32 = 14;
     pub const close_inset: f32 = 5;
     pub const pill_height: f32 = 24;
     pub const pill_gap: f32 = 12;
@@ -241,15 +262,15 @@ pub const HintMetrics = struct {
     pub const max_width: f32 = 480;
     pub const pad_plain: f32 = 16;
     /// With badge (chip / ring) left narrows.
-    pub const pad_marked: f32 = 14;
+    pub const pad_marked: f32 = 16;
     /// With button right narrows to 5, button and pill concentric.
     pub const pad_action: f32 = 5;
     pub const gap: f32 = 8;
     pub const keycap_gap: f32 = 6;
     pub const font: f32 = 13;
-    pub const weight: u16 = 500;
-    pub const chip: f32 = 18;
-    pub const glyph: f32 = 12;
+    pub const weight: u16 = 400;
+    pub const chip: f32 = 16;
+    pub const glyph: f32 = 16;
     pub const spinner: f32 = 16;
     /// Ring innerRadius 0.76 -> stroke width = 8 x 0.24.
     pub const spinner_stroke: f32 = 1.92;

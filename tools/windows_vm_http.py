@@ -189,7 +189,7 @@ class Handler(BaseHTTPRequestHandler):
                     job["started_at"] = time.time()
                     job["claimed_by"] = parts[1]
                 job = self.server.jobs[job_id]
-            return self.json_response(200, {"kind": job["kind"], "id": job_id, "exe_name": job.get("exe_name"), "custom_titlebar": job.get("custom_titlebar", False), "capture_frames": job.get("capture_frames", False), "trace_frames": job.get("trace_frames", False), "capture_desktop": job.get("capture_desktop", False), "allow_foreground": job.get("allow_foreground", False), "local_suite": job.get("local_suite")})
+            return self.json_response(200, {"kind": job["kind"], "id": job_id, "exe_name": job.get("exe_name"), "custom_titlebar": job.get("custom_titlebar", False), "native_titlebar": job.get("native_titlebar", False), "capture_frames": job.get("capture_frames", False), "trace_frames": job.get("trace_frames", False), "capture_desktop": job.get("capture_desktop", False), "allow_foreground": job.get("allow_foreground", False), "local_suite": job.get("local_suite")})
         if len(parts) == 3 and parts[:2] == ["rpc", "next"]:
             job = self.job(parts[2])
             if job is None or job["kind"] != "e2e":
@@ -307,11 +307,14 @@ class Handler(BaseHTTPRequestHandler):
                 exe_name = probe[1]
             modal_audit = payload.get("modal_audit")
             custom_titlebar = payload.get("custom_titlebar") is True
+            native_titlebar = payload.get("native_titlebar") is True
             startup_timeout_ms = payload.get("startup_timeout_ms", 90000)
             if type(startup_timeout_ms) is not int or not 1 <= startup_timeout_ms <= 300000:
                 return self.send_error(400, "invalid startup timeout")
             if custom_titlebar and (kind != "e2e" or payload.get("app") != "storybook"):
                 return self.send_error(400, "custom titlebar requires Storybook")
+            if native_titlebar and (custom_titlebar or kind != "e2e" or payload.get("app") != "storybook"):
+                return self.send_error(400, "native titlebar requires Storybook without custom titlebar")
             if modal_audit not in (None, "target", "desktop") or modal_audit and (kind != "e2e" or payload.get("app") != "storybook"):
                 return self.send_error(400, "Modal audit requires Storybook and target/desktop source")
             if kind == "e2e" and exe_name is None:
@@ -340,6 +343,7 @@ class Handler(BaseHTTPRequestHandler):
                 if kind == "e2e":
                     self.server.jobs[job_id]["startup_timeout_ms"] = startup_timeout_ms
                     self.server.jobs[job_id]["custom_titlebar"] = custom_titlebar
+                    self.server.jobs[job_id]["native_titlebar"] = native_titlebar
                     self.server.jobs[job_id]["local_suite"] = local_suite
                     self.server.rpc_pending[job_id] = deque()
                 self.server.pending.append(job_id)
@@ -882,7 +886,7 @@ def run_e2e(args: argparse.Namespace) -> int:
     local_suite = None
     if args.suite_on_worker:
         local_suite = build_local_suite(args, folder)
-    request(base, token, "POST", "/jobs", {"id": job_id, "kind": "e2e", "app": args.app, "local_suite": local_suite, "startup_timeout_ms": round(args.startup_timeout * 1000), "custom_titlebar": args.custom_titlebar, "capture_frames": args.capture_frames or args.capture_desktop or bool(args.audit_modal_frames), "trace_frames": args.trace_frames or bool(args.audit_modal_frames), "capture_desktop": args.capture_desktop or args.audit_modal_frames == "desktop", "modal_audit": args.audit_modal_frames, "allow_foreground": args.allow_foreground})
+    request(base, token, "POST", "/jobs", {"id": job_id, "kind": "e2e", "app": args.app, "local_suite": local_suite, "startup_timeout_ms": round(args.startup_timeout * 1000), "custom_titlebar": args.custom_titlebar, "native_titlebar": args.native_titlebar, "capture_frames": args.capture_frames or args.capture_desktop or bool(args.audit_modal_frames), "trace_frames": args.trace_frames or bool(args.audit_modal_frames), "capture_desktop": args.capture_desktop or args.audit_modal_frames == "desktop", "modal_audit": args.audit_modal_frames, "allow_foreground": args.allow_foreground})
     print(f"Windows E2E job: {job_id}; evidence: {folder}", flush=True)
     deadline = time.monotonic() + args.timeout
     while time.monotonic() < deadline:
@@ -973,6 +977,7 @@ def main() -> int:
     e2e_cmd.add_argument("--filter", default="")
     e2e_cmd.add_argument("--visual-quality", choices=["auto", "full", "basic"], help="Set and verify D3D12 visual quality through the app harness before testing")
     e2e_cmd.add_argument("--custom-titlebar", action="store_true", help="Use the shared custom_inset window configuration in Storybook")
+    e2e_cmd.add_argument("--native-titlebar", action="store_true", help="Storybook with the system title bar (its swap chain is presented to the HWND)")
     e2e_cmd.add_argument("--trace-frames", action="store_true", help="Log presentation intervals and D3D12 per-draw GPU timestamps (diagnostic overhead)")
     e2e_cmd.add_argument("--capture-frames", action="store_true", help="Capture up to 256 actual presented animation frames (adds readback cost)")
     e2e_cmd.add_argument("--capture-desktop", action="store_true", help="Also capture post-DwmFlush visible client pixels; changes pacing and requires a visible VM desktop")

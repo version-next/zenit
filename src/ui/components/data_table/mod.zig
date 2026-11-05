@@ -14,6 +14,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const core = @import("../../core.zig");
+const hooks = @import("../../hooks.zig");
 // Alias avoids DataTableState.view method name
 const view_dsl = @import("../../view.zig");
 const Cx = core.Cx;
@@ -61,8 +62,8 @@ pub const DataTableProps = struct {
     /// signal/derived value
     rows: Source(Rows) = .{ .value = &.{} },
     page_size: usize = 10,
-    row_height: f32 = 36,
-    header_height: f32 = 40,
+    row_height: f32 = 28,
+    header_height: f32 = 28,
     striped: bool = true,
     filterable: bool = true,
     resizable: bool = true,
@@ -142,6 +143,7 @@ pub const DataTableState = struct {
     row_click_ctxs: []RowClickCtx = &.{},
     /// Selected row background / normal row background (alternating under striped)
     selection_bg: core.Color = core.Color.TRANSPARENT,
+    hovered_row: ?usize = null,
     row_bg_even: core.Color = core.Color.TRANSPARENT,
     row_bg_odd: core.Color = core.Color.TRANSPARENT,
 
@@ -273,11 +275,16 @@ pub const DataTableState = struct {
             const fi = base + vr;
             const has_data = fi < self.filtered.items.len;
             const normal = if (vr % 2 == 1) self.row_bg_odd else self.row_bg_even;
-            const want = if (has_data and self.selection.isSelected(fi))
-                self.selection_bg
-            else
-                normal;
-            row_node.setBackgroundRaw(want);
+            const visual = styles.rowVisual(normal, has_data and self.selection.isSelected(fi), self.hovered_row == vr, self.cx.tokens);
+            row_node.setBackgroundRaw(visual.background.?);
+            for (0..self.columns.len) |ci| {
+                const label = self.cell_text_nodes[vr * self.columns.len + ci];
+                if (label.getText()) |old| {
+                    var text = old;
+                    text.color = styles.dataTableRowTextColor(has_data and self.selection.isSelected(fi), self.cx.tokens);
+                    label.setText(text);
+                }
+            }
             if (row_node.behavior.interaction.a11y) |*a| {
                 a.selected = has_data and self.selection.isSelected(fi);
             }
@@ -424,6 +431,17 @@ fn rowClickHandler(event: Event, context: ?*anyopaque) EventResult {
         },
         else => return .ignored,
     }
+}
+
+fn rowHover(ptr: *anyopaque) void {
+    const c: *RowClickCtx = @ptrCast(@alignCast(ptr));
+    c.state.hovered_row = c.visible_row;
+    c.state.applySelectionStyles();
+}
+fn rowLeave(ptr: *anyopaque) void {
+    const c: *RowClickCtx = @ptrCast(@alignCast(ptr));
+    if (c.state.hovered_row == c.visible_row) c.state.hovered_row = null;
+    c.state.applySelectionStyles();
 }
 
 const RowClickCtx = struct {
@@ -641,12 +659,14 @@ fn mountDataTable(props_in: DataTableProps, scope: *Scope, cx: *Cx) !DataTableRe
     const page_label = parts.page_label;
 
     // Row selection: use on_event to get modifiers (Cmd/Ctrl toggle, Shift range)
-    if (props.selection_mode != .none) {
-        for (row_nodes, 0..) |row_node, vr| {
-            row_click_ctxs[vr] = .{ .state = state, .visible_row = vr };
+    for (row_nodes, 0..) |row_node, vr| {
+        row_click_ctxs[vr] = .{ .state = state, .visible_row = vr };
+        if (props.selection_mode != .none) {
             row_node.behavior.events.event_context = @ptrCast(&row_click_ctxs[vr]);
             row_node.behavior.events.on_event = rowClickHandler;
         }
+        hooks.setHoverHandler(row_node, true, Cx.simpleHandler(rowHover, &row_click_ctxs[vr]));
+        hooks.setHoverHandler(row_node, false, Cx.simpleHandler(rowLeave, &row_click_ctxs[vr]));
     }
     // Column resize handle (raw on_event)
     for (resize_ctxs, 0..) |*rc, ci| {

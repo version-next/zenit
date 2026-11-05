@@ -27,6 +27,9 @@ const gpu = @import("gpu");
 const render = @import("render");
 const render_pacing = @import("render_pacing.zig");
 const caret_plan = @import("caret_patch_plan.zig");
+const sprite_host = @import("sprite_host.zig");
+const caret_sprite = @import("caret_sprite.zig");
+const cpu_patch = @import("cpu_patch.zig");
 extern fn macos_caret_patch_count(*anyopaque) c_uint;
 extern fn macos_caret_drawable_info(*anyopaque, *anyopaque, *[4]u64) void;
 extern fn metal_glass_clock_trace_line([*]const u8, usize) void;
@@ -40,6 +43,10 @@ extern fn macos_caret_patch_clear(*anyopaque) void;
 const engine_diagnostics_enabled = frame_testing_enabled or (@hasDecl(@import("build_options"), "engine_diagnostics") and @import("build_options").engine_diagnostics);
 extern fn metal_command_buffer_track_engines(*anyopaque) void;
 extern fn metal_command_buffer_engine_counts(*anyopaque, *[3]u32) void;
+extern fn metal_pass_timer_enabled() bool;
+extern fn metal_pass_timer_set_tag(u32) void;
+extern fn metal_pass_timer_read(*[32]u64, *[32]u32) u64;
+var last_glass_stage_ns: [render.backdrop_blur.stage_count]u64 = @splat(0);
 extern fn macos_fullscreen_header_encode(*anyopaque, *anyopaque, *anyopaque, u64) void;
 extern fn macos_fullscreen_header_needs_content_revision(*anyopaque) c_int;
 
@@ -72,7 +79,7 @@ const TextFontProps = render.TextFontProps;
 // disabled tracing does not sample clocks or register completion handlers.
 extern fn metal_glass_clock_trace_enabled() bool;
 extern fn metal_glass_clock_trace_host_time() f64;
-extern fn metal_glass_clock_trace_frame(buffer: *anyopaque, drawable: *anyopaque, frame: u64, sample_host_time: f64, sample_frame_time_ms: f64, sample_frame_dt_ms: f64) void;
+extern fn metal_glass_clock_trace_frame(buffer: *anyopaque, drawable: *anyopaque, frame: u64, window_id: u64, sample_host_time: f64, sample_frame_time_ms: f64, sample_frame_dt_ms: f64) void;
 
 /// Stable FontSelector -> TextRenderer bridge.
 ///
@@ -132,6 +139,17 @@ pub const FrameStats = struct {
     /// Glass (backdrop blur / Liquid Glass) nodes processed and their CPU time.
     glass_count: u32 = 0,
     glass_us: u64 = 0,
+    /// Glass composites drawn again from the previous frame's texture.
+    glass_reuse_hits: u32 = 0,
+    /// Damage-scissored frame: its area in 1/1000 of the target (0 otherwise)
+    /// and the paint ranges it did not encode.
+    damage_permille: u32 = 0,
+    damage_skipped_ranges: u32 = 0,
+    /// Thousands of instructions FrameDamage.prepare* took (ZENIT_PERF_TRACE).
+    damage_prep_k: u32 = 0,
+    /// Paint items whose damage geometry was computed this frame (the rest
+    /// reused the previous frame's by digest).
+    damage_geo_computed: u32 = 0,
     /// Offscreen textures created this frame (steady state: 0).
     texture_creates: u32 = 0,
     /// Backend render/blit passes recorded and the native begin/end CPU time
@@ -140,6 +158,32 @@ pub const FrameStats = struct {
     blit_passes: u32 = 0,
     compute_passes: u32 = 0,
     pass_native_us: u64 = 0,
+    /// Command-buffer finish + queue submit, and present call (CPU wall
+    /// clock, microseconds). Present may block on the swap chain's queue.
+    submit_us: u64 = 0,
+    present_us: u64 = 0,
+    /// Unattributed spans: paint-table scan through drawable acquisition
+    /// (frame-slot wait excluded), acquisition to encode start (encoder and
+    /// main pass setup), and from frame end to return (deferred releases).
+    prep_us: u64 = 0,
+    setup_us: u64 = 0,
+    teardown_us: u64 = 0,
+    /// Windows: CPU cycles (thousands) the rendering thread consumed from the
+    /// previous frame's start to this one's (everything the loop did on it),
+    /// inside this frame, and inside its present call. Wall time cannot tell a
+    /// blocking wait from work; these can. 0 elsewhere.
+    thread_kcycles_period: u64 = 0,
+    thread_kcycles_frame: u64 = 0,
+    thread_kcycles_present: u64 = 0,
+    /// D3D backend draw recording attribution (0 elsewhere): draws, time in
+    /// the draw adapter, its binding assembly, and the native record call.
+    backend_draws: u32 = 0,
+    backend_draw_us: u64 = 0,
+    backend_bind_us: u64 = 0,
+    backend_native_draw_us: u64 = 0,
+    backend_uniform_snapshots: u32 = 0,
+    backend_texture_views: u32 = 0,
+    backend_bind_groups: u32 = 0,
     /// Path pipeline GPU draws actually issued this frame (post-batch).
     path_draw_calls: u32 = 0,
     /// GPU retained composite: whole-layer cache hit / redraw / damage-rect partial redraw this
@@ -170,8 +214,139 @@ pub const FrameStats = struct {
     command_count: u32 = 0,
     /// Total frame time (microseconds).
     total_frame_us: u64 = 0,
+    /// CPU damage patch decision on a frame that went to the GPU anyway
+    /// (paint digest, damage, budget; microseconds).
+    cpu_patch_us: u64 = 0,
+    /// ZENIT_PERF_TRACE only: main-thread CPU time (preemption and blocking
+    /// excluded) of each frame stage, so in-frame CPU adds up exactly:
+    /// layout, cx.render, sprite sync, render end to drawable request (paint
+    /// scan, CPU patch decision, slot wait, prewarm), drawable acquisition,
+    /// encoder setup, encode, flush, finish/submit, present, and the whole
+    /// frame. tc_teardown_us is the previous frame's deferred teardown.
+    tc_poll_us: u64 = 0,
+    tc_layout_us: u64 = 0,
+    tc_render_us: u64 = 0,
+    tc_sprites_us: u64 = 0,
+    tc_prep_us: u64 = 0,
+    tc_prewarm_us: u64 = 0,
+    tc_acquire_us: u64 = 0,
+    tc_setup_us: u64 = 0,
+    tc_encode_us: u64 = 0,
+    tc_flush_us: u64 = 0,
+    tc_submit_us: u64 = 0,
+    tc_present_us: u64 = 0,
+    tc_total_us: u64 = 0,
+    tc_teardown_us: u64 = 0,
+    /// Text segment shaping cache lookups this frame (hits / shaped), for the shaping miss rate.
+    text_shape_hits: u32 = 0,
+    text_shape_misses: u32 = 0,
+    /// The text prewarm ran its full glyph pass (its signature changed).
+    prewarm_full_pass: u32 = 0,
+    /// The same stages in thousands of retired instructions.
+    tci_poll_k: u64 = 0,
+    tci_layout_k: u64 = 0,
+    tci_render_k: u64 = 0,
+    tci_sprites_k: u64 = 0,
+    tci_prep_k: u64 = 0,
+    tci_prewarm_k: u64 = 0,
+    tci_acquire_k: u64 = 0,
+    tci_setup_k: u64 = 0,
+    tci_encode_k: u64 = 0,
+    tci_submit_k: u64 = 0,
+    tci_present_k: u64 = 0,
+    tci_total_k: u64 = 0,
+    tci_teardown_k: u64 = 0,
 };
 
+/// Thread-CPU stamps for FrameStats.tc_* (zero unless ZENIT_PERF_TRACE).
+/// Each stamp also reads the thread's retired-instruction counter (Apple
+/// silicon), a stage cost that does not move with core type, frequency or
+/// machine load: A/B runs compare tci_* when the machine is busy.
+const CpuStamps = struct {
+    on: bool,
+    io: std.Io,
+    start: Mark = .{},
+    poll: Mark = .{},
+    layout: Mark = .{},
+    render: Mark = .{},
+    sprites: Mark = .{},
+    acquire_start: Mark = .{},
+    acquire_end: Mark = .{},
+    encode_start: Mark = .{},
+    encode_end: Mark = .{},
+    flush_end: Mark = .{},
+    submit_end: Mark = .{},
+    present_end: Mark = .{},
+
+    const Mark = struct { t: i128 = 0, i: u64 = 0 };
+    extern "c" fn thread_selfcounts(kind: c_int, buf: *[2]u64, nbytes: usize) c_int;
+
+    fn now(self: *const CpuStamps) Mark {
+        if (!self.on) return .{};
+        var counts: [2]u64 = .{ 0, 0 };
+        if (comptime @import("builtin").os.tag == .macos) {
+            if (thread_selfcounts(1, &counts, @sizeOf([2]u64)) != 0) counts = .{ 0, 0 };
+        }
+        return .{ .t = @import("zenit_time").threadCpuTimestamp(self.io), .i = counts[0] };
+    }
+    fn us(a: Mark, b: Mark) u64 {
+        return @intCast(@max(b.t - a.t, 0) / std.time.ns_per_us);
+    }
+    /// Thousands of instructions.
+    fn ki(a: Mark, b: Mark) u64 {
+        return (b.i -| a.i) / 1000;
+    }
+};
+
+/// Sums of FrameStats stage fields since the last timing reset, so a sampled
+/// interval reports means instead of a single last-frame value.
+pub const StageTotals = struct {
+    frames: u64 = 0,
+    layout_us: u64 = 0,
+    render_gen_us: u64 = 0,
+    gpu_encode_us: u64 = 0,
+    wait_for_frame_us: u64 = 0,
+    acquire_texture_us: u64 = 0,
+    cpu_frame_us: u64 = 0,
+    total_frame_us: u64 = 0,
+    encode_us: u64 = 0,
+    flush_us: u64 = 0,
+    submit_us: u64 = 0,
+    present_us: u64 = 0,
+    prep_us: u64 = 0,
+    setup_us: u64 = 0,
+    teardown_us: u64 = 0,
+    thread_kcycles_period: u64 = 0,
+    thread_kcycles_frame: u64 = 0,
+    thread_kcycles_present: u64 = 0,
+    glass_us: u64 = 0,
+    pass_native_us: u64 = 0,
+    render_passes: u64 = 0,
+    draw_calls: u64 = 0,
+    backend_draws: u64 = 0,
+    backend_draw_us: u64 = 0,
+    backend_bind_us: u64 = 0,
+    backend_native_draw_us: u64 = 0,
+    backend_uniform_snapshots: u64 = 0,
+    backend_texture_views: u64 = 0,
+    backend_bind_groups: u64 = 0,
+    gpu_execute_us: u64 = 0,
+};
+extern "kernel32" fn GetCurrentThread() callconv(.winapi) ?*anyopaque;
+extern "kernel32" fn QueryThreadCycleTime(thread: ?*anyopaque, cycles: *u64) callconv(.winapi) c_int;
+/// CPU cycles consumed by the calling thread (Windows; 0 elsewhere).
+fn threadCycles() u64 {
+    if (comptime @import("builtin").os.tag != .windows) return 0;
+    var cycles: u64 = 0;
+    return if (QueryThreadCycleTime(GetCurrentThread(), &cycles) != 0) cycles else 0;
+}
+fn accumulateStages(totals: *StageTotals, st: *const FrameStats) void {
+    totals.frames += 1;
+    inline for (@typeInfo(StageTotals).@"struct".field_names) |name| {
+        if (comptime std.mem.eql(u8, name, "frames")) continue;
+        @field(totals, name) += @field(st, name);
+    }
+}
 /// Cross-frame timing sample ring (P95 gate use). Implementation and test in timing_ring.zig,
 /// independent of Metal/ObjC bridge so `zig build test` truly covers it.
 pub const TimingRing = @import("timing_ring.zig").TimingRing;
@@ -206,6 +381,13 @@ pub const RecordingFrameContextFn = *const fn (?*anyopaque, *const gpu.Backend.T
 pub const AcquireFaultHook = struct {
     ctx: ?*anyopaque = null,
     should_fail: *const fn (ctx: ?*anyopaque) bool,
+};
+
+/// Reads the view's current bounds x backing scale in pixels, at presentation
+/// time (not the size cached at the last reconfigure).
+pub const PresentSizeProbe = struct {
+    ctx: *anyopaque,
+    live_pixels: *const fn (ctx: *anyopaque) [2]u32,
 };
 
 pub const AppRenderer = struct {
@@ -248,6 +430,7 @@ pub const AppRenderer = struct {
     /// Cross-frame timing sample ring (P95 gate use). `last_frame_stats` single-frame snapshot;
     /// single-frame timing very noisy. e2e needs "P95 over last N frames" robust aggregate.
     timing_ring: TimingRing = .{},
+    stage_totals: StageTotals = .{},
     /// Only resolved command-buffer timestamp intervals; no missing-sample zeros.
     gpu_timing_ring: TimingRing = .{},
     gpu_timing_disjoint_samples: u64 = 0,
@@ -258,6 +441,18 @@ pub const AppRenderer = struct {
     /// frame
     /// nominal, not render interval.
     prev_frame_start: ?@import("zenit_time").Instant = null,
+    frame_end_mark: ?@import("zenit_time").Instant = null,
+    /// threadCycles() at the previous frame's start / around this frame's present.
+    frame_start_cycles: u64 = 0,
+    present_cycles: u64 = 0,
+    /// ZENIT_PERF_TRACE: thread-CPU stamp of the last frame end and the
+    /// deferred teardown that followed it (reported with the next frame).
+    tc_frame_end: CpuStamps.Mark = .{},
+    prev_shape_hits: u64 = 0,
+    prev_shape_misses: u64 = 0,
+    prev_prewarm_passes: u64 = 0,
+    tc_teardown_us: u64 = 0,
+    tci_teardown_k: u64 = 0,
 
     // GPU frame sync, prevent CPU overwrite triple buffer GPU is reading. Platform abstraction:
     // Metal uses dispatch_semaphore, future Vulkan uses VkFence.
@@ -296,6 +491,15 @@ pub const AppRenderer = struct {
     /// after
     /// next frame reads; upper layer doesn't observe native handle.
     prev_frame_cmd_buffer: ?gpu.Backend.CommandBuffer = null,
+    /// Scratch buffers and the glyph atlas are volatile while idle; the next
+    /// encoder restores them first (see trimIdleResources).
+    idle_storage_volatile: bool = false,
+    /// Compositor sprite atlases and native layers (see sprite_host.zig).
+    sprite_host: sprite_host.Host = .{},
+    /// Windows: the caret blinked by DirectComposition (caret_sprite.zig).
+    caret_sprite: caret_sprite.State = .{},
+    /// CPU damage patches (see cpu_patch.zig); enabled by the host.
+    cpu_patch: cpu_patch.Patcher = .{},
     /// Scalar opt-in diagnostics; they never own drawables or command buffers.
     caret_diag_exit_host_time: f64 = 0,
     caret_diag_exit_seq: u64 = 0,
@@ -307,6 +511,18 @@ pub const AppRenderer = struct {
     gpu_timing_pending: [4]?gpu.Backend.CommandBuffer = @splat(null),
     /// An idle poll may harvest before frame() publishes its statistics.
     idle_gpu_execute_us: u64 = 0,
+    /// Drawable depth chosen from measured GPU load (surfaces that support it).
+    drawable_depth: render_pacing.DrawableDepth = .{},
+    /// Hosts whose view can change size underneath a frame install a probe;
+    /// a drawable that no longer matches it is discarded (error.DrawableSizeStale).
+    present_size_probe: ?PresentSizeProbe = null,
+    present_size_gate: render_pacing.PresentSizeGate = .{},
+    /// Frames discarded by the presentation size check (diagnostics/tests).
+    stale_drawable_discards: u64 = 0,
+    /// ZENIT_DEBUG_DRAWABLES=1, read once at init.
+    debug_drawables: bool = false,
+    /// Caret visibility of the last traced frame (ZENIT_GLASS_CLOCK_TRACE).
+    traced_caret_visible: ?bool = null,
     /// In-flight batch per-glass luminance readback: command buffer that wrote staging (extra
     /// retain).
     /// Until the batch read is done, the encode side stops writing staging
@@ -325,6 +541,8 @@ pub const AppRenderer = struct {
     retained_enabled: bool = true,
     frame_damage: render.FrameDamage = .{},
     frame_partial_count: u64 = 0,
+    /// Glass captures found outside the damage rect (must stay 0).
+    frame_damage_violations: u64 = 0,
     frame_reuse_count: u64 = 0,
     background_damage: render.FrameDamage = .{},
     background_tex: ?gpu.Backend.Texture = null,
@@ -332,9 +550,22 @@ pub const AppRenderer = struct {
     background_reuse_count: u64 = 0,
     background_partial_count: u64 = 0,
     retained_tex: ?gpu.Backend.Texture = null,
+    /// Full-window render target of isolated caret preparation, kept per size
+    /// so repeated preparations reuse it. Idle trim releases it.
+    caret_scratch: ?gpu.Backend.Texture = null,
     retained_w: u32 = 0,
     retained_h: u32 = 0,
     retained_valid: bool = false,
+    retained_host: bool = false,
+    /// Frame damage back-off (noteDamageOutcome): frames left without it, and
+    /// consecutive frames it did not pay for.
+    damage_backoff: u32 = 0,
+    damage_poor_streak: u32 = 0,
+    damage_backoff_len: u32 = damage_backoff_frames,
+    /// ZENIT_VERIFY_PAINT_DIGEST state (verifyPaintDigests).
+    digest_verify_prev: std.AutoHashMapUnmanaged(u64, u64) = .empty,
+    digest_verify_cur: std.AutoHashMapUnmanaged(u64, u64) = .empty,
+    paint_digest_violations: u64 = 0,
     /// Host-only entry preparation: copy hidden background from its presented
     /// frame, then render visible caret commands only into the small targets.
     last_frame_presented: bool = false,
@@ -343,7 +574,11 @@ pub const AppRenderer = struct {
     /// Latches after bounded failed replacement; only renderer init resets it.
     caret_flip_disabled: bool = false,
     caret_test_fringe: if (frame_testing_enabled) bool else void = if (frame_testing_enabled) false else {},
+    caret_test_scratch_oom: if (frame_testing_enabled) bool else void = if (frame_testing_enabled) false else {},
+    caret_test_isolation_unavailable: if (frame_testing_enabled) u8 else void = if (frame_testing_enabled) 0 else {},
     caret_hidden_items: ?[]caret_plan.Item = null,
+    /// Exact glyph ink of text commands (render.text_ink), for caret occlusion and CPU damage.
+    text_ink: render.text_ink.Cache = .{},
     caret_patch_ready: bool = false,
 
     // E2E screenshot request, set by test harness screenshot callback (test-mode). Actual pixel
@@ -355,8 +590,9 @@ pub const AppRenderer = struct {
     pending_screenshot_len: usize = 0,
     last_screenshot_ok: bool = false,
 
-    // Window-content recording. Context callbacks receive a submitted drawable
-    // and order their copy on the renderer queue; legacy callbacks wait below.
+    // Window-content recording. Metal copies on a separate queue and must
+    // wait for rendering with either callback shape; D3D readback is ordered
+    // on the renderer's queue and remains asynchronous.
     recording_active: bool = false,
     recording_frame_fn: ?RecordingFrameFn = null,
     recording_context_fn: ?RecordingFrameContextFn = null,
@@ -384,12 +620,14 @@ pub const AppRenderer = struct {
             .queue = queue,
             .surface = surface,
             .config = config,
+            .drawable_depth = .fromEnvironment(),
+            .debug_drawables = @import("zenit_environment").flag("ZENIT_DEBUG_DRAWABLES"),
             .sdf_renderer = undefined,
             .image_renderer = undefined,
             .icon_renderer = undefined,
             .text_renderer = undefined,
             .frame_sync = undefined,
-            .developer_empty_frames = if (comptime frame_testing_enabled and gpu.backend_kind == .metal) @import("zenit_environment").has("ZENIT_DEV_EMPTY_FRAME") else false,
+            .developer_empty_frames = if (comptime frame_testing_enabled and gpu.backend_kind == .metal) @import("zenit_environment").flag("ZENIT_DEV_EMPTY_FRAME") else false,
         };
 
         self.sdf_renderer = try SdfRenderer.init(allocator, device);
@@ -447,6 +685,14 @@ pub const AppRenderer = struct {
     }
 
     fn createEncoder(self: *AppRenderer) RenderCommandEncoder {
+        if (self.idle_storage_volatile) self.setIdleStorageVolatile(false);
+        return self.createEncoderKeepingScratch();
+    }
+
+    /// Encoder for CPU rasterization: GPU scratch storage stays volatile; only
+    /// the glyph atlas the CPU reads (and may extend) is made resident.
+    fn createEncoderKeepingScratch(self: *AppRenderer) RenderCommandEncoder {
+        if (self.idle_storage_volatile) self.text_renderer.atlas.setStorageVolatile(false);
         var enc = RenderCommandEncoder.initWithImageAndIcon(&self.sdf_renderer, &self.text_renderer, &self.image_renderer, &self.icon_renderer, &self.offscreen_pool, &self.persistent_gpu);
         // Once manual submissions escape FrameSync, automatic frames must
         // retain the same conservative aging too. Otherwise mixed use loses
@@ -569,6 +815,7 @@ pub const AppRenderer = struct {
 
     pub fn captureCaretCompositeToPng(self: *AppRenderer, path: []const u8, scale: f32) bool {
         const texture = &(self.retained_tex orelse return false);
+        if (!self.retained_host) return false; // GPU-private: not readable on the CPU
         if (self.prev_frame_cmd_buffer) |*command| command.waitUntilCompleted();
         return self.textureToPngComposited(texture, self.retained_w, self.retained_h, path, scale);
     }
@@ -605,6 +852,10 @@ pub const AppRenderer = struct {
     /// no retained frame yet (startup/disabled), caller falls back to old path.
     pub fn captureRetainedToPng(self: *AppRenderer, path: []const u8) bool {
         if (!self.retained_valid) return false;
+        // Only a host-visible copy can be read on the CPU: frame damage keeps a
+        // GPU-private (losslessly compressed) one when the harness does not ask
+        // for present copies, and reading it faults inside the driver.
+        if (!self.retained_host) return false;
         const tex = &(self.retained_tex orelse return false);
         // Blit encoded in last frame command stream; must confirm GPU done before read, else reads
         // half-written
@@ -630,25 +881,121 @@ pub const AppRenderer = struct {
     }
 
     fn ensureRetainedTexture(self: *AppRenderer, width: u32, height: u32) bool {
-        if (self.retained_tex != null and self.retained_w == width and self.retained_h == height) return true;
-        if (self.retained_tex) |*t| t.destroy();
-        self.retained_tex = null;
-        self.retained_valid = false;
+        // The test harness reads screenshots from it on the CPU; frame damage
+        // only copies it on the GPU (private storage; with no PixelFormatView or
+        // ShaderWrite usage the driver may losslessly compress it).
+        const host = self.retain_present_copy or !(comptime gpu.backend_kind == .metal);
+        if (self.retained_tex != null and self.retained_w == width and self.retained_h == height and self.retained_host == host) return true;
+        self.releaseRetainedTexture();
+        if (@import("zenit_environment").flag("ZENIT_DEBUG_FRAME_DAMAGE")) std.debug.print("[frame-damage] presented copy {d}x{d} host={}\n", .{ width, height, host });
         const tex = self.device.createTexture(self.allocator, .{
-            .label = "e2e-retained-present",
+            .label = "retained-present",
             .size = .{ .width = width, .height = height, .depth = 1 },
             .format = gpu.color_format,
             .usage = .{ .copy_src = true, .copy_dst = true, .render_attachment = gpu.backend_kind == .metal },
-            // WARN: must be host_upload (CPU-readable shared storage). Default device_local is
-            // GPU-private
-            // compressed layout on Apple Silicon, getBytes directly SIGSEGV (crashes at AGX
-            // processCompressedRegion2D).
-            .memory = .host_upload,
+            // WARN: CPU reads need host_upload (shared storage). Default device_local is
+            // GPU-private compressed layout on Apple Silicon, getBytes directly SIGSEGV (crashes
+            // at AGX processCompressedRegion2D).
+            .memory = if (host) .host_upload else .device_local,
         }) catch return false;
         self.retained_tex = tex;
         self.retained_w = width;
         self.retained_h = height;
+        self.retained_host = host;
         return true;
+    }
+
+    /// ZENIT_VERIFY_PAINT_DIGEST: the UI's paint digests (paint_table
+    /// DisplayItem.paint_digest) must name content: one digest, this frame or
+    /// the last, never stands for two different full item hashes. A violation
+    /// is an item whose content changed without its digest (a missed
+    /// ItemHeader.local_fp reset): logged, and fatal at level 2 (e2e).
+    fn verifyPaintDigests(self: *AppRenderer, items: anytype) void {
+        std.mem.swap(std.AutoHashMapUnmanaged(u64, u64), &self.digest_verify_prev, &self.digest_verify_cur);
+        self.digest_verify_cur.clearRetainingCapacity();
+        var unknown: usize = 0;
+        defer if (self.frame_count % 120 == 0) std.debug.print("[paint-digest] frame {d}: {d} items, {d} without digest, {d} violations so far\n", .{ self.frame_count, items.len, unknown, self.paint_digest_violations });
+        for (items) |*it| {
+            if (it.paint_digest == 0) {
+                unknown += 1;
+                continue;
+            }
+            const full = render.PaintFingerprint.fullItemDigest(it);
+            const seen = self.digest_verify_cur.get(it.paint_digest) orelse self.digest_verify_prev.get(it.paint_digest);
+            if (seen) |other| if (other != full) {
+                self.paint_digest_violations += 1;
+                std.log.err("[paint-digest] digest {x} names two contents: {s} geom=({d:.1},{d:.1},{d:.1}x{d:.1}) text=\"{s}\"", .{ it.paint_digest, @tagName(it.kind), it.geom.x, it.geom.y, it.geom.w, it.geom.h, it.text_content[0..@min(it.text_content.len, 24)] });
+                if (paintDigestVerifyLevel() >= 2) @panic("paint digest missed a content change");
+            };
+            self.digest_verify_cur.put(self.allocator, it.paint_digest, full) catch {};
+        }
+    }
+
+    /// Count this frame toward the next damage-planner probe.
+    fn advanceDamageBackoff(self: *AppRenderer) bool {
+        if (self.damage_backoff > 0) self.damage_backoff -= 1;
+        return self.damage_backoff == 0;
+    }
+
+    /// A damage-scissored frame pays for its damage scan and the copy of the
+    /// frame; it repays that by the paint it does not encode. Frames that
+    /// skip too little (or redraw in full: the damage is too large) in a row
+    /// stop the scan and the copy for a while.
+    fn noteDamageOutcome(self: *AppRenderer, damage: ?[4]u32, items: usize) void {
+        const fd = &self.frame_damage;
+        // A probe after back-off first rebuilds the discarded baseline. That
+        // full redraw says nothing about profitability; only an evaluated
+        // frame may reset the growing back-off interval.
+        if (damage == null and fd.full_reason == .no_baseline) return;
+        const poor = if (damage != null)
+            @as(u64, fd.skipped_items) * 5 <= items + 50
+        else
+            fd.full_reason == .too_large or fd.full_reason == .undescribable;
+        if (!poor) {
+            self.damage_poor_streak = 0;
+            self.damage_backoff_len = damage_backoff_frames;
+            return;
+        }
+        self.damage_poor_streak += 1;
+        if (self.damage_poor_streak < damage_poor_frames) return;
+        self.damage_poor_streak = 0;
+        self.damage_backoff = self.damage_backoff_len;
+        // Each back-off in a row (no profitable frame in between) lasts twice as long.
+        self.damage_backoff_len = @min(self.damage_backoff_len * 2, damage_backoff_max_frames);
+        fd.invalidate();
+        // Nothing reads the copy while backing off: the probe frame makes a new one.
+        if (!self.retain_present_copy) self.releaseRetainedTexture();
+    }
+
+    /// Drop the copy of the presented frame (and the damage baseline that
+    /// relies on it). The next frame redraws in full.
+    /// The caret preparation scratch for this extent (created or resized on
+    /// demand). Every use waits for its command to complete before returning.
+    pub fn caretScratch(self: *AppRenderer, width: u32, height: u32) !*gpu.Backend.Texture {
+        if (self.caret_scratch) |*t| {
+            if (t.size.width == width and t.size.height == height) return t;
+            t.destroy();
+            self.caret_scratch = null;
+        }
+        self.caret_scratch = try self.device.createTexture(self.allocator, .{
+            .label = "Zenit.CaretPreparation",
+            .size = .{ .width = width, .height = height },
+            .format = gpu.color_format,
+            .usage = .{ .render_attachment = true, .texture_binding = true, .copy_src = true },
+        });
+        return &self.caret_scratch.?;
+    }
+
+    fn releaseCaretScratch(self: *AppRenderer) void {
+        if (self.caret_scratch) |*t| t.destroy();
+        self.caret_scratch = null;
+    }
+
+    fn releaseRetainedTexture(self: *AppRenderer) void {
+        if (self.retained_tex) |*t| t.destroy();
+        self.retained_tex = null;
+        self.retained_valid = false;
+        self.frame_damage.invalidate();
     }
 
     /// Initialize AppRenderer internal FontSelector lazy derived font cache. FontSelector borrowed
@@ -700,16 +1047,43 @@ pub const AppRenderer = struct {
         self.caret_background_capture = false;
     }
 
+    /// Per command: the window-space pixels a text command draws on the main target at `scale`
+    /// (render.text_ink: its glyph quads), or null where unknown or not text (callers keep the
+    /// conservative PaintFingerprint bound). Allocated from `allocator`.
+    pub fn textInkBounds(self: *AppRenderer, allocator: std.mem.Allocator, commands: anytype, scale: f32) ![]?[4]f32 {
+        const out = try allocator.alloc(?[4]f32, commands.len);
+        @memset(out, null);
+        const fonts = self.fonts orelse return out;
+        self.text_ink.sync(self.frameResourceKey());
+        for (commands, out) |*it, *o| {
+            if (it.kind == .text) o.* = self.text_ink.bounds(self.allocator, &self.text_renderer, fonts, it, scale);
+        }
+        return out;
+    }
+
     pub fn caretItems(self: *AppRenderer, commands: anytype) ![]caret_plan.Item {
+        return self.caretItemsInk(commands, null);
+    }
+
+    /// Caret items of the main target at `scale`, text bounded by its exact glyph ink.
+    pub fn caretItemsAt(self: *AppRenderer, commands: anytype, scale: f32) ![]caret_plan.Item {
+        const ink = try self.textInkBounds(self.allocator, commands, scale);
+        defer self.allocator.free(ink);
+        return self.caretItemsInk(commands, ink);
+    }
+
+    /// `ink`: textInkBounds of `commands` (null: every text command keeps its conservative
+    /// envelope).
+    pub fn caretItemsInk(self: *AppRenderer, commands: anytype, ink: ?[]const ?[4]f32) ![]caret_plan.Item {
         const items = try self.allocator.alloc(caret_plan.Item, commands.len);
-        for (commands, items) |it, *item| {
+        for (commands, items, 0..) |it, *item, index| {
             var hash = std.hash.Wyhash.init(0);
             render.PaintFingerprint.hashCaretPaintItemInto(&hash, it);
             const digest = hash.final();
-            if (frame_testing_enabled and (self.caret_background_capture or self.caret_patch_capture) and it.glass_ptr != null and @import("zenit_environment").has("ZENIT_CARET_FLIP_DEBUG")) {
+            if (frame_testing_enabled and (self.caret_background_capture or self.caret_patch_capture) and it.glass_ptr != null and @import("zenit_environment").flag("ZENIT_CARET_FLIP_DEBUG")) {
                 std.log.info("[caret-material] hidden={} payload=0x{x} content=0x{x}", .{ self.caret_background_capture, @intFromPtr(it.glass_ptr), digest });
             }
-            if (frame_testing_enabled and (self.caret_background_capture or self.caret_patch_capture) and it.icon_rep_ptr != null and @import("zenit_environment").has("ZENIT_CARET_FLIP_DEBUG")) {
+            if (frame_testing_enabled and (self.caret_background_capture or self.caret_patch_capture) and it.icon_rep_ptr != null and @import("zenit_environment").flag("ZENIT_CARET_FLIP_DEBUG")) {
                 std.log.info("[caret-icon] hidden={} payload=0x{x} content=0x{x}", .{ self.caret_background_capture, @intFromPtr(it.icon_rep_ptr), digest });
             }
             const control = it.kind == .control;
@@ -717,7 +1091,7 @@ pub const AppRenderer = struct {
             item.* = .{
                 .label = if (control) @tagName(it.control_kind) else @tagName(it.kind),
                 .digest = digest,
-                .bounds = if (composite) render.PaintFingerprint.nestedCompositeBounds(it) orelse render.PaintFingerprint.damageItemBounds(it) else if (control) .{ 0, 0, 0, 0 } else if (it.kind == .path) render.PaintFingerprint.pathItemBounds(it) else render.PaintFingerprint.damageItemBounds(it),
+                .bounds = if (composite) render.PaintFingerprint.nestedCompositeBounds(it) orelse render.PaintFingerprint.damageItemBounds(it) else if (control) .{ 0, 0, 0, 0 } else if (it.kind == .path) render.PaintFingerprint.pathItemBounds(it) else if (ink) |b| b[index] orelse render.PaintFingerprint.damageItemBounds(it) else render.PaintFingerprint.damageItemBounds(it),
                 .drawable = if (control) switch (it.control_kind) {
                     .push_clip, .pop_clip, .end_opacity_layer, .end_blur_layer, .end_rounded_clip => false,
                     else => true,
@@ -754,7 +1128,7 @@ pub const AppRenderer = struct {
     fn renderCaretTargets(self: *AppRenderer, cx: anytype, scale: f32) !void {
         if (comptime gpu.backend_kind != .metal) return error.CaretPatchUnavailable;
         const commands = cx.lowerForEncoderPaintTable();
-        const visible = try self.caretItems(commands);
+        const visible = try self.caretItemsAt(commands, scale);
         defer self.allocator.free(visible);
         const count = macos_caret_patch_count(@ptrCast(self.surface.layer));
         if (count == 0 or count > 64) return error.CaretPatchUnavailable;
@@ -768,6 +1142,7 @@ pub const AppRenderer = struct {
         }
         const selected = try caret_plan.select(self.allocator, self.caret_hidden_items orelse return error.CaretPatchUnavailable, visible, cx.caret_rects[0..cx.caret_rect_count], patches[0..count]);
         defer self.allocator.free(selected);
+        var isolated = false;
         for (0..count) |index| {
             var rect: [4]u32 = undefined;
             const raw = macos_caret_patch_target(@ptrCast(self.surface.layer), @intCast(index), &rect) orelse return error.CaretPatchUnavailable;
@@ -783,15 +1158,20 @@ pub const AppRenderer = struct {
             var view = target.binding().createView();
             defer view.destroy();
             var pass = try command_encoder.beginRenderPass(.{ .color_attachments = &.{.{ .view = view, .load_op = .load, .store_op = .store }} });
-            pass.root_crop = rect;
-            pass.setViewport(0, 0, @floatFromInt(self.surface.extent.width), @floatFromInt(self.surface.extent.height), 0, 1);
-            pass.setScissorRect(0, 0, self.surface.extent.width, self.surface.extent.height);
             enc.gpu_command_encoder = &command_encoder;
             enc.main_render_target = target.binding();
             enc.render_pass = &pass;
+            enc.setDrawableExtent(self.surface.extent.width, self.surface.extent.height);
+            enc.root_target_crop = rect;
+            enc.applyOffscreenTargetViewport();
+            enc.pair_shape_clips = !self.caretTestForcesIsolation();
+            if (comptime frame_testing_enabled) if (self.caret_test_isolation_unavailable == 1) {
+                enc.image_renderer = null;
+            };
             // One command at a time keeps the original clip/order contract;
             // no full-window render target or drawable is acquired here.
             for (commands, selected, 0..) |_, keep, i| if (keep) try enc.encodeCommands(commands[i .. i + 1]);
+            if (enc.isolated_clip_fallbacks != 0) return error.CaretPatchUnavailable;
             const current_pass = enc.render_pass orelse return error.MissingActiveRenderPass;
             try enc.flush(current_pass);
             current_pass.end();
@@ -805,7 +1185,15 @@ pub const AppRenderer = struct {
             self.prev_frame_cmd_buffer = command.retained();
             if (macos_caret_patch_command_succeeded(@ptrCast(command.raw)) == 0) return error.CaretPreparationGpuFailed;
             self.frame_count += 1;
+            // A crossing shape clip isolates into an RGBA8 layer. Compositing
+            // just its caret over an already flattened background changes the
+            // rounding order, even with the correct root raster mapping.
+            if (enc.pass_sites[2] > 0) {
+                isolated = true;
+                break;
+            }
         }
+        if (isolated) self.renderCaretSceneTargets(commands, scale, count) catch return error.CaretPatchUnavailable;
         self.caret_patch_ready = true;
         if (self.pending_screenshot_path) |path| {
             macos_caret_patch_show(@ptrCast(self.surface.layer), 1);
@@ -814,6 +1202,71 @@ pub const AppRenderer = struct {
             self.pending_screenshot_path = null;
             self.pending_screenshot_len = 0;
         }
+    }
+
+    /// Caret fault probes target the isolation path (scene targets, isolation layers): they
+    /// isolate crossing shape clips that the shaders would otherwise pair.
+    fn caretTestForcesIsolation(self: *const AppRenderer) bool {
+        if (comptime !frame_testing_enabled) return false;
+        return self.caret_test_scratch_oom or self.caret_test_isolation_unavailable != 0;
+    }
+
+    /// Isolation requires the ordinary scene's complete compositing order.
+    /// Render once without presenting, then copy every native crop. The
+    /// completed command is released before entering idle flipping; the scratch
+    /// stays cached for the next preparation until idle trim.
+    fn renderCaretSceneTargets(self: *AppRenderer, commands: anytype, scale: f32, count: usize) !void {
+        if (comptime gpu.backend_kind != .metal) return error.CaretPatchUnavailable;
+        if (comptime frame_testing_enabled) if (self.caret_test_scratch_oom) return error.OutOfMemory;
+        const extent = self.surface.extent;
+        const scratch = try self.caretScratch(extent.width, extent.height);
+        try self.frame_sync.waitForNextFrame();
+        var slot_owned = true;
+        errdefer if (slot_owned) self.frame_sync.signal();
+        var enc = self.createEncoder();
+        defer enc.deinit();
+        enc.beginFrame(self.pool_viewport[0], self.pool_viewport[1], scale);
+        enc.setDrawableExtent(extent.width, extent.height);
+        enc.pair_shape_clips = !self.caretTestForcesIsolation();
+        var command_encoder = try gpu.Backend.CommandEncoder.init(self.queue);
+        errdefer command_encoder.deinit();
+        var view = scratch.binding().createView();
+        defer view.destroy();
+        const cc = self.config.clear_color;
+        var pass = try command_encoder.beginRenderPass(.{ .color_attachments = &.{.{
+            .view = view,
+            .load_op = .clear,
+            .store_op = .store,
+            .clear_value = .{ .r = cc.r, .g = cc.g, .b = cc.b, .a = cc.a },
+        }} });
+        enc.gpu_command_encoder = &command_encoder;
+        enc.main_render_target = scratch.binding();
+        enc.render_pass = &pass;
+        enc.applyOffscreenTargetViewport();
+        if (comptime frame_testing_enabled) if (self.caret_test_isolation_unavailable == 2) {
+            enc.image_renderer = null;
+        };
+        try enc.encodeCommands(commands);
+        if (enc.isolated_clip_fallbacks != 0) return error.CaretPatchUnavailable;
+        const current_pass = enc.render_pass orelse return error.MissingActiveRenderPass;
+        try enc.flush(current_pass);
+        current_pass.end();
+        for (0..count) |index| {
+            var rect: [4]u32 = undefined;
+            const raw = macos_caret_patch_target(@ptrCast(self.surface.layer), @intCast(index), &rect) orelse return error.CaretPatchUnavailable;
+            const target: gpu.Backend.Texture = .{ .raw = @ptrCast(@alignCast(raw)), .format = gpu.color_format, .size = .{ .width = rect[2], .height = rect[3] }, .mip_level_count = 1, .dimension = .@"2d", .memory = .host_upload };
+            try enc.copyTextureRegion(scratch.binding(), rect[0], rect[1], rect[2], rect[3], target.binding(), 0, 0, false);
+        }
+        var command = try command_encoder.finish();
+        defer command.deinit();
+        self.frame_sync.signalOnCompletion(&command);
+        slot_owned = false;
+        command.submit();
+        command.waitUntilCompleted();
+        if (self.prev_frame_cmd_buffer) |*previous| previous.deinit();
+        self.prev_frame_cmd_buffer = null;
+        if (macos_caret_patch_command_succeeded(@ptrCast(command.raw)) == 0) return error.CaretPreparationGpuFailed;
+        self.frame_count += 1;
     }
 
     /// Render one frame using UI Cx context.
@@ -842,14 +1295,21 @@ pub const AppRenderer = struct {
             }
         }
 
-        if (comptime @hasField(@TypeOf(cx.*), "frame_presentation_sample")) cx.frame_presentation_sample = presentation_sample;
+        if (comptime @hasDecl(@TypeOf(cx.*), "setFramePresentationSample")) {
+            cx.setFramePresentationSample(presentation_sample);
+        } else if (comptime @hasField(@TypeOf(cx.*), "frame_presentation_sample")) {
+            cx.frame_presentation_sample = presentation_sample;
+        }
         defer {
             if (comptime @hasField(@TypeOf(cx.*), "frame_presentation_sample")) cx.frame_presentation_sample = null;
         }
         const viewport = [3]f32{ viewport_width, viewport_height, scale };
         if (self.pool_viewport[0] != 0 and !std.mem.eql(f32, &viewport, &self.pool_viewport)) self.offscreen_pool.noteResize();
         self.pool_viewport = viewport;
+        var tc: CpuStamps = .{ .on = perfTraceEnabled(), .io = cx.io };
+        tc.start = tc.now();
         _ = self.pollBackdropLuminance(cx);
+        tc.poll = tc.now();
         // Permanent optional-pipeline failure downgrades this renderer once. Essential GPU errors
         // still
         // propagate; basic is not device recovery. Only D3D12 upgrades blur pipeline failure to
@@ -878,6 +1338,10 @@ pub const AppRenderer = struct {
             cx.backdrop_luminance_readback = self.visual_quality != .basic;
         }
         const frame_start = @import("zenit_time").Instant.now(cx.io) catch null;
+        const start_cycles = threadCycles();
+        const period_cycles = if (self.frame_start_cycles != 0) start_cycles -| self.frame_start_cycles else 0;
+        self.frame_start_cycles = start_cycles;
+        self.present_cycles = 0;
         var measured_frame = false;
         // Registered before frame resources: their deferred teardown must be
         // included in CPU/total timing, especially COM releases on Direct3D.
@@ -886,6 +1350,16 @@ pub const AppRenderer = struct {
             const elapsed = timerDelta(frame_start, complete);
             self.last_frame_stats.total_frame_us = elapsed;
             self.last_frame_stats.cpu_frame_us = elapsed -| self.last_frame_stats.wait_for_frame_us -| self.last_frame_stats.acquire_texture_us;
+            self.last_frame_stats.teardown_us = timerDelta(self.frame_end_mark, complete);
+            self.last_frame_stats.thread_kcycles_period = period_cycles / 1000;
+            self.last_frame_stats.thread_kcycles_frame = (threadCycles() -| start_cycles) / 1000;
+            self.last_frame_stats.thread_kcycles_present = self.present_cycles / 1000;
+            if (tc.on) {
+                const done = tc.now();
+                self.tc_teardown_us = CpuStamps.us(self.tc_frame_end, done);
+                self.tci_teardown_k = CpuStamps.ki(self.tc_frame_end, done);
+            }
+            accumulateStages(&self.stage_totals, &self.last_frame_stats);
             self.timing_ring.push(.{
                 .gpu_execute_us = self.last_frame_stats.gpu_execute_us,
                 .cpu_frame_us = self.last_frame_stats.cpu_frame_us,
@@ -950,6 +1424,7 @@ pub const AppRenderer = struct {
             return error.OutOfMemory;
         }
         const layout_end = @import("zenit_time").Instant.now(cx.io) catch null;
+        tc.layout = tc.now();
 
         // 2. Generate render commands. cx.render() runs paint pass fills cx.display_list; encoder
         //    via
@@ -958,6 +1433,19 @@ pub const AppRenderer = struct {
         // hold IR.
         const render_start = @import("zenit_time").Instant.now(cx.io) catch null;
         _ = cx.render();
+        tc.render = tc.now();
+        // Caret blink transitions, so pacing analysis can time when they show.
+        if (comptime gpu.backend_kind == .metal) if (clock_trace_enabled) if (cx.caret_shown) |visible| {
+            if (self.traced_caret_visible != visible) {
+                self.traced_caret_visible = visible;
+                var line: [128]u8 = undefined;
+                const text = std.fmt.bufPrint(&line, "{{\"kind\":\"caret\",\"visible\":{},\"frame\":{d},\"host_time\":{d:.9}}}", .{ visible, self.frame_count + 1, metal_glass_clock_trace_host_time() }) catch "";
+                metal_glass_clock_trace_line(text.ptr, text.len);
+            }
+        };
+        // Must precede every lowerForEncoderPaintTable() read of this frame.
+        if (comptime @hasField(@TypeOf(cx.*), "sprites")) sprite_host.sync(self, cx);
+        tc.sprites = tc.now();
         if (comptime frame_testing_enabled) {
             if (self.caret_test_fringe and cx.caret_rect_count > 0) {
                 const r = cx.caret_rects[0];
@@ -980,7 +1468,35 @@ pub const AppRenderer = struct {
         if (self.caret_background_capture) {
             if (self.caret_hidden_items) |items| self.allocator.free(items);
             self.caret_hidden_items = null;
-            self.caret_hidden_items = try self.caretItems(cx.lowerForEncoderPaintTable());
+            self.caret_hidden_items = try self.caretItemsAt(cx.lowerForEncoderPaintTable(), scale);
+        }
+
+        var cpu_patch_us: u64 = 0;
+        if (comptime cpu_patch.supported) {
+            const patch_start = @import("zenit_time").Instant.now(cx.io) catch null;
+            if (cpu_patch.tryPresent(self, cx, viewport_width, viewport_height, scale) == .presented) {
+                self.last_frame_presented = true;
+                self.frame_count += 1;
+                if (tc.on) {
+                    // CPU patch (or unchanged) frames: same thread-CPU split, the
+                    // patch decision and raster standing in for the GPU stages.
+                    const end = tc.now();
+                    const hits = self.text_renderer.segment_cache_hits -| self.prev_shape_hits;
+                    const misses = self.text_renderer.segment_cache_misses -| self.prev_shape_misses;
+                    self.prev_shape_hits = self.text_renderer.segment_cache_hits;
+                    self.prev_shape_misses = self.text_renderer.segment_cache_misses;
+                    std.debug.print("[perf-patch] {{\"frame\":{d},\"tc_layout_us\":{d},\"tc_render_us\":{d},\"tc_sprites_us\":{d},\"tc_patch_us\":{d},\"tc_total_us\":{d},\"text_shape_hits\":{d},\"text_shape_misses\":{d},\"before_render_cpu_us\":{d},\"rn_retained_us\":{d},\"rn_paint_us\":{d},\"phase_prebuild_us\":{d},\"layout_engine_us\":{d},\"tci_render_k\":{d},\"tci_sprites_k\":{d},\"tci_patch_k\":{d},\"tci_total_k\":{d}}}\n", .{
+                        self.frame_count,                    CpuStamps.us(tc.poll, tc.layout),   CpuStamps.us(tc.layout, tc.render),
+                        CpuStamps.us(tc.render, tc.sprites), CpuStamps.us(tc.sprites, end),      CpuStamps.us(tc.start, end),
+                        hits,                                misses,                             cx.perf.before_render_cpu_us,
+                        cx.perf.rn_retained_us,              cx.perf.rn_paint_us,                cx.perf.phase_prebuild_us,
+                        cx.perf.frame_layout_engine_us,      CpuStamps.ki(tc.layout, tc.render), CpuStamps.ki(tc.render, tc.sprites),
+                        CpuStamps.ki(tc.sprites, end),       CpuStamps.ki(tc.start, end),
+                    });
+                }
+                return;
+            }
+            cpu_patch_us = timerDelta(patch_start, @import("zenit_time").Instant.now(cx.io) catch null);
         }
 
         // Admission must precede ring rotation, atlas collection and GPU writes.
@@ -1029,7 +1545,10 @@ pub const AppRenderer = struct {
         var enc = self.createEncoder();
         defer enc.deinit();
         enc.beginFrame(viewport_width, viewport_height, scale);
+        const tc_prewarm_start = tc.now();
         if (self.config.prewarm_text) try enc.prewarmDisplay(cx);
+        const tc_prewarm_end = tc.now();
+        const tc_prewarm_us = CpuStamps.us(tc_prewarm_start, tc_prewarm_end);
 
         // 3. Prepare GPU submit.
         // Completed timing commands still retain their presented drawable.
@@ -1039,14 +1558,43 @@ pub const AppRenderer = struct {
         const newly_harvested_us = self.harvestGpuTimings();
         const gpu_execute_us: u64 = if (newly_harvested_us != 0) newly_harvested_us else self.idle_gpu_execute_us;
         self.idle_gpu_execute_us = 0;
+        // Before nextDrawable, so a heavy stretch deepens the queue it acquires from.
+        if (comptime @hasDecl(gpu.Backend.Surface, "setFrameLatency")) {
+            const period_us: u64 = @intFromFloat(1_000_000.0 / @as(f64, @floatCast(@max(1.0, cx.display_refresh_hz))));
+            if (self.drawable_depth.note(newly_harvested_us, period_us)) |latency| self.surface.setFrameLatency(latency);
+        }
         self.retireCompletedPresentation();
         const diagnostic_in_flight = if (clock_trace_enabled) self.diagnosticInFlight() else 0;
         const diagnostic_acquire_start = if (clock_trace_enabled) metal_glass_clock_trace_host_time() else 0;
         const acquire_start = @import("zenit_time").Instant.now(cx.io) catch null;
+        tc.acquire_start = tc.now();
         if (self.acquire_fault_hook) |hook| if (hook.should_fail(hook.ctx)) return error.SurfaceTimeout;
+        // A GPU frame replaces every CPU patch: present and removal share one
+        // CA transaction.
+        if (comptime cpu_patch.supported) self.cpu_patch.beginGpuFrame(@ptrCast(self.surface.layer));
+        var gpu_frame_presented = false;
+        defer if (comptime cpu_patch.supported) self.cpu_patch.endGpuFrame(@ptrCast(self.surface.layer), gpu_frame_presented);
         var surface_texture = try self.surface.acquireTexture(self.allocator);
         const acquire_end = @import("zenit_time").Instant.now(cx.io) catch null;
+        tc.acquire_end = tc.now();
         defer surface_texture.deinit();
+        // Geometry is final here: everything that can resize the view on this
+        // thread (Cx.render callbacks, the AX run loop nextDrawable may spin)
+        // has run, and nothing between here and present yields to AppKit. An
+        // unpresented drawable returns to the pool; the caller redraws at once.
+        // Only surfaces that track their configured extent (Metal) can be probed.
+        if (comptime @hasField(gpu.Backend.Surface, "extent")) if (self.present_size_probe) |probe| {
+            if (!self.present_size_gate.shouldPresent(.{
+                .drawable = .{ surface_texture.texture.size.width, surface_texture.texture.size.height },
+                .configured = .{ self.surface.extent.width, self.surface.extent.height },
+                .live = probe.live_pixels(probe.ctx),
+            })) {
+                self.stale_drawable_discards +%= 1;
+                if (@import("zenit_environment").flag("ZENIT_DEBUG_DRAWABLES"))
+                    std.debug.print("[drawable] discard stale {d}x{d} (configured {d}x{d})\n", .{ surface_texture.texture.size.width, surface_texture.texture.size.height, self.surface.extent.width, self.surface.extent.height });
+                return error.DrawableSizeStale;
+            }
+        };
 
         enc.setDrawableExtent(surface_texture.texture.size.width, surface_texture.texture.size.height);
 
@@ -1100,21 +1648,57 @@ pub const AppRenderer = struct {
         // A provider may change its output while retaining the same context
         // address. It has no revision contract, so custom providers repaint.
         // The preserved texture uses BGRA; other surface formats also repaint.
+        const frame_cache_common = self.retained_enabled and !self.has_external_encoder and self.config.clear_color.a == 1 and self.text_renderer.font_ranges_provider == null and
+            (surface_texture.texture.format == .bgra8_unorm or surface_texture.texture.format == .bgra8_unorm_srgb);
+        // Metal: frames are redrawn only inside their damage (effects and glass
+        // included) while the window is small enough that the kept copy of the
+        // presented frame is cheap (frameCopyFits).
+        const effect_damage = comptime gpu.backend_kind == .metal;
+        if (paintDigestVerifyLevel() > 0) self.verifyPaintDigests(cx.lowerForEncoderPaintTable());
+        const copy_fits = frameCopyFits(surface_texture.texture.size.width, surface_texture.texture.size.height);
+        // A window grown past the limit returns the copy at once (unless the
+        // test harness reads its screenshots from it).
+        if (effect_damage and !(copy_fits and frameDamageEnabled()) and !self.retain_present_copy) self.releaseRetainedTexture();
+        // Backing off (see noteDamageOutcome): no damage and no copy, except on
+        // the last frame, whose copy lets the next one try again.
+        const damage_ready = if (effect_damage) self.advanceDamageBackoff() else true;
         const frame_cache_enabled = if (comptime gpu.is_direct3d)
-            self.device.isSoftware() and self.retained_enabled and !self.has_external_encoder and self.config.clear_color.a == 1 and self.text_renderer.font_ranges_provider == null and
-                (surface_texture.texture.format == .bgra8_unorm or surface_texture.texture.format == .bgra8_unorm_srgb)
+            self.device.isSoftware() and frame_cache_common
+        else if (effect_damage)
+            frame_cache_common and frameDamageEnabled() and copy_fits and damage_ready
         else
             false;
         var damage: ?[4]u32 = null;
+        var damage_prep_k: u32 = 0;
         if (frame_cache_enabled) {
-            damage = try self.frame_damage.prepare(self.allocator, cx.lowerForEncoderPaintTable(), surface_texture.texture.size.width, surface_texture.texture.size.height, scale, self.frameResourceKey());
-            if (!self.retained_valid or self.retained_w != surface_texture.texture.size.width or self.retained_h != surface_texture.texture.size.height) damage = null;
+            const paint_table = cx.lowerForEncoderPaintTable();
+            const width = surface_texture.texture.size.width;
+            const height = surface_texture.texture.size.height;
+            const prep_start = if (tc.on) @import("zenit_time").threadInstructions() else 0;
+            defer if (tc.on) {
+                damage_prep_k = @intCast((@import("zenit_time").threadInstructions() -| prep_start) / 1000);
+            };
+            const verify_level = paintDigestVerifyLevel();
+            self.frame_damage.verify_geometry = verify_level > 0;
+            const geo_violations = self.frame_damage.geo_violations;
+            defer if (self.frame_damage.geo_violations != geo_violations) {
+                self.paint_digest_violations += self.frame_damage.geo_violations - geo_violations;
+                if (verify_level >= 2) @panic("frame damage reused geometry for a changed item");
+            };
+            damage = if (effect_damage)
+                try self.frame_damage.prepareEffects(self.allocator, cx.frame_arena.allocator(), paint_table, width, height, scale, self.frameResourceKey())
+            else
+                try self.frame_damage.prepare(self.allocator, paint_table, width, height, scale, self.frameResourceKey());
+            if (!self.retained_valid or self.retained_w != width or self.retained_h != height) {
+                if (damage != null and @import("zenit_environment").flag("ZENIT_DEBUG_FRAME_DAMAGE")) std.debug.print("[frame-damage] no presented copy\n", .{});
+                damage = null;
+            }
         } else self.frame_damage.invalidate();
 
         var prefix_len: usize = 0;
         var reuse_background = false;
         var background_update: ?[4]u32 = null;
-        if (frame_cache_enabled and !self.frame_damage.pending_valid) {
+        if (comptime gpu.is_direct3d) if (frame_cache_enabled and !self.frame_damage.pending_valid) {
             const commands = cx.lowerForEncoderPaintTable();
             const candidate = render.FrameDamage.flatPrefixEnd(commands);
             if (candidate > 0) {
@@ -1129,11 +1713,14 @@ pub const AppRenderer = struct {
         } else if (!frame_cache_enabled) {
             self.background_damage.invalidate();
             self.background_valid = false;
-        }
+        };
 
         var gpu_encoder = try gpu.Backend.CommandEncoder.init(self.queue);
+        if (comptime gpu.backend_kind == .metal) {
+            if (gpu.pass_tag_hook == null and metal_pass_timer_enabled()) gpu.pass_tag_hook = &metal_pass_timer_set_tag;
+        }
         if (comptime gpu.backend_kind == .metal and engine_diagnostics_enabled) {
-            if (frame_testing_enabled or @import("zenit_environment").has("ZENIT_DEV_ENGINE_COUNTS"))
+            if (frame_testing_enabled or @import("zenit_environment").flag("ZENIT_DEV_ENGINE_COUNTS"))
                 metal_command_buffer_track_engines(@ptrCast(gpu_encoder.raw));
         }
         // Error path fallback: encodeDisplay/flush below may error early-return, then finish()
@@ -1145,6 +1732,9 @@ pub const AppRenderer = struct {
         // no double-free.
         errdefer gpu_encoder.deinit();
 
+        // Direct3D copies the presented frame forward with a blit. Metal draws
+        // it in the frame's own pass instead (fillFrameDamage below): a blit
+        // into the drawable made the driver keep ~140 MiB more per window.
         if (comptime gpu.is_direct3d) {
             if (damage != null or reuse_background or background_update != null) {
                 var blit = try gpu_encoder.beginBlitPass();
@@ -1162,7 +1752,8 @@ pub const AppRenderer = struct {
             .color_attachments = &[_]gpu.RenderPassColorAttachment{
                 .{
                     .view = texture_view,
-                    .load_op = if (damage != null or reuse_background or background_update != null) .load else .clear,
+                    // Metal draws the kept frame over the whole target (copyFrameForward).
+                    .load_op = if ((comptime gpu.is_direct3d) and (damage != null or reuse_background or background_update != null)) .load else .clear,
                     .store_op = .store,
                     .clear_value = .{ .r = cc.r, .g = cc.g, .b = cc.b, .a = cc.a },
                 },
@@ -1171,6 +1762,7 @@ pub const AppRenderer = struct {
 
         // 4. Encode (encoder holds render_pass ref, clip stack available).
         const encode_start = @import("zenit_time").Instant.now(cx.io) catch null;
+        tc.encode_start = tc.now();
         // **Critical**: must bind gpu_command_encoder + main_render_target to encoder, else
         // opacity_layer.beginOpacityLayer / backdrop_blur early-return at
         // `gpu_command_encoder == null` -> all offscreen surfaces (modal/sheet opacity fade,
@@ -1178,7 +1770,26 @@ pub const AppRenderer = struct {
         enc.gpu_command_encoder = &gpu_encoder;
         enc.main_render_target = surface_texture.texture.binding();
         enc.render_pass = &render_pass;
+        var glass_capture: cpu_patch.GlassCaptureContext(@typeInfo(@TypeOf(cx.lowerForEncoderPaintTable())).pointer.child) = .{
+            .patcher = &self.cpu_patch,
+            .device = self.device,
+            .allocator = self.allocator,
+            .items = cx.lowerForEncoderPaintTable(),
+            .scale = scale,
+        };
+        if (comptime cpu_patch.supported) if (self.cpu_patch.enabled and self.cpu_patch.capture_underlays) {
+            enc.glass_capture = .{ .ctx = &glass_capture, .target = @TypeOf(glass_capture).target };
+        };
+        var glass_table: render.glass_reuse.Hook.Table(@typeInfo(@TypeOf(cx.lowerForEncoderPaintTable())).pointer.child) = .{
+            .items = cx.lowerForEncoderPaintTable(),
+            .allocator = cx.frame_arena.allocator(),
+            .hashes = if (effect_damage and frame_cache_enabled and self.frame_damage.pending_valid) self.frame_damage.item_hashes.items else null,
+        };
+        // ZENIT_GLASS_REUSE=0: composite every glass every frame (A/B control).
+        if (!glassReuseDisabled()) enc.glass_reuse = glass_table.hook();
         enc.applyOffscreenTargetViewport();
+        var damage_permille: u32 = 0;
+        var damage_skipped_ranges: u32 = 0;
         if (prefix_len > 0) {
             if (!reuse_background) {
                 if (background_update) |rect| {
@@ -1204,14 +1815,32 @@ pub const AppRenderer = struct {
             }
             try enc.encodeDisplayFrom(cx, prefix_len);
         } else if (damage) |rect| {
-            if (comptime gpu.is_direct3d) {
-                if (rect[2] > 0 and rect[3] > 0 and !render_pass.clearOpaque(.{ cc.r, cc.g, cc.b, cc.a }, rect)) return error.FrameDamageClearFailed;
+            if (comptime !gpu.is_direct3d) {
+                if (!render.opacity_layer.copyFrameForward(&enc, self.retained_tex.?.binding())) return error.FrameDamageClearFailed;
             }
             enc.frame_damage_scissor = rect;
             enc.applyOffscreenTargetViewport();
-            if (rect[2] > 0 and rect[3] > 0) try enc.encodeDisplay(cx);
+            if (rect[2] > 0 and rect[3] > 0) {
+                if (comptime gpu.is_direct3d) {
+                    if (!render_pass.clearOpaque(.{ cc.r, cc.g, cc.b, cc.a }, rect)) return error.FrameDamageClearFailed;
+                } else if (!render.opacity_layer.fillFrameDamage(&enc, .{ cc.r, cc.g, cc.b, cc.a })) return error.FrameDamageClearFailed;
+                if (effect_damage) enc.frame_damage_skip = self.frame_damage.skip.items;
+                try enc.encodeDisplay(cx);
+            }
+            damage_permille = @intCast(@as(u64, rect[2]) * rect[3] * 1000 / @max(1, @as(u64, surface_texture.texture.size.width) * surface_texture.texture.size.height));
+            damage_skipped_ranges = @intCast(enc.frame_damage_skip.len);
         } else try enc.encodeDisplay(cx);
+        if (effect_damage and frame_cache_enabled) self.noteDamageOutcome(damage, cx.lowerForEncoderPaintTable().len);
+        if (enc.frame_damage_violations > 0) {
+            // A glass captured backdrop the damage did not repaint: the next
+            // frame redraws everything (and the prediction needs fixing).
+            std.log.err("[frame-damage] {d} glass capture(s) outside the damage rect", .{enc.frame_damage_violations});
+            self.frame_damage_violations += enc.frame_damage_violations;
+            self.retained_valid = false;
+            cx.needs_redraw = true;
+        }
         const encode_end = @import("zenit_time").Instant.now(cx.io) catch null;
+        tc.encode_end = tc.now();
         const pending_sdf_instances = self.sdf_renderer.instances.items.len;
         const pending_text_instances = self.text_renderer.getPendingInstanceCount();
 
@@ -1252,6 +1881,7 @@ pub const AppRenderer = struct {
             return error.MissingActiveRenderPass;
         }
         const flush_end = @import("zenit_time").Instant.now(cx.io) catch null;
+        tc.flush_end = tc.now();
 
         // e2e: copy soon-presented content into retained texture (see retain_present_copy). Must
         // encode
@@ -1273,10 +1903,18 @@ pub const AppRenderer = struct {
 
         if (!frame_copy_ok) self.retained_valid = false;
 
+        // Windows caret sprite: copy the caret patch out of this composed frame.
+        if (comptime caret_sprite.supported) {
+            self.caret_sprite.encodeCapture(&gpu_encoder, surface_texture.texture.binding()) catch |err| {
+                std.log.warn("[caret-sprite] capture failed: {s}", .{@errorName(err)});
+                self.caret_sprite.capture = .none;
+            };
+        }
+
         // Diagnostics (ZENIT_DEBUG_GLASS_RT="x,y" device pixels): blit RT 64x64 region
         // to debug slot 2 at frame end; renderer reads RGB average next frame to compare
         // with capture/composite baselines for phase localization (sandwich method).
-        const glass_rt_spec = @import("zenit_environment").getOwned(self.allocator, "ZENIT_DEBUG_GLASS_RT") catch null;
+        const glass_rt_spec = if (@import("zenit_environment").flag("ZENIT_DEBUG_GLASS_RT")) @import("zenit_environment").getOwned(self.allocator, "ZENIT_DEBUG_GLASS_RT") catch null else null;
         defer if (glass_rt_spec) |spec| self.allocator.free(spec);
         if (glass_rt_spec) |spec| blk: {
             var it = std.mem.splitScalar(u8, spec, ',');
@@ -1331,6 +1969,7 @@ pub const AppRenderer = struct {
                 }
             }
         }
+        const submit_start = @import("zenit_time").Instant.now(cx.io) catch null;
         var cmd_buffer = try gpu_encoder.finish();
         defer cmd_buffer.deinit();
 
@@ -1362,6 +2001,7 @@ pub const AppRenderer = struct {
                 @ptrCast(cmd_buffer.raw),
                 @ptrCast(surface_texture.drawable),
                 self.frame_count + 1,
+                cx.window_id,
                 clock_sample_host_time,
                 clock_sample_frame_time_ms,
                 clock_sample_frame_dt_ms,
@@ -1385,7 +2025,17 @@ pub const AppRenderer = struct {
                     if (rect[2] == 0 or rect[3] == 0) self.frame_reuse_count += 1 else self.frame_partial_count += 1;
                 }
             } else self.frame_damage.invalidate();
-        } else cmd_buffer.submit();
+        } else {
+            cmd_buffer.submit();
+            if (frame_copy_ok and frame_cache_enabled and self.retained_valid) {
+                self.frame_damage.commit();
+                if (damage) |rect| {
+                    if (rect[2] == 0 or rect[3] == 0) self.frame_reuse_count += 1 else self.frame_partial_count += 1;
+                }
+            } else self.frame_damage.invalidate();
+        }
+        const submit_end = @import("zenit_time").Instant.now(cx.io) catch null;
+        tc.submit_end = tc.now();
         if (self.prev_frame_cmd_buffer) |*previous| previous.deinit();
         self.prev_frame_cmd_buffer = cmd_buffer.retained();
         self.pool_maintenance_retry.reset();
@@ -1406,18 +2056,26 @@ pub const AppRenderer = struct {
 
         if (self.recording_active) {
             if (self.recording_context_fn) |record_frame| {
-                // The Windows callback submits its readback to this same queue;
-                // it polls completion on a later frame and never waits here.
-                if (!record_frame(self.recording_context, &surface_texture.texture)) self.recording_active = false;
+                if (!render.recording_submission.deliver(gpu.backend_kind == .metal, &cmd_buffer, record_frame, .{ self.recording_context, &surface_texture.texture })) self.recording_active = false;
             } else if (self.recording_frame_fn) |record_frame| {
                 // The encoder uses a separate Metal queue. Waiting establishes
                 // an explicit cross-queue ownership boundary for this drawable.
-                cmd_buffer.waitUntilCompleted();
-                if (!record_frame(&surface_texture.texture)) self.recording_active = false;
+                if (!render.recording_submission.deliver(true, &cmd_buffer, record_frame, .{&surface_texture.texture})) self.recording_active = false;
             }
         }
 
+        const present_start = @import("zenit_time").Instant.now(cx.io) catch null;
+        const present_start_cycles = threadCycles();
         surface_texture.presentAfterSubmit(&cmd_buffer);
+        self.present_cycles = threadCycles() -| present_start_cycles;
+        sprite_host.afterPresent(self, &cmd_buffer);
+        // Sprite builds create their own encoder on the shared offscreen pool;
+        // this frame is submitted, so release its pool session first.
+        enc.endPoolSession();
+        if (comptime @hasField(@TypeOf(cx.*), "sprites")) sprite_host.advanceBuilds(self, cx);
+        const present_end = @import("zenit_time").Instant.now(cx.io) catch null;
+        tc.present_end = tc.now();
+        gpu_frame_presented = true;
         self.last_frame_presented = true;
 
         var engine_counts: [3]u32 = .{ 0, 0, 0 };
@@ -1425,6 +2083,7 @@ pub const AppRenderer = struct {
             metal_command_buffer_engine_counts(@ptrCast(cmd_buffer.raw), &engine_counts);
         // Collect frame performance statistics.
         const frame_end = @import("zenit_time").Instant.now(cx.io) catch null;
+        self.frame_end_mark = frame_end;
         // FrameStats declared wait/acquire/cpu fields but never assigned (review report §4);
         // three timerDelta results discarded via `_ =`, so gpu_encode_us mixed wait + acquire
         // + CPU encode + submit. Split here for accurate attribution.
@@ -1469,11 +2128,27 @@ pub const AppRenderer = struct {
             .flush_us = flush_us,
             .glass_count = render.backdrop_blur.perf.glass_count,
             .glass_us = render.backdrop_blur.perf.glass_ns / std.time.ns_per_us,
+            .glass_reuse_hits = enc.glass_reuse_hits,
+            .damage_permille = damage_permille,
+            .damage_skipped_ranges = damage_skipped_ranges,
+            .damage_prep_k = damage_prep_k,
+            .damage_geo_computed = self.frame_damage.geo_computed,
             .texture_creates = render.offscreen_texture.perf_texture_creates,
             .render_passes = if (comptime gpu.backend_kind == .metal) engine_counts[0] else if (comptime @hasDecl(gpu.Backend.CommandEncoder, "perf_counters")) gpu.Backend.CommandEncoder.perf_counters.render_passes else 0,
             .blit_passes = if (comptime gpu.backend_kind == .metal) engine_counts[1] else if (comptime @hasDecl(gpu.Backend.CommandEncoder, "perf_counters")) gpu.Backend.CommandEncoder.perf_counters.blit_passes else 0,
             .compute_passes = engine_counts[2],
             .pass_native_us = if (comptime @hasDecl(gpu.Backend.CommandEncoder, "perf_counters")) gpu.Backend.CommandEncoder.perf_counters.native_ns / std.time.ns_per_us else 0,
+            .submit_us = timerDelta(submit_start, submit_end),
+            .prep_us = timerDelta(render_end, acquire_start) -| (if (early_frame_wait) 0 else wait_us),
+            .setup_us = timerDelta(acquire_end, encode_start),
+            .present_us = timerDelta(present_start, present_end),
+            .backend_draws = if (comptime @hasDecl(gpu.Backend.CommandEncoder, "perf_counters")) gpu.Backend.CommandEncoder.perf_counters.draws else 0,
+            .backend_draw_us = if (comptime @hasDecl(gpu.Backend.CommandEncoder, "perf_counters")) gpu.Backend.CommandEncoder.perf_counters.draw_ns / std.time.ns_per_us else 0,
+            .backend_bind_us = if (comptime @hasDecl(gpu.Backend.CommandEncoder, "perf_counters")) gpu.Backend.CommandEncoder.perf_counters.bind_ns / std.time.ns_per_us else 0,
+            .backend_native_draw_us = if (comptime @hasDecl(gpu.Backend.CommandEncoder, "perf_counters")) gpu.Backend.CommandEncoder.perf_counters.native_draw_ns / std.time.ns_per_us else 0,
+            .backend_uniform_snapshots = if (comptime @hasDecl(gpu.Backend.CommandEncoder, "perf_counters")) gpu.Backend.CommandEncoder.perf_counters.uniform_snapshots else 0,
+            .backend_texture_views = if (comptime @hasDecl(gpu.Backend.CommandEncoder, "perf_counters")) gpu.Backend.CommandEncoder.perf_counters.texture_views else 0,
+            .backend_bind_groups = if (comptime @hasDecl(gpu.Backend.CommandEncoder, "perf_counters")) gpu.Backend.CommandEncoder.perf_counters.bind_groups else 0,
             .path_draw_calls = path_draws,
             .retained_hits = enc.retained_hits,
             .retained_misses = enc.retained_misses,
@@ -1489,7 +2164,47 @@ pub const AppRenderer = struct {
             .text_instances = @intCast(pending_text_instances),
             .command_count = @intCast(cx.lowerForEncoderPaintTable().len),
             .total_frame_us = total_us,
+            .cpu_patch_us = cpu_patch_us,
         };
+        if (tc.on) {
+            const end = tc.now();
+            self.tc_frame_end = end;
+            const st = &self.last_frame_stats;
+            st.text_shape_hits = @intCast(self.text_renderer.segment_cache_hits -| self.prev_shape_hits);
+            st.text_shape_misses = @intCast(self.text_renderer.segment_cache_misses -| self.prev_shape_misses);
+            st.prewarm_full_pass = @intCast(self.text_renderer.prewarm_full_passes -| self.prev_prewarm_passes);
+            self.prev_prewarm_passes = self.text_renderer.prewarm_full_passes;
+            self.prev_shape_hits = self.text_renderer.segment_cache_hits;
+            self.prev_shape_misses = self.text_renderer.segment_cache_misses;
+            st.tc_poll_us = CpuStamps.us(tc.start, tc.poll);
+            st.tc_layout_us = CpuStamps.us(tc.poll, tc.layout);
+            st.tc_render_us = CpuStamps.us(tc.layout, tc.render);
+            st.tc_sprites_us = CpuStamps.us(tc.render, tc.sprites);
+            st.tc_prep_us = CpuStamps.us(tc.sprites, tc.acquire_start) -| tc_prewarm_us;
+            st.tc_prewarm_us = tc_prewarm_us;
+            st.tc_acquire_us = CpuStamps.us(tc.acquire_start, tc.acquire_end);
+            st.tc_setup_us = CpuStamps.us(tc.acquire_end, tc.encode_start);
+            st.tc_encode_us = CpuStamps.us(tc.encode_start, tc.encode_end);
+            st.tc_flush_us = CpuStamps.us(tc.encode_end, tc.flush_end);
+            st.tc_submit_us = CpuStamps.us(tc.flush_end, tc.submit_end);
+            st.tc_present_us = CpuStamps.us(tc.submit_end, tc.present_end);
+            st.tc_total_us = CpuStamps.us(tc.start, end);
+            st.tc_teardown_us = self.tc_teardown_us;
+            st.tci_poll_k = CpuStamps.ki(tc.start, tc.poll);
+            st.tci_layout_k = CpuStamps.ki(tc.poll, tc.layout);
+            st.tci_render_k = CpuStamps.ki(tc.layout, tc.render);
+            st.tci_sprites_k = CpuStamps.ki(tc.render, tc.sprites);
+            st.tci_prewarm_k = CpuStamps.ki(tc_prewarm_start, tc_prewarm_end);
+            st.tci_prep_k = CpuStamps.ki(tc.sprites, tc.acquire_start) -| st.tci_prewarm_k;
+            st.tci_acquire_k = CpuStamps.ki(tc.acquire_start, tc.acquire_end);
+            st.tci_setup_k = CpuStamps.ki(tc.acquire_end, tc.encode_start);
+            st.tci_encode_k = CpuStamps.ki(tc.encode_start, tc.encode_end);
+            st.tci_submit_k = CpuStamps.ki(tc.encode_end, tc.submit_end);
+            st.tci_present_k = CpuStamps.ki(tc.submit_end, tc.present_end);
+            st.tci_total_k = CpuStamps.ki(tc.start, end);
+            st.tci_teardown_k = self.tci_teardown_k;
+        }
+        last_glass_stage_ns = render.backdrop_blur.perf.stage_ns;
         render.backdrop_blur.perf = .{};
         render.offscreen_texture.perf_texture_creates = 0;
         if (comptime @hasDecl(gpu.Backend.CommandEncoder, "perf_counters")) gpu.Backend.CommandEncoder.perf_counters = .{};
@@ -1499,6 +2214,10 @@ pub const AppRenderer = struct {
         // downstream editor. Write after cx.render(): perf.resetFrame() clears at render start, so
         // values here survive to next frame for DevTools to read across Cx.
         cx.frame_perf.acquire.push(acquire_us);
+        // Live-resize nextDrawable wait, one line per presented frame (the
+        // harness cannot answer RPCs inside AppKit's resize tracking loop).
+        if (self.debug_drawables and self.drawable_depth.live_resize)
+            std.debug.print("[drawable] live-resize acquire_us={d} drawables={d} size={d}x{d}\n", .{ acquire_us, self.drawable_depth.effective() + 1, surface_texture.texture.size.width, surface_texture.texture.size.height });
         cx.perf.layout_us = layout_us;
         cx.perf.render_us = render_gen_us;
         if (frame_start) |fs| {
@@ -1527,6 +2246,23 @@ pub const AppRenderer = struct {
         self.total_retained_misses += enc.retained_misses;
         self.total_retained_partial_repaints += enc.retained_partial_repaints;
         self.frame_count += 1;
+        if (perfTraceEnabled()) {
+            cx.input_perf.in_hit_build_nodes = cx.interaction_index.stat_build_nodes;
+            cx.input_perf.in_hit_build_proxies = cx.interaction_index.stat_build_proxies;
+            cx.input_perf.in_hit_build_blocks = cx.interaction_index.stat_build_blocks;
+            cx.input_perf.in_hit_reused_blocks = cx.interaction_index.stat_reused_blocks;
+            tracePerfFrame(self.frame_count, &self.last_frame_stats, &cx.perf, &cx.input_perf, cx.lowerForEncoderPaintTable().len);
+            cx.input_perf = .{};
+            cx.interaction_index.stat_build_nodes = 0;
+            cx.interaction_index.stat_build_proxies = 0;
+            cx.interaction_index.stat_build_blocks = 0;
+            cx.interaction_index.stat_reused_blocks = 0;
+        }
+        // ZENIT_GPU_INVENTORY=1 also dumps the live set every 300 presented
+        // frames, which covers continuously animating windows that never trim.
+        if (comptime @hasDecl(gpu.Backend.Device, "dumpInventory")) {
+            if (self.frame_count % 300 == 0) self.device.dumpInventory("frames");
+        }
         // Idle skips and failed frames do not dilute the timing history.
         measured_frame = true;
     }
@@ -1566,6 +2302,280 @@ pub const AppRenderer = struct {
             self.retireCompletedPresentation();
         }
         return self.pollBackdropLuminance(cx);
+    }
+
+    /// Render a compositor sprite flipbook into its atlas and wait for the GPU:
+    /// the compositor may show the atlas as soon as this returns. Each cell is
+    /// the window region of the sprite rendered by the regular encoder with
+    /// that frame's items, over `background` (the frame's items under the cell,
+    /// making the cell opaque and pixel-identical to the GPU frame) or over
+    /// transparency.
+    pub fn renderSpriteAtlas(self: *AppRenderer, atlas: *gpu.Backend.Texture, surface: *anyopaque, frames: anytype, background: anytype, p: anytype) !void {
+        if (comptime gpu.backend_kind != .metal) @compileError("Metal only (Direct3D: renderSpriteFrames)");
+        if (p.origin_px[0] < 0 or p.origin_px[1] < 0) return error.SpriteOffscreen;
+        const extent = self.surface.extent;
+        const origin: [2]u32 = .{ @intCast(p.origin_px[0]), @intCast(p.origin_px[1]) };
+        if (origin[0] + p.cell_px[0] > extent.width or origin[1] + p.cell_px[1] > extent.height) return error.SpriteOffscreen;
+        // Flat opaque flipbooks (a caret) are rasterized on the CPU straight
+        // into the atlas: no GPU submission, so no driver working set.
+        if (comptime cpu_patch.supported) if (background) |items| {
+            if (cpu_patch.rasterSpriteAtlas(self, surface, frames, items, p, origin)) return;
+        };
+        const is_opaque = background != null;
+        try self.frame_sync.waitForNextFrame();
+        var slot_owned = true;
+        errdefer if (slot_owned) self.frame_sync.signal();
+        var enc = self.createEncoder();
+        defer enc.deinit();
+        enc.beginFrame(self.pool_viewport[0], self.pool_viewport[1], p.scale);
+        var command_encoder = try gpu.Backend.CommandEncoder.init(self.queue);
+        errdefer command_encoder.deinit();
+        enc.gpu_command_encoder = &command_encoder;
+        enc.main_render_target = atlas.binding();
+        enc.main_destination_opaque = is_opaque;
+        const cc = self.config.clear_color;
+        const clear: gpu.Color = if (is_opaque) .{ .r = cc.r, .g = cc.g, .b = cc.b, .a = cc.a } else .{ .r = 0, .g = 0, .b = 0, .a = 0 };
+        // One pass for the whole flipbook: each frame rasterizes the cell's
+        // window region straight into its atlas slot. (A pass and a copy per
+        // frame made the driver grow its command storage by hundreds of MiB
+        // for a page of spinners.)
+        var view = atlas.binding().createView();
+        defer view.destroy();
+        var pass = try command_encoder.beginRenderPass(.{ .color_attachments = &.{.{
+            .view = view,
+            .load_op = .clear,
+            .store_op = .store,
+            .clear_value = clear,
+        }} });
+        var start: usize = 0;
+        for (frames.ends, 0..) |end, index| {
+            const col: u32 = @intCast(index % p.columns);
+            const row: u32 = @intCast(index / p.columns);
+            // Window coordinates map onto the cell: same pixel grid as the frame.
+            enc.root_target_crop = .{ origin[0], origin[1], p.cell_px[0], p.cell_px[1] };
+            enc.root_target_offset = .{ col * p.cell_px[0], row * p.cell_px[1] };
+            pass.root_crop = enc.root_target_crop;
+            pass.root_offset = enc.root_target_offset;
+            pass.setViewport(0, 0, @floatFromInt(extent.width), @floatFromInt(extent.height), 0, 1);
+            pass.setScissorRect(0, 0, extent.width, extent.height);
+            // flush() detaches the pass; every frame encodes against it again.
+            enc.render_pass = &pass;
+            if (background) |items| try enc.encodeCommands(items);
+            try enc.encodeCommands(frames.items[start..end]);
+            start = end;
+            // An effect that restarted the pass would lose the cell mapping.
+            if (enc.render_pass != &pass) return error.SpritePassInterrupted;
+            try enc.flush(&pass);
+        }
+        pass.end();
+        if (enc.isolated_clip_fallbacks != 0) return error.SpriteClipDegraded;
+        var command = try command_encoder.finish();
+        defer command.deinit();
+        self.frame_sync.signalOnCompletion(&command);
+        slot_owned = false;
+        command.submit();
+        command.waitUntilCompleted();
+        if (macos_caret_patch_command_succeeded(@ptrCast(command.raw)) == 0) return error.SpriteAtlasGpuFailed;
+    }
+
+    /// Windows: rasterize flipbook frames [first, first + count) one at a time
+    /// at the sprite's own window position in `scratch` (at least as large as
+    /// the cell's bottom-right corner), with the frame's viewport, so every
+    /// pixel goes through the same coordinates as in the frame itself, and
+    /// copy each cell into `readback` at `i * frame_stride` with `row_pitch`.
+    /// (Rasterizing into an atlas through a translated viewport differs from
+    /// the frame by a level on some edge pixels on Intel GPUs.) `background`
+    /// is the frame's items over the cell with the sprite's own taken out at
+    /// `own_at`, where each flipbook frame's items go: inside the same clips,
+    /// under whatever the frame paints over them. Returns the submitted
+    /// command; `readback` holds the cells once it completes.
+    pub fn renderSpriteFrames(self: *AppRenderer, scratch: *gpu.Backend.Texture, readback: *gpu.Backend.Buffer, row_pitch: u32, frame_stride: u64, frames: anytype, background: anytype, own_at: usize, p: anytype, first: usize, count: usize) !gpu.Backend.CommandBuffer {
+        if (comptime !gpu.is_direct3d) @compileError("Direct3D only");
+        if (p.origin_px[0] < 0 or p.origin_px[1] < 0) return error.SpriteOffscreen;
+        const config = self.surface.config orelse return error.SpriteOffscreen;
+        const origin: [2]u32 = .{ @intCast(p.origin_px[0]), @intCast(p.origin_px[1]) };
+        if (origin[0] + p.cell_px[0] > @min(config.width, scratch.size.width) or origin[1] + p.cell_px[1] > @min(config.height, scratch.size.height)) return error.SpriteOffscreen;
+        const errors_before = gpu.Backend.CommandBuffer.error_count.load(.monotonic);
+        try self.frame_sync.waitForNextFrame();
+        var slot_owned = true;
+        errdefer if (slot_owned) self.frame_sync.signal();
+        var enc = self.createEncoder();
+        defer enc.deinit();
+        enc.beginFrame(self.pool_viewport[0], self.pool_viewport[1], p.scale);
+        enc.setDrawableExtent(config.width, config.height);
+        var command_encoder = try gpu.Backend.CommandEncoder.init(self.queue);
+        errdefer command_encoder.deinit();
+        enc.gpu_command_encoder = &command_encoder;
+        enc.main_render_target = scratch.binding();
+        enc.main_destination_opaque = true;
+        const cc = self.config.clear_color;
+        var view = scratch.binding().createView();
+        defer view.destroy();
+        const region: gpu.Backend.native.TextureRegion = .{ .x = origin[0], .y = origin[1], .width = p.cell_px[0], .height = p.cell_px[1] };
+        for (first..first + count, 0..) |index, i| {
+            const start: usize = if (index == 0) 0 else frames.ends[index - 1];
+            const end: usize = frames.ends[index];
+            var pass = try command_encoder.beginRenderPass(.{ .color_attachments = &.{.{
+                .view = view,
+                .load_op = .load,
+                .store_op = .store,
+            }} });
+            pass.clamp_scissor = true;
+            pass.setViewport(0, 0, @floatFromInt(config.width), @floatFromInt(config.height), 0, 1);
+            pass.setScissorRect(0, 0, config.width, config.height);
+            // The frame starts from its clear color under the cell.
+            if (!pass.clearOpaque(.{ cc.r, cc.g, cc.b, cc.a }, .{ origin[0], origin[1], p.cell_px[0], p.cell_px[1] })) return error.SpriteClearFailed;
+            enc.render_pass = &pass;
+            try enc.encodeCommands(background[0..own_at]);
+            try enc.encodeCommands(frames.items[start..end]);
+            try enc.encodeCommands(background[own_at..]);
+            if (enc.render_pass != &pass) return error.SpritePassInterrupted;
+            try enc.flush(&pass);
+            pass.end();
+            try command_encoder.inner.copyTextureToBuffer(&scratch.inner, region, readback, i * frame_stride, row_pitch);
+        }
+        if (enc.isolated_clip_fallbacks != 0) return error.SpriteClipDegraded;
+        // Rejected draws are counted, not returned: any while encoding fails the build.
+        if (gpu.Backend.CommandBuffer.error_count.load(.monotonic) != errors_before) return error.SpriteAtlasGpuFailed;
+        var command = try command_encoder.finish();
+        errdefer command.deinit();
+        self.frame_sync.signalOnCompletion(&command);
+        slot_owned = false;
+        try command.submitChecked();
+        return command;
+    }
+
+    /// Rasterize `items` into a CPU patch target (see cpu_patch.zig). Treated
+    /// as a frame that completes immediately: it takes and returns a frame
+    /// slot so encoder ring writes never touch storage of an in-flight frame.
+    /// `parts` is a tuple or array of paint item slices encoded in order.
+    pub fn encodeCpuPatch(self: *AppRenderer, target: *anyopaque, parts: anytype, viewport_width: f32, viewport_height: f32, scale: f32) !void {
+        try self.frame_sync.waitForNextFrame();
+        defer self.frame_sync.signal();
+        // CPU frames do not re-arm the idle trim: if storage was already
+        // released, hand the glyph atlas back once the raster has read it.
+        const idle = self.idle_storage_volatile;
+        defer if (idle) self.text_renderer.atlas.setStorageVolatile(true);
+        var enc = self.createEncoderKeepingScratch();
+        defer enc.deinit();
+        enc.cpu_flat_target = target;
+        enc.main_destination_opaque = true;
+        enc.beginFrame(viewport_width, viewport_height, scale);
+        inline for (parts) |items| try enc.encodeCommands(items);
+        try enc.flushAllPending();
+        if (enc.isolated_clip_fallbacks != 0 or enc.clip_overflow_depth != 0) return error.CpuPatchClipDegraded;
+    }
+
+    /// Run patch operations (cpu_patch.patchOps) into a CPU patch target:
+    /// paint segments through the encoder, glass underlays as byte copies.
+    /// Encode a patch's operations without rasterizing them: fails like
+    /// encodeCpuPatchOps on content the CPU raster cannot draw (a crossing
+    /// shape clip pair, images, paths), before a raster spends a frame's worth
+    /// of CPU on it and the frame goes to the GPU anyway.
+    pub fn validateCpuPatchOps(self: *AppRenderer, ops: anytype, viewport_width: f32, viewport_height: f32, scale: f32) !void {
+        const S = struct {
+            var sentinel: u8 = 0;
+        };
+        try self.frame_sync.waitForNextFrame();
+        defer self.frame_sync.signal();
+        const idle = self.idle_storage_volatile;
+        defer if (idle) self.text_renderer.atlas.setStorageVolatile(true);
+        var enc = self.createEncoderKeepingScratch();
+        defer enc.deinit();
+        enc.cpu_flat_target = &S.sentinel;
+        enc.cpu_flat_validate_only = true;
+        enc.main_destination_opaque = true;
+        enc.beginFrame(viewport_width, viewport_height, scale);
+        for (ops) |op| switch (op) {
+            .items => |items| try enc.encodeCommands(items),
+            .underlay => try enc.flushAllPending(),
+        };
+        try enc.flushAllPending();
+        if (enc.isolated_clip_fallbacks != 0 or enc.clip_overflow_depth != 0) return error.CpuPatchClipDegraded;
+    }
+
+    pub fn encodeCpuPatchOps(self: *AppRenderer, target: *anyopaque, ops: anytype, viewport_width: f32, viewport_height: f32, scale: f32) !void {
+        try self.frame_sync.waitForNextFrame();
+        defer self.frame_sync.signal();
+        const idle = self.idle_storage_volatile;
+        defer if (idle) self.text_renderer.atlas.setStorageVolatile(true);
+        var enc = self.createEncoderKeepingScratch();
+        defer enc.deinit();
+        enc.cpu_flat_target = target;
+        enc.main_destination_opaque = true;
+        enc.beginFrame(viewport_width, viewport_height, scale);
+        for (ops) |op| switch (op) {
+            .items => |items| try enc.encodeCommands(items),
+            .underlay => |index| {
+                try enc.flushAllPending();
+                try cpu_patch.blitUnderlay(&self.cpu_patch, target, index);
+            },
+        };
+        try enc.flushAllPending();
+        if (enc.isolated_clip_fallbacks != 0 or enc.clip_overflow_depth != 0) return error.CpuPatchClipDegraded;
+    }
+
+    fn setIdleStorageVolatile(self: *AppRenderer, make_volatile: bool) void {
+        self.sdf_renderer.setScratchVolatile(make_volatile);
+        self.text_renderer.setScratchVolatile(make_volatile);
+        self.image_renderer.setScratchVolatile(make_volatile);
+        self.icon_renderer.setScratchVolatile(make_volatile);
+        self.text_renderer.atlas.setStorageVolatile(make_volatile);
+        self.idle_storage_volatile = make_volatile;
+    }
+
+    /// Shrink frame-loop resources once the window stopped presenting. Returns
+    /// false when the last submitted frame is still executing; the caller
+    /// retries on a later wake instead of waiting on the GPU.
+    pub fn trimIdleResources(self: *AppRenderer) bool {
+        if (self.has_external_encoder) return true;
+        if (self.prev_frame_cmd_buffer) |*last| {
+            if (comptime gpu.is_direct3d) {
+                last.waitChecked(0) catch return false;
+            } else if (!last.isCompleted()) return false;
+        }
+        // Completed commands (timing ring, last frame) still retain the
+        // drawables they presented, which would keep the layer pool alive.
+        const latest_us = self.harvestGpuTimings();
+        if (latest_us != 0) self.idle_gpu_execute_us = latest_us;
+        // A completed command whose timestamps never resolve stays "pending"
+        // forever; idle drops it rather than pinning a drawable.
+        self.dropGpuTimings();
+        self.retireCompletedPresentation();
+        if (self.prev_frame_cmd_buffer) |*last| {
+            last.deinit();
+            self.prev_frame_cmd_buffer = null;
+        }
+        self.offscreen_pool.trimIdle();
+        if (@import("zenit_environment").flag("ZENIT_DEBUG_ATLAS_FILL")) self.text_renderer.atlas.debugPrintFill();
+        // Idle keeps no frame copy: the first frame after redraws in full.
+        if (!self.retain_present_copy) self.releaseRetainedTexture();
+        self.releaseCaretScratch();
+        if (comptime sprite_host.supported) self.sprite_host.trimIdle();
+        // Nothing is in flight: demand-sized scratch regrows to what the next
+        // frames draw instead of keeping the busiest frame's size.
+        self.sdf_renderer.releaseScratch();
+        self.text_renderer.releaseScratch();
+        self.text_renderer.trimIdleCaches();
+        self.image_renderer.releaseScratch();
+        self.icon_renderer.releaseScratch();
+        if (!self.idle_storage_volatile) self.setIdleStorageVolatile(true) else self.text_renderer.atlas.setStorageVolatile(true);
+        if (comptime cpu_patch.supported) self.cpu_patch.trimIdle();
+        if (comptime @hasDecl(gpu.Backend.Surface, "setFrameLatency")) {
+            if (self.drawable_depth.reset()) |latency| self.surface.setFrameLatency(latency);
+        }
+        if (comptime @hasDecl(gpu.Backend.Surface, "purgeIdleDrawables")) self.surface.purgeIdleDrawables();
+        if (comptime @hasDecl(gpu.Backend.Device, "dumpInventory")) self.device.dumpInventory("idle");
+        return true;
+    }
+
+    /// Live resize pins the deep drawable queue (DrawableDepth.live_resize).
+    /// Called before any reconfigure/acquire of a resize step, so the first
+    /// resize frame already acquires from the deep pool.
+    pub fn setLiveResize(self: *AppRenderer, active: bool) void {
+        if (comptime @hasDecl(gpu.Backend.Surface, "setFrameLatency")) {
+            if (self.drawable_depth.setLiveResize(active)) |latency| self.surface.setFrameLatency(latency);
+        }
     }
 
     /// Get last frame perf stats. Backdrop brightness adaptation: read shared staging (BGRA8 sRGB
@@ -1799,7 +2809,7 @@ pub const AppRenderer = struct {
     }
 
     fn consumePreviousDebugGlass(self: *AppRenderer, completed: bool) void {
-        if (!completed or !@import("zenit_environment").has("ZENIT_DEBUG_GLASS")) return;
+        if (!completed or !@import("zenit_environment").flag("ZENIT_DEBUG_GLASS")) return;
         for (&self.persistent_gpu.debug_glass_slots, 0..) |*slot, si| {
             if (!slot.prev_pending) continue;
             if (slot.staging) |*staging| {
@@ -1817,7 +2827,7 @@ pub const AppRenderer = struct {
     }
 
     fn advanceDebugGlassSlots(self: *AppRenderer) void {
-        if (!@import("zenit_environment").has("ZENIT_DEBUG_GLASS")) return;
+        if (!@import("zenit_environment").flag("ZENIT_DEBUG_GLASS")) return;
         for (&self.persistent_gpu.debug_glass_slots) |*slot| {
             slot.prev_pending = slot.cur_pending;
             slot.prev_w = slot.cur_w;
@@ -1898,7 +2908,7 @@ pub const AppRenderer = struct {
         if (w == 0 or h == 0 or w > 64 or h > 64) return false;
         const bpr = w * 4;
         staging.readBgra8(w, h, buf, bpr) catch return false;
-        if (@import("zenit_environment").has("ZENIT_DEBUG_GLASS")) {
+        if (@import("zenit_environment").flag("ZENIT_DEBUG_GLASS")) {
             std.debug.print("[lum] read {d}x{d} px0=({d},{d},{d},{d}) pxmid=({d},{d},{d},{d})\n", .{ w, h, buf[0], buf[1], buf[2], buf[3], buf[(w * h / 2) * 4], buf[(w * h / 2) * 4 + 1], buf[(w * h / 2) * 4 + 2], buf[(w * h / 2) * 4 + 3] });
         }
         return true;
@@ -1950,7 +2960,21 @@ pub const AppRenderer = struct {
         return .{ rs / nf, gs / nf, bs / nf };
     }
 
+    /// Byte domain: a comptime table of the exact curve. Every glass's
+    /// luminance readback converts its staged pixels each frame (three `pow`
+    /// per pixel showed as ~1% of process CPU while scrolling under glass).
     fn srgbByteToLinear(c: u8) f64 {
+        return srgb_byte_linear_f64[c];
+    }
+
+    const srgb_byte_linear_f64: [256]f64 = blk: {
+        @setEvalBranchQuota(4_000_000);
+        var table: [256]f64 = undefined;
+        for (&table, 0..) |*slot, i| slot.* = srgbByteToLinearExact(@intCast(i));
+        break :blk table;
+    };
+
+    fn srgbByteToLinearExact(c: u8) f64 {
         const v = @as(f64, @floatFromInt(c)) / 255.0;
         if (v <= 0.04045) return v / 12.92;
         return std.math.pow(f64, (v + 0.055) / 1.055, 2.4);
@@ -1971,7 +2995,13 @@ pub const AppRenderer = struct {
     /// Destroy.
     pub fn deinit(self: *AppRenderer) void {
         self.clearCaretPreparation();
+        self.text_ink.deinit(self.allocator);
+        if (comptime sprite_host.supported) self.sprite_host.deinit(self.allocator, self);
+        if (comptime caret_sprite.supported) self.caret_sprite.deinit();
+        if (comptime cpu_patch.supported) self.cpu_patch.deinit(self.allocator, @ptrCast(self.surface.layer));
         self.frame_damage.deinit(self.allocator);
+        self.digest_verify_prev.deinit(self.allocator);
+        self.digest_verify_cur.deinit(self.allocator);
         self.background_damage.deinit(self.allocator);
         // Wait for all in-flight frames to complete, prevent GPU reading buffer during deinit.
         self.frame_sync.drain(FRAME_BUFFER_COUNT);
@@ -1995,6 +3025,7 @@ pub const AppRenderer = struct {
         // destroyed only on resize, leaked full BGRA texture on close (~20MB at 2880x1800).
         if (self.retained_tex) |*tex| tex.destroy();
         self.retained_tex = null;
+        self.releaseCaretScratch();
         if (self.fonts) |fonts| {
             if (fonts.drawn_width_ctx == @as(*anyopaque, @ptrCast(&self.text_renderer))) {
                 fonts.setDrawnWidthSource(null, null);
@@ -2018,4 +3049,190 @@ fn timerDelta(start: ?@import("zenit_time").Instant, end: ?@import("zenit_time")
         }
     }
     return 0;
+}
+
+/// ZENIT_PERF_TRACE=1: one JSON line per GPU frame with every integer field of
+/// the renderer's frame stats and the Cx perf counters (stage times in us,
+/// work counts), for per-stage cost breakdowns (scripts/measure_usage.py
+/// --perf).
+/// ZENIT_VERIFY_PAINT_DIGEST=1 logs paint digest violations, =2 panics on one.
+fn paintDigestVerifyLevel() u8 {
+    const S = struct {
+        var cached: ?u8 = null;
+    };
+    if (S.cached == null) S.cached = if (std.c.getenv("ZENIT_VERIFY_PAINT_DIGEST")) |v| std.fmt.parseInt(u8, std.mem.span(v), 10) catch 1 else 0;
+    return S.cached.?;
+}
+
+/// ZENIT_FRAME_DAMAGE=0: Metal redraws every frame in full (A/B control).
+fn frameDamageEnabled() bool {
+    const S = struct {
+        var cached: ?bool = null;
+    };
+    if (S.cached == null) S.cached = if (std.c.getenv("ZENIT_FRAME_DAMAGE")) |v| !std.mem.eql(u8, std.mem.span(v), "0") else true;
+    return S.cached.?;
+}
+
+/// Largest kept copy of the presented frame, in bytes (BGRA8: 4 per pixel).
+/// 24 MiB holds a 1512x982 pt window at 2x (a 14-inch MacBook Pro's default
+/// full-screen size) and the storybook's 1100x1000; a 5K full-screen window
+/// (59 MiB) redraws in full. ZENIT_FRAME_DAMAGE_MAX_MIB overrides.
+const frame_copy_max_bytes_default: u64 = 24 << 20;
+
+/// noteDamageOutcome: this many unprofitable frames in a row back off for
+/// damage_backoff_frames (about 0.75 s at 60 Hz, then one probe pair),
+/// doubling per consecutive back-off up to damage_backoff_max_frames (12 s).
+const damage_poor_frames: u32 = 6;
+const damage_backoff_frames: u32 = 45;
+const damage_backoff_max_frames: u32 = 720;
+
+fn frameCopyFits(width: u32, height: u32) bool {
+    const S = struct {
+        var cached: ?u64 = null;
+    };
+    if (S.cached == null) S.cached = if (std.c.getenv("ZENIT_FRAME_DAMAGE_MAX_MIB")) |v| (std.fmt.parseInt(u64, std.mem.span(v), 10) catch 24) << 20 else frame_copy_max_bytes_default;
+    return @as(u64, width) * height * 4 <= S.cached.?;
+}
+
+fn glassReuseDisabled() bool {
+    const S = struct {
+        var cached: ?bool = null;
+    };
+    if (S.cached == null) S.cached = if (std.c.getenv("ZENIT_GLASS_REUSE")) |v| std.mem.eql(u8, std.mem.span(v), "0") else false;
+    return S.cached.?;
+}
+
+fn perfTraceEnabled() bool {
+    const S = struct {
+        var cached: ?bool = null;
+    };
+    if (S.cached == null) S.cached = std.c.getenv("ZENIT_PERF_TRACE") != null;
+    return S.cached.?;
+}
+
+fn tracePerfFrame(frame: u64, stats: anytype, perf: anytype, input_perf: anytype, paint_items: usize) void {
+    var buf: [8192]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    w.print("[perf] {{\"frame\":{d},\"paint_items\":{d}", .{ frame, paint_items }) catch return;
+    inline for (.{ stats, perf, input_perf }, 0..) |src, src_index| {
+        inline for (@import("zenit_reflection").fields(@TypeOf(src.*))) |f| {
+            // A Cx counter sharing a FrameStats name (encode_us, submit_us,
+            // render_us, ...) would repeat the JSON key and its value (usually
+            // 0, host-filled later) would win in every JSON reader.
+            const shadowed = src_index > 0 and @hasField(@TypeOf(stats.*), f.name);
+            switch (@typeInfo(f.type)) {
+                .int => if (!shadowed) w.print(",\"{s}\":{d}", .{ f.name, @field(src.*, f.name) }) catch return,
+                else => {},
+            }
+        }
+    }
+    inline for (@import("zenit_reflection").fields(gpu.PassTag)) |f| {
+        if (f.value != 0) w.print(",\"cpu_{s}_us\":{d}", .{ f.name, last_glass_stage_ns[f.value] / std.time.ns_per_us }) catch return;
+    }
+    if (comptime gpu.backend_kind == .metal) if (metal_pass_timer_enabled()) {
+        var ns: [32]u64 = undefined;
+        var counts: [32]u32 = undefined;
+        _ = metal_pass_timer_read(&ns, &counts);
+        var total: u64 = 0;
+        for (ns) |v| total += v;
+        w.print(",\"gpass_total_us\":{d}", .{total / std.time.ns_per_us}) catch return;
+        inline for (@import("zenit_reflection").fields(gpu.PassTag)) |f| {
+            w.print(",\"gpass_{s}_us\":{d},\"gpass_{s}_n\":{d}", .{ f.name, ns[f.value] / std.time.ns_per_us, f.name, counts[f.value] }) catch return;
+        }
+    };
+    w.writeAll("}\n") catch return;
+    std.debug.print("{s}", .{w.buffered()});
+}
+
+test "luminance sRGB byte table is bit-exact against the curve" {
+    // Runtime (not comptime) evaluation of the reference for every byte.
+    var i: u16 = 0;
+    while (i <= 255) : (i += 1) {
+        var c: u8 = @intCast(i);
+        _ = &c;
+        try std.testing.expectEqual(AppRenderer.srgbByteToLinearExact(c), AppRenderer.srgbByteToLinear(c));
+    }
+}
+
+test "frame damage backoff survives baseline rebuilds and resets only on a profitable frame" {
+    const ui = @import("ui");
+    const Item = @typeInfo(@TypeOf(@as(*ui.Cx, undefined).lowerForEncoderPaintTable())).pointer.child;
+    const a = std.testing.allocator;
+    // This policy/planner path owns no GPU resources. The null retained
+    // texture still exercises releaseRetainedTexture and its invalidation.
+    var renderer: AppRenderer = .{
+        .allocator = a,
+        .io = std.testing.io,
+        .device = undefined,
+        .queue = undefined,
+        .surface = undefined,
+        .config = .{},
+        .sdf_renderer = undefined,
+        .image_renderer = undefined,
+        .icon_renderer = undefined,
+        .text_renderer = undefined,
+        .frame_sync = undefined,
+    };
+    defer renderer.frame_damage.deinit(a);
+    var paint = [_]Item{.{
+        .kind = .rect,
+        .geom = .{ .x = 0, .y = 0, .w = 1000, .h = 1000 },
+        .color = .{ .r = 1, .g = 0, .b = 0, .a = 255 },
+    }};
+    const fd = &renderer.frame_damage;
+    for ([_]u32{ 45, 90, 180, 360, 720, 720 }) |expected_wait| {
+        // Startup, or the first probe after a back-off: the presented copy
+        // was discarded, so this must reach the real no_baseline path.
+        const next_before_baseline = renderer.damage_backoff_len;
+        const baseline = try fd.prepareEffects(a, a, &paint, 1000, 1000, 1, 7);
+        try std.testing.expect(baseline == null);
+        try std.testing.expectEqual(render.FrameDamage.FullReason.no_baseline, fd.full_reason);
+        renderer.noteDamageOutcome(baseline, paint.len);
+        try std.testing.expectEqual(next_before_baseline, renderer.damage_backoff_len);
+        fd.commit(); // The full frame establishes a new presented baseline.
+
+        for (0..damage_poor_frames) |i| {
+            paint[0].color.r += 1;
+            const damage = try fd.prepareEffects(a, a, &paint, 1000, 1000, 1, 7);
+            try std.testing.expect(damage == null);
+            try std.testing.expectEqual(render.FrameDamage.FullReason.too_large, fd.full_reason);
+            renderer.noteDamageOutcome(damage, paint.len);
+            if (i + 1 < damage_poor_frames) {
+                try std.testing.expectEqual(@as(u32, 0), renderer.damage_backoff);
+                fd.commit();
+            }
+        }
+        try std.testing.expectEqual(expected_wait, renderer.damage_backoff);
+        try std.testing.expectEqual(@min(expected_wait * 2, damage_backoff_max_frames), renderer.damage_backoff_len);
+        try std.testing.expect(!fd.valid and !fd.pending_valid);
+        for (0..expected_wait - 1) |_| {
+            try std.testing.expect(!renderer.advanceDamageBackoff());
+            fd.invalidate(); // Same disabled-planner path as frameWithPresentation.
+        }
+        try std.testing.expect(renderer.advanceDamageBackoff());
+    }
+
+    // A new baseline remains neutral, then enough unchanged paint is truly
+    // useful: the planner skips all 100 items and restores the initial policy.
+    var many: [100]Item = @splat(paint[0]);
+    const baseline = try fd.prepareEffects(a, a, &many, 1000, 1000, 1, 7);
+    try std.testing.expectEqual(render.FrameDamage.FullReason.no_baseline, fd.full_reason);
+    renderer.noteDamageOutcome(baseline, many.len);
+    try std.testing.expectEqual(damage_backoff_max_frames, renderer.damage_backoff_len);
+    fd.commit();
+    for (0..damage_poor_frames - 1) |_| {
+        many[0].color.r += 1;
+        const damage = try fd.prepareEffects(a, a, &many, 1000, 1000, 1, 7);
+        try std.testing.expectEqual(render.FrameDamage.FullReason.too_large, fd.full_reason);
+        renderer.noteDamageOutcome(damage, many.len);
+        try std.testing.expectEqual(@as(u32, 0), renderer.damage_backoff);
+        fd.commit();
+    }
+    try std.testing.expectEqual(damage_poor_frames - 1, renderer.damage_poor_streak);
+    const unchanged = try fd.prepareEffects(a, a, &many, 1000, 1000, 1, 7);
+    try std.testing.expectEqual(@as(?[4]u32, .{ 0, 0, 0, 0 }), unchanged);
+    try std.testing.expectEqual(@as(u32, 100), fd.skipped_items);
+    renderer.noteDamageOutcome(unchanged, many.len);
+    try std.testing.expectEqual(damage_backoff_frames, renderer.damage_backoff_len);
+    try std.testing.expectEqual(@as(u32, 0), renderer.damage_poor_streak);
 }

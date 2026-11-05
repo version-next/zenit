@@ -90,6 +90,30 @@ comptime {
     backend_contract.verify(Backend, @tagName(backend_kind));
 }
 
+/// Diagnostic GPU pass attribution (ZENIT_GPU_PASS_TIMING=1 on Metal): the
+/// tag current when a render pass begins labels that pass's GPU time in the
+/// perf trace. The app renderer installs the hook; without it this is a no-op.
+pub const PassTag = enum(u32) {
+    other = 0,
+    glass_restore,
+    glass_capture,
+    glass_kawase,
+    glass_luminance,
+    glass_quarter,
+    glass_eighth,
+    glass_gauss_main,
+    glass_gauss_alt,
+    glass_gauss_fine,
+    glass_ambient_half,
+    glass_ambient_gauss,
+    glass_composite,
+    glass_fallback,
+};
+pub var pass_tag_hook: ?*const fn (u32) callconv(.c) void = null;
+pub fn setPassTag(tag: PassTag) void {
+    if (pass_tag_hook) |hook| hook(@backingInt(tag));
+}
+
 // Core Types (main entry points like wgpu)
 
 /// Instance - GPU interaction start point.
@@ -303,6 +327,15 @@ pub const TextureMemory = enum {
     host_upload,
 };
 
+/// CPU access pattern of a `host_upload` texture. `write_only` promises the
+/// CPU never reads it back (no readBgra8, getBytes or CPU rasterizer reads):
+/// Metal then maps it write-combined, which makes uploads cheaper and CPU
+/// reads very slow. Ignored for `device_local`.
+pub const HostAccess = enum {
+    read_write,
+    write_only,
+};
+
 /// Texture view dimension.
 pub const TextureViewDimension = enum {
     @"1d",
@@ -326,6 +359,9 @@ pub const TextureUsages = packed struct(u32) {
 /// Buffer usage flags.
 pub const BufferUsages = packed struct(u32) {
     map_read: bool = false,
+    /// CPU-writable. Without `map_read` the CPU must only write the mapping:
+    /// Metal maps such buffers write-combined (reads stay correct but uncached
+    /// and slow). Set `map_read` for any buffer the CPU reads back.
     map_write: bool = false,
     copy_src: bool = false,
     copy_dst: bool = false,
@@ -608,6 +644,12 @@ pub const TextureDescriptor = struct {
     format: TextureFormat,
     usage: TextureUsages,
     memory: TextureMemory = .device_local,
+    host_access: HostAccess = .read_write,
+    /// Pixel formats other than `format` this texture will be viewed or
+    /// reinterpreted as (WebGPU `viewFormats`). Leave empty unless a view in a
+    /// different format is really created: on Metal a foreign entry adds
+    /// MTLTextureUsagePixelFormatView, which disables lossless compression of
+    /// Private render targets. D3D12 rejects foreign entries.
     view_formats: []const TextureFormat = &.{},
 };
 
@@ -961,6 +1003,7 @@ test {
     //
     // Without explicit references, resource_pool / bind_group / conv tests (including key
     // invariants like ABA, epoch retirement) never ran.
+    _ = driver_bugs; // Required portable driver-rule regressions (not just type re-exports).
     _ = rhi;
     _ = backend_contract;
     _ = resource_pool;
@@ -971,6 +1014,7 @@ test {
     if (backend_kind == .metal) {
         _ = @import("metal/bind_group.zig");
         _ = @import("metal/conv.zig");
+        _ = @import("metal/surface.zig");
     }
 }
 

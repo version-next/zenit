@@ -1,0 +1,259 @@
+[
+  {
+    "source": "examples/storybook/controls/controls.yix",
+    "components": [
+      "Section",
+      "StateRow",
+      "Controls"
+    ]
+  },
+  {
+    "source": "examples/storybook/corner_clip/corner_clip.yix",
+    "components": [
+      "Case",
+      "CornerClip"
+    ]
+  },
+  {
+    "source": "src/ui/components/alert/alert.yix",
+    "components": [
+      "Alert"
+    ]
+  },
+  {
+    "source": "src/ui/components/badge/badge.yix",
+    "components": [
+      "Badge",
+      "StatusBadge"
+    ]
+  },
+  {
+    "source": "src/ui/components/breadcrumb/breadcrumb.yix",
+    "components": [
+      "Breadcrumb"
+    ]
+  },
+  {
+    "source": "src/ui/components/button/button.yix",
+    "components": [
+      "Button"
+    ]
+  },
+  {
+    "source": "src/ui/components/card/card.yix",
+    "components": [
+      "Card"
+    ]
+  },
+  {
+    "source": "src/ui/components/checkbox/checkbox.yix",
+    "components": [
+      "Checkbox"
+    ]
+  },
+  {
+    "source": "src/ui/components/checkbox/radio.yix",
+    "components": [
+      "Radio",
+      "RadioGroup"
+    ]
+  },
+  {
+    "source": "src/ui/components/checkbox/switch.yix",
+    "components": [
+      "Switch"
+    ]
+  },
+  {
+    "source": "src/ui/components/chip/chip.yix",
+    "components": [
+      "Chip"
+    ]
+  },
+  {
+    "source": "src/ui/components/control_shell/control_shell.yix",
+    "components": [
+      "ControlShell"
+    ]
+  },
+  {
+    "source": "src/ui/components/divider/divider.yix",
+    "components": [
+      "Divider"
+    ]
+  },
+  {
+    "source": "src/ui/components/menu/menu.yix",
+    "components": [
+      "MenuSeparator",
+      "MenuEntry"
+    ]
+  },
+  {
+    "source": "src/ui/components/modal/modal.yix",
+    "components": [
+      "ModalPanel"
+    ]
+  },
+  {
+    "source": "src/ui/components/progress/progress.yix",
+    "components": [
+      "Progress"
+    ]
+  },
+  {
+    "source": "src/ui/components/skeleton/skeleton.yix",
+    "components": [
+      "Skeleton"
+    ]
+  },
+  {
+    "source": "src/ui/components/spinner/spinner.yix",
+    "components": [
+      "Spinner"
+    ]
+  },
+  {
+    "source": "src/ui/components/stack/stack.yix",
+    "components": [
+      "VStack",
+      "HStack",
+      "Spacer"
+    ]
+  },
+  {
+    "source": "src/ui/components/steps/steps.yix",
+    "components": [
+      "Steps"
+    ]
+  },
+  {
+    "source": "src/ui/components/tag/tag.yix",
+    "components": [
+      "Tag"
+    ]
+  },
+  {
+    "source": "src/ui/components/timeline/timeline.yix",
+    "components": [
+      "TimelineRow",
+      "Timeline"
+    ]
+  },
+  {
+    "source": "tests/yix/doc_chip.yix",
+    "components": [
+      "Chip"
+    ]
+  },
+  {
+    "source": "tests/yix/equivalence_sequence.yix",
+    "components": [
+      "Sequence"
+    ]
+  },
+  {
+    "source": "tests/yix/lifecycle_split.yix",
+    "components": [
+      "Split",
+      "Nested",
+      "Holder",
+      "Decorated",
+      "SlotChild",
+      "SlottedForOom",
+      "PortalOwner"
+    ]
+  },
+  {
+    "source": "tests/yix/lsp/fixture.yix",
+    "components": [
+      "Card2",
+      "Demo"
+    ]
+  },
+  {
+    "source": "tests/yix/review_reactive.yix",
+    "components": [
+      "ExternalOnly",
+      "ExternalWithProp",
+      "PeekOnly",
+      "ReturnedSource",
+      "Pure",
+      "ExternalVisible",
+      "NullCall",
+      "ComptimeStructCall",
+      "StaticRecipeCall",
+      "MixedRuntimeCall"
+    ]
+  },
+  {
+    "source": "tests/yix/stories.yix",
+    "components": [
+      "Layout",
+      "ButtonStory",
+      "CardStory",
+      "BranchStory",
+      "TabsStory",
+      "ListStory",
+      "GeneratedNameStory",
+      "ControlledStory",
+      "ComponentKeys",
+      "ToggledKeys",
+      "UpperInput",
+      "TypedAttrStory",
+      "Label",
+      "PropsStory",
+      "BatchStory",
+      "UnicodeStory",
+      "RowCaptureStory",
+      "TextSignalStory",
+      "Doubled",
+      "Panel",
+      "PanelUse",
+      "Closable",
+      "ClosableUse",
+      "Stars",
+      "GrowingStars",
+      "Forward",
+      "ForwardUse",
+      "Numbered",
+      "NestedFlow",
+      "Toggle",
+      "ToggleBound",
+      "ToggleEcho",
+      "Guarded",
+      "EventForms",
+      "FieldNamedLikeProp",
+      "Picker",
+      "PickerUse",
+      "ExternalSum",
+      "StaticTwice",
+      "AliasLabel",
+      "TextIntoSlot",
+      "Required",
+      "RequiredUse",
+      "PickedName",
+      "ShapeLabel",
+      "Parsed",
+      "LazyBranch",
+      "KeyPad",
+      "Lifecycle",
+      "TryEvent",
+      "StateBox",
+      "Frame",
+      "FrameUse",
+      "Field",
+      "FieldBare",
+      "FieldFull",
+      "GlyphBox",
+      "GlyphTinted",
+      "LinkText",
+      "PillText",
+      "EditableRows",
+      "PinBoard",
+      "Captions",
+      "Groups",
+      "TypeOfProbe"
+    ]
+  }
+]

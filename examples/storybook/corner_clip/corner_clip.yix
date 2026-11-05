@@ -1,0 +1,157 @@
+//! Per-corner overflow clip regression fixture: each specimen clips a square red fill with its own
+//! corner radii (TL, TR, BR, BL). Rounded corners must cut the fill away; square corners keep it.
+//! The cases cover each clip path: node-local push_clip (shader SDF), the opacity layer fold
+//! (composite mask), a glass owner's rounded_clip surface (shader mask in the surface), the same
+//! nested in another rounded clip (offscreen layer + composite mask), half-turned owners (corners
+//! follow the owner) and a mirrored owner. Below them: nested shape clips must intersect (same-rect
+//! owners merge per corner, crossing owners isolate into a layer), and an oversized radius must
+//! normalise identically on the shader clip, the opacity fold, the blend composite and the clip
+//! layer.
+const ui = @import("ui");
+const S = @import("styles.yss");
+
+pub fn Case(title: []const u8 = "", children: View) View {
+    return (
+        <col style={S.cell}>
+            <text style={S.caption}>{title}</text>
+            {children}
+        </col>
+    );
+}
+
+pub fn CornerClip() View {
+    return (
+        <col style={S.root}>
+            <text style={S.heading}>Per-corner overflow clip</text>
+            <text style={S.lede}>Red fills are square; only the clip rounds them. TL 24 · TR 0 · BR 10 · BL 0 unless noted.</text>
+            <row style={S.grid}>
+                <Case title="Attached group">
+                    <row testId="story.cornerclip.group" style={S.attached}>
+                        <box testId="story.cornerclip.group.first" style={S.first}><box style={S.fill} /></box>
+                        <box testId="story.cornerclip.group.middle" style={S.middle}><box style={S.fill} /></box>
+                        <box testId="story.cornerclip.group.last" style={S.last}><box style={S.fill} /></box>
+                    </row>
+                </Case>
+                <Case title="Shader clip">
+                    <box testId="story.cornerclip.shader" style={.{ S.specimen, S.corners }}><box style={S.fill} /></box>
+                </Case>
+                <Case title="Opacity fold">
+                    <box testId="story.cornerclip.fold" style={.{ S.specimen, S.corners, S.faded }}><box style={S.fill} /></box>
+                </Case>
+                <Case title="Clip surface (glass)">
+                    <box testId="story.cornerclip.surface" style={.{ S.specimen, S.corners, S.glass }}><box style={S.fill} /></box>
+                </Case>
+            </row>
+            <row style={S.grid}>
+                <Case title="Clip layer (nested in a rounded clip)">
+                    <box style={S.outer}>
+                        <box testId="story.cornerclip.nested" style={.{ S.specimen, S.corners, S.glass }}><box style={S.fill} /></box>
+                    </box>
+                </Case>
+                <Case title="Half turn">
+                    <box testId="story.cornerclip.turned" style={.{ S.specimen, S.corners, S.turned }}><box style={S.fill} /></box>
+                </Case>
+                <Case title="Half turn, opacity fold">
+                    <box testId="story.cornerclip.turnedfold" style={.{ S.specimen, S.corners, S.turned, S.faded }}><box style={S.fill} /></box>
+                </Case>
+                <Case title="Mirrored">
+                    <box testId="story.cornerclip.mirrored" style={.{ S.specimen, S.corners, S.mirrored }}><box style={S.fill} /></box>
+                </Case>
+            </row>
+            <text style={S.lede}>Nested shape clips intersect: every ancestor's rounded corner still cuts content clipped again by a descendant.</text>
+            <row style={S.grid}>
+                <Case title="Nested: uniform 20 > TR 10">
+                    <box testId="story.cornerclip.chain2" style={.{ S.band, S.round20 }}>
+                        <box style={.{ S.band, S.only_tr10 }}><box style={S.fill} /></box>
+                    </box>
+                </Case>
+                <Case title="Nested x3: TL / TR / BR">
+                    <box testId="story.cornerclip.chain3" style={.{ S.band, S.only_tl20 }}>
+                        <box style={.{ S.band, S.only_tr20 }}>
+                            <box style={.{ S.band, S.only_br20 }}><box style={S.fill} /></box>
+                        </box>
+                    </box>
+                </Case>
+                <Case title="Nested x3, opacity fold">
+                    <box testId="story.cornerclip.chain3fold" style={.{ S.band, S.only_tl20, S.faded }}>
+                        <box style={.{ S.band, S.only_tr20 }}>
+                            <box style={.{ S.band, S.only_br20 }}><box style={S.fill} /></box>
+                        </box>
+                    </box>
+                </Case>
+            </row>
+            <row style={S.grid}>
+                <Case title="Crossing: uniform 20 > 70 wide, TR 12">
+                    <box style={.{ S.band, S.round20 }}>
+                        <box testId="story.cornerclip.cross2" style={.{ S.band, S.w70, S.only_tr12 }}><box style={S.fill} /></box>
+                    </box>
+                </Case>
+                <Case title="Crossing x3: TL 20 > TR 16 > BL 12">
+                    <box style={.{ S.band, S.only_tl20 }}>
+                        <box style={.{ S.band, S.w84, S.only_tr16 }}>
+                            <box testId="story.cornerclip.cross3" style={.{ S.band, S.w80, S.only_bl12 }}><box style={S.fill} /></box>
+                        </box>
+                    </box>
+                </Case>
+            </row>
+            <text style={S.lede}>Oversized radii normalise to half the shorter side on every path: TL 9999 draws a 20pt corner.</text>
+            <row style={S.grid}>
+                <Case title="Oversized TL, direct">
+                    <box testId="story.cornerclip.huge" style={.{ S.band, S.huge_tl }}><box style={S.fill} /></box>
+                </Case>
+                <Case title="Oversized TL, opacity fold">
+                    <box testId="story.cornerclip.hugefold" style={.{ S.band, S.huge_tl, S.faded }}><box style={S.fill} /></box>
+                </Case>
+                <Case title="Oversized TL, blend composite">
+                    <box testId="story.cornerclip.hugeblend" style={.{ S.band, S.huge_tl, S.multiplied }}><box style={S.fill} /></box>
+                </Case>
+                <Case title="Oversized TL, clip layer">
+                    <box style={S.outer}>
+                        <box testId="story.cornerclip.hugelayer" style={.{ S.band, S.huge_tl, S.glass }}><box style={S.fill} /></box>
+                    </box>
+                </Case>
+            </row>
+            <text style={S.lede}>The glass material normalises its corners like every clip: each glass silhouette (left) matches the content clip of the same radii (right).</text>
+            <row style={S.grid}>
+                <Case title="Glass: TL −4, TR 20">
+                    <row style={S.backdrop}>
+                        <box testId="story.cornerclip.glassneg" style={.{ S.band, S.neg_tl, S.glass_lit }} />
+                    </row>
+                </Case>
+                <Case title="Glass clip: TL −4, TR 20">
+                    <row style={S.backdrop}>
+                        <box testId="story.cornerclip.glassnegclip" style={.{ S.band, S.neg_tl, S.glass_lit }}><box style={S.fill} /></box>
+                    </row>
+                </Case>
+                <Case title="Glass: oversized TL">
+                    <row style={S.backdrop}>
+                        <box testId="story.cornerclip.glasshuge" style={.{ S.band, S.huge_tl, S.glass_lit }} />
+                    </row>
+                </Case>
+                <Case title="Glass clip: oversized TL">
+                    <row style={S.backdrop}>
+                        <box testId="story.cornerclip.glasshugeclip" style={.{ S.band, S.huge_tl, S.glass_lit }}><box style={S.fill} /></box>
+                    </row>
+                </Case>
+            </row>
+            <row style={S.grid}>
+                <Case title="Glass pill: radius 9999">
+                    <row style={S.backdrop}>
+                        <box testId="story.cornerclip.glasspillhuge" style={.{ S.band, S.pill_huge, S.glass_lit }} />
+                    </row>
+                </Case>
+                <Case title="Glass pill: radius 20">
+                    <row style={S.backdrop}>
+                        <box testId="story.cornerclip.glasspillexact" style={.{ S.band, S.pill_exact, S.glass_lit }} />
+                    </row>
+                </Case>
+                <Case title="Glass slivers: 0 and 2 wide">
+                    <row testId="story.cornerclip.glassslivers" style={.{ S.backdrop, S.sliver_row }}>
+                        <box testId="story.cornerclip.glasssliver0" style={.{ S.sliver0, S.glass_lit }} />
+                        <box testId="story.cornerclip.glasssliver2" style={.{ S.sliver2, S.glass_lit }} />
+                    </row>
+                </Case>
+            </row>
+        </col>
+    );
+}

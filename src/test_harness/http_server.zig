@@ -35,7 +35,7 @@ fn readFileCompat(dir: std.Io.Dir, io: std.Io, path: []const u8, allocator: std.
 }
 
 fn fileRpcDirFromEnv() []const u8 {
-    const raw = std.c.getenv("ZENIT_E2E_FILE_RPC_DIR") orelse return "";
+    const raw = @import("zenit_environment").getNative("ZENIT_E2E_FILE_RPC_DIR") orelse return "";
     return std.mem.span(raw);
 }
 
@@ -228,6 +228,16 @@ fn dispatchRequest(queue: *CommandQueue, method: []const u8, path: []const u8, b
             }
             return .{ .status = 400, .body = "{\"error\":\"invalid payload\"}" };
         }
+        if (std.mem.eql(u8, path, "/pointer_leave")) {
+            const result = queue.submitAndWait(.{ .pointer_leave = {} });
+            return .{ .status = 200, .body = result.getData() };
+        }
+        if (std.mem.eql(u8, path, "/window_active")) {
+            const active = findJsonBool(body, "active") orelse
+                return .{ .status = 400, .body = "{\"error\":\"invalid window_active payload\"}" };
+            const result = queue.submitAndWait(.{ .window_active = active });
+            return .{ .status = 200, .body = result.getData() };
+        }
         if (std.mem.eql(u8, path, "/mouse_up")) {
             if (parseMousePoint(body, .mouse_up)) |cmd| {
                 const result = queue.submitAndWait(cmd);
@@ -306,6 +316,18 @@ fn dispatchRequest(queue: *CommandQueue, method: []const u8, path: []const u8, b
         }
         if (std.mem.eql(u8, path, "/track_stop")) {
             const result = queue.submitAndWait(.{ .track_stop = {} });
+            return .{ .status = 200, .body = result.getData() };
+        }
+        if (std.mem.eql(u8, path, "/scroll_stream")) {
+            const result = queue.submitAndWait(.{ .scroll_stream = .{
+                .x = @floatCast(findJsonNumber(body, "x") orelse return .{ .status = 400, .body = "{\"error\":\"x required\"}" }),
+                .y = @floatCast(findJsonNumber(body, "y") orelse return .{ .status = 400, .body = "{\"error\":\"y required\"}" }),
+                .step = @floatCast(findJsonNumber(body, "step") orelse 12),
+                .span = @intFromFloat(@max(1, findJsonNumber(body, "span") orelse 30)),
+                .count = @intFromFloat(@max(0, findJsonNumber(body, "count") orelse 0)),
+                .interval_ms = @floatCast(findJsonNumber(body, "interval_ms") orelse 8.33),
+                .phased = (findJsonNumber(body, "phased") orelse 0) != 0,
+            } });
             return .{ .status = 200, .body = result.getData() };
         }
         if (std.mem.eql(u8, path, "/scroll")) {
@@ -435,9 +457,9 @@ fn dispatchRequest(queue: *CommandQueue, method: []const u8, path: []const u8, b
             return .{ .status = 200, .body = result.getData() };
         }
         if (std.mem.eql(u8, path, "/clock/advance")) {
-            const ms = findJsonNumber(body, "ms") orelse return .{ .status = 400, .body = "{\"error\":\"ms required\"}" };
+            const ms = findJsonNumber64(body, "ms") orelse return .{ .status = 400, .body = "{\"error\":\"ms required\"}" };
             if (!std.math.isFinite(ms) or ms < 0 or ms > 60_000) return .{ .status = 400, .body = "{\"error\":\"invalid ms\"}" };
-            const result = queue.submitAndWait(.{ .clock_advance = @floatCast(ms) });
+            const result = queue.submitAndWait(.{ .clock_advance = ms });
             return .{ .status = 200, .body = result.getData() };
         }
         if (std.mem.eql(u8, path, "/frames/read")) {
@@ -475,6 +497,22 @@ fn dispatchRequest(queue: *CommandQueue, method: []const u8, path: []const u8, b
             const mode = std.meta.stringToEnum(@import("command_queue.zig").VisualQualityCommand, value) orelse
                 return .{ .status = 400, .body = "{\"error\":\"invalid visual quality\"}" };
             const result = queue.submitAndWait(.{ .visual_quality = mode });
+            return .{ .status = 200, .body = result.getData() };
+        }
+        if (std.mem.eql(u8, path, "/sprites")) {
+            const command: @import("command_queue.zig").SpritesCommand = if (findJsonBool(body, "debug") orelse false) .debug else if (findJsonBool(body, "enabled")) |on| (if (on) .enable else .disable) else .query;
+            const result = queue.submitAndWait(.{ .sprites = command });
+            return .{ .status = 200, .body = result.getData() };
+        }
+        if (std.mem.eql(u8, path, "/cpu_patches")) {
+            const command: @import("command_queue.zig").SpritesCommand = if (findJsonBool(body, "enabled")) |on| (if (on) .enable else .disable) else .query;
+            const result = queue.submitAndWait(.{ .cpu_patches = command });
+            return .{ .status = 200, .body = result.getData() };
+        }
+        if (std.mem.eql(u8, path, "/screenshot/composited")) {
+            const command = parseRecordingStart(body) orelse
+                return .{ .status = 400, .body = "{\"error\":\"path required\"}" };
+            const result = queue.submitAndWait(.{ .composited_screenshot = command.recording_start });
             return .{ .status = 200, .body = result.getData() };
         }
         if (std.mem.eql(u8, path, "/recording/start")) {
@@ -766,6 +804,10 @@ fn findJsonBool(body: []const u8, key: []const u8) ?bool {
 }
 
 fn findJsonNumber(body: []const u8, key: []const u8) ?f32 {
+    return if (findJsonNumber64(body, key)) |v| @floatCast(v) else null;
+}
+
+fn findJsonNumber64(body: []const u8, key: []const u8) ?f64 {
     var search_buf: [64]u8 = undefined;
     const pattern = std.fmt.bufPrint(&search_buf, "\"{s}\":", .{key}) catch return null;
     const start = (std.mem.indexOf(u8, body, pattern) orelse return null) + pattern.len;
@@ -778,7 +820,7 @@ fn findJsonNumber(body: []const u8, key: []const u8) ?f32 {
     while (end < body.len and (body[end] >= '0' and body[end] <= '9' or body[end] == '.')) end += 1;
     if (end == pos) return null;
 
-    return std.fmt.parseFloat(f32, body[pos..end]) catch null;
+    return std.fmt.parseFloat(f64, body[pos..end]) catch null;
 }
 
 test "recording start parser validates path and target fps" {

@@ -26,7 +26,7 @@ pub const Device = struct {
     /// Programmable color-attachment reads are an Apple GPU capability.
     pub fn supportsFramebufferFetch(self: *Device) bool {
         if (comptime test_support.enabled) {
-            if (@import("zenit_environment").has("ZENIT_DEV_NO_FRAMEBUFFER_FETCH")) return false;
+            if (@import("zenit_environment").flag("ZENIT_DEV_NO_FRAMEBUFFER_FETCH")) return false;
         }
         if (self.framebuffer_fetch_supported) |supported| return supported;
         const supported = mtl.metal_device_supports_framebuffer_fetch(self.raw_device);
@@ -39,10 +39,16 @@ pub const Device = struct {
         test_support.fail_buffer_device = @ptrCast(self.raw_device);
     }
 
+    /// Print live GPU resources grouped by label and creating call site
+    /// (no-op unless ZENIT_GPU_INVENTORY is set).
+    pub fn dumpInventory(self: *Device, tag: [*:0]const u8) void {
+        mtl.metal_inventory_dump(self.raw_device, tag);
+    }
+
     /// Create Buffer. Note: returned Buffer doesn't need allocator free (Metal objects manage
     /// refcount); allocator parameter reserved for future extension (e.g., auxiliary structure
     /// allocation).
-    pub fn createBuffer(
+    pub noinline fn createBuffer(
         self: *Device,
         allocator: std.mem.Allocator,
         desc: gpu.BufferDescriptor,
@@ -74,6 +80,7 @@ pub const Device = struct {
         }
 
         self.buffer_count += 1;
+        mtl.metal_inventory_note(buffer, @ptrFromInt(@returnAddress()));
 
         return resources.Buffer{
             .raw = buffer,
@@ -83,7 +90,7 @@ pub const Device = struct {
     }
 
     /// Create Texture
-    pub fn createTexture(
+    pub noinline fn createTexture(
         self: *Device,
         allocator: std.mem.Allocator,
         desc: gpu.TextureDescriptor,
@@ -126,7 +133,7 @@ pub const Device = struct {
         );
         mtl.metal_texture_descriptor_set_usage(
             mtl_desc,
-            conv.toMetalTextureUsage(desc.usage),
+            conv.toMetalTextureUsage(desc.usage, conv.needsPixelFormatView(desc)),
         );
         mtl.metal_texture_descriptor_set_storage_mode(
             mtl_desc,
@@ -135,6 +142,8 @@ pub const Device = struct {
                 .host_upload => mtl.MTLStorageMode.Shared,
             }),
         );
+
+        if (conv.textureWriteCombined(desc)) mtl.metal_texture_descriptor_set_cpu_cache_write_combined(mtl_desc);
 
         // Create texture
         const texture = mtl.metal_device_new_texture(self.raw_device, mtl_desc) orelse
@@ -149,6 +158,7 @@ pub const Device = struct {
         }
 
         self.texture_count += 1;
+        mtl.metal_inventory_note(texture, @ptrFromInt(@returnAddress()));
         if (@import("zenit_environment").getBorrowed("ZENIT_DEBUG_TEXCREATE") != null) {
             std.debug.print("[texcreate] {s} {d}x{d}\n", .{ desc.label orelse "?", desc.size.width, desc.size.height });
         }

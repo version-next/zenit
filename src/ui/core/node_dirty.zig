@@ -19,6 +19,7 @@ const world_mod = @import("world.zig");
 const node_mod = @import("node.zig");
 const redraw = @import("redraw.zig");
 const debug_trace = @import("debug_trace.zig");
+const types = @import("types.zig");
 
 const Node = node_mod.Node;
 
@@ -72,8 +73,33 @@ pub inline fn bumpLooseInteractionGen() void {
     g_loose_interaction_gen +%= 1;
 }
 
+var layout_dirty_debug: ?bool = null;
+var layout_dirty_reports: u32 = 0;
+/// ZENIT_DEBUG_LAYOUT_DIRTY=1: print who marks a clean node layout-dirty (first 400 marks, with a
+/// stack trace). Finds layout work on frames that should only move content (scroll).
+fn layoutDirtyDebugEnabled() bool {
+    return layout_dirty_debug orelse blk: {
+        const v = @import("zenit_environment").flag("ZENIT_DEBUG_LAYOUT_DIRTY");
+        layout_dirty_debug = v;
+        break :blk v;
+    };
+}
+
+fn reportLayoutDirty(self: *Node) void {
+    if (layout_dirty_reports >= 400) return;
+    layout_dirty_reports += 1;
+    std.debug.print("[layout-dirty] node={d} component={s} test_id={s}\n", .{
+        self.id,
+        self.meta.ownership.meta.component_name orelse "(nil)",
+        self.meta.ownership.meta.test_id orelse "(nil)",
+    });
+    std.debug.dumpCurrentStackTrace(.{});
+}
+
 pub fn markLayoutDirty(self: *Node) void {
+    @import("node_tree.zig").hostDirty(self);
     if (self.frame_state.state_bits.dirty.core.layout) return;
+    if (layoutDirtyDebugEnabled()) reportLayoutDirty(self);
     bumpLooseInteractionGen();
     self.invalidateCustomClipGeometryCache();
     self.meta.per_frame.caches.versions.content +%= 1;
@@ -102,6 +128,7 @@ pub fn markLayoutDirty(self: *Node) void {
 /// Mark self and parent layout dirty. Used when child sizing properties (width/height) dynamically
 /// change, requiring parent container to re-run layoutChildren to recalculate child sizes.
 pub fn markSizingDirty(self: *Node) void {
+    @import("node_tree.zig").hostDirty(self);
     bumpLooseInteractionGen();
     self.invalidateCustomClipGeometryCache();
     self.meta.per_frame.caches.versions.content +%= 1;
@@ -145,6 +172,7 @@ pub fn markSizingDirty(self: *Node) void {
 /// Separate from normal layout dirty to avoid full-tree runtime index rebuild on mere position/size
 /// changes.
 pub fn markRuntimeIndexDirty(self: *Node) void {
+    @import("node_tree.zig").hostDirty(self);
     if (!self.frame_state.state_bits.dirty.runtime.dirty) {
         self.frame_state.state_bits.dirty.runtime.dirty = true;
     }
@@ -152,6 +180,7 @@ pub fn markRuntimeIndexDirty(self: *Node) void {
 }
 
 pub fn markRuntimeIndexFullRebuild(self: *Node) void {
+    @import("node_tree.zig").hostDirty(self);
     markRuntimeIndexDirty(self);
     if (!self.frame_state.state_bits.dirty.runtime.full_rebuild) {
         self.frame_state.state_bits.dirty.runtime.full_rebuild = true;
@@ -160,6 +189,7 @@ pub fn markRuntimeIndexFullRebuild(self: *Node) void {
 }
 
 pub fn markOrderDirty(self: *Node) void {
+    @import("node_tree.zig").hostDirty(self);
     if (!self.frame_state.state_bits.dirty.pipeline.order) {
         self.frame_state.state_bits.dirty.pipeline.order = true;
     }
@@ -177,6 +207,7 @@ pub fn markOrderDirty(self: *Node) void {
 }
 
 pub fn markInteractionDirty(self: *Node) void {
+    @import("node_tree.zig").hostDirty(self);
     bumpLooseInteractionGen();
     self.invalidateCustomClipGeometryCache();
     if (!self.frame_state.state_bits.dirty.pipeline.interaction) {
@@ -199,12 +230,14 @@ pub fn markInteractionDirty(self: *Node) void {
 }
 
 pub fn markHitSemanticsDirty(self: *Node) void {
+    @import("node_tree.zig").hostDirty(self);
     bumpLooseInteractionGen();
     self.frame_state.state_bits.dirty.hit.semantics = true;
     markInteractionDirty(self);
 }
 
 pub fn markHitStructureDirty(self: *Node) void {
+    @import("node_tree.zig").hostDirty(self);
     self.frame_state.state_bits.dirty.hit.structure = true;
     markRuntimeIndexDirty(self);
 }
@@ -233,6 +266,7 @@ pub fn bubbleChildRuntimeIndexDirty(self: *Node, full_rebuild: bool) void {
 /// absolute-positioned children; after rebind, only recursively relayout dirty children without
 /// re-running content_node's own layoutChildren.
 pub fn markSubtreeDirty(self: *Node) void {
+    @import("node_tree.zig").hostDirty(self);
     if (self.frame_state.state_bits.dirty.core.subtree_layout and self.frame_state.state_bits.dirty.core.subtree_render) return;
     self.invalidateCustomClipGeometryCache();
     self.meta.per_frame.caches.versions.content +%= 1;
@@ -254,6 +288,7 @@ pub fn markSubtreeDirty(self: *Node) void {
 }
 
 pub fn markCompositeDirty(self: *Node) void {
+    @import("node_tree.zig").hostDirty(self);
     const self_out_of_band = isOutOfBandRenderUnit(self);
     const self_needs_render_dirty = self.meta.per_frame.caches.commands.promoted == null and !self_out_of_band;
     var bubble_render_dirty = true;
@@ -301,6 +336,7 @@ pub fn markCompositeDirty(self: *Node) void {
 /// must converge here; separate per-path dirty marking misses composite or cache invalidation and
 /// causes visual bugs during animation.
 pub fn markCompositePropDirty(self: *Node) void {
+    @import("node_tree.zig").hostDirty(self);
     markInteractionDirty(self);
     markCompositeDirty(self);
     @import("node_render_cache.zig").invalidateRenderCache(self);
@@ -313,8 +349,42 @@ pub fn markCompositePropDirty(self: *Node) void {
 /// (positioning, setters, state switches); use this for per-frame interpolation. No manual dirty
 /// combos outside these two named ones.
 pub fn markCompositeAnimFrameDirty(self: *Node) void {
+    @import("node_tree.zig").hostDirty(self);
     markInteractionDirty(self);
     markCompositeDirty(self);
+}
+
+/// Advances whenever a hit layer moves (markHitLayerMotion*). Hit-index consumers that cache a
+/// query result against the scene (stationary-pointer hover) compare
+/// `HitRuntime.sceneEpoch()`, which folds this in: a layer move changes what a fixed world point
+/// resolves to without any rebuild.
+pub var g_hit_layer_motion_gen: u64 = 0;
+
+/// Own-transform change (scroll offset) of a node, interaction part only: the hit-layer
+/// counterpart of markInteractionDirty. A hit layer's subtree is stored in its own local space and
+/// queried through its live transform (hit_runtime.HitLayer), so the move needs no rebuild; only
+/// the scene epoch advances. Any other node falls back to markInteractionDirty.
+pub fn markHitLayerMotion(self: *Node) void {
+    if (!self.behavior.interaction.hit_layer) return markInteractionDirty(self);
+    @import("node_tree.zig").hostDirty(self);
+    self.invalidateCustomClipGeometryCache();
+    g_hit_layer_motion_gen +%= 1;
+    redraw.requested = true;
+}
+
+/// markCompositeAnimFrameDirty for an own-transform change: hit part via markHitLayerMotion.
+pub fn markHitLayerMotionAnimFrameDirty(self: *Node) void {
+    @import("node_tree.zig").hostDirty(self);
+    markHitLayerMotion(self);
+    markCompositeDirty(self);
+}
+
+/// markCompositePropDirty for an own-transform change: hit part via markHitLayerMotion.
+pub fn markHitLayerMotionPropDirty(self: *Node) void {
+    @import("node_tree.zig").hostDirty(self);
+    markHitLayerMotion(self);
+    markCompositeDirty(self);
+    @import("node_render_cache.zig").invalidateRenderCache(self);
 }
 
 /// Out-of-band render unit: whether `self` is **excluded from replay and freshly redrawn** when its
@@ -370,6 +440,7 @@ fn bubbleSubtreeRenderAcrossOutOfBandHops(self: *Node) void {
 }
 
 pub fn markRenderDirty(self: *Node) void {
+    @import("node_tree.zig").hostDirty(self);
     self.invalidateCustomClipGeometryCache();
     self.meta.per_frame.caches.versions.content +%= 1;
     self.frame_state.state_bits.dirty.core.render = true;
@@ -409,8 +480,64 @@ pub fn markRenderDirty(self: *Node) void {
     }
 }
 
+/// Which inheritable text properties of a node changed (see markInheritedTextDirty).
+pub const InheritedTextChange = struct {
+    /// text_color: read at paint (text, currentColor icons / images, custom draws).
+    color: bool = false,
+    /// text_font_size / text_font_weight: read by layout **and** paint (Node.resolveTextProps).
+    metrics: bool = false,
+
+    pub fn any(self: InheritedTextChange) bool {
+        return self.color or self.metrics;
+    }
+
+    /// The inheritable text fields a box style carries.
+    pub fn of(s: types.BoxStyle) InheritedTextChange {
+        return .{ .color = s.text_color != null, .metrics = s.font_size != null or s.font_weight != null };
+    }
+};
+
+/// The node's inheritable text properties (text_color / text_font_size / text_font_weight) changed.
+/// Every text that resolves them (the node itself included, its own StyleExt value applies to it)
+/// and every descendant reading them is otherwise clean, so a parent repaint would replay cached
+/// commands and layout would reuse cached measurements with the old values:
+/// - size / weight: text re-measures (markSizingDirty: new content version drops its intrinsic
+///   cache entry, the ancestors re-lay out) — unless the text declares both itself;
+/// - color: text, currentColor icons / images and custom draws (DrawContext.current_color)
+///   repaint.
+pub fn markInheritedTextDirty(self: *Node, change: InheritedTextChange) void {
+    @import("node_tree.zig").hostDirty(self);
+    if (!change.any()) return;
+    markInheritedTextReader(self, change);
+    markInheritedTextDescendants(self, change);
+}
+
+fn markInheritedTextDescendants(self: *Node, change: InheritedTextChange) void {
+    for (self.children.items) |child| {
+        markInheritedTextReader(child, change);
+        markInheritedTextDescendants(child, change);
+    }
+}
+
+fn markInheritedTextReader(node: *Node, change: InheritedTextChange) void {
+    if (change.metrics) if (node.getText()) |t| if (!(t.font_size_set and t.font_weight_set)) {
+        markSizingDirty(node);
+        return;
+    };
+    if (change.color and readsInheritedColor(node)) markRenderDirty(node);
+}
+
+fn readsInheritedColor(node: *const Node) bool {
+    if (node.meta.per_frame.custom_hooks.draw != null) return true;
+    if (node.getText() != null) return true;
+    if (node.getIcon()) |ic| return ic.tint_current_color;
+    if (node.getImage()) |im| return im.tint_current_color;
+    return false;
+}
+
 /// markRenderDirty + track render reason (DevTools trace).
 pub fn markRenderDirtyTracked(self: *Node, reason: debug_trace.RenderReason, comptime source: []const u8) void {
+    @import("node_tree.zig").hostDirty(self);
     markRenderDirty(self);
     debug_trace.maybeRecordRender(self.id, reason, source);
 }

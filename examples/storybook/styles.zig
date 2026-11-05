@@ -2,9 +2,11 @@
 const ui = @import("ui");
 const TOKENS = ui.theme.refs;
 
-pub const root = ui.css(.{ .width = .fill, .height = .fill, .direction = .column, .background = TOKENS.color.bg_primary });
+// The app mounts this root as a flex item in a viewport-sized column. Long
+// stories belong to the inner ScrollArea, including after text wraps settle.
+pub const root = ui.css(.{ .width = .fill, .height = .fill, .flex_basis = 0, .min_height = 0, .direction = .column, .background = TOKENS.color.bg_primary });
 pub const body = ui.css(.{ .width = .fill, .height = .fill, .direction = .row });
-pub const sidebarBody = ui.css(.{ .width = .fill, .height = .fill, .direction = .column });
+pub const sidebarBody = ui.css(.{ .width = .fill, .height = .fill, .flex_basis = 0, .min_height = 0, .direction = .column });
 pub const searchWrap = ui.css(.{ .padding = .{ .x = 10, .top = TOKENS.space.space100, .bottom = TOKENS.space.space200 } });
 pub const searchField = ui.css(.{
     .width = .fill,
@@ -14,7 +16,7 @@ pub const searchField = ui.css(.{
     .gap = TOKENS.space.space200,
     .padding = .{ .x = TOKENS.space.space200 },
     .background = TOKENS.color.bg_primary,
-    .border = .{ .width = .thin, .color = TOKENS.color.border, .radius = .lg },
+    .border = .{ .overlay = true, .width = .thin, .color = TOKENS.color.border, .radius = .lg },
 });
 pub const searchIcon = ui.css(.{ .width = TOKENS.size.sm, .height = TOKENS.size.sm });
 pub fn searchIconTint(t: *const ui.theme.Values) ui.Color {
@@ -53,7 +55,9 @@ pub const Nav = ui.sva(.{
 });
 pub const sidebarFooter = ui.css(.{ .padding = .{ .x = TOKENS.space.space400, .y = TOKENS.space.space300 } });
 pub const sidebarFooterText = ui.css(.{ .font_size = TOKENS.font_size.xs, .color = TOKENS.color.fg_tertiary });
-pub const workspace = ui.css(.{ .width = .fill, .height = .fill, .direction = .column, .position = .relative, .background = TOKENS.color.bg_primary });
+// The workspace fills only the space after the sidebar. Its stories may have
+// long unbreakable sample lines; those must not become the row's automatic min.
+pub const workspace = ui.css(.{ .width = .fill, .height = .fill, .flex_basis = 0, .min_width = 0, .direction = .column, .position = .relative, .background = TOKENS.color.bg_primary });
 /// Each window backend compiles its own native window design (docs/WINDOW_CHROME.md):
 /// AppKit follows macOS 26 Finder, Win32 a Windows 11 app (Mica, title bar, navigation
 /// pane, content card), Wayland a GNOME / libadwaita split view with two header bars.
@@ -91,8 +95,10 @@ pub const sidebar_layer = ui.css(.{
 });
 /// Sidebar top row: traffic lights / left caption controls; part of the drag region.
 pub const sidebarTop = ui.css(.{ .width = .fill, .height = ui.arb.px(header_height - sidebar_inset), .direction = .row, .align_items = .center, .padding = .{ .left = 4 } });
-pub const content_layer = ui.css(.{ .width = .fill, .height = .fill, .direction = .row });
-pub const contentGutter = ui.css(.{ .width = ui.arb.px(content_left), .height = .fill });
+// This is the viewport-sized layer; overflowing stories scroll inside it.
+pub const content_layer = ui.css(.{ .width = .fill, .height = .fill, .flex_basis = 0, .min_height = 0, .direction = .row });
+// Keep the reserved sidebar space even when a story's intrinsic width is large.
+pub const contentGutter = ui.css(.{ .width = ui.arb.px(content_left), .height = .fill, .flex_shrink = 0 });
 /// Full-width title bar over everything (the drag region); transparent.
 pub const header = ui.css(.{
     .position = .absolute,
@@ -120,15 +126,21 @@ pub const headerSpacer = ui.css(.{ .width = .fill, .height = .fill });
 // content card (rounded top-left corner, hairline stroke) with a Settings-style page title.
 pub const win = struct {
     pub const mica = ui.Color.hex(0xf3f3f3);
-    pub const root = ui.css(.{ .width = .fill, .height = .fill, .direction = .column, .background = mica });
+    // flex_basis 0 / min_height 0 like the macOS root: the window, not the content, sets
+    // the height (CSS min-height: auto would stretch the root to the full story list).
+    pub const root = ui.css(.{ .width = .fill, .height = .fill, .flex_basis = 0, .min_height = 0, .direction = .column, .background = mica });
     pub const titlebar = ui.css(.{ .width = .fill, .height = ui.arb.px(header_height), .direction = .row, .align_items = .center, .padding = .{ .left = 4 } });
     pub const titleButton: ui.BoxStyle = .{ .width = .{ .px = 40 }, .height = .{ .px = 36 }, .padding = ui.Padding.all(0), .border = .{ .radius = 4 }, .background = ui.Color.TRANSPARENT };
     pub const appIcon = ui.css(.{ .width = ui.arb.px(16), .height = ui.arb.px(16), .align_items = .center, .justify = .center, .background = ui.Color.hex(0x005fb8), .corner_radius = ui.arb.px(4) });
     pub const appIconLetter = ui.css(.{ .font_size = ui.arb.px(10), .font_weight = 700, .color = ui.Color.WHITE });
     pub const appTitle = ui.css(.{ .font_size = ui.arb.px(12), .color = ui.Color.hex(0x1a1a1a), .wrap = .none, .padding = .{ .left = 8 } });
-    pub const body = ui.css(.{ .width = .fill, .height = .fill, .direction = .row });
+    // min_height 0: a column child defaults to its content height (CSS min-height: auto),
+    // which let the navigation list stretch the body past the window: the sidebar had
+    // nothing to scroll and stories laid out below the window edge.
+    pub const body = ui.css(.{ .width = .fill, .height = .fill, .min_height = 0, .direction = .row });
     pub const navPane = ui.css(.{ .width = ui.arb.px(280), .height = .fill, .direction = .column, .padding = .{ .x = 4 } });
     pub const card: ui.BoxStyle = .{
+        .border_overlay = true,
         .width = ui.Sizing.fill(),
         .height = ui.Sizing.fill(),
         .direction = .column,
@@ -155,10 +167,11 @@ pub const win = struct {
 pub const gnome = struct {
     pub const sidebar_bg = ui.Color.hex(0xebebed);
     pub const view_bg = ui.Color.hex(0xffffff);
-    pub const root = ui.css(.{ .width = .fill, .height = .fill, .direction = .row, .background = view_bg });
+    pub const root = ui.css(.{ .width = .fill, .height = .fill, .flex_basis = 0, .min_height = 0, .direction = .row, .background = view_bg });
     pub const sidebar = ui.css(.{ .width = ui.arb.px(260), .height = .fill, .direction = .column, .background = sidebar_bg });
     pub const header = ui.css(.{ .width = .fill, .height = ui.arb.px(header_height), .direction = .row, .align_items = .center, .gap = 6, .padding = .{ .x = 6 } });
     pub const contentHeader = ui.css(.{
+        .border_overlay = true,
         .width = .fill,
         .height = ui.arb.px(header_height),
         .direction = .row,
@@ -197,17 +210,17 @@ pub const panel = ui.css(.{ .width = .fill, .direction = .column });
 pub const panelHug = ui.css(.{ .width = .fill, .direction = .column, .align_items = .start });
 /// The story note (WidgetSpec.note): secondary text above the panel, wrapping.
 /// Wraps at a readable measure (and stays clear of stories that draw over the window's right side).
-pub const storyNote = ui.css(.{ .font_size = TOKENS.font_size.sm, .color = TOKENS.color.fg_secondary, .wrap = .word, .width = .fill, .max_width = 480 });
+pub const storyNote = ui.css(.{ .font_size = TOKENS.font_size.sm, .color = TOKENS.color.fg_secondary, .wrap = .word_break, .width = .fill, .max_width = 480 });
 
 // -- Story content common styles (shared by stories.zig and other story files) --
 
 /// Vertical layout, gap spacing (px)
-pub fn stack(comptime gap: f32) @TypeOf(ui.css(.{ .gap = gap })) {
+pub fn stack(comptime gap: f32) @TypeOf(ui.css(.{ .gap = gap, .no_cross_stretch = true })) {
     return .{};
 }
 
 /// Horizontal layout, vertically centered, gap spacing (px)
-pub fn line(comptime gap: f32) @TypeOf(ui.css(.{ .gap = gap, .align_items = .center })) {
+pub fn line(comptime gap: f32) @TypeOf(ui.css(.{ .gap = gap, .align_items = .center, .no_cross_stretch = true })) {
     return .{};
 }
 

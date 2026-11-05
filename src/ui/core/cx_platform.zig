@@ -155,6 +155,19 @@ pub fn notifyAccessibilityPropertyChange(self: *Cx, node: *Node) void {
     self.focus_manager.a11y_bridge.notifyPropertyChange(node);
 }
 
+/// See `Cx.setReservedKeyChords`.
+pub fn setReservedKeyChords(self: *Cx, chords: []const @import("../events.zig").KeyChord) bool {
+    const sdk = self.system_sdk orelse return false;
+    var buf: [32]system_sdk_mod.events.ReservedChord = undefined;
+    const n = @min(chords.len, buf.len);
+    for (chords[0..n], buf[0..n]) |c, *out| out.* = .{
+        .keycode = @backingInt(c.key),
+        .modifiers = .{ .shift = c.mods.shift, .ctrl = c.mods.ctrl, .alt = c.mods.alt, .super = c.mods.super },
+    };
+    sdk.setReservedKeyChords(self.window_id, buf[0..n]) catch return false;
+    return true;
+}
+
 pub fn setImeCursorRect(self: *Cx, x: f32, y: f32, width: f32, height: f32) bool {
     const sdk = self.system_sdk orelse return false;
     sdk.setImeCursorRect(self.window_id, x, y, width, height) catch return false;

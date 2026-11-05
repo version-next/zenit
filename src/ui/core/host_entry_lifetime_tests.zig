@@ -488,10 +488,12 @@ test "timers: a callback that clears and frees another due timer's context does 
     try testing.expect(killer.victim == null);
 }
 
-// -- Drag: prior target freed by before_render hook between two hit-refresh cycles --
-// handleDragPayload ensureHitTestSceneFresh, then hitTestQuery (internal re-refresh). Dirty tree
-// runs hook twice, drain deferred free; prior target *Node if taken between refreshes points to
-// freed memory. Must resolve after all refreshes.
+// -- Drag: prior target freed by a before_render hook during the event's hit refresh --
+// handleDragPayload ensureHitTestSceneFresh, then hitTestQuery (internal refresh). A hook frees the
+// prior target and the deferred free drains; a prior target *Node taken before the refresh points
+// to freed memory. Must resolve after all refreshes. (Refreshes between frames re-run hooks only
+// after a scene mutation, so a hook keeping the tree dirty no longer runs twice in one event; the
+// hook frees on its first run, inside the refresh.)
 test "drag: previous target freed by a hook during the hit-test refresh gets no exited dispatch" {
     var z: DropZones = .{ .cx = undefined, .root = undefined, .left = undefined, .right = undefined };
     try z.build();
@@ -505,9 +507,8 @@ test "drag: previous target freed by a hook during the hit-test refresh gets no 
         fn tick(node: *Node) void {
             if (!armed) return;
             armed_calls += 1;
-            // Keep tree dirty, let next hit-refresh in same event run hook again.
             node.markRenderDirty();
-            if (armed_calls == 2) {
+            if (armed_calls == 1) {
                 armed = false;
                 const v = victim.?;
                 if (v.parent) |p| cx.?.detachChild(p, v);
@@ -532,9 +533,10 @@ test "drag: previous target freed by a hook during the hit-test refresh gets no 
     Hook.armed = true;
     z.root.markRenderDirty();
     z.cx.handleDrag(150, 50, drag_updated, "");
-    // Hook freed prior target in this event's second hit-refresh (pre-fix crashed here).
+    // Hook freed the prior target inside this event's hit refresh (pre-fix crashed here); the
+    // event's further refreshes coalesced into that one tick.
     try testing.expect(!Hook.armed);
-    try testing.expectEqual(@as(u32, 2), Hook.armed_calls);
+    try testing.expectEqual(@as(u32, 1), Hook.armed_calls);
     z.cx.handleDrag(0, 0, drag_exited, "");
 }
 

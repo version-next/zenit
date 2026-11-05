@@ -140,7 +140,7 @@ fn checkSdfBatchOrder(a: std.mem.Allocator, device: *gpu.Backend.Device, queue: 
         for (0..2) |version| {
             sdf.beginFrame(24, 12, 1, 0);
             sdf.setRectClip(.{ 1.25, 1.5, 20.5, 9.25 });
-            sdf.setClipMask(clip_kind, .{ 0, 0, 24, 12 }, 3, 0, 0, 0, @splat(0), @splat(.{ 0, 0 }));
+            sdf.setClipMask(clip_kind, .{ 0, 0, 24, 12 }, @splat(3), 0, 0, 0, @splat(0), @splat(.{ 0, 0 }));
             for (0..9) |i| {
                 const x: f32 = @floatFromInt(i);
                 try sdf.addRoundedRect(x, 0, 16, 12, .{ x / 10, 0.3, 0.7, 0.4 }, @splat(2));
@@ -267,7 +267,7 @@ fn checkPlainRectClip(a: std.mem.Allocator, device: *gpu.Backend.Device, queue: 
         for (0..2) |version| {
             sdf.beginFrame(32 / scale, 24 / scale, scale, 0);
             sdf.setRectClip(clip);
-            if (masked == 1) sdf.setClipMask(1, .{ 2.25 / scale, 1.5 / scale, 27 / scale, 20 / scale }, 3 / scale, 0, 0, 0, @splat(0), @splat(.{ 0, 0 }));
+            if (masked == 1) sdf.setClipMask(1, .{ 2.25 / scale, 1.5 / scale, 27 / scale, 20 / scale }, @splat(3 / scale), 0, 0, 0, @splat(0), @splat(.{ 0, 0 }));
             try sdf.addRoundedRect(-40.25, -30.125, 100, 80, .{ 0.3, 0.6, 0.8, 0.45 }, @splat(0));
             try sdf.addRoundedRect(4.375, 2.125, 8.5, 9.75, .{ 0.8, 0.2, 0.4, 1 }, @splat(0));
             for (sdf.instances.items) |*item| {
@@ -344,7 +344,7 @@ fn checkOpaqueRegions(a: std.mem.Allocator, device: *gpu.Backend.Device, queue: 
             const draw_start = gpu.Backend.RenderPass.frame_draw_call_count;
             sdf.beginFrame(128 / scale, 96 / scale, scale, 0);
             if (clipped == 1) sdf.setRectClip(.{ 1.25 / scale, 0.75 / scale, 123.5 / scale, 92.5 / scale });
-            if (masked != 0) sdf.setClipMask(if (masked == 3) 2 else 1, .{ 2 / scale, 1 / scale, 124 / scale, 94 / scale }, (if (masked == 2) @as(f32, 100) else 4) / scale, 0, 0, 0, @splat(0), @splat(.{ 0, 0 }));
+            if (masked != 0) sdf.setClipMask(if (masked == 3) 2 else 1, .{ 2 / scale, 1 / scale, 124 / scale, 94 / scale }, @splat((if (masked == 2) @as(f32, 100) else 4) / scale), 0, 0, 0, @splat(0), @splat(.{ 0, 0 }));
             try sdf.addRoundedRect(-8.25, -5.5, 180, 130, .{ 0.31, 0.67, 0.89, 1 }, @splat(0));
             try sdf.addRoundedRect(6.5, 8.25, 100, 65, .{ 0.8, 0.1, 0.3, 0.45 }, @splat(3));
             try sdf.addRoundedRect(14.25, 9.5, 110, 100, .{ 0.123, 0.456, 0.789, 1 }, @splat(0));
@@ -420,7 +420,7 @@ fn profileSolidRectClip(a: std.mem.Allocator, device: *gpu.Backend.Device, queue
     for (0..3) |material| {
         for (0..8) |i| for (0..2) |mode| {
             sdf.beginFrame(1024, 768, 1, 0);
-            if (material == 2) sdf.setClipMask(1, .{ 400, 300, 250, 250 }, 16, 0, 0, 0, @splat(0), @splat(.{ 0, 0 }));
+            if (material == 2) sdf.setClipMask(1, .{ 400, 300, 250, 250 }, @splat(16), 0, 0, 0, @splat(0), @splat(.{ 0, 0 }));
             sdf.setRectClip(.{ 480.25, 350.5, 64.5, 64.25 });
             try sdf.addRoundedRect(0, 0, 1024, 768, .{ 0.3, 0.6, 0.8, 0.45 }, @splat(if (material == 0) @as(f32, 0) else 12));
             // A transparent shadow expands the original six-vertex quad and
@@ -473,7 +473,7 @@ fn checkShadowRing(a: std.mem.Allocator, device: *gpu.Backend.Device, queue: *gp
             sdf.beginFrame(96, 80, scale, 0);
             if (opaque_background) try sdf.addRoundedRect(0, 0, 96 / scale, 80 / scale, .{ 0.12, 0.24, 0.36, 1 }, @splat(0));
             sdf.setRectClip(.{ 1.25 / scale, 4.5 / scale, 91 / scale, 70 / scale });
-            sdf.setClipMask(clip_kind, .{ 2.25 / scale, 3.5 / scale, 89 / scale, 71 / scale }, 3 / scale, 0, 0, 0, @splat(0), @splat(.{ 0, 0 }));
+            sdf.setClipMask(clip_kind, .{ 2.25 / scale, 3.5 / scale, 89 / scale, 71 / scale }, @splat(3 / scale), 0, 0, 0, @splat(0), @splat(.{ 0, 0 }));
             const w: f32 = if (variant == 5 or variant == 6) 4 else 60.5;
             const h: f32 = if (variant == 5) 4 else 48.25;
             const spread: f32 = if (variant == 1) 5 else if (variant == 2) -4 else 0;
@@ -615,7 +615,7 @@ fn profileImageMaskSpecialization(a: std.mem.Allocator, device: *gpu.Backend.Dev
             if (mode == 0) renderer.unmasked_pipeline = null;
             const scale: f32 = if (variant == 3) 1.75 else 1;
             renderer.beginFrame(1024 / scale, 768 / scale, scale);
-            if (variant == 3) renderer.setClipMask(1, .{ 40, 40, 420, 330 }, 24, 0, 0, 0, @splat(0), @splat(.{ 0, 0 }));
+            if (variant == 3) renderer.setClipMask(1, .{ 40, 40, 420, 330 }, @splat(24), 0, 0, 0, @splat(0), @splat(.{ 0, 0 }));
             if (variant != 0) renderer.setRectClip(.{ 17.25, 13.75, 780.5, 690.25 });
             const uv: [4]f32 = if (variant == 0) .{ 0, 0, 1, 1 } else .{ 0.125, 0.25, 0.875, 0.75 };
             const tint: [4]f32 = if (variant == 0) .{ 1, 1, 1, 1 } else .{ 0.8, 0.6, 0.4, 0.75 };
@@ -623,7 +623,7 @@ fn profileImageMaskSpecialization(a: std.mem.Allocator, device: *gpu.Backend.Dev
             const opacity: f32 = if (variant == 0) 1 else 0.45;
             const rotation: f32 = if (variant >= 2) 0.17 else 0;
             if (variant == 2) {
-                try renderer.addImageUVPremultiplied(texture, 0, 0, 1024 / scale, 768 / scale, uv, tint, radius, opacity, rotation);
+                try renderer.addImageUVPremultiplied(texture, 0, 0, 1024 / scale, 768 / scale, uv, tint, @splat(radius), opacity, rotation);
             } else try renderer.addImageUV(texture, 0, 0, 1024 / scale, 768 / scale, uv, tint, radius, opacity, rotation);
             var encoder = try gpu.Backend.CommandEncoder.init(queue);
             defer encoder.deinit();
@@ -662,7 +662,7 @@ fn profileRegionArrays(io: std.Io, a: std.mem.Allocator, device: *gpu.Backend.De
             defer sdf.region_pipelines = regions;
             if (mode == 0) sdf.region_pipelines = @splat(null);
             sdf.beginFrame(1024, 768, 1, 0);
-            sdf.setClipMask(1, .{ 2.25, 1.5, 1018, 764 }, 9, 0, 0, 0, @splat(0), @splat(.{ 0, 0 }));
+            sdf.setClipMask(1, .{ 2.25, 1.5, 1018, 764 }, @splat(9), 0, 0, 0, @splat(0), @splat(.{ 0, 0 }));
             try sdf.addRoundedRect(0, 0, 1024, 768, .{ 0.3, 0.6, 0.8, @floatFromInt(opaque_fill) }, @splat(6));
             sdf.instances.items[0].border_width = 2;
             sdf.instances.items[0].border_color = .{ 0.8, 0.2, 0.4, 0.75 };

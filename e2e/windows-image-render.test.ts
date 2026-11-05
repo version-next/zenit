@@ -8,6 +8,7 @@ async function capture(stage: string) {
   const path = `${getSessionDir()}/windows-images-${stage}.png`;
   assert((await screenshot(path)).ok, "capture failed");
   let png = decodePng(path);
+  let pngPath = path;
   let scrollCaptures = 0;
   // Logical client dimensions are rounded on Windows; their ratio to drawable
   // width is not the true DPI scale at fractional scaling.
@@ -15,6 +16,7 @@ async function capture(stage: string) {
   assert(typeof scale === "number" && scale > 0, "native window scale unavailable");
   console.log(`  ${path}, scale=${scale}`);
   const nodes = new Map<string, any>();
+  const placements = new Map<string, any>();
   const sample = async (id: string, dx: number, dy: number) => {
     let node = nodes.get(id);
     if (!node) {
@@ -26,15 +28,41 @@ async function capture(stage: string) {
         const movedPath = `${getSessionDir()}/windows-images-${stage}-scroll-${scrollCaptures++}.png`;
         assert((await screenshot(movedPath)).ok, "scrolled capture failed");
         png = decodePng(movedPath);
+        pngPath = movedPath;
         nodes.clear();
+        placements.clear();
         node = (await query(id))[0];
         assert(node, `missing scrolled ${id}`);
       }
       nodes.set(id, node);
+      placements.set(id, placed);
     }
     const x = Math.floor((node.rect.x + dx) * scale);
     const y = Math.floor((node.rect.y + dy) * scale);
-    assert(x >= 0 && x < png.width && y >= 0 && y < png.height, "sample outside screenshot");
+    if (!(x >= 0 && x < png.width && y >= 0 && y < png.height)) {
+      // screenPos can scroll: report its existing response without issuing it
+      // again and changing the state whose screenshot failed.
+      let currentStats: unknown;
+      try { currentStats = await stats(); }
+      catch (error) { currentStats = { diagnostic_error: String(error) }; }
+      const root = await tree();
+      function pathTo(node: any): any[] | null {
+        if (node.test_id === id) return [node];
+        for (const child of node.children ?? []) {
+          const path = pathTo(child);
+          if (path) return [node, ...path];
+        }
+        return null;
+      }
+      const ancestors = pathTo(root)?.map(n => ({ tag: n.tag, test_id: n.test_id, rect: n.rect,
+        translate_y: n.translate_y, component: n.component }));
+      assert(false, `sample outside screenshot: ${JSON.stringify({
+        stage, id, dx, dy, pixel: { x, y }, node_rect: node.rect,
+        screen_pos: placements.get(id), scale,
+        png: { path: pngPath, width: png.width, height: png.height },
+        current_stats: currentStats, ancestors,
+      })}`);
+    }
     const i = (y * png.width + x) * png.channels;
     return { rgb: [png.pixels[i], png.pixels[i+1], png.pixels[i+2]], x: (x + .5) / scale - node.rect.x, y: (y + .5) / scale - node.rect.y };
   };
@@ -69,7 +97,11 @@ test("Windows titlebar hit testing preserves controls, logical coordinates, disa
 test("Windows capture loss and batched moves preserve cancellation, fast drag, next-click recovery, native cursor routing, live-resize paint, logical client sizing and display refresh", async () => {
   await waitForServerReady(15000);
   assert((await clickTestId("gallery.window-status")).ok, "pointer contract command failed");
-  await waitFor(async () => (await query("gallery.window-status"))[0]?.text === "pointer-contract=PASS" ? true : null, 5000, 50);
+  const terminal = await waitFor(async () => {
+    const text = (await query("gallery.window-status"))[0]?.text;
+    return text === "pointer-contract=PASS" || text === "pointer-contract=FAIL" ? text : null;
+  }, 5000, 50);
+  assert(terminal === "pointer-contract=PASS", `native pointer contract failed: ${terminal}; see native stderr stage diagnostics`);
   await capture("pointer-cancel");
 });
 
@@ -147,6 +179,8 @@ test("Windows unloaded texture handles cannot alias replacement images", async (
 });
 
 test("Windows shadows preserve body cutout, spread, inset direction and dual colors", async () => {
+  const panel = (await query("gallery.shadow-panel"))[0];
+  assert(panel && Math.abs(panel.rect.h - 160) < 0.01, `shadow reference panel compressed: ${JSON.stringify(panel?.rect)}`);
   const image = await capture("shadows");
   const bottom = await image.pixel("shadow.outer", 50, 106);
   const top = await image.pixel("shadow.outer", 50, -6);

@@ -15,6 +15,8 @@ import {
   mouseDown,
   mouseMove,
   mouseUp,
+  pointerLeave,
+  setWindowActive,
   key,
   screenPos,
   startFrameObservation,
@@ -37,8 +39,9 @@ import {
   getE2eTimeoutMs,
   request,
 } from "./client";
-import { test, run, assert, getSessionDir, appendLog } from "./runner";
+import { test, run, assert, getSessionDir, appendLog, currentTestOrdinal } from "./runner";
 import { statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { decodePng as decodePngFile, countDarkPixels, countNonBackgroundPixels } from "./png";
 
 /// Pixel-level verification: rect region must have enough dark pixels (text/graphics really drawn).
@@ -197,6 +200,7 @@ function assertColorNear(actual: [number, number, number], expected: [number, nu
 // expected data values (text) appearing in component story. Prove component actually rendered (not
 // empty). One-to-one with stories.zig values.
 const EXPECT: Record<string, string[]> = {
+  controls: ["01 / CONTROLS", "Controls", "Sizes", "Variants × states", "Composition", "Selection controls", "Keyboard focus", "Add item", "Mixed"],
   button: ["Primary", "Secondary", "Ghost", "Danger", "Link", "Download", "Saving…", "Loading", "Normal", "Disabled", "Block primary"],
   checkbox: ["Unchecked", "Checked", "Indeterminate", "Disabled", "changed"],
   switch: ["Off", "On", "Disabled"],
@@ -210,8 +214,9 @@ const EXPECT: Record<string, string[]> = {
   editabletext: ["Quarterly roadmap", "title → Quarterly roadmap"],
   select: ["Select", "With icon", "Clearable", "Searchable", "Multiple · LG", "Multiple searchable · XS", "Option 1"],
   combobox: ["Fruit", "Type to search fruit"],
-  tags: ["zig", "metal", "Return, a trailing comma or Add commits a tag."],
-  upload: ["Click Browse to add files", "Browse…"],
+  tags: ["Zig", "UI", "Add tag…", "Return or a trailing comma commits a tag."],
+  upload: ["Attachment", "Choose file…", "design-system.pdf"],
+  datetimepicker: ["Oct 16, 2026 14:30:00"],
   datepicker: ["Pick a date"],
   daterange: ["Start date", "End date"],
   form: ["Name", "Email", "Submit", "Full name", "(not submitted)"],
@@ -220,7 +225,7 @@ const EXPECT: Record<string, string[]> = {
   tag: ["neutral", "accent", "success", "warning", "danger", "info", "Sizes", "Small", "Medium", "Default", "Outline", "Closable"],
   chip: ["Variants", "Default", "Active", "Outline", "Disabled", "Closable", "Sizes", "With icon", "Starred", "Folder"],
   card: ["Variants", "Default", "Outlined", "Elevated", "Card with body", "Body content goes here.", "States", "Selected", "Hoverable", "Interactive", "No padding"],
-  alert: ["Info", "Informational message.", "Success", "It worked.", "Warning", "Be careful.", "Error", "Something broke.", "Title-less alert with just a message."],
+  alert: ["A new version is ready", "Update when you’re ready. Your workspace will be restored.", "All changes saved", "Your project is up to date across your devices.", "You’re working offline", "Changes stay on this device until you reconnect.", "We couldn’t save your changes", "Your edits are safe. Check your connection and try again.", "Title-less alert with just a message."],
   progress: ["25", "60", "100", "Heights", "Error", "indeterminate"],
   spinner: [], // pure graphics no text - only verify panel mount + screenshot
   skeleton: [], // pure placeholder graphics no text
@@ -243,7 +248,7 @@ const EXPECT: Record<string, string[]> = {
   sheet: ["Open Sheet"],
   zindex: ["Sibling z-index", "Overflow container", "Pop", "Tip", "Open Nested Modal"],
   divider: ["Styles", "Labeled", "LEFT", "OR", "RIGHT", "Vertical", "Left", "Middle", "Right"],
-  stack: ["A", "B", "C", "First", "Second", "Third"],
+  stack: ["HStack gap=8", "VStack gap=8", "One", "Two", "Three"],
   layoutbox: ["Coverage matrix", "Padding-box anatomy", "content 624 × 132", "Percentage inset", "Flex vs Grid", "Sizing modes", "Overflow clipping"],
   virtuallist: ["Row 0", "Row 1"],
   virtuallistdynamic: ["#0", "#1"],
@@ -293,6 +298,7 @@ const EXPECT: Record<string, string[]> = {
   blendlab: ["Liquid Glass Hamburgefonstiv 0123"],
   glassedge: [], // the scene is in the window portal; ink: INK_TARGET
   popoverregress: ["Tall Popover"],
+  cornerclip: ["Per-corner overflow clip", "Attached group", "Shader clip", "Opacity fold", "Clip surface (glass)", "Clip layer (nested in a rounded clip)", "Half turn", "Half turn, opacity fold", "Mirrored", "Nested: uniform 20 > TR 10", "Nested x3: TL / TR / BR", "Crossing: uniform 20 > 70 wide, TR 12", "Crossing x3: TL 20 > TR 16 > BL 12", "Nested x3, opacity fold", "Oversized TL, direct", "Oversized TL, opacity fold", "Oversized TL, blend composite", "Oversized TL, clip layer"],
   paintreplay: ["Add row", "Remove row", "alpha", "beta", "Rounded card with clipped children", "translucent pill"],
   heavytext: ["Heavy text overflow", "glyph00"],
   textanimjitter: ["Rotate 360", "Opacity: fading in and out, steadily"],
@@ -528,6 +534,7 @@ async function animSleep(ms: number): Promise<void> {
   }
 }
 
+let freshMountOrdinal = -1;
 async function switchTo(storyKey: string): Promise<void> {
   await useRealtimeClock();
   // A failed overlay assertion must not poison every following test. Move the
@@ -536,6 +543,20 @@ async function switchTo(storyKey: string): Promise<void> {
   // own app frame, so close effects commit between Escape presses.
   await mouseMove(-10, -10);
   for (let i = 0; i < 3; i++) await key("escape");
+  // Every test starts from a freshly mounted story. Clicking the nav item of the story that is
+  // already shown keeps it mounted, with whatever state the previous test left (a submitted
+  // form, a scrolled canvas), so the outcome would depend on which test ran before. Later calls
+  // within the same test keep their state on purpose (ComboBox re-focuses after a selection).
+  if (freshMountOrdinal !== currentTestOrdinal()) {
+    freshMountOrdinal = currentTestOrdinal();
+    if ((await query(`story.${storyKey}`)).length > 0) {
+      const away = storyKey === "button" ? "controls" : "button";
+      assert((await clickTestId(`nav.${away}`)).ok === true, `failed to click nav.${away}`);
+      await waitFor(async () =>
+        (await query(`story.${storyKey}`)).length === 0 && (await query(`story.${away}`)).length === 1 ? true : null,
+      getE2eTimeoutMs(6000), 50);
+    }
+  }
   const click = await clickTestId(`nav.${storyKey}`);
   assert(click.ok === true, `failed to click nav.${storyKey}: ${JSON.stringify(click)}`);
   // wait panel appears AND text subtree built (Show mounts container then builds body; query
@@ -553,6 +574,13 @@ async function switchTo(storyKey: string): Promise<void> {
     return ready ? q : null;
   }, getE2eTimeoutMs(6000), 50);
   assert(panel.length === 1, `expected exactly 1 story.${storyKey} panel with content, got ${panel.length}`);
+}
+
+/// Opens / closes a multi-select from its chevron. The trigger's centre can land on a tag's remove
+/// button: tag widths follow the platform UI font.
+async function clickSelectChevron(id: string): Promise<void> {
+  const r = await screenPos(id);
+  assert((await clickAt(r.x + r.w - 20, r.y + r.h / 2)).ok === true, `failed to click ${id} chevron`);
 }
 
 test("server reachable", async () => {
@@ -577,7 +605,6 @@ async function scrollPanel(part: string, dx: number, dy: number, mods = {}) {
 }
 
 test("scrolling: logical points, axes and reset", async () => {
-  await switchTo("button");
   await switchTo("scrolling");
   await scrollPanel("vertical", 0, -60);
   assert((await scrollingState("vertical")).y === 60, "vertical wheel must move 60 logical points");
@@ -592,7 +619,6 @@ test("scrolling: logical points, axes and reset", async () => {
 });
 
 test("scrolling: nested ownership and boundary handoff", async () => {
-  await switchTo("button");
   await switchTo("scrolling");
   await scrollPanel("inner", 0, -40);
   assert((await scrollingState("inner")).y === 40, "inner did not consume wheel");
@@ -607,7 +633,6 @@ test("scrolling: nested ownership and boundary handoff", async () => {
 });
 
 test("scrolling: zero-delta trackpad and momentum lifecycle", async () => {
-  await switchTo("button");
   await switchTo("scrolling");
   await scrollPanel("vertical", 0, 0, { phase: "began" });
   await scrollPanel("vertical", 0, -24, { phase: "changed" });
@@ -622,6 +647,165 @@ test("scrolling: zero-delta trackpad and momentum lifecycle", async () => {
   await shot("scrolling-trackpad-ended");
 });
 
+
+test("scrolling: stationary pointer — hover follows content scrolled under it (wheel, momentum, nested)", async () => {
+  await switchTo("scrolling");
+  const hovered = async () => (await stats()).hover!;
+  // Pointer goes near the row's left edge; colour samples come from the empty right part.
+  const rowCenter = async (id: string) => {
+    const r = await screenPos(id);
+    return { x: r.x + 40, y: r.y + r.h / 2, sx: r.x + r.w - 40 };
+  };
+  // Earlier scrolling tests leave the lists scrolled: start from the top (clicks move the pointer,
+  // which is fine before the stationary part).
+  for (const part of ["vertical", "outer", "inner"]) await clickTestId(`story.scrolling.${part}.reset`);
+  await settle(200);
+  // Rest the pointer on Row 02 of the vertical list (rows are 30pt tall).
+  const p = await rowCenter("story.scrolling.vertical.row.02");
+  await mouseMove(p.x, p.y);
+  await settle(250);
+  let h = await hovered();
+  assert(h.test_id === "story.scrolling.vertical.row.02", `pointer rests on Row 02: ${JSON.stringify(h)}`);
+  const changes0 = h.reconcile_changes;
+
+  // Wheel 60pt without moving the pointer: Row 04 arrives under it and takes the hover.
+  await scrollAt(p.x, p.y, 0, -60);
+  await settle(250);
+  assert((await scrollingState("vertical")).y === 60, "wheel must scroll the vertical list by 60");
+  h = await hovered();
+  assert(h.test_id === "story.scrolling.vertical.row.04", `hover must follow the row under the stationary pointer: ${JSON.stringify(h)}`);
+  assert(h.reconcile_changes > changes0, `re-resolution must have changed hover: ${JSON.stringify(h)}`);
+  await shot("scrolling-stationary-hover");
+  const png = `${DIR}/story-scrolling-stationary-hover.png`;
+  const under = await rowCenter("story.scrolling.vertical.row.04");
+  const next = await rowCenter("story.scrolling.vertical.row.05");
+  const prev = await rowCenter("story.scrolling.vertical.row.03");
+  const at = (q: { sx: number; y: number }) => centerPixel(png, { x: q.sx - 3, y: q.y - 3, w: 6, h: 6 });
+  const hoverBg = at(under);
+  const plainBg = at(next);
+  appendLog(`  stationary hover: row04=(${hoverBg}) row05=(${plainBg}) row03=(${at(prev)})`);
+  assert(Math.max(...hoverBg.map((c, i) => Math.abs(c - plainBg[i]))) >= 3, `row under the pointer must paint hover: (${hoverBg}) vs (${plainBg})`);
+  assertColorNear(at(prev), plainBg, "row that scrolled out from under the pointer is no longer hovered", 3);
+
+  // Trackpad gesture + momentum: hover lands on the row under the pointer once content rests.
+  await scrollAt(p.x, p.y, 0, 0, { phase: "began" });
+  await scrollAt(p.x, p.y, 0, -24, { phase: "changed" });
+  await scrollAt(p.x, p.y, 0, 0, { phase: "ended" });
+  await scrollAt(p.x, p.y, 0, -36, { momentum: "began" });
+  await scrollAt(p.x, p.y, 0, 0, { momentum: "ended" });
+  await settle(300);
+  const y = (await scrollingState("vertical")).y;
+  const panel = await screenPos("story.scrolling.vertical");
+  const expectRow = Math.floor((p.y - panel.y + y) / 30) + 1;
+  h = await hovered();
+  assert(h.test_id === `story.scrolling.vertical.row.${String(expectRow).padStart(2, "0")}`,
+    `after momentum (y=${y}) hover must be Row ${expectRow}: ${JSON.stringify(h)}`);
+
+  // Pointer leaves the window: nothing hovers, and later scrolling does not resurrect hover.
+  await mouseMove(-10, -10);
+  await settle(200);
+  assert((await hovered()).test_id === null, "pointer outside the window clears hover");
+
+  // Nested: pointer on the inner list; the inner list consumes the wheel until its edge, then the
+  // outer list scrolls and carries the inner rows under the pointer.
+  const q = await rowCenter("story.scrolling.inner.row.02");
+  await mouseMove(q.x, q.y);
+  await settle(250);
+  assert((await hovered()).test_id === "story.scrolling.inner.row.02", `inner Row 02 hovered: ${JSON.stringify(await hovered())}`);
+  await scrollAt(q.x, q.y, 0, -30);
+  await settle(250);
+  h = await hovered();
+  assert(h.test_id === "story.scrolling.inner.row.03", `inner wheel moves hover to Row 03: ${JSON.stringify(h)}`);
+  // Inner list: 20 rows x 30 = 600 in a 100 viewport, edge at 500 (now at 30).
+  await scrollAt(q.x, q.y, 0, -470);
+  await settle(300);
+  const innerEdge = (await scrollingState("inner")).y;
+  assert(innerEdge === 500 && (await scrollingState("outer")).y === 0, `inner at its edge, outer untouched: inner=${innerEdge}`);
+  h = await hovered();
+  assert(h.test_id === "story.scrolling.inner.row.19", `inner at its edge: Row 19 under the pointer: ${JSON.stringify(h)}`);
+  // Past the edge the wheel hands off: the outer list moves 40 and carries the inner rows up.
+  await scrollAt(q.x, q.y, 0, -40);
+  await settle(300);
+  const outerY = (await scrollingState("outer")).y;
+  assert(outerY === 40 && (await scrollingState("inner")).y === innerEdge, `handoff to outer: outer=${outerY}`);
+  // Whatever row now sits under the pointer must be the hovered one (geometry is the authority).
+  const tree = await query("story.scrolling.inner.content");
+  let rowUnder: string | null = null;
+  const walk = (n: any) => {
+    if (typeof n?.test_id === "string" && n.test_id.startsWith("story.scrolling.inner.row.") && n.rect &&
+      q.y >= n.rect.y && q.y < n.rect.y + n.rect.h) rowUnder = n.test_id;
+    for (const c of n?.children ?? []) walk(c);
+  };
+  walk(tree[0]);
+  h = await hovered();
+  appendLog(`  nested handoff: outer y=${outerY}, row under pointer=${rowUnder}, hovered=${h.test_id}`);
+  assert(rowUnder === "story.scrolling.inner.row.20" && h.test_id === rowUnder, `after outer scroll the row under the pointer (${rowUnder}) must be hovered: ${JSON.stringify(h)}`);
+  await shot("scrolling-stationary-hover-nested");
+  await clickTestId("story.scrolling.outer.reset");
+  await clickTestId("story.scrolling.inner.reset");
+});
+
+test("scrolling: hover follows the pointer in an inactive window and stops under a covering window", async () => {
+  await switchTo("scrolling");
+  const hovered = async () => (await stats()).hover!;
+  for (const part of ["vertical", "outer", "inner"]) await clickTestId(`story.scrolling.${part}.reset`);
+  await settle(200);
+  const row = async (id: string) => {
+    const r = await screenPos(id);
+    return { x: r.x + 40, y: r.y + r.h / 2, sx: r.x + r.w - 40 };
+  };
+  const p = await row("story.scrolling.vertical.row.02");
+  await mouseMove(p.x, p.y);
+  await settle(200);
+  assert((await hovered()).test_id === "story.scrolling.vertical.row.02", `pointer rests on Row 02: ${JSON.stringify(await hovered())}`);
+  try {
+    // Another application becomes active. Native hover (AppKit activeAlways tracking areas, Win32,
+    // Wayland pointer focus) does not depend on activation, and the background window still
+    // wheel-scrolls under the pointer: hover follows the row that arrives.
+    assert((await setWindowActive(false)).ok, "window_active route");
+    await settle(150);
+    let h = await hovered();
+    assert(h.test_id === "story.scrolling.vertical.row.02" && h.pointer_live, `deactivation keeps hover: ${JSON.stringify(h)}`);
+    const changes = h.reconcile_changes;
+    await scrollAt(p.x, p.y, 0, -60);
+    await settle(250);
+    assert((await scrollingState("vertical")).y === 60, "inactive window scrolls by 60");
+    h = await hovered();
+    assert(h.test_id === "story.scrolling.vertical.row.04" && h.reconcile_changes > changes,
+      `inactive window: hover follows the row under the pointer: ${JSON.stringify(h)}`);
+    await shot("scrolling-inactive-hover");
+    const png = `${DIR}/story-scrolling-inactive-hover.png`;
+    const at = async (id: string) => { const q = await row(id); return centerPixel(png, { x: q.sx - 3, y: q.y - 3, w: 6, h: 6 }); };
+    const hoverBg = await at("story.scrolling.vertical.row.04");
+    const plainBg = await at("story.scrolling.vertical.row.05");
+    assert(Math.max(...hoverBg.map((c, i) => Math.abs(c - plainBg[i]))) >= 3, `inactive window paints hover: (${hoverBg}) vs (${plainBg})`);
+
+    // Another window is ordered over the resting pointer: the platform reports pointer_left at an
+    // unchanged position inside the content. Hover clears and content scrolled meanwhile does
+    // not resurrect it.
+    assert((await pointerLeave()).ok, "pointer_leave route");
+    await settle(150);
+    h = await hovered();
+    assert(h.test_id === null && !h.pointer_over_content && !h.pointer_live, `covered: no hover: ${JSON.stringify(h)}`);
+    await shot("scrolling-covered-no-hover");
+    const covered = `${DIR}/story-scrolling-covered-no-hover.png`;
+    const q4 = await row("story.scrolling.vertical.row.04");
+    assertColorNear(centerPixel(covered, { x: q4.sx - 3, y: q4.y - 3, w: 6, h: 6 }), plainBg, "covered row paints no hover", 3);
+    const hits = h.reconcile_hit_tests;
+    await scrollAt(p.x, p.y, 0, -30);
+    await settle(250);
+    h = await hovered();
+    assert(h.test_id === null && h.reconcile_hit_tests === hits, `content scrolled under the covering window stays unhovered: ${JSON.stringify(h)}`);
+    // The window moves away: the platform re-delivers the resting position.
+    await mouseMove(p.x, p.y);
+    await settle(200);
+    h = await hovered();
+    assert(h.test_id === "story.scrolling.vertical.row.05" && h.pointer_live, `uncovered: the row under the pointer hovers again: ${JSON.stringify(h)}`);
+  } finally {
+    await setWindowActive(true);
+    await clickTestId("story.scrolling.vertical.reset");
+  }
+});
 
 // ── all components: switch + data verification + screenshot (visual + log data dual) ──
 for (const key of KEYS) {
@@ -642,6 +826,24 @@ for (const key of KEYS) {
       missing.length === 0,
       `story.${key} 缺数据值: [${missing.join(", ")}] — 实际文本: ${texts}`,
     );
+
+    if (key === "stack") {
+      // Both stacks now use the same design copy. Check each occurrence so a
+      // missing HStack or VStack child cannot be masked by its sibling stack.
+      const nodes = (await query("story.stack"))[0];
+      const labels: string[] = [];
+      if (nodes) collectText(nodes, labels);
+      for (const value of ["One", "Two", "Three"])
+        assert(labels.filter((text) => text === value).length === 2, `both stacks must render ${value}`);
+    }
+
+    if (key === "datepicker" || key === "daterange") {
+      const empty = (await query(`story.${key}.empty`))[0];
+      const placeholders: string[] = [];
+      if (empty) collectText(empty, placeholders);
+      for (const placeholder of EXPECT[key])
+        assert(placeholders.includes(placeholder), `empty ${key} missing placeholder ${placeholder}`);
+    }
 
     const path = `${DIR}/story-${key}.png`;
     await shot(key);
@@ -861,7 +1063,6 @@ test("Steps: 连接线连贯（横向贯穿圆心 / 纵向末段贴圆圈）+ �
 });
 
 test("Steps: Next / Back 驱动当前步 signal，进度线与禁用态跟随", async () => {
-  await switchTo("button");
   await switchTo("steps");
   const horizontal = async () => {
     const steppers: any[] = [];
@@ -892,7 +1093,6 @@ test("Steps: Next / Back 驱动当前步 signal，进度线与禁用态跟随", 
 });
 
 test("Card: 点卡片改选中，selected 由同一个 signal 派生", async () => {
-  await switchTo("button");
   await switchTo("card");
   const status = async () => (await query("story.card.status"))[0]?.text ?? "";
   assert((await status()) === "plan → basic", `初始应为 "plan → basic"，got "${await status()}"`);
@@ -904,7 +1104,6 @@ test("Card: 点卡片改选中，selected 由同一个 signal 派生", async () 
 });
 
 test("Rate: 点星改分，派生标签跟随", async () => {
-  await switchTo("button");
   await switchTo("rate");
   const status = async () => (await query("story.rate.status"))[0]?.text ?? "";
   assert((await status()) === "value 3 / 5", `初始标签应为 "value 3 / 5"，got "${await status()}"`);
@@ -1232,7 +1431,6 @@ test("Slider: 交互 — 点 track 改值", async () => {
 // cancels/reverts ──
 // Primary semantic assertions (docs sec 18.4), screenshots visual aid only.
 test("Slider: stepped drag stays snapped and ends on release", async () => {
-  await switchTo("button");
   await switchTo("slider");
   const pos = await screenPos("story.slider.stepped.track");
   const y = pos.y + pos.h / 2;
@@ -1264,7 +1462,6 @@ test("Slider: stepped drag stays snapped and ends on release", async () => {
 test("Slider: feedback playground is opt-in and can be reset and disabled", async () => {
   // Re-selecting the active story preserves state; remount before checking
   // the default-off contract independently of the preceding drag test.
-  await switchTo("button");
   await switchTo("slider");
   const status = async () => (await query("story.slider.feedback.status"))[0]?.text ?? "";
   const expectStatus = async (text: string) => {
@@ -1306,7 +1503,6 @@ test("Slider: feedback playground is opt-in and can be reset and disabled", asyn
 });
 
 test("Slider: native patterns are selectable without implicitly enabling feedback", async () => {
-  await switchTo("button");
   await switchTo("slider");
   const expectPattern = async (name: string) => {
     await waitFor(async () => (await query("story.slider.feedback.pattern"))[0]?.text === `Pattern: ${name}` ? true : null,
@@ -2038,11 +2234,10 @@ test("Notification: 文案提示胶囊（16.13）— 与卡片同一堆叠、宽
   await clearAll();
 });
 
-test("NumberStepper: 交互 — 点 + 步进", async () => {
+test("NumberStepper: 交互 — 点 Increase 箭头步进", async () => {
   await switchTo("stepper");
-  const tree = await query("story.stepper.basic");
-  const plus = findRectByText(tree[0], "+");
-  assert(plus, "找不到 + 按钮");
+  const plus = await screenPos("story.stepper.increase");
+  assert(plus.w > 0 && plus.h > 0, "找不到 Increase 箭头");
   await clickAt(plus.x + plus.w / 2, plus.y + plus.h / 2);
   await sleep(250);
   const t1 = await query("story.stepper.basic");
@@ -2062,12 +2257,63 @@ test("NumberStepper: 交互 — 点 + 步进", async () => {
     if (value === 9) nine = rect;
     if (value === 10) {
       assert(rect.w > nine.w + 1, `9→10 must remeasure width: ${nine.w}→${rect.w}`);
-      assert(Math.abs(rect.x + rect.w / 2 - nine.x - nine.w / 2) < 1,
-        "updated value must remain centered");
+      // RYMhT aligns the value to the field start, alongside right-side arrows.
+      assert(Math.abs(rect.x - nine.x) < 1, "updated value must retain its left alignment");
+      assert(rect.x + rect.w < plus.x, "two-digit value must not overlap the arrow strip");
       await shot("stepper-digit-growth");
       assertRegionHasInk(`${DIR}/story-stepper-digit-growth.png`, rect, "stepper two-digit label", 10);
     }
   }
+});
+
+test("NumberStepper: 键入 — 回车提交 / Esc 放弃 / 失焦提交 / 上下键步进", async () => {
+  await switchTo("stepper");
+  const wrapper = (await query("story.stepper.basic"))[0].rect;
+  const plus = await screenPos("story.stepper.increase");
+  // the value area: everything left of the arrow strip
+  const field = { x: wrapper.x + 1, y: wrapper.y + 1, w: plus.x - wrapper.x - 2, h: wrapper.h - 2 };
+  const texts = async () => {
+    const out: string[] = [];
+    collectText((await query("story.stepper.basic"))[0], out);
+    return out;
+  };
+  const waitText = (value: string) => waitFor(async () => (await texts()).includes(value) ? true : null, getE2eTimeoutMs(2000), 40);
+  const focusField = async () => {
+    assert((await clickAt(field.x + field.w / 2, field.y + field.h / 2)).ok === true);
+    await sleep(150);
+    await key("a", { cmd: true });
+  };
+
+  // Return commits once, clamped (42 -> 10 proves the commit, not just the draft)
+  await focusField();
+  await type_("42");
+  await waitText("42");
+  await shot("stepper-typing-draft");
+  await key("return");
+  await waitText("10");
+
+  // Escape discards the draft
+  await focusField();
+  await type_("3");
+  await waitText("3");
+  await key("escape");
+  await waitText("10");
+
+  // Up steps from the draft (4 + 1), not from the committed 10
+  await focusField();
+  await type_("4");
+  await key("up");
+  await waitText("5");
+
+  // blur commits: "02" is normalized to "2" only by a commit
+  await focusField();
+  await type_("02");
+  await waitText("02");
+  await clickAt(wrapper.x + wrapper.w + 200, wrapper.y + wrapper.h / 2);
+  await waitText("2");
+  assert(!(await texts()).includes("02"), "blur must commit and normalize the draft");
+  await shot("stepper-typed-committed");
+  appendLog(`  stepper after typing: ${(await texts()).join(" │ ")}`);
 });
 
 test("TagsInput: 交互 — 逗号提交 + × 删除", async () => {
@@ -2081,6 +2327,21 @@ test("TagsInput: 交互 — 逗号提交 + × 删除", async () => {
   appendLog(`  tags after commit: ${out.join(" │ ")}`);
   assert(out.includes("gpu"), `逗号提交后应有 gpu tag — ${out.join(" │ ")}`);
   await shot("tags-committed");
+  // Default Add button commits through the same path.
+  await clickTestId("story.tags.input");
+  await type_("default-add");
+  const addButton = await screenPos("story.tags.add");
+  assert(addButton.w > 0 && addButton.h > 0, "默认 Add 按钮必须存在");
+  assert((await clickTestId("story.tags.add")).ok === true, "默认 Add 必须可点击");
+  await sleep(350);
+  const afterAdd: string[] = [];
+  const addTree = await query("story.tags.wrapper");
+  if (addTree[0]) collectText(addTree[0], afterAdd);
+  const addInputTexts: string[] = [];
+  collectText((await query("story.tags.input"))[0], addInputTexts);
+  assert(afterAdd.filter((t) => t === "default-add").length - addInputTexts.filter((t) => t === "default-add").length === 1, `默认 Add 应提交真实 tag — ${afterAdd.join(" │ ")}`);
+  assert(!addInputTexts.includes("default-add"), "默认 Add 提交后必须清空输入框");
+  await clickTestId("story.tags.input");
   // Return commits too, and clears the input
   await type_("text");
   await key("return");
@@ -2097,18 +2358,17 @@ test("TagsInput: 交互 — 逗号提交 + × 删除", async () => {
   assert(!ft.includes("text"), `回车提交后输入框应清空 — ${ft.join(" │ ")}`);
 });
 
-test("FileUpload: 交互 — Browse 回填文件行", async () => {
+test("FileUpload: 交互 — Choose file 回填文件行", async () => {
   await switchTo("upload");
-  const tree = await query("story.upload.wrapper");
-  const browse = findRectByText(tree[0], "Browse…");
-  assert(browse, "找不到 Browse 按钮");
+  const browse = await screenPos("story.upload.choose");
+  assert(browse.w > 0 && browse.h > 0, "找不到 Choose file 按钮");
   await clickAt(browse.x + browse.w / 2, browse.y + browse.h / 2);
   await sleep(250);
   const out: string[] = [];
   const t1 = await query("story.upload.wrapper");
   if (t1[0]) collectText(t1[0], out);
   appendLog(`  upload after browse: ${out.join(" │ ")}`);
-  assert(out.join(" ").includes("demo-file-1.txt"), `Browse 后应出现文件行 — ${out.join(" │ ")}`);
+  assert(out.join(" ").includes("demo-file-1.txt"), `Choose file 后应出现文件行 — ${out.join(" │ ")}`);
 });
 
 test("FileUpload: 拖放 — Finder 拖入文件（程序化注入）", async () => {
@@ -2187,6 +2447,163 @@ test("DataTable: 交互 — 翻页 + 筛选", async () => {
   await shot("datatable-filtered");
 });
 
+test("VirtualList hit: rows clicked right after a wheel stream are the rows painted under the pointer", async () => {
+  // Fixture list (examples/storybook/vlist_hit_fixture.zig): every row records the data index it
+  // was clicked as. Rows are recycled pool slots; the hit index rebuilds only the rebound ones
+  // (hit_runtime HitBlock), so a stale block would click the previous binding.
+  async function paintedRowAt(x: number, y: number): Promise<number | null> {
+    for (const row of await query("review.vlist-hit.row")) {
+      const r = row.rect;
+      if (!r || row.visible === false) continue;
+      if (x < r.x || x >= r.x + r.w || y < r.y || y >= r.y + r.h) continue;
+      // Away from row edges: sub-pixel snapping must not decide the answer.
+      if (y - r.y < 2 || r.y + r.h - y < 2) return null;
+      const label = (row.children ?? []).map((c: any) => c.text).find((t: any) => typeof t === "string") as string | undefined;
+      const m = label ? /^VRow (\d+)$/.exec(label) : null;
+      return m ? Number(m[1]) : null;
+    }
+    return null;
+  }
+  async function clickedAt(x: number, y: number): Promise<number> {
+    const before = await request("POST", "/review/vlist-hit-state", {});
+    assert((await clickAt(x, y)).ok === true, "click rpc failed");
+    const after = await request("POST", "/review/vlist-hit-state", {});
+    assert(after.clicks === before.clicks + 1, `click at (${x},${y}) reached no row: ${JSON.stringify(after)}`);
+    return after.clicked;
+  }
+  for (const variant of ["/review/vlist-hit-mount", "/review/vlist-hit-mount-dynamic"]) {
+    const setup = await request("POST", variant, {});
+    assert(setup.ok === true, `${variant} failed: ${JSON.stringify(setup)}`);
+    await settle(300);
+    try {
+      const q = await query("review.vlist-hit.list");
+      assert(q.length === 1 && q[0]?.rect, "fixture list missing");
+      const list = q[0].rect;
+      const x = list.x + 120;
+      const ys = [list.y + 9, list.y + list.h / 2 + 3, list.y + list.h - 9];
+      const streams = [[-28, -28, -28], [-7, -9, -13, -5], [-150, -90], [60, 45], [-1200], [-3, -3], [400, -800, 120], [-31, -57, -11, -88]];
+      let checked = 0;
+      for (let round = 0; round < streams.length * 2; round++) {
+        for (const dy of streams[round % streams.length]) await scrollAt(x, list.y + list.h / 2, 0, dy);
+        // Straight after the stream, before any settle.
+        const y = ys[round % ys.length];
+        const got = await clickedAt(x, y);
+        await settle(150);
+        const want = await paintedRowAt(x, y);
+        appendLog(`  ${variant} round ${round}: clicked #${got}, painted #${want}`);
+        if (want === null) continue;
+        assert(got === want, `${variant} round ${round}: click at y=${y} hit row #${got}, painted row is #${want}`);
+        checked++;
+      }
+      assert(checked >= streams.length, `${variant}: too few unambiguous probes (${checked})`);
+      // Both ends after a jump: the end bounce settles first (it moves the rows).
+      for (const [dy, y] of [[-1_000_000, ys[2]], [1_000_000, ys[0]]] as const) {
+        await scrollAt(x, list.y + list.h / 2, 0, dy);
+        await settle(700);
+        const want = await paintedRowAt(x, y);
+        const got = await clickedAt(x, y);
+        appendLog(`  ${variant} end ${dy}: clicked #${got}, painted #${want}`);
+        assert(want !== null && got === want, `${variant} end ${dy}: click hit row #${got}, painted row is #${want}`);
+      }
+    } finally {
+      await request("POST", "/review/vlist-hit-unmount", {});
+      await settle(200);
+    }
+  }
+});
+
+test("Table(virtual): 虚拟行悬停与直渲行同一声明 — 进出悬停、斑马纹回落、滚动回收不串悬停", async () => {
+  await switchTo("table");
+  // Visible virtual rows: data index (from the "Name #N" cell) -> sample point in the empty right
+  // part of the Role column (no glyphs), in logical coordinates.
+  // `hx` is where the pointer goes (Name column, left of the sample point) so the harness's drawn
+  // cursor never covers the sampled pixels.
+  async function rows(): Promise<Map<number, { x: number; y: number; hx: number }>> {
+    const q = await query("story.table.virtual");
+    assert(q.length === 1 && q[0]?.rect, "story.table.virtual 不存在");
+    const table = q[0].rect;
+    const out = new Map<number, { x: number; y: number; hx: number }>();
+    const walk = (n: any) => {
+      if (n?.hidden) return;
+      const m = typeof n?.text === "string" ? /#(\d+)$/.exec(n.text) : null;
+      if (m && n.rect) {
+        const y = n.rect.y + n.rect.h / 2;
+        // fully inside the body viewport (below the 28px header, above the bottom border)
+        if (n.rect.y >= table.y + 30 && n.rect.y + n.rect.h <= table.y + table.h - 2) out.set(Number(m[1]), { x: table.x + 1 + 160 + 120 - 14, y, hx: table.x + 1 + 120 });
+      }
+      for (const c of n?.children ?? []) walk(c);
+    };
+    walk(q[0]);
+    return out;
+  }
+  const sample = (png: string, p: { x: number; y: number }) => centerPixel(png, { x: p.x - 3, y: p.y - 3, w: 6, h: 6 });
+  const diff = (a: number[], b: number[]) => Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]), Math.abs(a[2] - b[2]));
+
+  await mouseMove(-10, -10);
+  await settle(300);
+  const r0 = await rows();
+  assert(r0.has(1) && r0.has(2) && r0.has(3), `虚拟表格应可见第 1-3 行 — ${[...r0.keys()].join(",")}`);
+  await shot("table-virtual-idle");
+  const idle = `${DIR}/story-table-virtual-idle.png`;
+  const oddBase = sample(idle, r0.get(1)!);
+  const evenBase = sample(idle, r0.get(2)!);
+  appendLog(`  virtual table base: odd=(${oddBase}) even=(${evenBase})`);
+  assert(diff(oddBase, evenBase) >= 3, `斑马纹奇偶行底色应可区分: odd=(${oddBase}) even=(${evenBase})`);
+
+  // Hover even row 2: bg_hover after the 150ms ease-out; neighbours keep their stripe.
+  assert((await mouseMove(r0.get(2)!.hx, r0.get(2)!.y)).ok === true);
+  await settle(400);
+  await shot("table-virtual-hover-even");
+  const hEven = `${DIR}/story-table-virtual-hover-even.png`;
+  const evenHover = sample(hEven, r0.get(2)!);
+  appendLog(`  row 2 hovered=(${evenHover})`);
+  assert(diff(evenHover, evenBase) >= 3, `悬停第 2 行应变为 bg_hover: (${evenHover}) vs 底色 (${evenBase})`);
+  // bg_hover is a light tint: guard against sampling the drawn cursor / text instead of the row.
+  assert(Math.min(...evenHover) >= 200, `悬停色应是浅色行底而非光标/字形像素: (${evenHover})`);
+  assertColorNear(sample(hEven, r0.get(1)!), oddBase, "悬停第 2 行时第 1 行保持奇数底色", 3);
+  assertColorNear(sample(hEven, r0.get(3)!), oddBase, "悬停第 2 行时第 3 行保持奇数底色", 3);
+
+  // Move to odd row 1: same hover colour (shared declaration), row 2 falls back to its stripe.
+  assert((await mouseMove(r0.get(1)!.hx, r0.get(1)!.y)).ok === true);
+  await settle(400);
+  await shot("table-virtual-hover-odd");
+  const hOdd = `${DIR}/story-table-virtual-hover-odd.png`;
+  assertColorNear(sample(hOdd, r0.get(1)!), evenHover, "奇数行悬停色与偶数行一致（同一 bg_hover）", 3);
+  assertColorNear(sample(hOdd, r0.get(2)!), evenBase, "离开第 2 行后回到偶数底色", 3);
+
+  // Scroll under the stationary hovering pointer (wheel only, no pointer move): slots get
+  // recycled; hover follows the row that arrives under the pointer (native NSScrollView /
+  // browser behaviour), the row that scrolled away no longer hovers, and no other row does.
+  const under = r0.get(1)!;
+  const hoverBefore = (await stats()).hover!;
+  for (let i = 0; i < 6; i++) await scrollAt(under.hx, under.y, 0, -60);
+  await settle(600);
+  const r1 = await rows();
+  assert(!r1.has(1) && r1.size > 0, `滚动后第 1 行应已滚出 — ${[...r1.keys()].join(",")}`);
+  await shot("table-virtual-scrolled-hovering");
+  const sc = `${DIR}/story-table-virtual-scrolled-hovering.png`;
+  let underIdx = -1;
+  for (const [idx, p] of r1) if (underIdx < 0 || Math.abs(p.y - under.y) < Math.abs(r1.get(underIdx)!.y - under.y)) underIdx = idx;
+  assert(underIdx >= 0 && Math.abs(r1.get(underIdx)!.y - under.y) < 16, `滚动后指针下应有一行 — ${[...r1.entries()].map(([i, p]) => `${i}@${p.y}`).join(",")}`);
+  appendLog(`  row under the stationary pointer after scroll: #${underIdx} (${sample(sc, r1.get(underIdx)!)})`);
+  assertColorNear(sample(sc, r1.get(underIdx)!), evenHover, `指针不动、滚到指针下的第 ${underIdx} 行应立即进入悬停（bg_hover）`, 3);
+  const hoverAfter = (await stats()).hover!;
+  assert(hoverAfter.reconcile_changes > hoverBefore.reconcile_changes,
+    `滚动应在指针不动时重解析悬停: ${JSON.stringify(hoverBefore)} -> ${JSON.stringify(hoverAfter)}`);
+  let checked = 0;
+  for (const [idx, p] of r1) {
+    if (idx === underIdx) continue;
+    assertColorNear(sample(sc, p), idx % 2 === 1 ? oddBase : evenBase, `滚动回收后第 ${idx} 行无残留悬停`, 3);
+    checked++;
+  }
+  assert(checked >= 4, `滚动后应至少校验 4 行，实际 ${checked}`);
+  await mouseMove(-10, -10);
+  await settle(400);
+  await shot("table-virtual-scrolled-idle");
+  const sci = `${DIR}/story-table-virtual-scrolled-idle.png`;
+  for (const [idx, p] of r1) assertColorNear(sample(sci, p), idx % 2 === 1 ? oddBase : evenBase, `指针离开后第 ${idx} 行回到斑马纹`, 3);
+});
+
 test("ComboBox: 交互 — 输入过滤 + 点选写回", async () => {
   await switchTo("combobox");
   await clickTestId("story.combobox.input"); // focus input
@@ -2225,11 +2642,11 @@ test("ComboBox: 交互 — 输入过滤 + 点选写回", async () => {
   await shot("combobox-no-results");
 });
 
-test("Select: puQEf component family", async () => {
+test("Select: RYMhT component family", async () => {
   await switchTo("select");
   const family = await query("story.select.family");
-  assert(family.length === 1, `puQEf family root 缺失 — got ${family.length}`);
-  await shot("select-puqef-rest");
+  assert(family.length === 1, `RYMhT family root 缺失 — got ${family.length}`);
+  await shot("select-rymht-rest");
 
   const near = (actual: number, expected: number, label: string, tolerance = 1) => {
     const delta = Math.abs(actual - expected);
@@ -2238,20 +2655,24 @@ test("Select: puQEf component family", async () => {
   };
   const opacityOf = (node: any): number => node.opacity ?? 1;
   const rotateOf = (node: any): number => node.rotate ?? 0;
+  // RYMhT: 16px icons, 12px horizontal inset, 6px field gap,
+  // and 28px option rows inside a panel with 4px padding.
   const withIconTrigger = (await query("story.select.with-icon"))[0];
-  near(withIconTrigger.rect.w, 352, "puQEf trigger width");
-  assert(withIconTrigger.rect.h >= 38 && withIconTrigger.rect.h <= 41, `LG trigger height ${withIconTrigger.rect.h} 不在 puQEf 38..41`);
+  near(withIconTrigger.rect.w, 352, "RYMhT trigger width");
+  // spec/json/RYMhT.json replaces puQEf: default md field height is 32px.
+  near(withIconTrigger.rect.h, 32, "RYMhT default trigger height");
+  near((await screenPos("story.select.multiple-lg")).h, 40, "LG trigger height");
 
   // real single-select: open Popover -> select Option 2 -> trigger writes.
   await clickTestId("story.select.with-icon");
   await sleep(55);
   const openingChevron = (await query("story.select.with-icon.chevron"))[0];
   appendLog(`  opening chevron captured rotate=${rotateOf(openingChevron).toFixed(3)} rad`);
-  await shot("select-puqef-with-icon-opening-rotate-mid");
+  await shot("select-rymht-with-icon-opening-rotate-mid");
   await sleep(160);
   const openedChevron = (await query("story.select.with-icon.chevron"))[0];
   near(rotateOf(openedChevron), Math.PI, "opened chevron rotates 180deg", 0.06);
-  await shot("select-puqef-with-icon-open");
+  await shot("select-rymht-with-icon-open");
   const withIconPanel = await query("story.select.with-icon.panel");
   const texts: string[] = [];
   if (withIconPanel[0]) collectText(withIconPanel[0], texts);
@@ -2262,11 +2683,11 @@ test("Select: puQEf component family", async () => {
   await sleep(55);
   const closingChevron = (await query("story.select.with-icon.chevron"))[0];
   appendLog(`  closing chevron captured rotate=${rotateOf(closingChevron).toFixed(3)} rad`);
-  await shot("select-puqef-with-icon-closing-rotate-mid");
+  await shot("select-rymht-with-icon-closing-rotate-mid");
   await sleep(160);
   const closedChevron = (await query("story.select.with-icon.chevron"))[0];
   near(rotateOf(closedChevron), 0, "closed chevron returns to 0deg", 0.06);
-  await shot("select-puqef-with-icon-selected-option-2");
+  await shot("select-rymht-with-icon-selected-option-2");
   const selectedText = await storyTexts("select");
   assert(selectedText.includes("Option 2"), `单选未写回 trigger: ${selectedText}`);
 
@@ -2274,7 +2695,7 @@ test("Select: puQEf component family", async () => {
   // absolute icon-only clear overlays chevron.
   await mouseMove(-10, -10);
   await sleep(100);
-  await shot("select-puqef-clearable-selected-rest");
+  await shot("select-rymht-clearable-selected-rest");
   const clearButtonRest = (await query("story.select.clear"))[0];
   const clearChevronRest = (await query("story.select.clearable.chevron"))[0];
   const clearAppendRest = (await query("story.select.clearable.append"))[0];
@@ -2283,17 +2704,17 @@ test("Select: puQEf component family", async () => {
     `selected rest 必须只显示 chevron — clear opacity=${clearButtonRest.opacity}`);
   assert(clearChevronRest.opacity === undefined || clearChevronRest.opacity === 1,
     `selected rest chevron 必须可见 — opacity=${clearChevronRest.opacity}`);
-  near(clearAppendCompRest.rect.w, 20, "fixed append overlay width", 0.75);
-  near(clearAppendRest.rect.w, 20, "shell append remains one icon wide", 0.75);
+  near(clearAppendCompRest.rect.w, 16, "fixed append overlay width", 0.75);
+  near(clearAppendRest.rect.w, 16, "shell append remains one icon wide", 0.75);
 
   const clearablePos = await screenPos("story.select.clearable");
   await mouseMove(clearablePos.x + 48, clearablePos.y + clearablePos.h / 2);
   const clearButtonFadeIn = (await query("story.select.clear"))[0];
   const clearChevronFadeOut = (await query("story.select.clearable.chevron"))[0];
   appendLog(`  fade-in capture: clear=${opacityOf(clearButtonFadeIn).toFixed(3)} chevron=${opacityOf(clearChevronFadeOut).toFixed(3)}`);
-  await shot("select-puqef-clearable-fade-in-mid");
+  await shot("select-rymht-clearable-fade-in-mid");
   await sleep(180);
-  await shot("select-puqef-clearable-selected-trigger-hover");
+  await shot("select-rymht-clearable-selected-trigger-hover");
   const clearButtonHover = (await query("story.select.clear"))[0];
   const clearChevronHover = (await query("story.select.clearable.chevron"))[0];
   near(opacityOf(clearButtonHover), 1, "selected hover clear fade-in settles", 0.02);
@@ -2307,9 +2728,9 @@ test("Select: puQEf component family", async () => {
 
   await clickTestId("story.select.clearable");
   await sleep(60);
-  await shot("select-puqef-clearable-opening-selected");
+  await shot("select-rymht-clearable-opening-selected");
   await sleep(140);
-  await shot("select-puqef-clearable-open-selected");
+  await shot("select-rymht-clearable-open-selected");
   const clearButtonOpen = (await query("story.select.clear"))[0];
   const clearChevronOpen = (await query("story.select.clearable.chevron"))[0];
   const clearAppendOpen = (await query("story.select.clearable.append"))[0];
@@ -2318,8 +2739,8 @@ test("Select: puQEf component family", async () => {
   const clearChevronDownOpen = (await query("story.select.clearable.chevron-down"))[0];
   near(clearButtonOpen.rect.x, clearChevronOpen.rect.x, "open clear overlays chevron x", 0.75);
   near(clearButtonOpen.rect.w, clearChevronOpen.rect.w, "open clear matches chevron width", 0.75);
-  near(clearAppendCompOpen.rect.w, 20, "selected append stays one icon wide", 0.75);
-  near(clearAppendOpen.rect.w, clearAppendCompOpen.rect.w, "shell append contains LONiE Box", 0.75);
+  near(clearAppendCompOpen.rect.w, 16, "selected append stays one icon wide", 0.75);
+  near(clearAppendOpen.rect.w, clearAppendCompOpen.rect.w, "shell append contains overlay Box", 0.75);
   assert(opacityOf(clearButtonOpen) > 0.98 && opacityOf(clearChevronOpen) < 0.02,
     `selected open hover 必须由 clear 覆盖 chevron — clear=${opacityOf(clearButtonOpen)} chevron=${opacityOf(clearChevronOpen)}`);
   assert(opacityOf(clearChevronUpOpen) === 0 && opacityOf(clearChevronDownOpen) === 1,
@@ -2327,15 +2748,15 @@ test("Select: puQEf component family", async () => {
   near(rotateOf(clearChevronDownOpen), Math.PI, "clearable open chevron rotation target", 0.06);
   await clickTestId("story.select.clearable");
   await sleep(200);
-  await shot("select-puqef-clearable-reclosed-selected");
+  await shot("select-rymht-clearable-reclosed-selected");
 
   await mouseMove(-10, -10);
   const clearButtonFadeOut = (await query("story.select.clear"))[0];
   const clearChevronFadeIn = (await query("story.select.clearable.chevron"))[0];
   appendLog(`  fade-out capture: clear=${opacityOf(clearButtonFadeOut).toFixed(3)} chevron=${opacityOf(clearChevronFadeIn).toFixed(3)}`);
-  await shot("select-puqef-clearable-fade-out-mid");
+  await shot("select-rymht-clearable-fade-out-mid");
   await sleep(180);
-  await shot("select-puqef-clearable-reclosed-selected-rest");
+  await shot("select-rymht-clearable-reclosed-selected-rest");
   const clearButtonReclosedRest = (await query("story.select.clear"))[0];
   const clearChevronReclosedRest = (await query("story.select.clearable.chevron"))[0];
   const clearChevronDownReclosedRest = (await query("story.select.clearable.chevron-down"))[0];
@@ -2350,16 +2771,16 @@ test("Select: puQEf component family", async () => {
   const clearPos = await screenPos("story.select.clear");
   await mouseMove(clearPos.x + clearPos.w / 2, clearPos.y + clearPos.h / 2);
   await sleep(120);
-  await shot("select-puqef-clearable-clear-hover");
+  await shot("select-rymht-clearable-clear-hover");
   await mouseDown(clearPos.x + clearPos.w / 2, clearPos.y + clearPos.h / 2);
   await sleep(80);
-  await shot("select-puqef-clearable-clear-pressed");
+  await shot("select-rymht-clearable-clear-pressed");
   await mouseUp(clearPos.x + clearPos.w / 2, clearPos.y + clearPos.h / 2);
   const clearedButtonFadeOut = (await query("story.select.clear"))[0];
   appendLog(`  clear-click fade-out capture: clear=${opacityOf(clearedButtonFadeOut).toFixed(3)}`);
-  await shot("select-puqef-clearable-cleared-fade-out-mid");
+  await shot("select-rymht-clearable-cleared-fade-out-mid");
   await sleep(180);
-  await shot("select-puqef-clearable-cleared");
+  await shot("select-rymht-clearable-cleared");
   const clearableTree = await query("story.select.clearable");
   const clearableTexts: string[] = [];
   if (clearableTree[0]) collectText(clearableTree[0], clearableTexts);
@@ -2372,56 +2793,56 @@ test("Select: puQEf component family", async () => {
   const clearedChevronDown = (await query("story.select.clearable.chevron-down"))[0];
   near(clearAppend.rect.w, clearChevron.rect.w, "cleared append stays one icon wide", 0.75);
   near(clearedAppendComp.rect.w, clearChevron.rect.w, "empty overlay Box stays one icon wide", 0.75);
-  near(clearChevron.rect.x + clearChevron.rect.w, clearedTrigger.rect.x + clearedTrigger.rect.w - 16,
-    "cleared LG chevron stays at right padding", 0.75);
+  near(clearChevron.rect.x + clearChevron.rect.w, clearedTrigger.rect.x + clearedTrigger.rect.w - 12,
+    "cleared MD chevron stays at right padding", 0.75);
   assert(opacityOf(clearedButton) < 0.02, `cleared state 的 clear 必须隐藏 — opacity=${opacityOf(clearedButton)}`);
   assert(opacityOf(clearedChevronDown) === 1,
     `cleared closed state 必须显示 chevron-down — opacity=${opacityOf(clearedChevronDown)}`);
   await clickTestId("story.select.clearable");
   await sleep(55);
-  await shot("select-puqef-clearable-opening-empty-rotate-mid");
+  await shot("select-rymht-clearable-opening-empty-rotate-mid");
   await sleep(145);
-  await shot("select-puqef-clearable-open-empty");
+  await shot("select-rymht-clearable-open-empty");
   await clickTestId("story.select.clearable");
   await sleep(55);
-  await shot("select-puqef-clearable-closing-empty-rotate-mid");
+  await shot("select-rymht-clearable-closing-empty-rotate-mid");
   await sleep(145);
-  await shot("select-puqef-clearable-reclosed-empty");
+  await shot("select-rymht-clearable-reclosed-empty");
 
   // real search: input 3 to filter, click select, write Input and close.
   await clickTestId("story.select.trigger");
   await sleep(250);
-  await shot("select-puqef-search-open-before-hover");
+  await shot("select-rymht-search-open-before-hover");
   const searchHover = await screenPos("story.select.search.option-1");
   await mouseMove(searchHover.x - 20, searchHover.y + 12);
   await sleep(60);
   await mouseMove(searchHover.x + 28, searchHover.y + 12);
   await sleep(180);
-  await shot("select-puqef-search-open-default");
+  await shot("select-rymht-search-open-default");
   const searchDefaultPanel = (await query("story.select.panel"))[0];
   const searchOption1 = (await query("story.select.search.option-1"))[0];
   const searchIcon = (await query("story.select.search.icon"))[0];
   const searchInputAtRest = (await query("story.select.search.input"))[0];
-  near(searchDefaultPanel.rect.w, 352, "puQEf search panel width");
-  near(searchDefaultPanel.rect.h, 112, "puQEf search panel height", 2);
-  near(searchInputAtRest.rect.x - (searchIcon.rect.x + searchIcon.rect.w), 8, "puQEf search icon/text gap", 0.75);
+  near(searchDefaultPanel.rect.w, 352, "RYMhT search panel width");
+  near(searchDefaultPanel.rect.h, 92, "RYMhT search panel height", 2);
+  near(searchInputAtRest.rect.x - (searchIcon.rect.x + searchIcon.rect.w), 6, "RYMhT search icon/text gap", 0.75);
   assertColorNear(
-    centerPixel(`${DIR}/story-select-puqef-search-open-default.png`, {
+    centerPixel(`${DIR}/story-select-rymht-search-open-default.png`, {
       x: searchOption1.rect.x + searchOption1.rect.w * 0.5,
       y: searchOption1.rect.y + searchOption1.rect.h * 0.5,
       w: 4,
       h: 4,
     }),
-    [245, 245, 245],
-    "puQEf searchable hover background",
+    [215, 220, 250], // light list_selection_hover_bg, paired with selection_fg
+    "RYMhT searchable selected hover background",
     5,
   );
   await clickTestId("story.select.trigger");
   await sleep(120);
-  await shot("select-puqef-search-closed-after-trigger");
+  await shot("select-rymht-search-closed-after-trigger");
   await clickTestId("story.select.search.input");
   await sleep(180);
-  await shot("select-puqef-search-focused-open");
+  await shot("select-rymht-search-focused-open");
   // search box has selected label (Option 1): select-all then input, '3' replaces it to filter.
   // Prior relied on double-click within interval hitting word '1' -> click-busy -> 'Option 13',
   // filter empty.
@@ -2433,76 +2854,76 @@ test("Select: puQEf component family", async () => {
   const searchPanel = await waitFor(async () => (await query("story.select.panel"))[0] ?? null, 2500, 40);
   near(searchTrigger.rect.w, 352, "search trigger width");
   near(searchPanel.rect.w, 352, "search panel width");
-  assert(searchTrigger.rect.h >= 36 && searchTrigger.rect.h <= 40, `search trigger height ${searchTrigger.rect.h} 不在 puQEf 36..40`);
-  await shot("select-puqef-search-open");
+  near(searchTrigger.rect.h, 32, "RYMhT searchable md trigger height");
+  await shot("select-rymht-search-open");
   await clickTestId("story.select.search.option-3");
   await sleep(180);
-  await shot("select-puqef-search-selected-option-3");
+  await shot("select-rymht-search-selected-option-3");
   const searchInput = await inputState("story.select.search.input");
   assert(searchInput.buffer === "Option 3", `search select 未写回 Option 3: ${JSON.stringify(searchInput)}`);
   // Reopen the committed value as a separate transition; this catches stale
   // filter/selection styling that is invisible in the one-way happy path.
   await clickTestId("story.select.trigger");
   await sleep(180);
-  await shot("select-puqef-search-reopened-selected-option-3");
+  await shot("select-rymht-search-reopened-selected-option-3");
   await clickTestId("story.select.trigger");
   await sleep(120);
-  await shot("select-puqef-search-reclosed-selected-option-3");
+  await shot("select-rymht-search-reclosed-selected-option-3");
 
   // real multi-select: check Option 3, panel stays open, tag appears; click tag x to remove.
-  await clickTestId("story.select.multiple-lg");
+  await clickSelectChevron("story.select.multiple-lg");
   await sleep(220);
-  await shot("select-puqef-multiple-lg-open-before-hover");
+  await shot("select-rymht-multiple-lg-open-before-hover");
   const hoverPos = await screenPos("story.select.multiple-lg.option-1");
   await mouseMove(hoverPos.x + 24, hoverPos.y + 12);
   await sleep(120);
-  // Visual baseline first: exactly the two initial tags shown in `puQEf`.
-  await shot("select-puqef-multiple-lg-open");
+  // Visual baseline first: exactly the two initial tags shown in `RYMhT`.
+  await shot("select-rymht-multiple-lg-open");
   const multipleLgPanel = (await query("story.select.multiple-lg.panel"))[0];
   const multipleLgOption1 = (await query("story.select.multiple-lg.option-1"))[0];
-  near(multipleLgPanel.rect.w, 352, "puQEf multiple LG panel width");
-  near(multipleLgPanel.rect.h, 152, "puQEf multiple LG panel height", 2);
+  near(multipleLgPanel.rect.w, 352, "RYMhT multiple LG panel width");
+  near(multipleLgPanel.rect.h, 120, "RYMhT multiple LG panel height", 2);
   assertColorNear(
-    centerPixel(`${DIR}/story-select-puqef-multiple-lg-open.png`, {
+    centerPixel(`${DIR}/story-select-rymht-multiple-lg-open.png`, {
       x: multipleLgOption1.rect.x + multipleLgOption1.rect.w * 0.5,
       y: multipleLgOption1.rect.y + multipleLgOption1.rect.h * 0.5,
       w: 4,
       h: 4,
     }),
-    [245, 245, 245],
-    "puQEf multiple hover background",
+    [244, 244, 245],
+    "RYMhT multiple hover background",
     5,
   );
   await clickTestId("story.select.multiple-lg.option-3");
   await sleep(150);
   let tag3 = await query("story.select.multiple-lg.option-3.tag");
   assert(tag3[0]?.rect.w > 0 && tag3[0]?.rect.h > 0, "多选后 Option 3 tag 未显示");
-  await shot("select-puqef-multiple-lg-selected-3");
+  await shot("select-rymht-multiple-lg-selected-3");
   await clickTestId("story.select.multiple-lg.option-3.tag-close");
   await sleep(150);
-  await shot("select-puqef-multiple-lg-tag-3-removed");
+  await shot("select-rymht-multiple-lg-tag-3-removed");
   tag3 = await query("story.select.multiple-lg.option-3.tag");
   assert(!tag3[0] || tag3[0].rect.h === 0, "点 tag close 后 Option 3 仍显示");
-  await clickTestId("story.select.multiple-lg");
+  await clickSelectChevron("story.select.multiple-lg");
   await sleep(150);
-  await shot("select-puqef-multiple-lg-closed");
+  await shot("select-rymht-multiple-lg-closed");
 
   // Searchable multiple LG: open -> close -> focus input -> filter -> select -> close.
-  await clickTestId("story.select.multiple-search-lg");
+  await clickSelectChevron("story.select.multiple-search-lg");
   await sleep(180);
-  await shot("select-puqef-multiple-search-lg-open");
-  await clickTestId("story.select.multiple-search-lg");
+  await shot("select-rymht-multiple-search-lg-open");
+  await clickSelectChevron("story.select.multiple-search-lg");
   await sleep(120);
-  await shot("select-puqef-multiple-search-lg-closed");
+  await shot("select-rymht-multiple-search-lg-closed");
   await clickTestId("story.select.multiple-search-lg.input");
   await sleep(180);
-  await shot("select-puqef-multiple-search-lg-focused-open");
+  await shot("select-rymht-multiple-search-lg-focused-open");
   await type_("3");
   await sleep(180);
-  await shot("select-puqef-multiple-search-lg-filtered-3");
+  await shot("select-rymht-multiple-search-lg-filtered-3");
   await clickTestId("story.select.multiple-search-lg.option-3");
   await sleep(150);
-  await shot("select-puqef-multiple-search-lg-selected-option-3");
+  await shot("select-rymht-multiple-search-lg-selected-option-3");
   const multiSearchLgContent = (await query("story.select.multiple-search-lg.content"))[0];
   const multiSearchLgInput = (await query("story.select.multiple-search-lg.input"))[0];
   const multiSearchLgAppend = (await query("story.select.multiple-search-lg.append"))[0];
@@ -2512,88 +2933,88 @@ test("Select: puQEf component family", async () => {
     `multiple searchable input 起点不在 content slot: input=${JSON.stringify(multiSearchLgInput.rect)} content=${JSON.stringify(multiSearchLgContent.rect)}`,
   );
   assert(
-    multiSearchLgContent.rect.x + multiSearchLgContent.rect.w <= multiSearchLgAppend.rect.x - 7,
+    multiSearchLgContent.rect.x + multiSearchLgContent.rect.w <= multiSearchLgAppend.rect.x - 5.5,
     `multiple searchable content 侵入 append slot: content=${JSON.stringify(multiSearchLgContent.rect)} append=${JSON.stringify(multiSearchLgAppend.rect)}`,
   );
   assertColorNear(
-    centerPixel(`${DIR}/story-select-puqef-multiple-search-lg-selected-option-3.png`, {
+    centerPixel(`${DIR}/story-select-rymht-multiple-search-lg-selected-option-3.png`, {
       x: multiSearchLgContent.rect.x + multiSearchLgContent.rect.w + 2,
       y: multiSearchLgAppend.rect.y + multiSearchLgAppend.rect.h * 0.5 - 2,
       w: 4,
       h: 4,
     }),
-    [250, 250, 250],
+    [255, 255, 255],
     "multiple searchable content/append paint gap",
     4,
   );
-  await clickTestId("story.select.multiple-search-lg");
+  await clickSelectChevron("story.select.multiple-search-lg");
   await sleep(120);
-  await shot("select-puqef-multiple-search-lg-reclosed");
+  await shot("select-rymht-multiple-search-lg-reclosed");
 
   // MD/XS also open real Popover alone, not just trigger close.
-  await clickTestId("story.select.multiple-md");
+  await clickSelectChevron("story.select.multiple-md");
   await sleep(250);
   const mdPanel = (await query("story.select.multiple-md.panel"))[0];
   appendLog(`  multiple MD panel: rect=${JSON.stringify(mdPanel.rect)} opacity=${mdPanel.opacity}`);
-  near(mdPanel.rect.h, 152, "puQEf multiple MD panel height", 2);
-  await shot("select-puqef-multiple-md-open");
-  await clickTestId("story.select.multiple-md");
+  near(mdPanel.rect.h, 120, "RYMhT multiple MD panel height", 2);
+  await shot("select-rymht-multiple-md-open");
+  await clickSelectChevron("story.select.multiple-md");
   await sleep(120);
-  await shot("select-puqef-multiple-md-closed");
+  await shot("select-rymht-multiple-md-closed");
 
   // Repeat every searchable transition at MD; size-specific reflow bugs have
   // previously only appeared while the query text or a new tag was present.
-  await clickTestId("story.select.multiple-search-md");
+  await clickSelectChevron("story.select.multiple-search-md");
   await sleep(180);
-  await shot("select-puqef-multiple-search-md-open");
-  await clickTestId("story.select.multiple-search-md");
+  await shot("select-rymht-multiple-search-md-open");
+  await clickSelectChevron("story.select.multiple-search-md");
   await sleep(120);
-  await shot("select-puqef-multiple-search-md-closed");
+  await shot("select-rymht-multiple-search-md-closed");
   await clickTestId("story.select.multiple-search-md.input");
   await sleep(180);
-  await shot("select-puqef-multiple-search-md-focused-open");
+  await shot("select-rymht-multiple-search-md-focused-open");
   await type_("3");
   await sleep(180);
-  await shot("select-puqef-multiple-search-md-filtered-3");
+  await shot("select-rymht-multiple-search-md-filtered-3");
   await clickTestId("story.select.multiple-search-md.option-3");
   await sleep(150);
-  await shot("select-puqef-multiple-search-md-selected-option-3");
-  await clickTestId("story.select.multiple-search-md");
+  await shot("select-rymht-multiple-search-md-selected-option-3");
+  await clickSelectChevron("story.select.multiple-search-md");
   await sleep(120);
-  await shot("select-puqef-multiple-search-md-reclosed");
+  await shot("select-rymht-multiple-search-md-reclosed");
 
-  await clickTestId("story.select.multiple-xs");
+  await clickSelectChevron("story.select.multiple-xs");
   await sleep(250);
   const xsTrigger = (await query("story.select.multiple-xs"))[0];
   const xsPanel = (await query("story.select.multiple-xs.panel"))[0];
   // control height unified: XS = control scale xs (padding_y*2 + line_height = 20). Design was 23.
   near(xsTrigger.rect.h, 20, "XS trigger height", 0.75);
-  near(xsPanel.rect.h, 118, "puQEf multiple XS panel height", 2);
-  await shot("select-puqef-multiple-xs-open");
-  await clickTestId("story.select.multiple-xs");
+  near(xsPanel.rect.h, 120, "RYMhT multiple XS panel height", 2);
+  await shot("select-rymht-multiple-xs-open");
+  await clickSelectChevron("story.select.multiple-xs");
   await sleep(120);
-  await shot("select-puqef-multiple-xs-closed");
+  await shot("select-rymht-multiple-xs-closed");
 
   // XS searchable gets the same complete state sequence, including the
   // narrow trigger after a second tag is inserted.
-  await clickTestId("story.select.multiple-search-xs");
+  await clickSelectChevron("story.select.multiple-search-xs");
   await sleep(180);
-  await shot("select-puqef-multiple-search-xs-open");
-  await clickTestId("story.select.multiple-search-xs");
+  await shot("select-rymht-multiple-search-xs-open");
+  await clickSelectChevron("story.select.multiple-search-xs");
   await sleep(120);
-  await shot("select-puqef-multiple-search-xs-closed");
+  await shot("select-rymht-multiple-search-xs-closed");
   await clickTestId("story.select.multiple-search-xs.input");
   await sleep(180);
-  await shot("select-puqef-multiple-search-xs-focused-open");
+  await shot("select-rymht-multiple-search-xs-focused-open");
   await type_("3");
   await sleep(180);
-  await shot("select-puqef-multiple-search-xs-filtered-3");
+  await shot("select-rymht-multiple-search-xs-filtered-3");
   await clickTestId("story.select.multiple-search-xs.option-3");
   await sleep(150);
-  await shot("select-puqef-multiple-search-xs-selected-option-3");
-  await clickTestId("story.select.multiple-search-xs");
+  await shot("select-rymht-multiple-search-xs-selected-option-3");
+  await clickSelectChevron("story.select.multiple-search-xs");
   await sleep(120);
-  await shot("select-puqef-multiple-search-xs-reclosed");
+  await shot("select-rymht-multiple-search-xs-reclosed");
 });
 
 test("Menu: 交互 — 点开显示 items", async () => {
@@ -2652,32 +3073,57 @@ test("Menu: items 由 signal 驱动 — 换数组后重建，点新项拿到它�
 test("damage-rect: modal 内按钮悬停触发部分重绘（retained 层只重画脏区）", async () => {
   // scenario selection: retained only covers promoted overlay (normal content not promoted). Modal
   // content in layer, button hover only small bg delta -> per-item diff small dirty -> partial.
+  //
+  // The retained texture must still be resident when the hover frame renders. After 1 s without
+  // a GPU frame the runtime's idle trim releases the offscreen pool (by design), and the next
+  // frame repaints the layer in full. Fixed sleeps let that gap exceed 1 s whenever the machine
+  // is loaded (seen in a parallel run: partial 23 -> 23, one unprimed miss; reproduced every time
+  // with ZENIT_IDLE_TRIM_MS=300). Keep the frame loop running for the measurement and wait for
+  // states instead of sleeping.
   await switchTo("modal");
   const btn = await screenPos("story.modal.open");
   await clickAt(btn.x + btn.w / 2, btn.y + btn.h / 2);
-  await sleep(900); // wait entrance animation settle -> retained texture primed
-  const before = await stats();
-  const dlg = (await query("story.modal.dialog"))[0];
-  assert(dlg != null, "modal dialog 未打开");
-  const okBtn = await screenPos("story.modal.ok");
-  await mouseMove(okBtn.x + okBtn.w / 2, okBtn.y + okBtn.h / 2);
-  await sleep(400);
-  // screenshot is the presentation barrier for file-RPC. Reading stats before
-  // it races the renderer: the pointer command has been acknowledged, but the
-  // corresponding retained-surface frame may not have been published yet.
-  await shot("modal-hover-partial-repaint");
-  const after = await stats();
-  appendLog(
-    `  partial: ${before.retained_partial_repaints} -> ${after.retained_partial_repaints}; ` +
-    `hits ${before.retained_hits} -> ${after.retained_hits}; misses ${before.retained_misses} -> ${after.retained_misses}`,
-  );
-  // finish: click overlay blank to close modal (close_on_overlay), don't affect next test
-  await clickAt(1000, 60);
-  await sleep(500);
-  assert(
-    after.retained_partial_repaints > before.retained_partial_repaints,
-    `modal 内按钮悬停应触发 damage-rect 部分重绘 — partial_repaints ${before.retained_partial_repaints} -> ${after.retained_partial_repaints}`,
-  );
+  await request("POST", "/redraw", { continuous: true });
+  try {
+    const dlg = (await query("story.modal.dialog"))[0];
+    assert(dlg != null, "modal dialog 未打开");
+    // Settled and primed: the layer composites from its texture (hits grow) with no repaint.
+    let before = await stats();
+    const settleStart = Date.now();
+    const samples: string[] = [];
+    await waitFor(async () => {
+      await sleep(60); // continuous redraw: a few frames per sample
+      const now = await stats();
+      samples.push(`f${now.frame_count - before.frame_count}/h${now.retained_hits - before.retained_hits}/m${now.retained_misses - before.retained_misses}`);
+      const settled = now.retained_hits > before.retained_hits && now.retained_misses === before.retained_misses;
+      before = now;
+      return settled ? true : null;
+    }, getE2eTimeoutMs(5000), 0);
+    appendLog(`  settled in ${Date.now() - settleStart}ms: ${samples.join(" ")}`);
+    const okBtn = await screenPos("story.modal.ok");
+    await mouseMove(okBtn.x + okBtn.w / 2, okBtn.y + okBtn.h / 2);
+    let after = before;
+    await waitFor(async () => {
+      after = await stats();
+      return after.retained_partial_repaints > before.retained_partial_repaints ? true : null;
+    }, getE2eTimeoutMs(3000), 30).catch(() => {});
+    await shot("modal-hover-partial-repaint");
+    appendLog(
+      `  partial: ${before.retained_partial_repaints} -> ${after.retained_partial_repaints}; ` +
+      `hits ${before.retained_hits} -> ${after.retained_hits}; misses ${before.retained_misses} -> ${after.retained_misses}`,
+    );
+    assert(
+      after.retained_partial_repaints > before.retained_partial_repaints,
+      `modal 内按钮悬停应触发 damage-rect 部分重绘 — partial_repaints ${before.retained_partial_repaints} -> ${after.retained_partial_repaints}`,
+    );
+  } finally {
+    await request("POST", "/redraw", { continuous: false });
+    // click overlay blank to close modal (close_on_overlay), don't affect next test
+    await clickAt(1000, 60);
+    // The dialog node is reused across open/close; a closed modal reports visible=false.
+    await waitFor(async () => ((await query("story.modal.dialog"))[0]?.visible === false ? true : null), getE2eTimeoutMs(3000), 50)
+      .catch(() => appendLog("  modal did not close after the overlay click"));
+  }
 });
 
 // ── zindex: system z-index manager verification (tier baseline + overflow escape + nesting
@@ -3191,6 +3637,378 @@ test("GlassEdge: 贴窗口边缘的 glass 无黑边", async () => {
   appendLog(`  right-edge darkest=(${r},${g},${b})`);
   assert(r + g + b > 330, `right-edge 出现黑边 fringe: darkest=(${r},${g},${b})`);
   assert((await health()).status === "ok", "app died after glassedge");
+});
+
+// ── CJK weights: every glyph of a semibold Han line is heavier than the regular line ──
+// examples/storybook/cjk_weights: one 12-character Han line at 16pt in 400 / 600 / 700, in the UI
+// font and in a Latin-only family whose Han glyphs all come from a fallback face. Each full-width
+// glyph owns 1/12 of the line; its ink (background minus luma, summed) must grow with the weight
+// glyph by glyph. A fallback face shared between weights hands the regular bitmaps rasterized
+// first to the bold lines: those glyphs keep the regular ink (ratio ~1.0) while the rest are bold.
+test("CJK weights: every glyph of a semibold / bold Han line is heavier than the regular line", async () => {
+  await switchTo("cjkweights");
+  await settle(300);
+  const path = `${DIR}/story-cjkweights.png`;
+  await screenshot(path);
+  const png = decodePng(path);
+  const scale = decodedCaptureScale(png);
+  const glyphs = 12;
+  const inkPerGlyph = async (id: string): Promise<number[]> => {
+    const r = (await query(id))[0]?.rect;
+    assert(r != null && r.w > 0, `${id} missing`);
+    appendLog(`  ${id} rect=(${r.x},${r.y},${r.w},${r.h})`);
+    const bg = pixelRgb(png, scale, r.x - 4, r.y + r.h / 2);
+    const bgL = 0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2];
+    const out: number[] = [];
+    for (let i = 0; i < glyphs; i++) {
+      const x0 = Math.round((r.x + (r.w * i) / glyphs) * scale), x1 = Math.round((r.x + (r.w * (i + 1)) / glyphs) * scale);
+      const y0 = Math.floor(r.y * scale), y1 = Math.ceil((r.y + r.h) * scale);
+      let ink = 0;
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+        const k = (y * png.width + x) * png.channels;
+        ink += Math.max(0, bgL - (0.299 * png.pixels[k] + 0.587 * png.pixels[k + 1] + 0.114 * png.pixels[k + 2]));
+      }
+      out.push(ink);
+    }
+    return out;
+  };
+  const failures: string[] = [];
+  for (const family of ["system", "latin"]) {
+    const regular = await inkPerGlyph(`story.cjkweights.${family}.400`);
+    assert(regular.every((v) => v > 0), `${family}.400: a glyph cell has no ink`);
+    for (const weight of [600, 700]) {
+      const heavy = await inkPerGlyph(`story.cjkweights.${family}.${weight}`);
+      const ratios = heavy.map((v, i) => v / regular[i]);
+      appendLog(`  ${family} ${weight}/400 per glyph: ${ratios.map((q) => q.toFixed(2)).join(" ")}`);
+      ratios.forEach((q, i) => {
+        if (q < 1.1) failures.push(`${family} ${weight}: glyph ${i} (${"连接拒绝重新探测同意共享"[i]}) ink ${q.toFixed(2)}x the regular line`);
+      });
+    }
+  }
+  assert(failures.length === 0, `Han glyphs not heavier at the heavier weight:\n${failures.join("\n")}`);
+});
+
+// ── Per-corner overflow clip: rounded corners cut the square red fill, square corners keep it ──
+// Each specimen paints nothing itself; only its overflow clip can round the fill. Probes sit 2pt
+// and 5pt in from each corner along the diagonal: 2pt is outside every rounded corner (r >= 10),
+// 5pt is outside r=24 but inside r=10, so a swapped / half-turned / mirrored radius set fails.
+// The attached group's r=16 corners are probed at 2pt / 7pt instead: 5pt would sit only 0.44pt
+// inside that arc, less than a fractional layout origin snapped to the device grid plus the AA
+// ramp (seen on a 200% Windows display). The background reference is sampled left of the
+// attached group (the panel background).
+type Corner = "tl" | "tr" | "br" | "bl";
+type CornerExpect = Record<Corner, [boolean, boolean]>; // [clipped at 2pt, clipped at 5pt]
+function pixelRgb(png: ReturnType<typeof decodePng>, scale: number, x: number, y: number): [number, number, number] {
+  const px = Math.floor(x * scale), py = Math.floor(y * scale);
+  const i = (py * png.width + px) * png.channels;
+  return [png.pixels[i], png.pixels[i + 1], png.pixels[i + 2]];
+}
+function rgbDist(a: number[], b: number[]): number {
+  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+}
+/// Scrolls the story area until every listed node lies inside the window: below the title bar /
+/// floating toolbar and above the bottom edge, so pixel probes never read outside the capture.
+/// The window height is the platform's (about 845pt on a 1440x900 Windows 11 screen, taller on
+/// the macOS runners), never a constant.
+async function bringIntoView(ids: string[], margin = 8): Promise<void> {
+  const top = 60;
+  for (let i = 0; i < 30; i++) {
+    const vpH = (await tree()).rect.h;
+    let minY = Infinity, maxY = -Infinity, x = 0;
+    for (const id of ids) {
+      const r = (await query(id))[0]?.rect;
+      assert(r != null && r.w > 0, `${id} missing`);
+      if (r.y < minY) x = r.x + r.w / 2;
+      minY = Math.min(minY, r.y);
+      maxY = Math.max(maxY, r.y + r.h);
+    }
+    assert(maxY - minY + 2 * margin <= vpH - top, `nodes span ${(maxY - minY).toFixed(1)}pt; the ${vpH}pt window cannot show them at once`);
+    const below = maxY + margin - vpH, above = top + margin - minY;
+    if (below <= 0.5 && above <= 0.5) return;
+    await scrollAt(x, vpH / 2, 0, below > 0 ? -Math.min(120, below) : Math.min(120, above));
+    await sleep(120);
+  }
+  throw new Error(`could not scroll ${ids.join(", ")} into view`);
+}
+test("CornerClip: per-corner overflow clip on shader / fold / glass surface / nested layer / turned / mirrored paths", async () => {
+  await switchTo("cornerclip");
+  await settle(300);
+  const path = `${DIR}/story-cornerclip-probe.png`;
+  await screenshot(path);
+  const png = decodePng(path);
+  const scale = decodedCaptureScale(png);
+  const tl24_br10: CornerExpect = { tl: [true, true], tr: [false, false], br: [true, false], bl: [false, false] };
+  const turned: CornerExpect = { tl: [true, false], tr: [false, false], br: [true, true], bl: [false, false] };
+  const mirrored: CornerExpect = { tl: [false, false], tr: [true, true], br: [false, false], bl: [true, false] };
+  const groupInsets: [number, number] = [2, 7];
+  const cases: Array<[string, CornerExpect, [number, number]?]> = [
+    ["story.cornerclip.group.first", { tl: [true, false], tr: [false, false], br: [false, false], bl: [true, false] }, groupInsets],
+    ["story.cornerclip.group.middle", { tl: [false, false], tr: [false, false], br: [false, false], bl: [false, false] }, groupInsets],
+    ["story.cornerclip.group.last", { tl: [false, false], tr: [true, false], br: [true, false], bl: [false, false] }, groupInsets],
+    ["story.cornerclip.shader", tl24_br10],
+    ["story.cornerclip.fold", tl24_br10],
+    ["story.cornerclip.surface", tl24_br10],
+    ["story.cornerclip.nested", tl24_br10],
+    ["story.cornerclip.turned", turned],
+    ["story.cornerclip.turnedfold", turned],
+    ["story.cornerclip.mirrored", mirrored],
+  ];
+  const failures: string[] = [];
+  const groupFirst = (await query("story.cornerclip.group.first"))[0];
+  assert(groupFirst != null, "story.cornerclip.group.first missing");
+  const outside = pixelRgb(png, scale, groupFirst.rect.x - 6, groupFirst.rect.y + groupFirst.rect.h / 2);
+  for (const [id, expect, insets = [2, 5]] of cases) {
+    const node = (await query(id))[0];
+    assert(node != null && node.rect.w > 0, `${id} missing`);
+    const r = node.rect;
+    appendLog(`  ${id} rect=(${r.x},${r.y},${r.w},${r.h})`);
+    const inside = pixelRgb(png, scale, r.x + r.w / 2, r.y + r.h / 2);
+    assert(rgbDist(inside, outside) > 80, `${id}: fill ${inside} vs background ${outside} not distinguishable`);
+    const at: Record<Corner, (d: number) => [number, number]> = {
+      tl: (d) => [r.x + d, r.y + d],
+      tr: (d) => [r.x + r.w - d, r.y + d],
+      br: (d) => [r.x + r.w - d, r.y + r.h - d],
+      bl: (d) => [r.x + d, r.y + r.h - d],
+    };
+    for (const corner of ["tl", "tr", "br", "bl"] as Corner[]) {
+      insets.forEach((d, k) => {
+        const [x, y] = at[corner](d);
+        const got = pixelRgb(png, scale, x, y);
+        const clipped = expect[corner][k];
+        const want = clipped ? outside : inside;
+        const other = clipped ? inside : outside;
+        const ok = rgbDist(got, want) < 40 && rgbDist(got, other) > 60;
+        appendLog(`  ${id} ${corner}@${d}: ${got} expect ${clipped ? "clipped" : "kept"} ${ok ? "ok" : "FAIL"}`);
+        if (!ok) failures.push(`${id} ${corner}@${d}pt: got ${got}, want ${clipped ? "background" : "fill"} ${want}`);
+      });
+    }
+  }
+  assert(failures.length === 0, `per-corner clip mismatches:\n${failures.join("\n")}`);
+  assert((await health()).status === "ok", "app died after cornerclip");
+});
+
+// ── Nested shape clips intersect; oversized radii normalise identically on direct / offscreen paths ──
+// chain2: uniform r20 parent around a TR10-only child (same 100x40 box). The child's square TL must
+// still be cut by the parent's arc at 2pt / 5pt, while the part of that square corner inside the
+// parent arc (10pt) survives. chain3 / chain3fold: three nested owners each rounding one different
+// corner (TL / TR / BR = 20); every one of the three must cut, BL stays square. Probes at 2pt / 5pt
+// fall outside an r=20 arc (cut-off depth 5.86pt), 10pt falls inside it.
+// huge / hugefold / hugeblend / hugelayer: TL 9999 must normalise to 20 (half the 40pt side) on
+// the shader clip, the opacity-fold composite mask, the blend composite mask and the nested clip
+// layer composite mask alike; the TL corner cut-out of each path must match the analytic r=20
+// area and the direct path's.
+test("CornerClip: nested shape clips intersect and oversized radii normalise on every path", async () => {
+  await switchTo("cornerclip");
+  await settle(300);
+  const chainIds = ["story.cornerclip.chain2", "story.cornerclip.chain3", "story.cornerclip.chain3fold", "story.cornerclip.cross2",
+    "story.cornerclip.cross3", "story.cornerclip.huge", "story.cornerclip.hugefold", "story.cornerclip.hugeblend", "story.cornerclip.hugelayer"];
+  await bringIntoView(chainIds);
+  await settle(300);
+  const path = `${DIR}/story-cornerclip-chain.png`;
+  await screenshot(path);
+  const png = decodePng(path);
+  const scale = decodedCaptureScale(png);
+  // Background reference: left of chain2, the first specimen of its row (panel background).
+  const chainFirst = (await query("story.cornerclip.chain2"))[0];
+  assert(chainFirst != null, "story.cornerclip.chain2 missing");
+  const outside = pixelRgb(png, scale, chainFirst.rect.x - 6, chainFirst.rect.y + chainFirst.rect.h / 2);
+  type Probe = [Corner, number, boolean]; // corner, inset (pt) along the diagonal, clipped?
+  const cut = (c: Corner): Probe[] => [[c, 2, true], [c, 5, true], [c, 10, false]];
+  const kept = (c: Corner): Probe[] => [[c, 2, false], [c, 5, false]];
+  const cases: Array<[string, Probe[]]> = [
+    ["story.cornerclip.chain2", [...cut("tl"), ...cut("tr"), ...cut("br"), ...cut("bl")]],
+    ["story.cornerclip.chain3", [...cut("tl"), ...cut("tr"), ...cut("br"), ...kept("bl")]],
+    ["story.cornerclip.chain3fold", [...cut("tl"), ...cut("tr"), ...cut("br"), ...kept("bl")]],
+    // Crossing shapes (probes relative to the innermost owner): r20 parent cuts TL / BL, the
+    // child's own TR 12 cuts at 2pt only (reach 3.5pt), BR is square everywhere.
+    ["story.cornerclip.cross2", [...cut("tl"), ["tr", 2, true], ["tr", 5, false], ...kept("br"), ...cut("bl")]],
+    // Three crossing levels: TL 20 (grandparent), TR 16 of the 84pt middle owner reaching the 80pt
+    // child's TR corner (2pt cut, 5pt kept), the child's own BL 12 (2pt cut, 5pt kept).
+    ["story.cornerclip.cross3", [...cut("tl"), ["tr", 2, true], ["tr", 5, false], ...kept("br"), ["bl", 2, true], ["bl", 5, false]]],
+    ["story.cornerclip.huge", [...cut("tl"), ...kept("tr"), ...kept("br"), ...kept("bl")]],
+    ["story.cornerclip.hugefold", [...cut("tl"), ...kept("tr"), ...kept("br"), ...kept("bl")]],
+    ["story.cornerclip.hugeblend", [...cut("tl"), ...kept("tr"), ...kept("br"), ...kept("bl")]],
+    ["story.cornerclip.hugelayer", [...cut("tl"), ...kept("tr"), ...kept("br"), ...kept("bl")]],
+  ];
+  const failures: string[] = [];
+  const rects: Record<string, { x: number; y: number; w: number; h: number }> = {};
+  const fills: Record<string, number[]> = {};
+  for (const [id, probes] of cases) {
+    const node = (await query(id))[0];
+    assert(node != null && node.rect.w > 0, `${id} missing`);
+    const r = node.rect;
+    rects[id] = r;
+    appendLog(`  ${id} rect=(${r.x},${r.y},${r.w},${r.h})`);
+    const inside = pixelRgb(png, scale, r.x + r.w / 2, r.y + r.h / 2);
+    fills[id] = inside;
+    assert(rgbDist(inside, outside) > 80, `${id}: fill ${inside} vs background ${outside} not distinguishable`);
+    const at: Record<Corner, (d: number) => [number, number]> = {
+      tl: (d) => [r.x + d, r.y + d],
+      tr: (d) => [r.x + r.w - d, r.y + d],
+      br: (d) => [r.x + r.w - d, r.y + r.h - d],
+      bl: (d) => [r.x + d, r.y + r.h - d],
+    };
+    for (const [corner, d, clipped] of probes) {
+      const [x, y] = at[corner](d);
+      const got = pixelRgb(png, scale, x, y);
+      const want = clipped ? outside : inside;
+      const other = clipped ? inside : outside;
+      const ok = rgbDist(got, want) < 40 && rgbDist(got, other) > 60;
+      appendLog(`  ${id} ${corner}@${d}: ${got} expect ${clipped ? "clipped" : "kept"} ${ok ? "ok" : "FAIL"}`);
+      if (!ok) failures.push(`${id} ${corner}@${d}pt: got ${got}, want ${clipped ? "background" : "fill"} ${want}`);
+    }
+  }
+  // TL corner cut-out area, in device px²: sum the fill coverage (0 = background, 1 = fill) over a
+  // window that starts in the background above-left of the owner and ends inside its fill; the
+  // fill's area there is the window part right/below the owner's (fractional) edge minus the
+  // rounded corner's cut-out. Exact up to AA rounding and independent of where the owner falls on
+  // the pixel grid, so direct and offscreen paths compare 1:1. r = 20pt: (1 - π/4)·(20·scale)².
+  const cutout = (id: string): number => {
+    const r = rects[id];
+    const fill = fills[id];
+    const axis = [fill[0] - outside[0], fill[1] - outside[1], fill[2] - outside[2]];
+    const len2 = axis[0] ** 2 + axis[1] ** 2 + axis[2] ** 2;
+    const x0 = Math.floor(r.x * scale) - 2, y0 = Math.floor(r.y * scale) - 2;
+    const x1 = Math.floor((r.x + 30) * scale), y1 = Math.floor((r.y + 30) * scale);
+    let sum = 0;
+    for (let py = y0; py < y1; py++) {
+      for (let px = x0; px < x1; px++) {
+        const k = (py * png.width + px) * png.channels;
+        const p = [png.pixels[k] - outside[0], png.pixels[k + 1] - outside[1], png.pixels[k + 2] - outside[2]];
+        sum += Math.min(1, Math.max(0, (p[0] * axis[0] + p[1] * axis[1] + p[2] * axis[2]) / len2));
+      }
+    }
+    return (x1 - r.x * scale) * (y1 - r.y * scale) - sum;
+  };
+  const expected = (1 - Math.PI / 4) * (20 * scale) ** 2;
+  const direct = cutout("story.cornerclip.huge");
+  appendLog(`  huge TL cut-out ${direct.toFixed(1)}px² (analytic r=20: ${expected.toFixed(1)}px²)`);
+  if (Math.abs(direct - expected) > 0.06 * expected) failures.push(`story.cornerclip.huge: TL cut-out ${direct.toFixed(1)}px², want ${expected.toFixed(1)}px² (radius not normalised to 20pt)`);
+  for (const id of ["story.cornerclip.hugefold", "story.cornerclip.hugeblend", "story.cornerclip.hugelayer"]) {
+    const area = cutout(id);
+    appendLog(`  ${id} TL cut-out ${area.toFixed(1)}px² vs direct ${direct.toFixed(1)}px²`);
+    if (Math.abs(area - direct) > 0.06 * expected) failures.push(`${id}: TL cut-out ${area.toFixed(1)}px² diverges from the direct clip's ${direct.toFixed(1)}px²`);
+  }
+  assert(failures.length === 0, `nested / oversized clip mismatches:\n${failures.join("\n")}`);
+  assert((await health()).status === "ok", "app died after cornerclip chain");
+});
+
+// ── Glass material corners normalise like every clip ──
+// The glass shape used to keep its own radius model: a "-1 = uniform" sentinel turned a negative /
+// NaN first corner into an all-round glass, and the blur-only glass shader drew only the largest
+// corner (TL 9999 -> a full pill). Each specimen is a bright glass (white surface veil) on a dark
+// backdrop. Glass-only specimens: the silhouette must cut exactly the corners the radii name.
+// "clip" twins add a square red fill under the owner's overflow clip: a cut corner must show the
+// backdrop (the glass under it is cut the same way), a kept corner the fill. TL 9999 must cut the
+// analytic r=20 area on the glass as on the clip; a 9999 pill must match the exact r=20 pill; 0 / 2
+// wide slivers must draw nothing outside their rect and keep the app alive.
+test("GlassRadii: glass shape, content clip and oversized / negative radii normalise identically", async () => {
+  await switchTo("cornerclip");
+  await settle(300);
+  await bringIntoView(["story.cornerclip.glassneg", "story.cornerclip.glassnegclip", "story.cornerclip.glasshuge",
+    "story.cornerclip.glasshugeclip", "story.cornerclip.glasspillhuge", "story.cornerclip.glasspillexact"], 12);
+  await settle(400);
+  const path = `${DIR}/story-cornerclip-glass.png`;
+  await screenshot(path);
+  const png = decodePng(path);
+  const scale = decodedCaptureScale(png);
+  const rectOf = async (id: string) => {
+    const node = (await query(id))[0];
+    assert(node != null && node.rect.w >= 0, `${id} missing`);
+    return node.rect;
+  };
+  const neg = await rectOf("story.cornerclip.glassneg");
+  const backdrop = pixelRgb(png, scale, neg.x - 5, neg.y + neg.h / 2);
+  const glass = pixelRgb(png, scale, neg.x + neg.w / 2, neg.y + neg.h / 2);
+  appendLog(`  backdrop=${backdrop} glass=${glass}`);
+  assert(rgbDist(glass, backdrop) > 120, `glass ${glass} vs backdrop ${backdrop} not distinguishable`);
+  type Probe = [Corner, number, boolean]; // corner, inset (pt) along the diagonal, cut?
+  const cut = (c: Corner): Probe[] => [[c, 2, true], [c, 5, true], [c, 10, false]];
+  const kept = (c: Corner): Probe[] => [[c, 2, false], [c, 5, false]];
+  const negProbes = [...kept("tl"), ...cut("tr"), ...kept("br"), ...kept("bl")];
+  const hugeProbes = [...cut("tl"), ...kept("tr"), ...kept("br"), ...kept("bl")];
+  const pillProbes = [...cut("tl"), ...cut("tr"), ...cut("br"), ...cut("bl")];
+  const cases: Array<[string, Probe[], boolean]> = [
+    ["story.cornerclip.glassneg", negProbes, false],
+    ["story.cornerclip.glassnegclip", negProbes, true],
+    ["story.cornerclip.glasshuge", hugeProbes, false],
+    ["story.cornerclip.glasshugeclip", hugeProbes, true],
+    ["story.cornerclip.glasspillhuge", pillProbes, false],
+    ["story.cornerclip.glasspillexact", pillProbes, false],
+  ];
+  const failures: string[] = [];
+  const rects: Record<string, { x: number; y: number; w: number; h: number }> = {};
+  for (const [id, probes, filled] of cases) {
+    const r = await rectOf(id);
+    rects[id] = r;
+    const inside = pixelRgb(png, scale, r.x + r.w / 2, r.y + r.h / 2);
+    appendLog(`  ${id} rect=(${r.x},${r.y},${r.w},${r.h}) inside=${inside}`);
+    if (rgbDist(inside, backdrop) < 120) failures.push(`${id}: inside ${inside} indistinguishable from backdrop ${backdrop}`);
+    const at: Record<Corner, (d: number) => [number, number]> = {
+      tl: (d) => [r.x + d, r.y + d],
+      tr: (d) => [r.x + r.w - d, r.y + d],
+      br: (d) => [r.x + r.w - d, r.y + r.h - d],
+      bl: (d) => [r.x + d, r.y + r.h - d],
+    };
+    for (const [corner, d, isCut] of probes) {
+      const [x, y] = at[corner](d);
+      const got = pixelRgb(png, scale, x, y);
+      const want = isCut ? backdrop : inside;
+      const other = isCut ? inside : backdrop;
+      const ok = rgbDist(got, want) < 60 && rgbDist(got, other) > 60;
+      appendLog(`  ${id} ${corner}@${d}: ${got} expect ${isCut ? "cut" : "kept"} ${ok ? "ok" : "FAIL"}`);
+      if (!ok) failures.push(`${id} ${corner}@${d}pt: got ${got}, want ${isCut ? "backdrop" : filled ? "fill" : "glass"} ${want}`);
+    }
+  }
+  // TL cut-out area in device px² (see the oversized clip test above): glass and clip cut r = 20.
+  const cutout = (id: string, inside: number[]): number => {
+    const r = rects[id];
+    const axis = [inside[0] - backdrop[0], inside[1] - backdrop[1], inside[2] - backdrop[2]];
+    const len2 = axis[0] ** 2 + axis[1] ** 2 + axis[2] ** 2;
+    const x0 = Math.floor(r.x * scale) - 2, y0 = Math.floor(r.y * scale) - 2;
+    const x1 = Math.floor((r.x + 30) * scale), y1 = Math.floor((r.y + 30) * scale);
+    let sum = 0;
+    for (let py = y0; py < y1; py++) {
+      for (let px = x0; px < x1; px++) {
+        const k = (py * png.width + px) * png.channels;
+        const p = [png.pixels[k] - backdrop[0], png.pixels[k + 1] - backdrop[1], png.pixels[k + 2] - backdrop[2]];
+        sum += Math.min(1, Math.max(0, (p[0] * axis[0] + p[1] * axis[1] + p[2] * axis[2]) / len2));
+      }
+    }
+    return (x1 - r.x * scale) * (y1 - r.y * scale) - sum;
+  };
+  const expected = (1 - Math.PI / 4) * (20 * scale) ** 2;
+  for (const id of ["story.cornerclip.glasshuge", "story.cornerclip.glasshugeclip"]) {
+    const r = rects[id];
+    const area = cutout(id, pixelRgb(png, scale, r.x + r.w / 2, r.y + r.h / 2));
+    appendLog(`  ${id} TL cut-out ${area.toFixed(1)}px² (analytic r=20: ${expected.toFixed(1)}px²)`);
+    if (Math.abs(area - expected) > 0.1 * expected) failures.push(`${id}: TL cut-out ${area.toFixed(1)}px², want ${expected.toFixed(1)}px²`);
+  }
+  // Pill 9999 == pill 20: same silhouette, pixel for pixel up to grid phase.
+  {
+    const a = rects["story.cornerclip.glasspillhuge"], b = rects["story.cornerclip.glasspillexact"];
+    let sum = 0, n = 0, worst = 0;
+    for (let y = 0; y < a.h; y += 0.5) {
+      for (let x = 0; x < a.w; x += 0.5) {
+        const pa = pixelRgb(png, scale, a.x + x, a.y + y), pb = pixelRgb(png, scale, b.x + x, b.y + y);
+        const dd = rgbDist(pa, pb);
+        sum += dd; n++; worst = Math.max(worst, dd);
+      }
+    }
+    appendLog(`  pill 9999 vs pill 20: mean ${(sum / n).toFixed(2)} max ${worst.toFixed(1)}`);
+    if (sum / n > 3) failures.push(`pill 9999 differs from pill 20: mean ${(sum / n).toFixed(2)}`);
+  }
+  // Slivers: nothing outside their rect (probe the backdrop 6pt to either side).
+  for (const id of ["story.cornerclip.glasssliver0", "story.cornerclip.glasssliver2"]) {
+    const r = await rectOf(id);
+    for (const dx of [-6, r.w + 6]) {
+      const got = pixelRgb(png, scale, r.x + dx, r.y + r.h / 2);
+      appendLog(`  ${id} @${dx}: ${got}`);
+      if (rgbDist(got, backdrop) > 30) failures.push(`${id}: glass leaked to x${dx >= 0 ? "+" : ""}${dx}pt (${got})`);
+    }
+  }
+  assert(failures.length === 0, `glass corner mismatches:\n${failures.join("\n")}`);
+  assert((await health()).status === "ok", "app died after cornerclip glass");
 });
 
 test("GlassIslands: 同帧两个 blur+rounded_clip 岛都必须显示内容", async () => {
@@ -4266,7 +5084,14 @@ test("CanvasEvents: scroll 修饰键 + magnify + drag + 剪贴板 PNG 回环", a
   assert(texts.join(" ").includes("dropped"), `drag 应收到 dropped (got: ${texts.join(" ")})`);
   assert(texts.join(" ").includes("/tmp/fake-image.png"), `dropped 应携带路径 (got: ${texts.join(" ")})`);
 
-  // clipboard PNG loop: write 2x2 red PNG -> probe/count/read full chain
+  // clipboard PNG loop: write 2x2 red PNG -> probe/count/read full chain. With a private
+  // pasteboard (ZENIT_E2E_PASTEBOARD, set per instance by run_storybook_e2e.sh) the round trip
+  // must not touch the system clipboard: parallel instances would race on it, and a test run
+  // must not overwrite the developer's clipboard.
+  const privatePasteboard = process.platform === "darwin" && !!process.env.ZENIT_E2E_PASTEBOARD;
+  const generalChangeCount = () => Number(execFileSync("osascript", ["-l", "JavaScript", "-e",
+    'ObjC.import("AppKit"); $.NSPasteboard.generalPasteboard.changeCount'], { encoding: "utf8" }).trim());
+  const generalBefore = privatePasteboard ? generalChangeCount() : 0;
   await clickTestId("story.canvasevents.clipbtn");
   await sleep(400);
   texts = [];
@@ -4276,6 +5101,11 @@ test("CanvasEvents: scroll 修饰键 + magnify + drag + 剪贴板 PNG 回环", a
   assert(clip.includes("image=true"), `probe 应报告 image (got: ${clip})`);
   assert(clip.includes("2x2"), `应读回 2x2 图片 (got: ${clip})`);
   assert(clip.includes("px_ok=true"), `像素应为纯红 premultiplied (got: ${clip})`);
+  if (privatePasteboard) {
+    const generalAfter = generalChangeCount();
+    appendLog(`  general pasteboard changeCount ${generalBefore} -> ${generalAfter} (private: ${process.env.ZENIT_E2E_PASTEBOARD})`);
+    assert(generalAfter === generalBefore, `剪贴板回环写进了系统剪贴板（changeCount ${generalBefore} -> ${generalAfter}），应只写实例私有 pasteboard`);
+  }
   await shot("canvasevents");
   assert((await health()).status === "ok", "app died after canvasevents");
 });
@@ -4494,6 +5324,14 @@ test("RTL: 窄宽换行的 caret、selection rect 与 hit-testing 共用视觉�
   const initial = await inputState("story.rtl.editor");
   assert((initial.display_line_count ?? 0) >= 2, `RTL 编辑器没有触发 soft wrap: ${initial.display_line_count}`);
 
+  assert(initial.line_height && initial.padding_v != null, "missing textarea line metrics");
+  // RYMhT changed padding/line height; fixed y+30 now hits row 0.
+  // Derive click centers without changing the story width or weakening row assertions.
+  const lineHeight = initial.line_height!;
+  const firstY = rect.y + initial.padding_v! + lineHeight / 2;
+  const secondY = firstY + lineHeight;
+  appendLog(`  RTL geometry: rect=${JSON.stringify(rect)} lineHeight=${lineHeight} padding=${initial.padding_v} rows=${initial.display_line_count}`);
+
   const graphemeBoundaries = new Set<number>([0]);
   const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
   const encoder = new TextEncoder();
@@ -4515,17 +5353,29 @@ test("RTL: 窄宽换行的 caret、selection rect 与 hit-testing 共用视觉�
   };
 
   // same RTL visual line both sides, soft-wrap next visual line.
-  const left = await clickAndRead(rect.x + rect.w * 0.28, rect.y + 10);
-  const right = await clickAndRead(rect.x + rect.w * 0.72, rect.y + 10);
-  const wrapped = await clickAndRead(rect.x + rect.w * 0.38, rect.y + 30);
+  const left = await clickAndRead(rect.x + rect.w * 0.28, firstY);
+  const right = await clickAndRead(rect.x + rect.w * 0.72, firstY);
+  const wrapped = await clickAndRead(rect.x + rect.w * 0.38, secondY);
   assert(left.cursor_pos !== right.cursor_pos, "同一 RTL 行左右 hit-test 映射到了同一逻辑位置");
   assert(left.cursor_rect!.x < right.cursor_rect!.x, "caret rect 的视觉 x 顺序与点击方向相反");
   assert(wrapped.cursor_rect!.y > left.cursor_rect!.y + 8, "soft-wrap 后行首/行尾仍映射到上一视觉行");
 
+  // Exercise the two physical carets at soft-wrap boundaries as well as interior text.
+  // Far-left/right clicks clamp to visual endpoints; they must retain the clicked row.
+  for (const y of [firstY, secondY]) {
+    for (const x of [rect.x + initial.padding_h!, rect.x + rect.w - initial.padding_h!]) {
+      await clickAt(x, y);
+      const endpoint = await inputState("story.rtl.editor");
+      assert(graphemeBoundaries.has(endpoint.cursor_pos), "endpoint hit split a grapheme");
+      assert(endpoint.cursor_rect && Math.abs(endpoint.cursor_rect.y + endpoint.cursor_rect.h / 2 - y) < 3,
+        `soft-wrap endpoint mapped to another visual row: click=(${x},${y}) state=${JSON.stringify(endpoint)}`);
+    }
+  }
+
   // drag-select across visual lines; selection may split into multiple non-contiguous rects by bidi
   // run.
-  const dragStart = { x: rect.x + rect.w * 0.24, y: rect.y + 10 };
-  const dragEnd = { x: rect.x + rect.w * 0.76, y: rect.y + 30 };
+  const dragStart = { x: rect.x + rect.w * 0.24, y: firstY };
+  const dragEnd = { x: rect.x + rect.w * 0.76, y: secondY };
   await mouseDown(dragStart.x, dragStart.y);
   await mouseMove((dragStart.x + dragEnd.x) / 2, (dragStart.y + dragEnd.y) / 2);
   await mouseMove(dragEnd.x, dragEnd.y);
@@ -4757,6 +5607,101 @@ test("IME: Input preedit 取消 —— 空 preedit / 切走焦点都不留脏文
   assert(!vis2.includes("canceled"), `失焦后 marked text 仍在渲染文本里 — 实际: "${vis2}"`);
 
   await shot("ime-input-cancel");
+});
+
+// ── Input viewport (LC3 regressions; also the Windows text-input / edge-drag stages) ──
+// The editing viewport is the field's content box whatever the value is: the unscrolled long
+// value at Home must not widen the content slot (CSS automatic minimum), or End lands on a
+// shorter scroll, the text paints past the frame and a held edge drag never scrolls.
+
+async function longInputValue(testId: string, value: string) {
+  await clearInput(testId);
+  await imeCommit(value);
+  await sleep(120);
+  const state = await inputState(testId);
+  assert(state.buffer === value && state.cursor_pos === value.length, `long value not committed: ${JSON.stringify(state)}`);
+  return state;
+}
+
+test("Input: long value keeps the field width; Home / End restore the viewport", async () => {
+  await switchTo("input");
+  const field = (await query("story.input.name.input"))[0].rect;
+  const end = await longInputValue("story.input.name", "abcdefghijklmnopqrstuvwxyz".repeat(4));
+  assert(end.scroll_x > 100, `caret did not scroll: ${end.scroll_x}`);
+  await key("home");
+  await sleep(120);
+  const home = await inputState("story.input.name");
+  assert(home.cursor_pos === 0 && home.scroll_x === 0, `Home did not reset the viewport: ${JSON.stringify(home)}`);
+  const atHome = (await query("story.input.name.input"))[0].rect;
+  assert(Math.abs(atHome.w - field.w) < 0.5, `field resized with its value: ${field.w} -> ${atHome.w}`);
+  await key("end");
+  await sleep(120);
+  const restored = await inputState("story.input.name");
+  assert(restored.cursor_pos === end.cursor_pos && Math.abs(restored.scroll_x - end.scroll_x) < 1,
+    `End did not restore the viewport: typed=${end.scroll_x} restored=${restored.scroll_x}`);
+  const caret = restored.cursor_rect!;
+  assert(caret && caret.w > 0 && caret.x >= field.x && caret.x <= field.x + field.w,
+    `caret left the field: ${JSON.stringify({ caret, field })}`);
+});
+
+test("Input: pointer drag selects an interior range in both directions", async () => {
+  await switchTo("input");
+  const value = "abcdefghijklmnopqrstuvwxyz";
+  for (const reverse of [false, true]) {
+    await longInputValue("story.input.name", value);
+    const endCaret = (await inputState("story.input.name")).cursor_rect!;
+    await key("home");
+    const homeCaret = (await inputState("story.input.name")).cursor_rect!;
+    assert(endCaret.x - homeCaret.x > 100, `value too short for the gesture: ${JSON.stringify({ homeCaret, endCaret })}`);
+    await sleep(500); // not a double click on the focus click
+    const span = endCaret.x - homeCaret.x, y = homeCaret.y + homeCaret.h / 2;
+    const left = homeCaret.x + span * 0.2, right = homeCaret.x + span * 0.8;
+    const from = reverse ? right : left, to = reverse ? left : right;
+    assert((await mouseDown(from, y)).ok, "drag press failed");
+    try {
+      await mouseMove((from + to) / 2, y);
+      await mouseMove(to, y);
+    } finally {
+      await mouseUp(to, y);
+    }
+    const state = await inputState("story.input.name");
+    const anchor = state.anchor ?? -1;
+    assert(anchor >= 0 && (reverse ? anchor > state.cursor_pos : anchor < state.cursor_pos), `drag direction: ${JSON.stringify(state)}`);
+    const lo = Math.min(anchor, state.cursor_pos), hi = Math.max(anchor, state.cursor_pos);
+    assert(lo > 0 && hi < value.length && hi - lo >= 10, `drag did not select an interior range: ${JSON.stringify(state)}`);
+    await key("delete");
+    const after = await inputState("story.input.name");
+    assert(after.buffer === value.slice(0, lo) + value.slice(hi) && after.cursor_pos === lo && after.anchor === -1,
+      `drag deleted a different range: ${JSON.stringify(after)}`);
+  }
+});
+
+test("Input: a stationary drag past either edge keeps scrolling and stops on release", async () => {
+  await switchTo("input");
+  await longInputValue("story.input.name", "abcdefghijklmnopqrstuvwxyz".repeat(20));
+  const r = (await query("story.input.name.input"))[0].rect, y = r.y + r.h / 2;
+  for (const reverse of [false, true]) {
+    await key(reverse ? "end" : "home");
+    await sleep(500);
+    const start = reverse ? r.x + r.w - 40 : r.x + 40, outside = reverse ? r.x - 30 : r.x + r.w + 30;
+    assert((await mouseDown(start, y)).ok, "edge drag press failed");
+    try {
+      await mouseMove(outside, y);
+      const before = await inputState("story.input.name");
+      await sleep(600); // no pointer events while held outside
+      const after = await inputState("story.input.name");
+      assert(after.anchor === before.anchor && (after.anchor ?? -1) >= 0, `autoscroll moved the anchor: ${JSON.stringify({ before, after })}`);
+      assert(reverse ? after.cursor_pos < before.cursor_pos : after.cursor_pos > before.cursor_pos,
+        `stationary drag stopped selecting: ${JSON.stringify({ reverse, before: before.cursor_pos, after: after.cursor_pos, scroll: [before.scroll_x, after.scroll_x] })}`);
+      assert(reverse ? after.scroll_x < before.scroll_x : after.scroll_x > before.scroll_x, "viewport did not follow the drag");
+    } finally {
+      await mouseUp(outside, y);
+    }
+    const released = await inputState("story.input.name");
+    await sleep(250);
+    const stopped = await inputState("story.input.name");
+    assert(released.cursor_pos === stopped.cursor_pos && released.scroll_x === stopped.scroll_x, "drag continued after release");
+  }
 });
 
 test("IME: Textarea 多行 —— 换行边界处 preedit/commit 正确", async () => {
@@ -5235,16 +6180,44 @@ const GPU_P95_BUDGET_US = 8000;
 // Skip sample count -> fake 'always green' gate.
 const MIN_TIMING_SAMPLES = 30;
 
-for (const key of ["datatable", "virtuallist"]) {
+/// The story's scrollable list: the first VirtualList node (rect + its visible row labels).
+function findVirtualList(node: any): any {
+  if (node?.component === "VirtualList") return node;
+  for (const c of node?.children ?? []) {
+    const hit = findVirtualList(c);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+async function virtualListState(): Promise<{ rect: any; labels: string }> {
+  const list = findVirtualList(await tree());
+  assert(list?.rect, "story has no VirtualList to scroll");
+  const texts: string[] = [];
+  collectText(list, texts);
+  return { rect: list.rect, labels: texts.join(" | ") };
+}
+
+// The wheel goes to the story's own list (virtuallist: the 1000-row VirtualList; table: the
+// virtual Table body). A wheel over content that cannot scroll renders no frame, so the load must
+// come from content that really moves; the gate first proves it does.
+for (const key of ["table", "virtuallist"]) {
   test(`perf gate: ${key} 滚动 GPU 帧时间 P95 < ${GPU_P95_BUDGET_US}us`, async () => {
     await switchTo(key);
     await sleep(700); // Wait entrance/layout settle, avoid first-frame PSO compile tainting sample
+    const before = await virtualListState();
+    const x = before.rect.x + before.rect.w / 2;
+    const y = before.rect.y + before.rect.h / 2;
     await resetTiming(); // Clear loop -> P95 only counts this scenario's frames
     // Generate real scroll load (retained layer repaint + path/text pipeline). Scroll down then up,
     // content always moving: wheel stops at boundary = no frame = insufficient sample.
     for (let i = 0; i < 40; i++) {
-      await scrollAt(700, 400, 0, i < 20 ? -60 : 60);
+      await scrollAt(x, y, 0, i < 20 ? -60 : 60);
       await sleep(25);
+      if (i === 19) {
+        const moved = await virtualListState();
+        assert(moved.labels !== before.labels, `滚轮没有移动 ${key} 的列表内容（目标点 ${x},${y}）— 负载不成立`);
+      }
     }
     const s = await stats();
     appendLog(
@@ -5266,7 +6239,7 @@ for (const key of ["datatable", "virtuallist"]) {
       `GPU 帧时间回退：${key} 滚动 gpu_p95=${s.gpu_p95_us}us 超预算 ${GPU_P95_BUDGET_US}us ` +
       `(本机基线 ~1.2-1.8ms)。细分见 log 的 layout/render_gen/encode。`,
     );
-  });
+  }, { serial: "asserts a GPU frame-time P95 budget; other instances sharing the GPU inflate it" });
 }
 
 test("Surface: resize 后 screenshot readback 仍有效（usage 单一出口回归）", async () => {
@@ -5444,7 +6417,7 @@ test("View DSL: each/show/match/sva 混排——增删、切页、variant 样式
   const bgDone = await rowBg("done");
   const diff = Math.max(...bgBefore.map((c, i) => Math.abs(c - bgDone[i])));
   appendLog(`  [viewdsl] row bg before=(${bgBefore.join(",")}) done=(${bgDone.join(",")}) diff=${diff}`);
-  assert(diff >= 8, `done 后行背景应切到 success_subtle，实际几乎没变: ${diff}`);
+  assert(diff >= 5 && bgDone[1] - bgDone[0] >= 8, `done 后行背景应切到 success_subtle（绿色通道领先），实际 diff=${diff} bg=(${bgDone.join(",")})`);
 
   // New: row 4 appears in list, list still above footer
   await clickText(ROOT, "Add todo");
@@ -5504,6 +6477,53 @@ test("Form Composition: same-size Input/Select/Button share height and center li
   await shot("formcompose-alignment");
 });
 
+test("Form Composition: a long Select label ellipsizes in the trigger and the list keeps its check", async () => {
+  await switchTo("formcompose");
+  await clickTestId("story.formcompose.md.owner");
+  await waitFor(async () => (await query("story.formcompose.md.owner.panel"))[0] ?? null, 2500, 40);
+  await settle(250);
+  await clickText("story.formcompose.md.owner.panel", "Assigned to me");
+  await settle(250);
+  const trigger = (await query("story.formcompose.md.owner"))[0];
+  const label = findByText(trigger, "Assigned to me");
+  assert(label != null, "trigger 里缺 Assigned to me 文本");
+  assert(label!.x + label!.w <= trigger.rect.x + trigger.rect.w, `trigger 文本溢出: ${JSON.stringify(label)} vs ${JSON.stringify(trigger.rect)}`);
+  await clickTestId("story.formcompose.md.owner");
+  const panel = await waitFor(async () => (await query("story.formcompose.md.owner.panel"))[0] ?? null, 2500, 40);
+  await settle(250);
+  const row = findByText(panel, "Assigned to me");
+  assert(row != null, "面板里缺 Assigned to me");
+  // The trailing check (16px) must still fit inside the panel after the label ellipsizes.
+  assert(row!.x + row!.w + 16 <= panel.rect.x + panel.rect.w, `选项文本把对勾挤出面板: ${JSON.stringify(row)} vs ${JSON.stringify(panel.rect)}`);
+  // panel_width = .content: the panel sizes to its rows instead of the 150px trigger.
+  assert(panel.rect.w > trigger.rect.w, `内容宽面板应比 trigger 宽: ${panel.rect.w} vs ${trigger.rect.w}`);
+  await shot("formcompose-owner-ellipsis");
+  await key("Escape");
+  await settle(250);
+});
+
+test("Select: overflowing multi-select chips scroll sideways inside the trigger", async () => {
+  await switchTo("select");
+  await waitFor(async () => (await query("story.select.multi-open.panel"))[0] ?? null, 2500, 40);
+  await settle(250);
+  await clickText("story.select.multi-open.panel", "Marketing");
+  await settle(250);
+  const trigger = (await query("story.select.multi-open"))[0];
+  const before = findByText(trigger, "Marketing");
+  assert(before != null, "trigger 里缺 Marketing 标签");
+  assert(before!.x + before!.w > trigger.rect.x + trigger.rect.w - 32, `三个标签应当溢出 trigger: ${JSON.stringify(before)} vs ${JSON.stringify(trigger.rect)}`);
+  await scrollAt(trigger.rect.x + 60, trigger.rect.y + trigger.rect.h / 2, -400, 0);
+  await settle(250);
+  const scrolled = findByText((await query("story.select.multi-open"))[0], "Marketing");
+  assert(scrolled!.x < before!.x - 10, `横向滚动后标签应左移: ${before!.x} -> ${scrolled!.x}`);
+  await shot("select-multi-open-chips-scrolled");
+  await scrollAt(trigger.rect.x + 60, trigger.rect.y + trigger.rect.h / 2, 400, 0);
+  await settle(250);
+  const back = findByText((await query("story.select.multi-open"))[0], "Marketing");
+  assert(Math.abs(back!.x - before!.x) < 0.5, `滚回起点后标签应复位: ${before!.x} -> ${back!.x}`);
+  await shot("select-multi-open-chips-start");
+});
+
 test("绘制不变式：整轮 storybook 没有任何节点在一帧里重复发射同一填充", async () => {
   // Per-frame self-check cumulative count (see ui core/paint_invariants.zig): after all stories and
   // interactions must remain 0. Non-zero = some cache replay/re-record path sent own content twice
@@ -5511,7 +6531,7 @@ test("绘制不变式：整轮 storybook 没有任何节点在一帧里重复发
   const st = await stats();
   appendLog(`  paint_duplicate_fills(total)=${st.paint_duplicate_fills} last_node=${st.paint_duplicate_node}`);
   assert(st.paint_duplicate_fills === 0, `整轮出现 ${st.paint_duplicate_fills} 次重复发射（最近的节点 ${st.paint_duplicate_node}）；用 ZENIT_DEBUG_CMDSTREAM 看是哪帧哪个节点`);
-});
+}, { final: true }); // the counter covers everything this app instance ran before it
 
 
 // Metal's per-command-buffer native counter includes the header host as well

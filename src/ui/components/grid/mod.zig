@@ -33,6 +33,7 @@ const state_mod = @import("state.zig");
 pub const GridProps = state_mod.GridProps;
 pub const GridState = state_mod.GridState;
 pub const CellRenderFn = state_mod.CellRenderFn;
+pub const ScopedCellRenderFn = state_mod.ScopedCellRenderFn;
 pub const CellBinding = state_mod.CellBinding;
 pub const VisibleRange = state_mod.VisibleRange;
 pub const ExternalRowWindow = state_mod.ExternalRowWindow;
@@ -84,15 +85,17 @@ pub const GridBuilder = struct {
     /// `ui.view` integration: the cell function returns a view element, used as a direct ui.view
     /// child: `W.Grid(.{ .row_count = r, .col_count = c, .col_widths = &ws }).cells(ctx, cell)`.
     /// Cell function: `fn (Ctx, row: usize, col: usize) E` / `fn (usize, usize) E` (ctx {}),
-    /// or component `fn (Ctx, usize, usize, *Scope, *Cx) !*Node`. Each cell gets a child scope at
-    /// the root: a pool cell swap rebind/refresh (clear-then-render) destroys the scope and its
-    /// contained effects.
+    /// or component `fn (Ctx, usize, usize, *Scope, *Cx) !*Node`. Each cell's content gets a child
+    /// scope of the grid's own scope, bound to the content root: a pool cell swap rebind/refresh
+    /// (clear-then-render) destroys the scope and its contained effects, and freeing the grid
+    /// root retires all of them with the grid.
     pub fn cells(self: GridBuilder, ctx: anytype, comptime cell_fn: anytype) GridCells(@TypeOf(ctx), cell_fn) {
         return .{ .builder = self, .ctx = ctx };
     }
 
     pub fn mount(self: GridBuilder, scope: *Scope, cx: *Cx) !GridResult {
-        return mountImpl(self.props, scope, cx);
+        const f = self.props.cell_render_fn orelse return error.MissingCellRenderFn;
+        return mountImpl(self.props, .{ .plain = f }, scope, cx);
     }
 };
 
@@ -111,25 +114,26 @@ pub fn GridCells(comptime Ctx: type, comptime cell_fn: anytype) type {
         pub fn viewMount(self: Self, scope: *Scope, cx: *Cx) !GridResult {
             const st = try State.create(scope, self.ctx);
             var p = self.builder.props;
-            p.cell_render_fn = render;
+            p.cell_render_fn = null;
             p.cell_render_ctx = @ptrCast(st);
-            return mountImpl(p, scope, cx);
+            return mountImpl(p, .{ .scoped = render }, scope, cx);
         }
 
-        fn render(node: *Node, row: usize, col: usize, cx: *Cx, user: ?*anyopaque) void {
+        /// Content scopes open under the grid's own scope (`grid_scope`), not the caller's:
+        /// freeing the grid root retires every bound cell's content with it.
+        fn render(node: *Node, row: usize, col: usize, grid_scope: *Scope, cx: *Cx, user: ?*anyopaque) void {
             const st: *State = @ptrCast(@alignCast(user.?));
-            view.renderInto(st.scope, cx, node, cell_fn, st.ctx, .{ row, col }, what) catch |err| {
+            view.renderInto(grid_scope, cx, node, cell_fn, st.ctx, .{ row, col }, what) catch |err| {
                 std.log.warn("Grid.cells: cell ({d},{d}) render failed: {s}", .{ row, col, @errorName(err) });
             };
         }
     };
 }
 
-fn mountImpl(props: GridProps, scope: *Scope, cx: *Cx) !GridResult {
+fn mountImpl(props: GridProps, cell_render: state_mod.CellRender, scope: *Scope, cx: *Cx) !GridResult {
     const my_scope = try scope.childScope();
     const p = props;
     {
-        if (p.cell_render_fn == null) return error.MissingCellRenderFn;
         if (p.col_widths.len != p.col_count) return error.ColWidthsLengthMismatch;
 
         // Outer root
@@ -320,8 +324,9 @@ fn mountImpl(props: GridProps, scope: *Scope, cx: *Cx) !GridResult {
             .initialized = false,
             .last_content_tx = 0,
             .last_content_ty = 0,
-            .cell_render_fn = p.cell_render_fn.?,
+            .cell_render = cell_render,
             .cell_render_ctx = p.cell_render_ctx,
+            .scope = my_scope,
             .external_row_window = p.external_row_window,
         };
         state.rebuildColOffsets();
@@ -705,7 +710,7 @@ fn configureCell(state: *GridState, node: *Node, row: usize, col: usize) void {
     clearNodeChildren(node, state.cx);
     node.setText(null);
 
-    state.cell_render_fn(node, row, col, state.cx, state.cell_render_ctx);
+    state.renderCell(node, row, col);
     node.markLayoutDirty();
 }
 
@@ -827,7 +832,7 @@ fn rerenderBoundCell(state: *GridState, node: *Node, cell: CellBinding) void {
     }
     node.setText(null);
     if (cell.row >= state.row_count or cell.col >= state.col_count) return;
-    state.cell_render_fn(node, cell.row, cell.col, state.cx, state.cell_render_ctx);
+    state.renderCell(node, cell.row, cell.col);
     node.markLayoutDirty();
 }
 
@@ -1007,4 +1012,34 @@ test "Grid: mount 在任意分配点失败时不泄漏（sweep）" {
             return r.root;
         }
     }.m);
+}
+
+test "LC3C Grid external row window subtracts layout border" {
+    var cx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer cx.deinit();
+    const scope = try Scope.init(std.testing.allocator, null, cx.owner);
+    defer scope.dispose();
+    const mounted = try Grid(.{
+        .row_count = 10,
+        .col_count = 1,
+        .col_widths = &.{50},
+        .width = 100,
+        .height = 100,
+        .cell_render_fn = struct {
+            fn render(_: *Node, _: usize, _: usize, _: *Cx, _: ?*anyopaque) void {}
+        }.render,
+    }).mount(scope, cx);
+    cx.root = mounted.root;
+    const state = mounted.state;
+    state.scroll_container.style.padding = core.Padding.all(10);
+    state.scroll_container.style.border = .{ .width = 5 };
+    state.pinned_rows[@backingInt(PinOwner.hit_test)] = 5;
+    state.setExternalRowWindowFromHost(.{ .scroll_y = 200, .height = 80, .margin = 3 }, 100);
+    try std.testing.expectEqual(@as(f32, 82), state.external_row_window.?.top);
+    try std.testing.expectEqual(@as(f32, 168), state.external_row_window.?.bottom);
+    try std.testing.expectEqual(@as(?usize, null), state.pinned_rows[@backingInt(PinOwner.hit_test)]);
+    state.scroll_container.style.border.overlay = true;
+    state.setExternalRowWindowFromHost(.{ .scroll_y = 200, .height = 80, .margin = 3 }, 100);
+    try std.testing.expectEqual(@as(f32, 87), state.external_row_window.?.top);
+    try std.testing.expectEqual(@as(f32, 173), state.external_row_window.?.bottom);
 }

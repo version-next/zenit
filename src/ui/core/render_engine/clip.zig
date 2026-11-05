@@ -16,9 +16,12 @@ pub const RenderClipSpec = struct {
     enabled: bool,
     shape_kind: display_list_mod.ClipShapeKind,
     local_rect: ComputedRect,
+    /// Rounded-clip corner radii TL, TR, BR, BL (scaled; zero unless shape_kind == .rounded_rect).
     radii: [4]f32,
-    radius: f32,
-    polygon: display_list_mod.ClipPolygon,
+    /// Polygon clip (shape_kind == .polygon), in the frame allocator; null otherwise. By
+    /// reference: the render states that carry it are copied per node and per pass, and the
+    /// polygon is most of their size.
+    polygon: ?*const display_list_mod.ClipPolygon,
     bounds_fallback: bool,
 };
 
@@ -294,6 +297,27 @@ pub fn paddingBoxClipRect(node: *const Node, rect: ComputedRect) ComputedRect {
     );
 }
 
+/// Padding-box (inner) corner radii for an overflow clip, TL, TR, BR, BL, multiplied by
+/// `scale`. CSS inner radius = outer radius - adjacent border width; a circular corner takes the
+/// wider of its two adjacent sides (TL: top/left, TR: top/right, BR: bottom/right, BL:
+/// bottom/left), so a uniform border reduces every corner by the same width.
+pub fn paddingBoxClipRadii(node: *const Node, rect: ComputedRect, outer: [4]f32, scale: f32) [4]f32 {
+    const inset = clipBorderInsets(node); // top, right, bottom, left
+    const applies = insetApplies(node, rect, inset);
+    const adjacent = [4]f32{
+        @max(inset[0], inset[3]),
+        @max(inset[0], inset[1]),
+        @max(inset[2], inset[1]),
+        @max(inset[2], inset[3]),
+    };
+    var out: [4]f32 = undefined;
+    for (outer, adjacent, 0..) |radius, side, i| {
+        const inner = if (applies) @max(radius - side, 0) else radius;
+        out[i] = @max(inner * scale, 0);
+    }
+    return out;
+}
+
 pub fn resolveNodeRenderClipSpec(cx: *@import("render_context.zig").RenderContext, node: *Node, allocator: Allocator, scale_min: f32) RenderClipSpec {
     // Read rect from World.LayoutTable.
     const node_world_rect = cx.rectFromWorld(node);
@@ -304,8 +328,7 @@ pub fn resolveNodeRenderClipSpec(cx: *@import("render_context.zig").RenderContex
             .shape_kind = .rect,
             .local_rect = node_local_rect,
             .radii = .{ 0, 0, 0, 0 },
-            .radius = 0,
-            .polygon = display_list_mod.ClipPolygon.empty(),
+            .polygon = null,
             .bounds_fallback = false,
         };
     }
@@ -330,8 +353,7 @@ pub fn resolveNodeRenderClipSpec(cx: *@import("render_context.zig").RenderContex
             .shape_kind = .rect,
             .local_rect = node_local_rect,
             .radii = .{ 0, 0, 0, 0 },
-            .radius = 0,
-            .polygon = display_list_mod.ClipPolygon.empty(),
+            .polygon = null,
             .bounds_fallback = false,
         },
         .rect, .ellipse, .path, .custom => blk: {
@@ -352,10 +374,12 @@ pub fn resolveNodeRenderClipSpec(cx: *@import("render_context.zig").RenderContex
                 .rect => paddingBoxClipRect(node, node_local_rect),
                 else => node_local_rect,
             };
-            const polygon = if ((clip_shape == .path or clip_shape == .custom) and clip_geometry != null)
-                buildClipPolygonFromPathGeometry(clip_geometry.?, local_rect)
-            else
-                display_list_mod.ClipPolygon.empty();
+            const has_geometry = (clip_shape == .path or clip_shape == .custom) and clip_geometry != null;
+            // Stored whenever it was built (null reads as the empty polygon). One that cannot be
+            // stored degrades exactly like one that cannot be built (bounds fallback).
+            const stored: ?*display_list_mod.ClipPolygon = if (has_geometry) (cx.frame_allocator.create(display_list_mod.ClipPolygon) catch null) else null;
+            if (stored) |p| p.* = buildClipPolygonFromPathGeometry(clip_geometry.?, local_rect);
+            const polygon = if (stored) |p| p.* else display_list_mod.ClipPolygon.empty();
             break :blk .{
                 // Render runtime currently supports precise rect / rounded-rect / ellipse clip masks.
                 // Path-backed path/custom clip semantics use the polygon primitive when geometry exists.
@@ -368,24 +392,22 @@ pub fn resolveNodeRenderClipSpec(cx: *@import("render_context.zig").RenderContex
                 },
                 .local_rect = local_rect,
                 .radii = .{ 0, 0, 0, 0 },
-                .radius = 0,
-                .polygon = polygon,
+                .polygon = stored,
                 .bounds_fallback = (clip_shape == .path or clip_shape == .custom) and (polygon.point_count == 0 or polygon.contour_count == 0),
             };
         },
-        .rounded_rect => |radius| {
-            // Inner radius = outer radius - stroke width (CSS padding-box inner radius).
-            const inset = clipBorderInsets(node);
-            const max_inset = @max(@max(inset[0], inset[1]), @max(inset[2], inset[3]));
-            const inner_radius = if (insetApplies(node, node_local_rect, inset)) @max(radius - max_inset, 0) else radius;
-            const resolved = @max(inner_radius * scale_min, 0);
+        .rounded_rect, .rounded_corners => {
+            const outer: [4]f32 = switch (clip_shape) {
+                .rounded_rect => |radius| .{ radius, radius, radius, radius },
+                .rounded_corners => |radii| radii,
+                else => unreachable,
+            };
             return .{
                 .enabled = true,
                 .shape_kind = .rounded_rect,
                 .local_rect = paddingBoxClipRect(node, node_local_rect),
-                .radii = .{ resolved, resolved, resolved, resolved },
-                .radius = resolved,
-                .polygon = display_list_mod.ClipPolygon.empty(),
+                .radii = paddingBoxClipRadii(node, node_local_rect, outer, scale_min),
+                .polygon = null,
                 .bounds_fallback = false,
             };
         },

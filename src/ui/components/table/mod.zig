@@ -94,7 +94,10 @@ pub const SortDirection = enum {
 
 /// Cell render callback (low-level contract; app code uses
 /// `.cells(ctx, cell)`): populate cell with content. `user_ctx` = `render_cell_ctx`.
-pub const CellRenderFn = *const fn (cell: *Node, row: usize, col: usize, cx: *Cx, user_ctx: ?*anyopaque) void;
+/// `scope` owns `cell`: it is retired together with the cell (table rebuild in direct mode,
+/// slot recycle in virtual mode), so anything the callback hangs on the cell (effects,
+/// subscriptions, resources) must be opened under it -- never under a longer-lived scope.
+pub const CellRenderFn = *const fn (cell: *Node, row: usize, col: usize, scope: *Scope, cx: *Cx, user_ctx: ?*anyopaque) void;
 
 /// Table properties. Sort state: column index + direction (direction != .none).
 pub const TableSort = struct {
@@ -109,8 +112,8 @@ pub const TableProps = struct {
     /// Data version: when content changes without row_count change, set new value
     /// (or derive from data signal) to redraw cells.
     data_version: Source(u64) = .{ .value = 0 },
-    row_height: f32 = 36,
-    header_height: f32 = 40,
+    row_height: f32 = 28,
+    header_height: f32 = 28,
     striped: bool = false,
     hoverable: bool = true,
     table_width: ?f32 = null,
@@ -161,8 +164,6 @@ pub const TableState = struct {
     /// dedicated scope.
     body: ?*Node = null,
     body_scope: ?*Scope = null,
-    /// View-form callbacks borrow the current body scope through their state.
-    cell_scope_slot: ?**Scope = null,
     vl_state: ?*VirtualListState = null,
     /// Last (row_count, version, sort) applied to body; null = not yet built.
     body_key: ?u64 = null,
@@ -205,7 +206,6 @@ pub const TableState = struct {
         self.dropBody();
         const body_scope = try self.scope.childScope();
         self.body_scope = body_scope;
-        if (self.cell_scope_slot) |slot| slot.* = body_scope;
         errdefer self.dropBody();
         // Mount then record: adoptChild / view.mount failure releases nodes just
         // mounted; record early and errdefer releases twice.
@@ -287,19 +287,16 @@ pub const TableBuilder = struct {
     /// ui.view integration: a cell function returns a view element, passed directly as a
     /// child to ui.view: W.Table(.{ .columns = &cols, .row_count = n }).cells(ctx, cell).
     /// Cell function: fn (Ctx, row: usize, col: usize) E / fn (usize, usize) E (ctx = {}),
-    /// or component form fn (Ctx, usize, usize, *Scope, *Cx) !*Node. Each cell has a child
-    /// scope bound to the cell content root: a table rebuild (row_count / data_version
-    /// change) or virtual row reclaim frees the scope + cell effects.
+    /// or component form fn (Ctx, usize, usize, *Scope, *Cx) !*Node. Each cell's content gets a
+    /// child scope of the cell's own scope (itself under the row), bound to the content root: a
+    /// table rebuild (row_count / data_version change) or virtual row reclaim frees the scope +
+    /// cell effects together with the row.
     pub fn cells(self: TableBuilder, ctx: anytype, comptime cell_fn: anytype) TableCells(@TypeOf(ctx), cell_fn) {
         return .{ .builder = self, .ctx = ctx };
     }
 
     /// Retain mode: mount.
     pub fn mount(self: TableBuilder, scope: *Scope, cx: *Cx) !TableResult {
-        return self.mountWithCellScope(scope, cx, null);
-    }
-
-    fn mountWithCellScope(self: TableBuilder, scope: *Scope, cx: *Cx, cell_scope_slot: ?**Scope) !TableResult {
         cx.owner.enterMount();
         defer cx.owner.exitMount();
         const my_scope = try scope.childScope();
@@ -341,7 +338,6 @@ pub const TableBuilder = struct {
             .table_width = table_width,
             .cx = cx,
             .scope = my_scope,
-            .cell_scope_slot = cell_scope_slot,
             .tokens = t,
             .inner = wrapper,
             .columns = p.columns,
@@ -440,21 +436,36 @@ fn fillDirectBody(state: *TableState, body_scope: *Scope, body: *Node, row_count
 }
 
 const DirectRowCtx = struct { state: *TableState, count: usize };
-const DirectRowArgs = struct { state: *TableState, index: usize };
+const RowArgs = struct { state: *TableState, index: usize };
 const SeparatorProps = struct { style: core.BoxStyle };
-const DirectRowElem = struct { view_dsl.ComponentOf(buildDirectRow), ?view_dsl.Box(SeparatorProps, void, null) };
+const RowElem = view_dsl.ComponentOf(buildRow);
+const SeparatorElem = view_dsl.Box(SeparatorProps, void, null);
+const DirectRowElem = struct { RowElem, ?SeparatorElem };
+
+/// Row element, shared by both body modes: direct rendering lists it next to a divider; the
+/// virtual body mounts it into the pooled slot (`virtualRowRender`).
+fn rowElement(state: *TableState, row_i: usize) RowElem {
+    return view_dsl.component(buildRow, RowArgs{ .state = state, .index = row_i });
+}
+
+/// Divider below a row, shared by both body modes.
+fn separatorElement(state: *TableState, _: usize) SeparatorElem {
+    return view_dsl.box(SeparatorProps{ .style = tableSeparatorStyle(state.tokens.tokens.color.separator) }, {});
+}
 
 /// One row + divider (omit after last).
 fn directRowElement(c: DirectRowCtx, _: void, row_i: usize) DirectRowElem {
     return .{
-        view_dsl.component(buildDirectRow, DirectRowArgs{ .state = c.state, .index = row_i }),
-        if (row_i + 1 < c.count) view_dsl.box(SeparatorProps{ .style = tableSeparatorStyle(c.state.tokens.tokens.color.separator) }, {}) else null,
+        rowElement(c.state, row_i),
+        if (row_i + 1 < c.count) separatorElement(c.state, row_i) else null,
     };
 }
 
-/// One row: cells per column (content via render_cell) + row click/hover (both
-/// in row scope).
-fn buildDirectRow(args: DirectRowArgs, scope: *Scope, cx: *Cx) !*Node {
+/// One row: cells per column (content via render_cell) + row click/hover, all owned by `scope`.
+/// The single row declaration for both body modes: the direct body mounts it under the body
+/// scope, the virtual body under a per-slot subscope that is retired with the row node when the
+/// slot is recycled, so hover / transition / click state never outlives the row it belongs to.
+fn buildRow(args: RowArgs, scope: *Scope, cx: *Cx) !*Node {
     const state = args.state;
     const row_i = args.index;
     const t = state.tokens;
@@ -475,33 +486,26 @@ fn buildDirectRow(args: DirectRowArgs, scope: *Scope, cx: *Cx) !*Node {
     }
 
     const row_node = try view_dsl.render(scope, cx, view_dsl.box(.{
-        .style = .{ tableRowStyle(row_bg, p.row_height), if (row_click != null) core.BoxStyle{ .cursor = .pointer } else core.BoxStyle{} },
+        .style = .{ tableRowStyle(row_bg, p.row_height), if (row_click != null) core.BoxStyle{ .cursor = .pointer } else core.BoxStyle{}, styles.rowFade, view_dsl.when(p.hoverable, view_dsl.hover(styles.rowHover)) },
         .a11y = core.A11yProps{ .role = .row, .row_index = @intCast(row_i) },
         .on_click = row_click,
-    }, view_dsl.items(DirectCellCtx{ .state = state, .row = row_i }, p.columns, directCellElement)));
+    }, view_dsl.items(CellCtx{ .state = state, .row = row_i }, p.columns, cellElement)));
     errdefer {
         hooks.invalidateSubtreeHookState(row_node);
         cx.freeNode(row_node);
     }
 
-    // Hover effect (hook on row scope, released with body rebuild).
-    if (p.hoverable) {
-        _ = try hooks.useAnimatedBackground(scope, cx, row_node, .{
-            .normal = row_bg,
-            .hover = t.tokens.color.list_hover_bg,
-        });
-    }
     return row_node;
 }
 
-const DirectCellCtx = struct { state: *TableState, row: usize };
-const DirectCellArgs = struct { state: *TableState, col: ColumnDef, row: usize, index: usize };
+const CellCtx = struct { state: *TableState, row: usize };
+const CellArgs = struct { state: *TableState, col: ColumnDef, row: usize, index: usize };
 
-fn directCellElement(c: DirectCellCtx, col: ColumnDef, ci: usize) view_dsl.ComponentOf(buildDirectCell) {
-    return view_dsl.component(buildDirectCell, DirectCellArgs{ .state = c.state, .col = col, .row = c.row, .index = ci });
+fn cellElement(c: CellCtx, col: ColumnDef, ci: usize) view_dsl.ComponentOf(buildCell) {
+    return view_dsl.component(buildCell, CellArgs{ .state = c.state, .col = col, .row = c.row, .index = ci });
 }
 
-fn buildDirectCell(args: DirectCellArgs, scope: *Scope, cx: *Cx) !*Node {
+fn buildCell(args: CellArgs, scope: *Scope, cx: *Cx) !*Node {
     const p = args.state.props;
     const cell = try view_dsl.render(scope, cx, view_dsl.box(.{
         .style = tableCellStyle(args.col),
@@ -511,8 +515,10 @@ fn buildDirectCell(args: DirectCellArgs, scope: *Scope, cx: *Cx) !*Node {
             .column_index = @intCast(args.index),
         },
     }, {}));
-    // Cell content callback (may graft subtree into cell).
-    if (p.render_cell) |render_fn| render_fn(cell, args.row, args.index, cx, p.render_cell_ctx);
+    // Cell content callback (may graft subtree into cell). It receives this cell's own scope:
+    // content ownership follows the row that owns the cell in both body modes (body scope
+    // subtree in direct mode, the recycled slot's row scope in virtual mode).
+    if (p.render_cell) |render_fn| render_fn(cell, args.row, args.index, scope, cx, p.render_cell_ctx);
     return cell;
 }
 
@@ -525,6 +531,7 @@ pub fn TableCells(comptime Ctx: type, comptime cell_fn: anytype) type {
         ctx: Ctx,
 
         const Self = @This();
+        /// User ctx, owned by the table's mount scope (outlives every body / row / cell).
         const State = view_dsl.CallbackState(Ctx);
 
         pub fn viewMount(self: Self, scope: *Scope, cx: *Cx) !TableResult {
@@ -532,21 +539,23 @@ pub fn TableCells(comptime Ctx: type, comptime cell_fn: anytype) type {
             var b = self.builder;
             b.props.render_cell = render;
             b.props.render_cell_ctx = @ptrCast(st);
-            // Cell effects must be children of the active body scope, so a
-            // rebuild disposes them before recursively clearing node bindings.
-            return b.mountWithCellScope(scope, cx, &st.scope);
+            return b.mount(scope, cx);
         }
 
-        fn render(cell: *Node, row: usize, col: usize, cx: *Cx, user: ?*anyopaque) void {
+        /// Content scope opens under `cell_scope` (the cell's owner), never under the mount
+        /// or body scope: a recycled virtual row frees its scope subtree, and with it the
+        /// content's effects, before the row's nodes are released.
+        fn render(cell: *Node, row: usize, col: usize, cell_scope: *Scope, cx: *Cx, user: ?*anyopaque) void {
             const st: *State = @ptrCast(@alignCast(user.?));
-            view_dsl.renderInto(st.scope, cx, cell, cell_fn, st.ctx, .{ row, col }, what) catch |err| {
+            view_dsl.renderInto(cell_scope, cx, cell, cell_fn, st.ctx, .{ row, col }, what) catch |err| {
                 std.log.warn("Table.cells: cell ({d},{d}) render failed: {s}", .{ row, col, @errorName(err) });
             };
         }
     };
 }
 
-/// Direct mode row-click context (in body scope).
+/// Row-click context, owned by the row's scope (body scope in direct mode, the slot subscope in
+/// virtual mode).
 const RowClickCtx = struct {
     state: *TableState,
     index: usize,
@@ -559,64 +568,8 @@ const RowClickCtx = struct {
 
 // ========== Virtual scroll mode (large data) ==========.
 
-/// Virtual scroll row render context, passed to VirtualList render callback.
-const VirtualRowContext = struct {
-    columns: []const ColumnDef,
-    render_cell: ?CellRenderFn,
-    render_cell_ctx: ?*anyopaque,
-    row_height: f32,
-    striped: bool,
-    hoverable: bool,
-    /// Design token color cache (avoid cx.tokens in render callback).
-    bg_secondary: Color,
-    list_hover_bg: Color,
-    separator_color: Color,
-    /// Row click forwarded to runtime (with row index).
-    state: *TableState,
-
-    /// -- Hover context slot table (see RowHoverCtx notes) --.  Indexed by
-    /// VirtualList pool node pointer, capacity = VirtualList.max_pool_size. Whole
-    /// table allocated/freed with VirtualRowContext, independent of row_count.
-    hover_slots: [virtual_list.max_pool_size]RowHoverCtx = @as([virtual_list.max_pool_size]RowHoverCtx, @splat(.{})),
-    /// Slot -> pool node owning it (null = unused).
-    hover_slot_owner: [virtual_list.max_pool_size]?*Node = @as([virtual_list.max_pool_size]?*Node, @splat(null)),
-    hover_slot_count: usize = 0,
-
-    /// Get (or first-time allocate) hover slot exclusive to this pool node.
-    ///
-    /// Previously was `allocator.create(RowHoverCtx)` never freed: each row scrolled in leaked one,
-    /// scrolling 10k rows leaked ~10k. Pool has at most max_pool_size slots alive simultaneously,
-    /// so reusing slots per pool node plugs leak and naturally avoids dangling risk from old code
-    /// where old ctx still referenced by other nodes' events after pool reuse.
-    fn hoverSlotFor(self: *VirtualRowContext, pool_node: *Node) ?*RowHoverCtx {
-        for (self.hover_slot_owner[0..self.hover_slot_count], 0..) |owner, i| {
-            if (owner == pool_node) return &self.hover_slots[i];
-        }
-        if (self.hover_slot_count >= self.hover_slots.len) return null;
-        const i = self.hover_slot_count;
-        self.hover_slot_owner[i] = pool_node;
-        self.hover_slot_count += 1;
-        return &self.hover_slots[i];
-    }
-};
-
-/// Row hover/click context (one per pool slot, overwritten in render callback).
-const RowHoverCtx = struct {
-    row_node: ?*Node = null,
-    normal_bg: Color = Color.TRANSPARENT,
-    hover_bg: Color = Color.TRANSPARENT,
-    state: ?*TableState = null,
-    index: usize = 0,
-
-    fn click(ptr: *anyopaque) void {
-        const self: *RowHoverCtx = @ptrCast(@alignCast(ptr));
-        if (self.state) |st| st.rowClick(self.index);
-    }
-};
-
 fn mountVirtualBody(state: *TableState, body_scope: *Scope, row_count: usize) !struct { container: *Node, vl_state: *VirtualListState } {
     const cx = state.cx;
-    const t = state.tokens;
     const p = state.props;
 
     // VirtualList item_height = row height + 1px divider.
@@ -624,131 +577,40 @@ fn mountVirtualBody(state: *TableState, body_scope: *Scope, row_count: usize) !s
     // Body height = total table height - header - border (2px).
     const body_height = p.table_height - p.header_height - 2;
 
-    // Allocate virtual row render context (in body scope).
-    const vr_ctx = try body_scope.allocator.create(VirtualRowContext);
-    vr_ctx.* = .{
-        .columns = p.columns,
-        .render_cell = p.render_cell,
-        .render_cell_ctx = p.render_cell_ctx,
-        .row_height = p.row_height,
-        .striped = p.striped,
-        .hoverable = p.hoverable,
-        .bg_secondary = t.tokens.color.bg_secondary,
-        .list_hover_bg = t.tokens.color.list_hover_bg,
-        .separator_color = t.tokens.color.separator,
-        .state = state,
-    };
-    try body_scope.adoptResource(@ptrCast(vr_ctx), struct {
-        fn cleanup(ptr: *anyopaque, alloc: Allocator) void {
-            alloc.destroy(@as(*VirtualRowContext, @ptrCast(@alignCast(ptr))));
-        }
-    }.cleanup);
-
+    // TableState is owned by the table scope and outlives the body: a plain context pointer.
     const vl_result = try virtual_list.VirtualList(.{
         .item_count = row_count,
         .item_height = item_height,
         .width = state.table_width,
         .height = body_height,
         .overscan = 5,
-    }).mountWithContext(
-        body_scope,
-        cx,
-        @ptrCast(vr_ctx),
-        null,
-        virtualRowRender,
-    );
+    }).mountScoped(body_scope, cx, @ptrCast(state), virtualRowRender);
 
     return .{ .container = vl_result.container, .vl_state = vl_result.state };
 }
 
-/// VirtualList row render callback, called when item enters visible area.
-fn virtualRowRender(node: *Node, index: usize, cx: *Cx, user_context: ?*anyopaque) void {
-    const vr_ctx: *VirtualRowContext = @ptrCast(@alignCast(user_context orelse return));
-    const allocator = cx.allocator;
-
-    // VirtualList calls clearSlotNode before this, releasing slot's old subtree.
+/// VirtualList slot render callback (item enters visible range / data refresh).
+///
+/// Mounts the same row + divider elements as the direct body, each through `view.renderInto`:
+/// a subscope of the list's own scope bound to the mounted root. The row's cells, and the
+/// content scopes `.cells` opens under each cell's scope, all nest inside that row subscope.
+/// VirtualList clears the slot (frees its children) before every rebind, which retires the row
+/// subscope -- hover listeners, style layers, transitions, click contexts and cell content
+/// effects together -- so a rebound slot always starts from a fresh, unhovered row and nothing
+/// accumulates while scrolling.
+fn virtualRowRender(node: *Node, index: usize, list_scope: *Scope, cx: *Cx, user_context: ?*anyopaque) void {
+    const state: *TableState = @ptrCast(@alignCast(user_context.?));
     node.style.direction = .column;
     node.style.flex_shrink = 0;
-
-    // Row container (cells arranged horizontal), bg rules match direct render path
-    // tableRowBg semantics, but render callback doesn't access cx.tokens, uses
-    // VirtualRowContext cached colors.
-    const is_even = (index % 2 == 0);
-    const row_bg = if (vr_ctx.striped and !is_even) vr_ctx.bg_secondary else Color.TRANSPARENT;
-
-    // Mount as soon as built: if mounting fails adoptChild releases the node; the callback
-    // returns void, so a failure leaves an incomplete row.
-    const row_node = core.adoptChild(cx, allocator, node, box(cx, tableRowStyle(row_bg, vr_ctx.row_height), .{}) catch return) catch return;
-    row_node.behavior.interaction.a11y = .{
-        .role = .row,
-        .row_index = @intCast(index),
+    const what = "Table virtual row";
+    view_dsl.renderInto(list_scope, cx, node, rowElement, state, .{index}, what) catch {
+        _ = virtual_list.markPoolNodeRenderIncomplete(node);
+        return;
     };
-
-    // Reuse this pool node's exclusive context slot (no per-row heap alloc).
-    const slot = vr_ctx.hoverSlotFor(node);
-    if (slot) |hc| hc.* = .{
-        .row_node = row_node,
-        .normal_bg = row_bg,
-        .hover_bg = vr_ctx.list_hover_bg,
-        .state = vr_ctx.state,
-        .index = index,
+    view_dsl.renderInto(list_scope, cx, node, separatorElement, state, .{index}, what) catch {
+        // Unbinds the slot (frees the row mounted above) and retries next frame.
+        _ = virtual_list.markPoolNodeRenderIncomplete(node);
     };
-
-    if (vr_ctx.state.on_row_click != null) {
-        if (slot) |hc| {
-            row_node.style.cursor = .pointer;
-            row_node.behavior.events.on_click = core.Cx.simpleHandler(RowHoverCtx.click, @ptrCast(hc));
-        }
-    }
-
-    // Set hover effect (via on_hover/on_leave; doesn't depend on Scope /
-    // useAnimatedBackground).
-    if (vr_ctx.hoverable) {
-        row_node.style.cursor = .pointer;
-        if (slot) |hc| {
-            hooks.setHoverHandler(row_node, true, .{
-                .callback = rowHoverEnter,
-                .context = @ptrCast(hc),
-            });
-            hooks.setHoverHandler(row_node, false, .{
-                .callback = rowHoverLeave,
-                .context = @ptrCast(hc),
-            });
-        }
-    }
-
-    for (vr_ctx.columns, 0..) |col, ci| {
-        const cell = core.adoptChild(cx, allocator, row_node, box(cx, tableCellStyle(col), .{}) catch continue) catch continue;
-        cell.behavior.interaction.a11y = .{
-            .role = .gridcell,
-            .row_index = @intCast(index),
-            .column_index = @intCast(ci),
-        };
-
-        // User render callback.
-        if (vr_ctx.render_cell) |render_fn| {
-            render_fn(cell, index, ci, cx, vr_ctx.render_cell_ctx);
-        }
-    }
-
-    // Row divider.
-    _ = core.adoptChild(cx, allocator, node, box(cx, tableSeparatorStyle(vr_ctx.separator_color), .{}) catch return) catch return;
-}
-
-/// Row hover enter callback.
-fn rowHoverEnter(context: *anyopaque) void {
-    const hc: *RowHoverCtx = @ptrCast(@alignCast(context));
-    const row = hc.row_node orelse return;
-    row.setStyle(null, .background, hc.hover_bg);
-    row.markRenderDirty();
-}
-
-/// Row hover leave callback.
-fn rowHoverLeave(context: *anyopaque) void {
-    const hc: *RowHoverCtx = @ptrCast(@alignCast(context));
-    const row = hc.row_node orelse return;
-    row.setStyle(null, .background, hc.normal_bg);
-    row.markRenderDirty();
 }
 
 // ========== Internal helpers ==========.
@@ -1201,7 +1063,7 @@ test "Table: row_count / data_version from signals refresh the body; crossing 50
 
     const Probe = struct {
         var renders: u32 = 0;
-        fn cell(_: *Node, _: usize, _: usize, _: *Cx, _: ?*anyopaque) void {
+        fn cell(_: *Node, _: usize, _: usize, _: *Scope, _: *Cx, _: ?*anyopaque) void {
             renders += 1;
         }
     };
@@ -1240,58 +1102,199 @@ test "table: 动态行数（跨虚拟阈值）的 mount 在任意分配点失败
     }.m);
 }
 
-test "Table(virtual, hoverable): 反复滚动不泄漏 hover 上下文" {
-    // Leak regression: hover ctx must not be allocated per scroll-in. Uses
-    // testing.allocator (leak detection) and scrolls >1000 rows; hover ctx reuses
-    // VirtualRowContext's fixed table by pool slot, so allocations are independent of
-    // scrolled rows.
-    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
-    defer ctx.deinit();
+/// Virtual-mode fixture: a mounted 10k-row table with a laid-out viewport.
+const VirtualFixture = struct {
+    cx: *Cx,
+    scope: *Scope,
+    result: TableResult,
 
-    const root = try box(ctx, .{ .width = .{ .px = 600 }, .height = .{ .px = 500 } }, .{});
-    ctx.root = root;
-
-    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
-    defer scope.dispose();
-
-    const result = try Table(.{
-        .columns = &test_columns,
-        .row_count = 10000,
-        .row_height = 36,
-        .table_height = 400,
-        .hoverable = true, // <- KEY: uses hover ctx allocation path.
-    }).mount(scope, ctx);
-    try root.appendChild(std.testing.allocator, result.wrapper);
-
-    const vl = stateOf(result).vl_state.?;
-    const item_height: f32 = 36 + 1;
-    vl.scroll_state.viewport_height = 400 - 40 - 2;
-    vl.scroll_state.content_height = 10000 * item_height;
-
-    // Scroll 2000 rows: old leaked ~2000 RowHoverCtx here.
-    var i: usize = 0;
-    while (i < 2000) : (i += 1) {
-        vl.scroll_state.scroll_y = @as(f32, @floatFromInt(i)) * item_height;
-        vl.updateVisibleItems();
+    fn init(props: anytype) !VirtualFixture {
+        const cx = try Cx.init(std.testing.allocator, std.testing.io);
+        errdefer cx.deinit();
+        cx.setViewport(600, 500);
+        const root = try box(cx, .{ .width = .{ .px = 600 }, .height = .{ .px = 500 } }, .{});
+        cx.root = root;
+        const scope = try Scope.init(std.testing.allocator, null, cx.owner);
+        errdefer scope.dispose();
+        const result = try Table(props).mount(scope, cx);
+        try root.appendChild(std.testing.allocator, result.wrapper);
+        try std.testing.expect(stateOf(result).vl_state != null);
+        return .{ .cx = cx, .scope = scope, .result = result };
     }
 
-    // Hover slots bounded by pool capacity, independent of 2000 scrolled rows.
-    try std.testing.expect(vl.render_user_context != null);
-    const vr: *VirtualRowContext = @ptrCast(@alignCast(vl.render_user_context.?));
-    try std.testing.expect(vr.hover_slot_count > 0);
-    try std.testing.expect(vr.hover_slot_count <= virtual_list.max_pool_size);
-    try std.testing.expect(vr.hover_slot_count < 64); // much less than 2000.
-
-    // Each slot points to a currently valid row_node (no dangling/uninitialized).
-    for (vr.hover_slot_owner[0..vr.hover_slot_count], 0..) |owner, s| {
-        try std.testing.expect(owner != null);
-        try std.testing.expect(vr.hover_slots[s].row_node != null);
+    fn deinit(f: VirtualFixture) void {
+        f.scope.dispose();
+        f.cx.deinit();
     }
+
+    fn vl(f: VirtualFixture) *VirtualListState {
+        return stateOf(f.result).vl_state.?;
+    }
+
+    /// Bound slot + its row node for data index `index` (null = not bound).
+    fn slotOf(f: VirtualFixture, index: usize) ?struct { slot: usize, row: *Node } {
+        const list = f.vl();
+        for (list.pool_bindings, 0..) |binding, slot| {
+            if (binding != index) continue;
+            const pool = list.pool_nodes[slot];
+            return .{ .slot = slot, .row = pool.children.items[0] };
+        }
+        return null;
+    }
+
+    /// Scroll so `first` is the top row (no layout needed: drives the VirtualList pass directly).
+    fn scrollTo(f: VirtualFixture, first: usize, item_height: f32) void {
+        const list = f.vl();
+        list.scroll_state.viewport_height = 400 - 28 - 2;
+        list.scroll_state.content_height = @as(f32, @floatFromInt(list.item_count)) * item_height;
+        list.scroll_state.scroll_y = @as(f32, @floatFromInt(first)) * item_height;
+        list.updateVisibleItems();
+    }
+};
+
+fn testHover(n: *Node, on: bool) void {
+    const h = if (on) n.behavior.events.on_hover.? else n.behavior.events.on_leave.?;
+    h.callback(h.context);
+}
+
+/// Background the row is heading to: transition target while one runs, else the current value.
+fn backgroundTarget(n: *Node) Color {
+    if (n.frame_state.frame_local.runtime.transitions) |slots| {
+        if (slots.find(.background)) |slot| if (slot.active) return slot.to_color;
+    }
+    return n.getBackground();
+}
+
+fn backgroundTransitionActive(n: *Node) bool {
+    const slots = n.frame_state.frame_local.runtime.transitions orelse return false;
+    const slot = slots.find(.background) orelse return false;
+    return slot.active;
+}
+
+test "Table(virtual): 虚拟行悬停走与直渲行同一份声明——过渡到 bg_active，离开回到斑马纹底色" {
+    const f = try VirtualFixture.init(.{ .columns = &test_columns, .row_count = 10000, .striped = true });
+    defer f.deinit();
+    const tok = f.cx.tokens.tokens.color;
+
+    // Odd row: striped base is bg_secondary; mounted without a transition.
+    const odd = (f.slotOf(1) orelse return error.RowNotBound).row;
+    try std.testing.expectEqual(core.A11yRole.row, odd.behavior.interaction.a11y.?.role);
+    try std.testing.expectEqual(@as(u32, 1), odd.behavior.interaction.a11y.?.row_index);
+    try std.testing.expect(Color.eql(tok.bg_secondary, odd.getBackground()));
+    try std.testing.expect(!backgroundTransitionActive(odd));
+    // No on_row_click: hover alone must not advertise a click target.
+    try std.testing.expect(odd.style.cursor != .pointer);
+
+    testHover(odd, true);
+    try std.testing.expect(backgroundTransitionActive(odd));
+    try std.testing.expect(Color.eql(tok.bg_active, backgroundTarget(odd)));
+    testHover(odd, false);
+    try std.testing.expect(Color.eql(tok.bg_secondary, backgroundTarget(odd)));
+
+    // Even row: base transparent.
+    const even = (f.slotOf(2) orelse return error.RowNotBound).row;
+    testHover(even, true);
+    try std.testing.expect(Color.eql(tok.bg_active, backgroundTarget(even)));
+    testHover(even, false);
+    try std.testing.expect(Color.eql(Color.TRANSPARENT, backgroundTarget(even)));
+}
+
+test "Table(virtual): 回收复用槽位后悬停 / 过渡不串到新内容，行作用域不累积" {
+    const f = try VirtualFixture.init(.{ .columns = &test_columns, .row_count = 10000, .striped = true });
+    defer f.deinit();
+    const tok = f.cx.tokens.tokens.color;
+    const item_height: f32 = 28 + 1;
+    f.scrollTo(0, item_height);
+
+    // Hover row 3 and leave it mid-transition, then scroll it out of range.
+    const hovered = f.slotOf(3) orelse return error.RowNotBound;
+    testHover(hovered.row, true);
+    try std.testing.expect(backgroundTransitionActive(hovered.row));
+    // Row subscopes hang off the list's own scope (itself under the body scope).
+    const row_parent = f.vl().scope;
+    const scopes_before = row_parent.children.items.len;
+    // Live non-row children of the list scope (ScrollArea etc.): constant while scrolling.
+    const fixed_scopes = liveChildScopes(row_parent) - 2 * boundSlots(f.vl());
+
+    // Scroll 2000 rows: each slot is rebound many times.
+    var first: usize = 0;
+    while (first < 2000) : (first += 1) f.scrollTo(first, item_height);
+
+    // The hovered slot now carries another row: fresh node, its own base, no hover, no transition.
+    const list = f.vl();
+    const rebound = list.pool_bindings[hovered.slot] orelse return error.SlotNotRebound;
+    try std.testing.expect(rebound != 3);
+    for (list.pool_bindings, 0..) |binding, slot| {
+        const idx = binding orelse continue;
+        const row = list.pool_nodes[slot].children.items[0];
+        try std.testing.expectEqual(@as(u32, @intCast(idx)), row.behavior.interaction.a11y.?.row_index);
+        const base = if (idx % 2 == 1) tok.bg_secondary else Color.TRANSPARENT;
+        try std.testing.expect(Color.eql(base, row.getBackground()));
+        try std.testing.expect(!backgroundTransitionActive(row));
+        // Exactly one hover listener chain per row (none left over from the previous binding).
+        try std.testing.expect(row.behavior.events.on_hover != null);
+    }
+
+    // Row subscopes retire with their nodes: two per bound slot (row + divider), independent
+    // of how many rows scrolled through.
+    const bound = boundSlots(list);
+    try std.testing.expect(bound > 0);
+    try std.testing.expect(row_parent.children.items.len <= scopes_before + 2 * list.pool_size);
+    try std.testing.expect(row_parent.children.items.len < 2 * virtual_list.max_pool_size);
+    try std.testing.expectEqual(fixed_scopes + 2 * bound, liveChildScopes(row_parent));
+}
+
+fn liveChildScopes(scope: *Scope) usize {
+    var n: usize = 0;
+    for (scope.children.items) |c| n += @intFromBool(!c.disposed);
+    return n;
+}
+
+fn boundSlots(list: *VirtualListState) usize {
+    var n: usize = 0;
+    for (list.pool_bindings) |b| n += @intFromBool(b != null);
+    return n;
+}
+
+test "Table(virtual): hoverable=false 时行无悬停；有 on_row_click 时才是 pointer" {
+    const Sink = struct {
+        fn onClick(_: *@This(), _: usize) void {}
+    };
+    var sink = Sink{};
+    const f = try VirtualFixture.init(.{ .columns = &test_columns, .row_count = 10000, .striped = true, .hoverable = false, .on_row_click = Handler(usize).from(Sink, &sink, Sink.onClick) });
+    defer f.deinit();
+    const tok = f.cx.tokens.tokens.color;
+    const row = (f.slotOf(1) orelse return error.RowNotBound).row;
+    try std.testing.expect(row.behavior.events.on_hover == null);
+    try std.testing.expect(row.behavior.events.on_click != null);
+    try std.testing.expect(row.style.cursor == .pointer);
+    try std.testing.expect(Color.eql(tok.bg_secondary, backgroundTarget(row)));
 }
 
 // styles.zig test collection, this line required; see docs/STYLING.md.
 test {
     _ = @import("styles.zig");
+}
+
+test "table: 虚拟行（悬停 + 点击 + 斑马纹）的 mount 在任意分配点失败时不泄漏（sweep）" {
+    try @import("../oom_sweep.zig").sweepMount("table(virtual rows)", struct {
+        const Sink = struct {
+            fn onClick(_: *@This(), _: usize) void {}
+        };
+        var sink: Sink = .{};
+        fn m(scope: *Scope, cx: *Cx) anyerror!?*Node {
+            const r = try Table(.{
+                .columns = &test_columns,
+                .row_count = 200,
+                .striped = true,
+                .hoverable = true,
+                .on_row_click = Handler(usize).from(Sink, &sink, Sink.onClick),
+            }).mount(scope, cx);
+            // Rows were rendered during mount (initial VirtualList pass).
+            if (stateOf(r).vl_state.?.pool_bindings[0] == null) return error.NoRowsRendered;
+            return r.wrapper;
+        }
+    }.m);
 }
 
 // Per-allocation OOM sweep; see src/ui/components/oom_sweep.zig.
@@ -1303,4 +1306,67 @@ test "table: mount 在任意分配点失败时不泄漏（sweep）" {
             return r.wrapper;
         }
     }.m);
+}
+
+const RecycleCellCtx = struct { label: *Signal([]const u8) };
+
+fn recycleCellView(ctx: RecycleCellCtx, row: usize, col: usize) view_dsl.Text(@TypeOf(.{}), view_dsl.Fmt("{s}:{d}.{d}", struct { *Signal([]const u8), usize, usize })) {
+    return view_dsl.text(.{}, view_dsl.fmt("{s}:{d}.{d}", .{ ctx.label, row, col }));
+}
+
+fn liveScopeCount(scope: *Scope) usize {
+    var n: usize = @intFromBool(!scope.disposed);
+    for (scope.children.items) |c| n += liveScopeCount(c);
+    return n;
+}
+
+fn liveEffectCount(cx: *Cx) usize {
+    return cx.owner.graph.countByKind().get(.effect);
+}
+
+fn subtreeHasTextT(root: *Node, want: []const u8) bool {
+    if (root.getText()) |t| {
+        if (std.mem.eql(u8, t.content, want)) return true;
+    }
+    for (root.children.items) |c| {
+        if (subtreeHasTextT(c, want)) return true;
+    }
+    return false;
+}
+
+test "Table(virtual).cells: 回收槽位时单元格内容 scope / 绑定效果随行释放，不累积，Signal 更新不触碰已释放节点" {
+    const cx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer cx.deinit();
+    cx.setViewport(600, 500);
+    const root = try box(cx, .{ .width = .{ .px = 600 }, .height = .{ .px = 500 } }, .{});
+    cx.root = root;
+    const scope = try Scope.init(std.testing.allocator, null, cx.owner);
+    defer scope.dispose();
+    const label = try scope.createSignal([]const u8, "a");
+
+    const result = try Table(.{ .columns = &test_columns, .row_count = 10000 })
+        .cells(RecycleCellCtx{ .label = label }, recycleCellView).viewMount(scope, cx);
+    try root.appendChild(std.testing.allocator, result.wrapper);
+    const f = VirtualFixture{ .cx = cx, .scope = scope, .result = result };
+    const item_height: f32 = 28 + 1;
+    f.scrollTo(0, item_height);
+    try std.testing.expect(subtreeHasTextT(result.wrapper, "a:0.0"));
+
+    const body_scope = stateOf(result).body_scope.?;
+    const scopes_before = liveScopeCount(body_scope);
+    const effects_before = liveEffectCount(cx);
+
+    // Scroll 300 rows: every slot is rebound many times.
+    var first: usize = 0;
+    while (first < 300) : (first += 1) f.scrollTo(first, item_height);
+    f.scrollTo(0, item_height);
+
+    // Cell content scopes and their bindText effects retire with the row that owns them.
+    try std.testing.expectEqual(scopes_before, liveScopeCount(body_scope));
+    try std.testing.expectEqual(effects_before, liveEffectCount(cx));
+
+    // Updating the signal reaches only live cells (a retained effect would write a freed node).
+    label.set("b");
+    try std.testing.expect(subtreeHasTextT(result.wrapper, "b:0.0"));
+    try std.testing.expect(!subtreeHasTextT(result.wrapper, "a:0.0"));
 }

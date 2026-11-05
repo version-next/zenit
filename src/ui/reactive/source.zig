@@ -574,14 +574,10 @@ pub fn Bound(comptime T: type) type {
         /// For components whose callback type differs from `T` (e.g., `?[]const u8` value +
         /// `[]const u8` callback), use this directly.
         pub fn commit(self: Self, v: T) ?T {
-            if (debug_checks) {
-                // Scan entire tracking stack: untrack's empty reader sentinel masks effect/memo
-                // frames below it.
-                for (self.owner.graph.tracking_stack.items) |id| {
-                    if (!id.isNull()) {
-                        std.debug.panic("Model.propose called inside an effect/memo; proposals must come from event handlers", .{});
-                    }
-                }
+            if (debug_checks and self.owner.inReactiveComputation()) {
+                // Event handlers that a computation sets off synchronously (blur from an effect
+                // revoking focus) defer their proposal with `SignalOwner.runOutsideComputation`.
+                std.debug.panic("Model.propose called inside an effect/memo; proposals must come from event handlers", .{});
             }
             // Compare keys, not save old slice: split's parent callback may write text source
             // twice, or drain another write synchronously outside batch; the double-buffer holding

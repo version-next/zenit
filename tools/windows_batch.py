@@ -13,6 +13,7 @@ Stages: the shared render/input gates (windows_shared_regression.PHASES), the na
 probe (scope all) and the UI Automation suites (reported, not blocking).
 """
 import argparse
+import urllib.parse
 import hashlib
 import json
 import os
@@ -34,7 +35,22 @@ REPO = queue.REPO
 GPU_PROBE = queue.PROBES["gpu"][1]
 
 
-def stages(include_a11y: bool, renderer: str = "d3d12", full_app_suites: bool = False) -> list[dict]:
+HOVER_PROBE = "zenit-windows-hover-probe.exe"
+
+
+def hover_stages() -> list[dict]:
+    """Hover liveness with real input on the worker (needs --allow-foreground: they move the
+    worker's cursor, wheel and foreground). `hover-probe` measures the native Win32 facts
+    (tools/windows_hover_probe.c); `hover-native` checks Zenit against them in Storybook."""
+    return [
+        {"name": "hover-probe", "kind": "probe", "exe_name": HOVER_PROBE, "blocking": True, "allow_foreground": True},
+        {"name": "hover-native", "kind": "e2e", "exe_name": queue.E2E_APPS["storybook"],
+         "suite_source": "e2e/windows-hover-native.test.ts", "minimum_cases": 1, "blocking": True, "filter": "",
+         "allow_foreground": True, "app_env": {"ZENIT_E2E_ISOLATE_POINTER": "0"}},
+    ]
+
+
+def stages(include_a11y: bool, renderer: str = "d3d12", full_app_suites: bool = False, hover_native: bool = False) -> list[dict]:
     out = []
     for name, app, suite, minimum, _reuse, extra in shared.PHASES:
         modal = "--audit-modal-frames" in extra
@@ -85,6 +101,8 @@ def stages(include_a11y: bool, renderer: str = "d3d12", full_app_suites: bool = 
     out.append({"name": "gpu-contracts", "kind": "probe",
                 "exe_name": "zenit-windows-d3d11-contract.exe" if renderer == "d3d11" else GPU_PROBE,
                 "renderer": renderer, "blocking": True})
+    if hover_native:
+        out.extend(hover_stages())
     if include_a11y:
         for suite in sorted((REPO / "e2e").glob("windows-accessibility*.test.ts")):
             short = suite.name.removeprefix("windows-").removesuffix(".test.ts")
@@ -128,6 +146,7 @@ def build(arch: str, prefix: Path, renderer: str = "d3d12") -> None:
     # DebugAllocator exit checks are part of the lifetime contract.
     subprocess.run(["zig", "build", "windows-window-chrome", "-Dtest-mode=true",
                     f"-Dgpu-backend={renderer}", "-Doptimize=Debug", *common], cwd=REPO, check=True)
+    subprocess.run(["zig", "build", "windows-hover-probe", "-Doptimize=fast", *common], cwd=REPO, check=True)
     if renderer == "d3d11":
         subprocess.run(["zig", "build", "windows-d3d11-contract", "-Dgpu-backend=d3d11", "-Doptimize=fast", *common], cwd=REPO, check=True)
         return
@@ -229,6 +248,29 @@ def suite_summary(stage_dir: Path) -> dict | None:
     return json.loads(found[0].read_text()) if len(found) == 1 else None
 
 
+def judge_hover_probe(result: dict, stage_dir: Path) -> tuple[bool, str]:
+    """Every required native fact PASS, the measurement present, the run completed."""
+    stdout = (stage_dir / "windows-probe-stdout.log").read_text(errors="replace")
+    stderr = (stage_dir / "windows-probe-stderr.log").read_text(errors="replace")
+    found = re.search(r"^HOVERPROBE_JSON (\{.*\})\s*$", stdout, re.MULTILINE)
+    try:
+        data = json.loads(found.group(1)) if found else None
+    except ValueError:
+        data = None
+    failed = re.findall(r"^FAIL: (.*)$", stderr, re.MULTILINE)
+    passed = len(re.findall(r"^PASS: ", stderr, re.MULTILINE))
+    complete = re.search(r"^hover probe complete: 0 required fact\(s\) failed$", stderr, re.MULTILINE) is not None
+    ok = result["exit_code"] == 0 and data is not None and complete and not failed and passed >= 6
+    detail = f"{passed} native facts PASS" + (f"; FAIL: {'; '.join(failed)}" if failed else "")
+    if data:
+        detail += (f"; routing={data['wheel_routing']} inactive moves={data['inactive_moves']} wheels={data['inactive_wheels']}"
+                   f" cover leave={data['cover']['leave_ms']}ms uncover move={data['uncover']['move_ms']}ms"
+                   f" release-over-other leaves={data['release_over_other']['leaves']}")
+    else:
+        detail += "; no HOVERPROBE_JSON"
+    return ok, detail + ("" if complete else "; incomplete")
+
+
 def judge(stage: dict, stage_dir: Path) -> tuple[bool, str]:
     if not stage_dir.is_dir():
         return False, "no evidence returned"
@@ -237,6 +279,8 @@ def judge(stage: dict, stage_dir: Path) -> tuple[bool, str]:
     if error:
         return False, f"stage error (exit {result['exit_code']}): {error[:300]}"
     if stage["kind"] == "probe":
+        if stage.get("name") == "hover-probe":
+            return judge_hover_probe(result, stage_dir)
         if stage.get("name") == "window-lifetime":
             stderr = (stage_dir / "windows-probe-stderr.log").read_text(errors="replace")
             case_records = re.findall(r"lifetime callback passed: trigger=(click|focus|key|cleanup) close_owner=(true|false)", stderr)
@@ -295,6 +339,7 @@ def main() -> int:
     parser.add_argument("--require-a11y", action="store_true", help="fail the batch if any UI Automation suite fails")
     parser.add_argument("--no-a11y", action="store_true", help="skip the UI Automation suites")
     parser.add_argument("--full-app-suites", action="store_true", help="also run all Storybook and text-input cases without filters")
+    parser.add_argument("--stages", help="comma-separated stage names to run (iteration only; acceptance runs every stage)")
     parser.add_argument("--suite-timeout", type=float, default=900, help="seconds per individual suite")
     parser.add_argument("--zdoc", type=Path, help="zeditor checkout: add its zdoc-smoke stage (needs a Windows test-mode build in --zdoc-bin)")
     parser.add_argument("--zdoc-bin", action="append", default=[],
@@ -304,7 +349,12 @@ def main() -> int:
                         help="zdoc suite instead of e2e/windows-zdoc-smoke.test.ts (relative to --zdoc), e.g. the manual hold")
     parser.add_argument("--zdoc-only", action="store_true", help="run only the zdoc stage (no Zenit build or stages)")
     parser.add_argument("--allow-foreground", action="store_true",
-                        help="let the zdoc stages take the VM's foreground and inject native Windows input (SendInput)")
+                        help="let the zdoc stages take the VM's foreground and inject native Windows input (SendInput); "
+                             "also adds the real-input hover stages (hover-probe, hover-native)")
+    parser.add_argument("--extra-suite", action="append", default=[], metavar="NAME=APP:SUITE[?filter=F&env.K=V]",
+                        help="add a blocking e2e stage, e.g. popover-text-seam=storybook:e2e/popover-text-seam.test.ts; "
+                             "optional query: filter=<ZENIT_E2E_FILTER> and env.<KEY>=<value> for the app, percent-encoded")
+    parser.add_argument("--only-extra", action="store_true", help="run only the --extra-suite stages (a targeted repro)")
     parser.add_argument("--startup-timeout", type=float, default=60)
     parser.add_argument("--timeout", type=float, default=3600, help="seconds for the whole batch on the worker")
     parser.add_argument("--wait-worker", type=float, default=0, help="seconds to wait for a fresh worker heartbeat before queuing (the queue is shared; a worker inside another job's stage does not heartbeat)")
@@ -324,7 +374,28 @@ def main() -> int:
         print(f"==> Building {args.arch} apps and GPU contracts into {prefix}", flush=True)
         build(args.arch, prefix, args.renderer)
         bin_dir = prefix / "bin"
-    plan = [] if args.zdoc_only else stages(not args.no_a11y, args.renderer, args.full_app_suites)
+    # Real-input hover stages take the worker's cursor and foreground: only with --allow-foreground.
+    if args.only_extra and not args.extra_suite:
+        parser.error("--only-extra requires --extra-suite")
+    plan = [] if args.zdoc_only or args.only_extra else stages(not args.no_a11y, args.renderer, args.full_app_suites, args.allow_foreground)
+    for spec in args.extra_suite:
+        name, _, rest = spec.partition("=")
+        rest, _, query = rest.partition("?")
+        app, _, suite = rest.partition(":")
+        if not (name and app in queue.E2E_APPS and (REPO / suite).is_file()):
+            parser.error(f"--extra-suite {spec!r}: want NAME=APP:SUITE with APP in {sorted(queue.E2E_APPS)}")
+        stage = {"name": name, "kind": "e2e", "exe_name": queue.E2E_APPS[app], "suite_source": suite,
+                 "minimum_cases": 1, "blocking": True, "filter": ""}
+        for item in filter(None, query.split("&")):
+            key, _, value = item.partition("=")
+            value = urllib.parse.unquote(value)  # %20 etc.: the spec travels through word splitting
+            if key == "filter":
+                stage["filter"] = value
+            elif key.startswith("env.") and len(key) > 4:
+                stage.setdefault("app_env", {})[key[4:]] = value
+            else:
+                parser.error(f"--extra-suite {spec!r}: unknown option {key!r} (filter=, env.KEY=)")
+        plan.append(stage)
     if args.zdoc is not None:
         zdoc = args.zdoc.resolve()
         suite = zdoc / (args.zdoc_suite or "e2e/windows-zdoc-smoke.test.ts")
@@ -345,6 +416,13 @@ def main() -> int:
             for stage in plan:
                 if stage["name"].startswith("zdoc-smoke"):
                     stage["allow_foreground"] = True
+    if args.stages is not None:
+        wanted = [name for name in args.stages.split(",") if name]
+        known = {stage["name"] for stage in plan}
+        unknown = [name for name in wanted if name not in known]
+        if not wanted or unknown:
+            parser.error(f"--stages: unknown or empty stage names {unknown or wanted}; known: {', '.join(sorted(known))}")
+        plan = [stage for stage in plan if stage["name"] in wanted]
     if args.require_a11y:
         for stage in plan:
             stage["blocking"] = True

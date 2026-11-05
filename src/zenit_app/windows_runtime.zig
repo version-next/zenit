@@ -9,7 +9,9 @@ const system_sdk = @import("system_sdk");
 const text = @import("text");
 const SharedGpu = @import("shared_gpu.zig").SharedGpu;
 const shared_renderer = @import("gpu").is_direct3d;
+const caret_sprite = @import("caret_sprite.zig");
 const windows_paint = if (shared_renderer) @import("windows_shared_paint.zig") else @import("windows_paint.zig");
+const dev_control = @import("dev_control/mod.zig");
 const test_harness = @import("test_harness");
 const ClearColor = @import("renderer.zig").ClearColor;
 const window_lifecycle = @import("window_lifecycle.zig");
@@ -32,6 +34,9 @@ pub const Config = struct {
     window: WindowConfig = .{},
     /// Return false to cancel. Called for native and application close requests.
     on_close_request: ?*const fn (*App) bool = null,
+    /// Application reopen with no visible window (see the macOS runtime). Win32 has no such
+    /// event (a hidden window's process is reached through its tray icon), so it is not called.
+    on_reopen: ?*const fn (*App) void = null,
     /// Called once before teardown, while every App resource is still usable.
     on_destroy: ?*const fn (*App) void = null,
     /// Application-level shortcuts: called for every native key event before
@@ -106,6 +111,25 @@ pub const App = struct {
     native_frame_active: bool,
     native_redraw_pending: bool,
     in_native_callback: bool,
+    /// Idle trim (as on macOS): one second after the last rendered frame the
+    /// renderer releases its frame-loop resources (offscreen pool, scratch,
+    /// sprite atlases), again two and seven seconds later. Null when no trim
+    /// is pending. ZENIT_IDLE_TRIM_MS overrides the first delay.
+    idle_trim_due_ns: ?i128,
+    idle_trim_stage: u8,
+    idle_trim_delay_ns: u64,
+    /// Caret blinked by DirectComposition while nothing else changes
+    /// (caret_sprite.zig; the macOS runtime's caret flip). ZENIT_CARET_FLIP=0
+    /// disables it; under the test harness it is off unless set to 1
+    /// (drawable readback cannot see the compositor).
+    caret_flip_enabled: bool,
+    caret_flipping: bool,
+    /// Rendering only to advance the caret's own blink (keeps the quiet clock).
+    caret_tick_only: bool,
+    caret_quiet_since_ns: ?i128,
+    caret_idle_delay_ns: u64,
+    caret_admission: @import("caret_flip_lifecycle.zig").Admission,
+    caret_entries: u64,
 
     pub const MountFn = *const fn (*ui.Cx, *ui.Scope) anyerror!*ui.Node;
 
@@ -164,7 +188,9 @@ pub const App = struct {
         errdefer self.sdk.deinit();
         self.font_system = try text.FontSystem.init(allocator, config.io);
         errdefer self.font_system.deinit();
-        self.font_system.setDefaultLocale(config.font.locale);
+        // No configured locale: the user's UI language, so CJK falls back like the system does.
+        var locale_buffer: [86]u8 = undefined;
+        self.font_system.setDefaultLocale(config.font.locale orelse text.Backend.userLocale(&locale_buffer) orelse "en-US");
         // Resolve once for all slots, own the family independently of Config.
         var chosen: ?*text.Font = null;
         for (config.font.fallback_families) |family| {
@@ -202,11 +228,35 @@ pub const App = struct {
         self.scale = self.win.getScaleFactor();
         self.font_selector.setScaleFactor(self.scale);
         self.cx.display_refresh_hz = self.win.getDisplayRefreshRate();
+        // Compositor sprites (sprite_host.zig): DWM steps opaque flipbooks
+        // sampled at the display refresh rate, above a frame that keeps
+        // painting the node. Drawable readback (test screenshots) cannot see
+        // them: off under the test harness unless ZENIT_SPRITES=1;
+        // ZENIT_SPRITES=0 disables them anywhere.
+        self.cx.sprites.enabled = shared_renderer and @import("sprite_host.zig").supported and blk: {
+            var buf: [16]u8 = undefined;
+            const value = @import("zenit_environment").getInto("ZENIT_SPRITES", &buf) orelse break :blk !test_harness.enabled;
+            break :blk !std.mem.eql(u8, value, "0");
+        };
+        self.cx.sprites.filter_placed = false;
+        self.cx.sprites.max_atlas_bytes = @import("sprite_host.zig").max_rendered_atlas_bytes;
+        self.cx.sprites.replay_in_place = true;
+        self.cx.sprites.flipbook_hz = self.cx.display_refresh_hz;
         self.pump_timeout_ms = config.pump_timeout_ms;
         self.idle_skip_frames = config.idle_skip_frames;
         self.native_frame_active = false;
         self.native_redraw_pending = false;
         self.in_native_callback = false;
+        self.idle_trim_due_ns = null;
+        self.idle_trim_stage = 0;
+        self.idle_trim_delay_ns = idleTrimDelayNs();
+        self.caret_flip_enabled = caretFlipEnabled();
+        self.caret_flipping = false;
+        self.caret_tick_only = false;
+        self.caret_quiet_since_ns = null;
+        self.caret_idle_delay_ns = caretIdleDelayNs();
+        self.caret_admission = .{};
+        self.caret_entries = 0;
         const logical = self.win.getLogicalSize();
         self.cx.setWindowMetrics(logical[0], logical[1], self.scale);
         self.painter = if (comptime shared_renderer) try windows_paint.Painter.initWithSharedGpu(allocator, config.io, &self.win, .{
@@ -227,7 +277,7 @@ pub const App = struct {
         // mounts so new glass takes the first-frame family probe, as on macOS.
         self.cx.backdrop_luminance_readback = if (comptime shared_renderer) self.painter.state.renderer.visual_quality != .basic else true;
         try self.painter.setDefaultFontFamily(self.resolved_font_family);
-        try self.painter.setDefaultLocale(config.font.locale);
+        try self.painter.setDefaultLocale(self.fonts[0].locale);
         self.renderer = &self.painter;
         if (shared_renderer) self.setFontSelector(&self.font_selector);
         if (comptime shared_renderer) {
@@ -246,6 +296,7 @@ pub const App = struct {
         @import("windows_accessibility.zig").install(self.cx, &self.win) catch |err| {
             std.log.err("Windows accessibility handler: {s}", .{@errorName(err)});
         };
+        if (dev_control.enabled) try dev_control.attach(self);
         return self;
     }
 
@@ -287,6 +338,9 @@ pub const App = struct {
         if (self.cx.hasActiveCalls()) @panic("App.deinit during an active UI call; request window close instead");
         if (self.destroying) return;
         self.destroying = true;
+        if (dev_control.enabled) dev_control.beginTeardown();
+        defer if (dev_control.enabled) dev_control.endTeardown();
+        if (dev_control.enabled) dev_control.detach(self);
         // Nothing paints once the renderer detaches below.
         self.win.conceal();
         if (self.config.on_destroy) |callback| callback(self);
@@ -514,6 +568,7 @@ pub const App = struct {
         self.cx.root_scope = scope;
         self.cx.root = app_root;
         self.cx.popover_portal_root = portal;
+        if (dev_control.enabled) try self.cx.prepareStyleGeneration();
 
         const user_root = try mount_fn(self.cx, scope);
         app_root.appendChild(allocator, user_root) catch |err| {
@@ -549,6 +604,14 @@ pub const App = struct {
         return self.win.getWindowId();
     }
 
+    /// This window's runtime test routes (/windows/..., /sprites/...; see
+    /// spriteRoute), for hosts that run their own harness server and pick the
+    /// target window themselves. Main thread. Null: not one of them.
+    pub fn harnessRoute(self: *App, path: []const u8, body: []const u8, out: []u8) ?[]const u8 {
+        if (comptime !test_harness.enabled) return null;
+        return spriteRoute(self, path, body, out);
+    }
+
     pub fn rebindTestHarness(self: *App) void {
         if (!test_harness.enabled) return;
         g_test_cx = self.cx;
@@ -558,6 +621,7 @@ pub const App = struct {
         test_harness.setResizeWindowCallback(resizeWindowForHarness);
         test_harness.setScreenshotCallback(captureScreenshotForHarness);
         test_harness.setFrameStatsCallback(frameStatsForHarness);
+        if (comptime shared_renderer) test_harness.setRuntimeRouteHandler(perfRouteForHarness);
         test_harness.setResetTimingCallback(resetTimingForHarness);
         test_harness.setVisualQualityCallback(visualQualityForHarness);
         if (shared_renderer) test_harness.setRecordingCallbacks(startRecordingForHarness, recordingStatusForHarness, stopRecordingForHarness);
@@ -624,6 +688,7 @@ pub const App = struct {
         const size = self.win.getSize();
         const scale = self.win.getScaleFactor();
         self.cx.display_refresh_hz = self.win.getDisplayRefreshRate();
+        if (self.cx.display_refresh_hz > 0) self.cx.sprites.flipbook_hz = self.cx.display_refresh_hz;
         const logical = self.win.getLogicalSize();
         if (logical[0] != self.cx.viewport.width or logical[1] != self.cx.viewport.height or scale != self.scale) {
             self.width = size[0];
@@ -644,15 +709,198 @@ pub const App = struct {
         // measurement requests one frame so adaptive hooks see it; unfinished
         // readbacks neither block the UI nor force continuous GPU redraws.
         if (self.painter.refreshLuminance(self.cx)) self.cx.needs_redraw = true;
-        if (!self.idle_skip_frames or self.cx.wantsFrame() or self.win.windowRecordingStatus().active != 0) {
+        var want = !self.idle_skip_frames or self.cx.wantsFrame() or self.win.windowRecordingStatus().active != 0;
+        if (comptime caret_sprite.supported) want = self.caretFlipDecide(want);
+        if (want) {
             rendered = true;
+            defer self.caret_tick_only = false;
             try self.painter.update(self.cx, &self.win);
+            if (dev_control.enabled and !self.in_native_callback) dev_control.afterLayout(self);
             // Reveal on the first frame that carries the application's UI.
             // Showing the window paints synchronously before the app mounts
             // its root; that frame is background only and must stay cloaked.
             // Both painters present every non-empty frame they are given.
             if (self.cx.root != null and size[0] != 0 and size[1] != 0) self.win.notePresented();
+            self.noteFrameForIdleTrim();
+        } else self.maybeTrimIdle();
+    }
+
+    fn caretFlipEnabled() bool {
+        if (comptime !caret_sprite.supported) return false;
+        var buf: [8]u8 = undefined;
+        const value = @import("zenit_environment").getInto("ZENIT_CARET_FLIP", &buf) orelse return !test_harness.enabled;
+        return !std.mem.eql(u8, value, "0");
+    }
+
+    fn caretIdleDelayNs() u64 {
+        var buf: [16]u8 = undefined;
+        const value = @import("zenit_environment").getInto("ZENIT_CARET_FLIP_IDLE_MS", &buf) orelse return 2 * std.time.ns_per_s;
+        const ms = std.fmt.parseInt(u32, value, 10) catch return 2 * std.time.ns_per_s;
+        return @as(u64, std.math.clamp(ms, 500, 60000)) * std.time.ns_per_ms;
+    }
+
+    /// Advance the declared caret phase to `now`; true when it changed.
+    fn updateCaretPhase(self: *App, now: i128) bool {
+        if (now < self.cx.caret_next_ns) return false;
+        const steps = @divTrunc(now - self.cx.caret_next_ns, self.cx.caret_half_ns) + 1;
+        if (@mod(steps, 2) == 1) self.cx.caret_visible = !self.cx.caret_visible;
+        self.cx.caret_next_ns += steps * self.cx.caret_half_ns;
+        return true;
+    }
+
+    /// Whether this wake renders, with the caret handed to the compositor once
+    /// it is the only thing changing (see caret_sprite.zig).
+    fn caretFlipDecide(self: *App, want_frame: bool) bool {
+        // The runtime, not wantsFrame, advances the caret phase.
+        self.cx.caret_flip_host = self.caret_flip_enabled;
+        if (!self.caret_flip_enabled) return want_frame;
+        self.caret_admission.observe(self.cx.input_epoch, self.cx.world.mutation_epoch);
+        const now = @import("zenit_time").monotonicTimestamp(self.cx.io);
+        // The sprite host dropped the sprite (a failed put): paint the caret
+        // again rather than rely on that failure's redraw reaching here.
+        if (self.caret_flipping and !self.painter.state.renderer.caret_sprite.active) {
+            self.exitCaretFlip();
+            return true;
         }
+        if (want_frame) {
+            self.exitCaretFlip();
+            return true;
+        }
+        const eligible = self.cx.caret_phase_valid and self.cx.caret_rect_count > 0 and !self.cx.caret_rect_overflow and
+            self.painter.state.renderer.config.clear_color.a == 1;
+        if (!eligible) {
+            self.exitCaretFlip();
+            // Unsupported or fully clipped declarations still blink normally.
+            if (self.cx.caret_phase_valid and self.updateCaretPhase(now)) return self.caretTick();
+            return false;
+        }
+        const was_visible = self.cx.caret_visible;
+        const phase_changed = self.updateCaretPhase(now);
+        if (self.caret_flipping) return false; // DWM blinks it.
+        if (self.caret_quiet_since_ns == null) self.caret_quiet_since_ns = now;
+        // Enter on a blink: the two capture frames are presented, so the first
+        // repeats the phase on screen and the second is that blink itself.
+        if (phase_changed and was_visible != self.cx.caret_visible and now - self.caret_quiet_since_ns.? >= @max(self.caret_idle_delay_ns, self.cx.caret_half_ns) and self.caret_admission.ready(now)) {
+            self.enterCaretFlip() catch |err| {
+                std.log.warn("[caret-flip] entry failed: {s}", .{@errorName(err)});
+                self.painter.state.renderer.caret_sprite.deactivate();
+                self.caret_flipping = false;
+                self.caret_admission.failed(now, self.caret_idle_delay_ns);
+                self.caret_admission.painted(self.cx.world.mutation_epoch);
+                self.cx.needs_redraw = true;
+                if (self.cx.root) |root| root.markSubtreeDirty();
+                return true;
+            };
+            self.caret_admission.painted(self.cx.world.mutation_epoch);
+            return false; // enterCaretFlip rendered its frames.
+        }
+        return if (phase_changed) self.caretTick() else false;
+    }
+
+    /// A frame that only advances the caret's blink.
+    fn caretTick(self: *App) bool {
+        self.caret_tick_only = true;
+        self.cx.needs_redraw = true;
+        return true;
+    }
+
+    fn exitCaretFlip(self: *App) void {
+        if (self.caret_flipping) {
+            // The next frame paints the caret again and no longer puts the
+            // sprite; the host removes it once that frame is presented.
+            self.painter.state.renderer.caret_sprite.deactivate();
+            self.cx.needs_redraw = true;
+            if (self.cx.root) |root| root.markSubtreeDirty();
+        }
+        self.caret_flipping = false;
+        self.caret_quiet_since_ns = null;
+    }
+
+    /// Render the caret hidden, then shown, copying its patch out of each
+    /// composed frame; then render the frame that puts the sprite.
+    fn enterCaretFlip(self: *App) !void {
+        if (comptime !caret_sprite.supported) return error.Unsupported;
+        const renderer = &self.painter.state.renderer;
+        const drawable = self.win.getDrawableSize();
+        const rect = caret_sprite.patchRect(self.cx.caret_rects[0..self.cx.caret_rect_count], self.scale, drawable) orelse return error.CaretPatchUnavailable;
+        try renderer.caret_sprite.begin(renderer.device, rect);
+        defer self.cx.caret_paint_override = null;
+        // Entry runs on a phase change: the phase just left is still on screen.
+        // Capturing it first presents nothing new; the second frame is the blink.
+        const now_visible = self.cx.caret_visible;
+        for ([_]bool{ !now_visible, now_visible }) |visible| {
+            self.cx.caret_paint_override = visible;
+            renderer.caret_sprite.capture = if (visible) .visible else .hidden;
+            self.cx.needs_redraw = true;
+            if (self.cx.root) |root| root.markSubtreeDirty();
+            try self.painter.update(self.cx, &self.win);
+            // The frame did not reach its back buffer (no surface, zero size).
+            if (renderer.caret_sprite.capture != .none) return error.CaretPatchUnavailable;
+        }
+        // Both pictures come from one unchanged window.
+        if (!std.meta.eql(self.win.getDrawableSize(), drawable)) return error.CaretHostTransition;
+        try renderer.caret_sprite.activate();
+        self.caret_flipping = true;
+        self.caret_entries += 1;
+        self.cx.caret_paint_override = null;
+        self.cx.needs_redraw = true;
+        if (self.cx.root) |root| root.markSubtreeDirty();
+        try self.painter.update(self.cx, &self.win);
+        // From here the window renders nothing: idle trim counts from now.
+        self.noteFrameForIdleTrim();
+    }
+
+    fn idleTrimDelayNs() u64 {
+        var buf: [16]u8 = undefined;
+        const value = @import("zenit_environment").getInto("ZENIT_IDLE_TRIM_MS", &buf) orelse return std.time.ns_per_s;
+        const ms = std.fmt.parseInt(u32, value, 10) catch return std.time.ns_per_s;
+        return @as(u64, ms) * std.time.ns_per_ms;
+    }
+
+    fn noteFrameForIdleTrim(self: *App) void {
+        if (comptime !shared_renderer) return;
+        if (self.idle_trim_delay_ns == 0) return;
+        self.idle_trim_stage = 0;
+        self.idle_trim_due_ns = @import("zenit_time").monotonicTimestamp(self.cx.io) + self.idle_trim_delay_ns;
+    }
+
+    fn maybeTrimIdle(self: *App) void {
+        if (comptime !shared_renderer) return;
+        const due = self.idle_trim_due_ns orelse return;
+        const now = @import("zenit_time").monotonicTimestamp(self.cx.io);
+        if (now < due) return;
+        const trimmed = self.painter.trimIdle();
+        if (@import("zenit_environment").flag("ZENIT_DEBUG_IDLE_TRIM"))
+            std.debug.print("[idle-trim] window={d} stage={d} trimmed={}\n", .{ self.windowId(), self.idle_trim_stage, trimmed });
+        if (!trimmed) {
+            // The last frame is still executing: retry without waiting on the GPU.
+            self.idle_trim_due_ns = now + 50 * std.time.ns_per_ms;
+            return;
+        }
+        // Later stages catch resources released only after deferred work
+        // (retired presentation, pool maintenance) completes.
+        const later = [_]u64{ 2, 7 };
+        self.idle_trim_due_ns = if (self.idle_trim_stage < later.len) now + @as(i128, later[self.idle_trim_stage] * self.idle_trim_delay_ns) else null;
+        self.idle_trim_stage += 1;
+    }
+
+    /// Milliseconds until this window needs the loop again for its own
+    /// maintenance (idle trim, offscreen pool), capped at `timeout_ms`.
+    fn maintenanceTimeoutMs(self: *const App, timeout_ms: u32) u32 {
+        var result = self.offscreenMaintenanceTimeoutMs(timeout_ms);
+        // A just-submitted backdrop luminance readback may finish after the
+        // last frame: poll it (refreshLuminance in frame) without rendering,
+        // as the macOS runtime does.
+        if (comptime shared_renderer) {
+            if (self.painter.state.renderer.hasPendingBackdropLuminance()) result = @min(result, 16);
+        }
+        if (self.idle_trim_due_ns) |due| {
+            const now = @import("zenit_time").monotonicTimestamp(self.cx.io);
+            const left: u64 = if (due > now) @intCast(due - now) else 0;
+            const ms = @max(1, (left + std.time.ns_per_ms - 1) / std.time.ns_per_ms);
+            result = @min(result, @as(u32, @intCast(@min(ms, std.math.maxInt(u32)))));
+        }
+        return result;
     }
 
     fn offscreenMaintenanceTimeoutMs(self: *const App, timeout_ms: u32) u32 {
@@ -669,12 +917,13 @@ pub const App = struct {
         self.cx.needs_redraw = true;
         try self.frame();
         while (!self.should_quit) {
-            const timeout = if (self.cx.wantsFrame()) 0 else if (test_harness.enabled) @min(self.pump_timeout_ms, 16) else self.pump_timeout_ms;
-            platform.Window.pumpAppEventsTimeout(self.offscreenMaintenanceTimeoutMs(timeout));
+            const timeout = if (self.cx.wantsFrame()) 0 else if (test_harness.enabled or dev_control.active()) @min(self.pump_timeout_ms, 16) else self.pump_timeout_ms;
+            pumpNative(self.maintenanceTimeoutMs(timeout));
             self.cx.bindFrameClock();
             if (test_harness.enabled) test_harness.drainCommands();
             const result = try self.sdk.pump(0);
             for (self.sdk.events()) |event| self.processEvent(event);
+            if (dev_control.enabled) dev_control.drain();
             self.dispatchFocusLoss();
             if (!result.should_continue or self.should_quit) break;
             try self.frame();
@@ -717,6 +966,7 @@ pub const App = struct {
         defer self.cx.refreshTextInputSession();
         switch (event) {
             .quit => self.should_quit = true,
+            .app_reopen => if (self.config.on_reopen) |callback| callback(self),
             .window_close_requested => self.requestClose() catch {},
             .window_resized, .frame_requested, .system_theme_changed => self.cx.needs_redraw = true,
             .window_focused => |e| {
@@ -725,7 +975,7 @@ pub const App = struct {
                 // active exactly while it is the focused foreground window.
                 // Test-mode runs in the background, so treat it as active unless
                 // the test asks for real activation (inactive baselines).
-                const appears_active = if (test_harness.enabled and !@import("zenit_environment").has("ZENIT_E2E_REAL_ACTIVATION")) true else e.focused and e.appears_active;
+                const appears_active = if (test_harness.enabled and !@import("zenit_environment").flag("ZENIT_E2E_REAL_ACTIVATION")) true else e.focused and e.appears_active;
                 if (self.cx.window_active != appears_active) {
                     self.cx.window_active = appears_active;
                     // Inactive appearance (caption text, glass tint) is resolved in hooks.
@@ -734,6 +984,7 @@ pub const App = struct {
                 if (!e.focused) self.cx.cancelPointerInteractions(.window_blur) else self.cx.replayCursor();
             },
             .mouse_move => |e| self.cx.handleMouseMoveEx(e.x, e.y, toUiModifiers(e.modifiers)),
+            .pointer_left => self.cx.handlePointerLeave(),
             .mouse_button => |e| {
                 if (e.cancelled) {
                     self.cx.needs_redraw = true;
@@ -941,15 +1192,15 @@ pub const MultiWindowApp = struct {
             const owner_id = app.owner_window;
             self.detachOwner(app);
             _ = self.windows.orderedRemove(index);
-            _ = self.lifecycle.removed(id);
+            // Only a window that still held focus hands it on (a closing panel
+            // returns it to its owner); an inactive one leaves focus alone.
+            const handoff = self.lifecycle.removedFocusHandoff(id, owner_id);
             app.deinit();
             if (self.activeWindow()) |survivor| survivor.rebindTestHarness();
             // Windows hands activation to an arbitrary window (or another
             // application) when the active one is destroyed. Make the fallback
             // explicit so keyboard focus, IME and shortcuts stay with this app.
-            if (!self.lifecycle.quit_requested) {
-                // A closing panel hands focus back to its owner.
-                if (owner_id) |owner| if (self.window(owner) != null) self.lifecycle.setFocused(owner, true);
+            if (handoff != null) {
                 if (self.activeWindow()) |survivor| survivor.activate();
             }
             break;
@@ -994,11 +1245,11 @@ pub const MultiWindowApp = struct {
         self.applyPendingCloses();
         if (!self.shouldContinue()) return false;
         var maintenance_timeout_ms = timeout_ms;
-        for (self.windows.items) |app| maintenance_timeout_ms = app.offscreenMaintenanceTimeoutMs(maintenance_timeout_ms);
+        for (self.windows.items) |app| maintenance_timeout_ms = app.maintenanceTimeoutMs(maintenance_timeout_ms);
         self.execution_depth += 1;
         {
             defer self.execution_depth -= 1;
-            platform.Window.pumpAppEventsTimeout(maintenance_timeout_ms);
+            pumpNative(maintenance_timeout_ms);
             // The native quit flag is process-wide, so every window's pump
             // reports it with a `.quit` event. Ask the application once per
             // pump; a veto withdraws the request and the rest of the batch
@@ -1048,6 +1299,26 @@ pub const MultiWindowApp = struct {
         }
         self.applyPendingCloses();
     }
+    /// The wait an application-owned loop (`pump` + `frame`) should pass to
+    /// `pump` for the windows Zenit renders: zero while one wants a frame,
+    /// else until the earliest window timer, scheduled redraw or
+    /// maintenance deadline (idle trim, offscreen pool), at most the
+    /// configured `pump_timeout_ms` only while a developer control session
+    /// polls. Same contract as the macOS runtime's `pumpTimeoutMs`.
+    pub fn pumpTimeoutMs(self: *MultiWindowApp) u32 {
+        var timeout: u32 = std.math.maxInt(u32);
+        for (self.windows.items) |app| {
+            if (app.cx.wantsFrame()) return 0;
+            if (app.cx.nextWakeDelayNs()) |delay_ns| {
+                const ms = @max(1, (delay_ns +| (std.time.ns_per_ms - 1)) / std.time.ns_per_ms);
+                timeout = @min(timeout, @as(u32, @intCast(@min(ms, std.math.maxInt(u32)))));
+            }
+            timeout = app.maintenanceTimeoutMs(timeout);
+        }
+        if (dev_control.active()) timeout = @min(timeout, 16);
+        return timeout;
+    }
+
     pub fn tick(self: *MultiWindowApp) !bool {
         if (self.execution_depth != 0 or self.tearing_down or self.hasActiveCalls()) return error.ReentrantWindowLoop;
         var timeout = self.config.pump_timeout_ms;
@@ -1057,7 +1328,9 @@ pub const MultiWindowApp = struct {
                 break;
             }
         }
+        if (dev_control.active()) timeout = @min(timeout, 16);
         if (!try self.pump(timeout)) return false;
+        if (dev_control.enabled) dev_control.drain();
         if (test_harness.enabled) {
             g_harness_host = self;
             test_harness.setCommandBoundaryCallbacks(beginHarnessCommand, endHarnessCommand);
@@ -1152,6 +1425,11 @@ fn frameStatsForHarness() test_harness.FrameStatsSnapshot {
         .blit_passes = if (shared_renderer) app.painter.state.renderer.last_frame_stats.blit_passes else 0,
         .compute_passes = if (shared_renderer) app.painter.state.renderer.last_frame_stats.compute_passes else 0,
         .pass_native_us = if (shared_renderer) app.painter.state.renderer.last_frame_stats.pass_native_us else 0,
+        .stage_totals = if (shared_renderer) harnessStageTotals(app.painter.state.renderer.stage_totals) else null,
+        .caret_flipping = app.caret_flipping,
+        .caret_visible = app.cx.caret_visible,
+        .caret_rect_count = @intCast(app.cx.caret_rect_count),
+        .caret_entries = app.caret_entries,
         .gpu_p95_us = st.gpu_p95_us,
         .cpu_p95_us = st.cpu_p95_us,
         .total_p95_us = st.total_p95_us,
@@ -1249,4 +1527,152 @@ fn visualQualityForHarness(command: test_harness.VisualQualityCommand) ?[]const 
         },
     }
     return @tagName(app.painter.state.renderer.visual_quality);
+}
+
+fn harnessStageTotals(totals: anytype) test_harness.StageTotals {
+    var out: test_harness.StageTotals = .{};
+    inline for (@typeInfo(test_harness.StageTotals).@"struct".field_names) |name| @field(out, name) = @field(totals, name);
+    return out;
+}
+
+/// Native event wait. While a harness scroll stream runs, wake when its next
+/// event is due, as the real wheel message it stands for would wake the loop;
+/// a plain timeout only ends on a system timer tick (15.6 ms), which paced the
+/// stream at about 32 events per second instead of its 120 Hz.
+fn pumpNative(timeout_ms: u32) void {
+    if (timeout_ms != 0) if (test_harness.streamNextDelayNs()) |delay_ns| {
+        const us = @min(@as(u64, timeout_ms) * std.time.us_per_ms, delay_ns / std.time.ns_per_us);
+        return platform.Window.pumpAppEventsTimeoutPrecise(@intCast(us));
+    };
+    platform.Window.pumpAppEventsTimeout(timeout_ms);
+}
+
+/// Test-mode measurement switch: POST /perf/present-interval {"interval":N}
+/// presents every Nth vblank (0 restores the surface default), to compare an
+/// animation's CPU cost at 120 / 60 / 30 Hz on a 120 Hz display.
+fn perfRouteForHarness(path: []const u8, body: []const u8, out: []u8) ?[]const u8 {
+    if (spriteRouteForHarness(path, body, out)) |written| return written;
+    if (!std.mem.eql(u8, path, "/perf/present-interval")) return null;
+    const app = g_test_app orelse return null;
+    const key = std.mem.indexOf(u8, body, "\"interval\"") orelse return null;
+    var i = key + "\"interval\"".len;
+    while (i < body.len and (body[i] == ':' or body[i] == ' ')) i += 1;
+    var end = i;
+    while (end < body.len and body[end] >= '0' and body[end] <= '9') end += 1;
+    const interval = std.fmt.parseInt(u32, body[i..end], 10) catch return null;
+    if (interval > 4) return null;
+    app.painter.state.surface.sync_interval = if (interval == 0) null else interval;
+    app.cx.needs_redraw = true;
+    return std.fmt.bufPrint(out, "{{\"ok\":true,\"interval\":{d}}}", .{interval}) catch null;
+}
+
+extern fn zenit_win_capture_client_png(hwnd: *anyopaque, path: [*:0]const u8, x: c_int, y: c_int, w: c_int, h: c_int) c_int;
+extern fn zenit_win_capture_burst_start(hwnd: *anyopaque, path: [*:0]const u8, x: c_int, y: c_int, w: c_int, h: c_int, count: c_uint) c_int;
+extern fn zenit_win_capture_burst_wait(timeout_ms: c_uint) c_int;
+extern fn zenit_win_sprites_set_freeze(on: c_int) void;
+extern fn zenit_win_bring_to_front(hwnd: *anyopaque) c_int;
+extern fn zenit_win_window_info(hwnd: *anyopaque, root: *?*anyopaque, foreground: *?*anyopaque, title: [*]u8, title_len: c_int, state: *[7]c_int) void;
+
+/// Compositor sprite acceptance (e2e/windows-sprites.test.ts). Images are
+/// what DWM composes for the window (swap chain and sprite visuals), read
+/// from the screen; drawable readback cannot see the sprites.
+///   POST /windows/readback {"path"}  the renderer's last frame as a BMP
+///   POST /windows/info {}    the window's root, visibility, cloak, rect
+///   POST /windows/raise {}   the foreground window, inside the work area
+///        (moved, shrunk to fit): captures read the screen
+///   POST /windows/capture {"path","x","y","w","h"}      client rect (w/h 0: all)
+///   POST /windows/capture-burst {"path","x","y","w","h","count"}
+///        one image per composition on a worker thread, stacked vertically
+///   POST /windows/capture-burst-wait {"timeout_ms"}
+///   POST /sprites/freeze {"on"}   show the put phase's frame, no animation
+///   POST /sprites/flipbook {"path","index"}  the active sprite's flipbook as rendered
+///   POST /sprites/caret {}       the caret sprite: flipping, patch rect, half period
+///   POST /sprites/caret-flip {"on"}  hand the caret to the compositor or not
+///        (off: the caret blinks in regular frames, the reference pictures)
+fn spriteRouteForHarness(path: []const u8, body: []const u8, out: []u8) ?[]const u8 {
+    return spriteRoute(g_test_app orelse return null, path, body, out);
+}
+
+fn spriteRoute(app: *App, path: []const u8, body: []const u8, out: []u8) ?[]const u8 {
+    if (comptime !shared_renderer) return null;
+    const Args = struct { path: []const u8 = "", x: i32 = 0, y: i32 = 0, w: i32 = 0, h: i32 = 0, count: u32 = 0, timeout_ms: u32 = 0, on: bool = false, index: u32 = 0 };
+    if (!std.mem.startsWith(u8, path, "/windows/") and !std.mem.startsWith(u8, path, "/sprites/")) return null;
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const args = std.json.parseFromSliceLeaky(Args, arena, if (body.len == 0) "{}" else body, .{ .ignore_unknown_fields = true }) catch return std.fmt.bufPrint(out, "{{\"ok\":false,\"error\":\"bad json\"}}", .{}) catch null;
+    const hwnd = app.win.getNativeSurfaceHandle();
+    const path_z = arena.dupeSentinel(u8, args.path, 0) catch return null;
+    if (std.mem.eql(u8, path, "/windows/readback")) {
+        // The renderer's last frame (BMP), against what the screen shows.
+        if (!std.mem.endsWith(u8, args.path, ".bmp")) return std.fmt.bufPrint(out, "{{\"ok\":false,\"error\":\"path must end in .bmp\"}}", .{}) catch null;
+        const ok = app.painter.captureBmp(args.path) catch false;
+        return std.fmt.bufPrint(out, "{{\"ok\":{}}}", .{ok}) catch null;
+    }
+    if (std.mem.eql(u8, path, "/windows/raise") or std.mem.eql(u8, path, "/windows/info")) {
+        const ok = if (std.mem.eql(u8, path, "/windows/raise")) zenit_win_bring_to_front(hwnd) == 1 else true;
+        var root: ?*anyopaque = null;
+        var foreground: ?*anyopaque = null;
+        var title: [128]u8 = @splat(0);
+        var state: [7]c_int = @splat(0);
+        zenit_win_window_info(hwnd, &root, &foreground, &title, title.len, &state);
+        const t = std.mem.sliceTo(&title, 0);
+        for (title[0..t.len]) |*c| if (c.* == '"' or c.* == '\\' or c.* < 0x20) {
+            c.* = '_';
+        };
+        return std.fmt.bufPrint(out, "{{\"ok\":{},\"hwnd\":{d},\"root\":{d},\"foreground\":{d},\"title\":\"{s}\",\"visible\":{d},\"iconic\":{d},\"cloaked\":{d},\"rect\":[{d},{d},{d},{d}]}}", .{
+            ok,       @intFromPtr(hwnd), @intFromPtr(root), @intFromPtr(foreground), t,
+            state[0], state[1],          state[2],          state[3],                state[4],
+            state[5], state[6],
+        }) catch null;
+    }
+    if (std.mem.eql(u8, path, "/windows/capture")) {
+        const ok = zenit_win_capture_client_png(hwnd, path_z.ptr, args.x, args.y, args.w, args.h) == 1;
+        return std.fmt.bufPrint(out, "{{\"ok\":{}}}", .{ok}) catch null;
+    }
+    if (std.mem.eql(u8, path, "/windows/capture-burst")) {
+        const ok = zenit_win_capture_burst_start(hwnd, path_z.ptr, args.x, args.y, args.w, args.h, args.count) == 1;
+        return std.fmt.bufPrint(out, "{{\"ok\":{}}}", .{ok}) catch null;
+    }
+    if (std.mem.eql(u8, path, "/windows/capture-burst-wait")) {
+        const result = zenit_win_capture_burst_wait(args.timeout_ms);
+        return std.fmt.bufPrint(out, "{{\"ok\":{},\"done\":{}}}", .{ result == 1, result != 0 }) catch null;
+    }
+    if (std.mem.eql(u8, path, "/sprites/caret")) {
+        const c = &app.painter.state.renderer.caret_sprite;
+        return std.fmt.bufPrint(out, "{{\"ok\":true,\"enabled\":{},\"flipping\":{},\"active\":{},\"entries\":{d},\"visible\":{},\"rect\":[{d},{d},{d},{d}],\"half_ms\":{d}}}", .{
+            app.caret_flip_enabled, app.caret_flipping, c.active,  app.caret_entries, app.cx.caret_visible,
+            c.rect[0],              c.rect[1],          c.rect[2], c.rect[3],         @divTrunc(app.cx.caret_half_ns, std.time.ns_per_ms),
+        }) catch null;
+    }
+    if (std.mem.eql(u8, path, "/sprites/caret-flip")) {
+        if (!args.on) app.exitCaretFlip();
+        app.caret_flip_enabled = args.on and caret_sprite.supported;
+        app.cx.needs_redraw = true;
+        return std.fmt.bufPrint(out, "{{\"ok\":true,\"enabled\":{}}}", .{app.caret_flip_enabled}) catch null;
+    }
+    if (std.mem.eql(u8, path, "/sprites/freeze")) {
+        zenit_win_sprites_set_freeze(@intFromBool(args.on));
+        return std.fmt.bufPrint(out, "{{\"ok\":true}}", .{}) catch null;
+    }
+    if (std.mem.eql(u8, path, "/sprites/tile")) {
+        @import("sprite_host.zig").tile_override = args.count;
+        return std.fmt.bufPrint(out, "{{\"ok\":true}}", .{}) catch null;
+    }
+    if (std.mem.eql(u8, path, "/sprites/dump")) {
+        const host = @import("sprite_host.zig");
+        if (args.path.len == 0 or args.path.len > host.dump_dir_buf.len) {
+            host.dump_dir = null;
+        } else {
+            @memcpy(host.dump_dir_buf[0..args.path.len], args.path);
+            host.dump_dir = host.dump_dir_buf[0..args.path.len];
+        }
+        return std.fmt.bufPrint(out, "{{\"ok\":true}}", .{}) catch null;
+    }
+    if (std.mem.eql(u8, path, "/sprites/flipbook")) {
+        const info = @import("sprite_host.zig").writeFlipbookPng(&app.painter.state.renderer, app.cx, args.index, args.count, path_z) catch |err|
+            return std.fmt.bufPrint(out, "{{\"ok\":false,\"error\":\"{s}\"}}", .{@errorName(err)}) catch null;
+        return std.fmt.bufPrint(out, "{{\"ok\":true,\"origin\":[{d},{d}],\"cell\":[{d},{d}],\"columns\":{d},\"frames\":{d},\"period_ms\":{d}}}", .{ info.origin[0], info.origin[1], info.cell[0], info.cell[1], info.columns, info.frames, info.period_ms }) catch null;
+    }
+    return null;
 }

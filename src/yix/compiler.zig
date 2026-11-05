@@ -6,6 +6,59 @@ const Token = std.zig.Token;
 const List = std.ArrayList;
 const Error = error{ InvalidYix, OutOfMemory };
 
+/// Syntax-only preview lowering. Concrete types remain in the compiled schema;
+/// these records can only select an existing typed factory, never evaluate Zig.
+pub const PreviewAttribute = struct { name: []const u8, value: []const u8, literal: bool = false, slot: bool = false };
+pub const PreviewOp = struct {
+    kind: enum { element, text, hole, close },
+    path: []const u8 = "",
+    receiver: []const u8 = "",
+    tokens: []const u8 = "",
+    identity_tokens: ?[]const u8 = null,
+    attributes: []const PreviewAttribute = &.{},
+    literal: ?[]const u8 = null,
+    captures: []const []const u8 = &.{},
+    fragments: []const []const u8 = &.{},
+};
+pub const PreviewComponent = struct {
+    name: []const u8,
+    start: usize,
+    end: usize,
+    ops: []const PreviewOp,
+    isolated: bool,
+    key_tokens: []const u8 = "",
+    region: bool = false,
+};
+pub const PreviewDocument = struct { envelope: []const u8, components: []const PreviewComponent, regions: []const PreviewComponent };
+pub const PreviewResult = union(enum) { document: PreviewDocument, diagnostic: Diagnostic };
+const PreviewCollector = struct { ops: List(PreviewOp) = .empty, components: List(PreviewComponent) = .empty, regions: List(PreviewComponent) = .empty };
+
+/// All storage belongs to `a` (normally a preparation arena). Uses the exact
+/// production parser, including Zig tokenization and lexical region assignment.
+pub fn compilePreview(a: Allocator, module_path: []const u8, source: []const u8) !PreviewResult {
+    if (std.mem.indexOfAny(u8, source, &.{ mark_open, mark_text, mark_close, mark_point, mark_component })) |at|
+        return .{ .diagnostic = .{ .offset = at, .message = "invalid source control byte" } };
+    const root = try a.dupeSentinel(u8, source, 0);
+    var origins: List(Origin) = .empty;
+    try origins.append(a, .{ .ptr = @intFromPtr(root.ptr), .len = root.len, .offset = 0 });
+    var seq: usize = 0;
+    var collector: PreviewCollector = .{};
+    var p: Parser = .{ .a = a, .source = root, .module_path = module_path, .origins = &origins, .flow_seq = &seq, .preview = &collector };
+    _ = p.file() catch |err| switch (err) {
+        error.InvalidYix => return .{ .diagnostic = p.diagnostic orelse .{ .offset = p.absolute(p.pos), .message = "invalid Yix syntax" } },
+        else => return err,
+    };
+    var envelope: List(u8) = .empty;
+    var cursor: usize = 0;
+    for (collector.components.items) |c| {
+        try envelope.appendSlice(a, try p.normalizedTokens(source[cursor..c.start]));
+        try envelope.appendSlice(a, " @template_boundary ");
+        cursor = c.end;
+    }
+    try envelope.appendSlice(a, try p.normalizedTokens(source[cursor..]));
+    return .{ .document = .{ .envelope = envelope.items, .components = collector.components.items, .regions = collector.regions.items } };
+}
+
 /// Messages have static storage; only Result.output needs freeing.
 /// `offset` is absolute byte offset in .yix source (subparser positions already adjusted).
 pub const Diagnostic = struct { offset: usize, message: []const u8 };
@@ -64,6 +117,12 @@ pub fn compile(allocator: Allocator, source: []const u8) !Result {
 }
 
 pub fn compileMapped(allocator: Allocator, source: []const u8) !MappedResult {
+    return compileMappedWithPath(allocator, "<memory>", source);
+}
+
+/// `module_path` is the source path relative to the project/repository root.
+/// Disk generators and diagnostic remappers must pass the same stable path.
+pub fn compileMappedWithPath(allocator: Allocator, module_path: []const u8, source: []const u8) !MappedResult {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -75,7 +134,7 @@ pub fn compileMapped(allocator: Allocator, source: []const u8) !MappedResult {
     var origins: List(Origin) = .empty;
     try origins.append(a, .{ .ptr = @intFromPtr(root.ptr), .len = root.len, .offset = 0 });
     var flow_seq: usize = 0;
-    var p: Parser = .{ .a = a, .source = root, .origins = &origins, .flow_seq = &flow_seq };
+    var p: Parser = .{ .a = a, .source = root, .module_path = module_path, .origins = &origins, .flow_seq = &flow_seq };
     const marked = p.file() catch |err| switch (err) {
         error.InvalidYix => {
             const d = p.diagnostic orelse Diagnostic{ .offset = p.absolute(p.pos), .message = "invalid Yix syntax" };
@@ -203,12 +262,18 @@ pub fn genToSrcNearest(segments: []const Segment, gen: usize) usize {
 /// Compile one source file by extension: `.yss` style recipe, otherwise Yix. Diagnostics: .yss
 /// allocated by caller, Yix static strings.
 pub fn compileSource(allocator: Allocator, path: []const u8, source: []const u8) !Result {
-    return if (std.mem.endsWith(u8, path, ".yss")) style.compile(allocator, source) else compile(allocator, source);
+    return if (std.mem.endsWith(u8, path, ".yss")) style.compileWithPath(allocator, source, path) else switch (try compileMappedWithPath(allocator, path, source)) {
+        .diagnostic => |d| .{ .diagnostic = d },
+        .mapped => |m| blk: {
+            allocator.free(m.segments);
+            break :blk .{ .output = m.output };
+        },
+    };
 }
 
 /// Like compileSource, with position mapping (editor use).
 pub fn compileMappedSource(allocator: Allocator, path: []const u8, source: []const u8) !MappedResult {
-    return if (std.mem.endsWith(u8, path, ".yss")) style.compileMapped(allocator, source) else compileMapped(allocator, source);
+    return if (std.mem.endsWith(u8, path, ".yss")) style.compileMappedWithPath(allocator, source, path) else compileMappedWithPath(allocator, path, source);
 }
 
 /// Diagnostic offset -> 1-based line:col (col in bytes, matches zig error format).
@@ -442,6 +507,9 @@ const Mapping = struct { generated: usize, source: usize };
 const Parser = struct {
     a: Allocator,
     source: [:0]const u8,
+    module_path: []const u8 = "<memory>",
+    preview: ?*PreviewCollector = null,
+    catalog_prefixes: ?*List([]const u8) = null,
     /// All source buffers (original + sub-parser copies) positions in original, shared by whole
     /// parser tree.
     origins: *List(Origin),
@@ -451,6 +519,7 @@ const Parser = struct {
     /// branches).
     /// Sub-parsers share counter, reset at component start.
     flow_seq: *usize,
+    template_path: []const u8 = "",
     pos: usize = 0,
     diagnostic: ?Diagnostic = null,
     symbols: List(Symbol) = .empty,
@@ -466,6 +535,10 @@ const Parser = struct {
     /// Component's slot names (`View` param: `children` default, others named).
     slot_names: []const []const u8 = &.{},
     slots_used: List([]const u8) = .empty,
+    /// `?View` slots: built only when the caller fills them, via `{if (name) <box>…{name}…</box>}`.
+    optional_slots: []const []const u8 = &.{},
+    /// Optional slot whose `{if (name) …}` guard is being parsed (its `{name}` is allowed here).
+    slot_guard: ?[]const u8 = null,
     /// Slot in control flow branch forbidden (slot nodes determined at mount).
     in_branch: bool = false,
     /// Derived-value block label index (`__yix_d<n>:`, unique in component).
@@ -485,6 +558,10 @@ const Parser = struct {
     effect_writes: List([]const u8) = .empty,
     /// onMount statement: runs after root node mount (ref available when accessed).
     mount_code: List(u8) = .empty,
+    preview_setup_safe: bool = true,
+    /// View hooks belong to the repeatable template, not instance setup.
+    view_attach_code: List(u8) = .empty,
+    view_detach_code: List(u8) = .empty,
 
     fn fail(p: *Parser, offset: usize, comptime message: []const u8) Error {
         p.diagnostic = .{ .offset = p.absolute(offset), .message = message };
@@ -883,6 +960,9 @@ const Parser = struct {
         try p.rejectBuiltinShadowing();
         var out: List(u8) = .empty;
         var at: usize = 0;
+        var catalog_source: List(u8) = .empty;
+        var catalog_prefixes: List([]const u8) = .empty;
+        p.catalog_prefixes = &catalog_prefixes;
         while (p.token().tag != .eof) {
             const t = p.take();
             if (t.tag != .keyword_fn) continue;
@@ -896,6 +976,7 @@ const Parser = struct {
             if (!eq(p.word(p.token()), "View")) continue;
             _ = p.take();
             _ = try p.expect(.l_brace);
+            try p.add(&catalog_source, p.source[at..t.loc.start]);
             try p.add(&out, try p.markZigSrc(p.source[at..t.loc.start]));
             try p.add(&out, try p.fmt("{c}{d}{c}", .{ mark_component, t.loc.start, mark_text }));
             try p.mappings.append(p.a, .{ .generated = 0, .source = t.loc.start });
@@ -905,12 +986,107 @@ const Parser = struct {
             try p.add(&out, try p.component(p.word(name_t), params, is_pub));
             at = p.pos;
         }
+        try p.add(&catalog_source, p.source[at..]);
         try p.add(&out, try p.markZigSrc(p.source[at..]));
         if (p.mappings.items.len == 0) return out.items;
+        if (!eq(p.module_path, "<memory>") and p.preview == null) {
+            // A translated module may live alone in a build cache. Keep one
+            // exact baseline in the generated module instead of requiring a
+            // neighboring source file. Hex escapes cannot masquerade as copied
+            // Zig or source-map markers. The release branch never embeds bytes.
+            try p.add(&out, "\nconst __yix_preview_source: ?[]const u8 = if (ui.view.template.preview_enabled) \"");
+            const hex = "0123456789abcdef";
+            for (p.source) |byte| {
+                try p.add(&out, "\\x");
+                try out.append(p.a, hex[byte >> 4]);
+                try out.append(p.a, hex[byte & 15]);
+            }
+            try p.add(&out, "\" else null;\n");
+            try p.add(&out, "const __YixStyleCatalog = if (ui.view.template.preview_enabled) ui.view.template.styleCatalog(.{");
+            try p.catalogRoots(&out, catalog_source.items, "");
+            try p.add(&out, " }) else void;\n");
+        }
         // Component mapping line rewritten by stripMarks with post-strip offset.
         try p.add(&out, "\n//# yix-map-data []\n");
         return out.items;
     }
+    /// Enumerate private declarations in authored namespaces too: Zig reflection
+    /// deliberately exposes only public decls. Imported namespaces use the typed
+    /// collector because their private names cannot be referenced by this module.
+    fn catalogRoots(p: *Parser, out: *List(u8), raw: []const u8, prefix: []const u8) Error!void {
+        const bytes = try p.a.dupeSentinel(u8, raw, 0);
+        var z = std.zig.Tokenizer.init(bytes);
+        var depth: usize = 0;
+        var previous: Token.Tag = .eof;
+        while (true) {
+            const tok = z.next();
+            const prior = previous;
+            previous = tok.tag;
+            if (tok.tag == .eof) break;
+            if (tok.tag == .l_brace) depth += 1;
+            if (tok.tag == .r_brace) depth -= 1;
+            if (depth != 0 or tok.tag != .keyword_const) continue;
+            if (prior != .eof and prior != .semicolon and prior != .comma and prior != .keyword_pub and prior != .doc_comment and prior != .container_doc_comment) continue;
+            var probe = z;
+            const name = probe.next();
+            if (name.tag != .identifier) continue;
+            var delimiter = probe.next();
+            if (delimiter.tag == .colon) {
+                var nested: usize = 0;
+                while (true) {
+                    delimiter = probe.next();
+                    if (delimiter.tag == .eof or delimiter.tag == .semicolon) break;
+                    if (delimiter.tag == .equal and nested == 0) break;
+                    if (delimiter.tag == .l_paren or delimiter.tag == .l_bracket or delimiter.tag == .l_brace) nested += 1;
+                    if (delimiter.tag == .r_paren or delimiter.tag == .r_bracket or delimiter.tag == .r_brace) nested -|= 1;
+                }
+            }
+            if (delimiter.tag != .equal) continue;
+            const first = probe.next();
+            const path = try p.fmt("{s}{s}{s}", .{ prefix, if (prefix.len == 0) "" else ".", bytes[name.loc.start..name.loc.end] });
+            if (first.tag == .builtin and eq(bytes[first.loc.start..first.loc.end], "@import")) {
+                _ = probe.next();
+                const arg = probe.next();
+                if (arg.tag == .string_literal) {
+                    const imported = bytes[arg.loc.start..arg.loc.end];
+                    var style_namespace = std.mem.endsWith(u8, imported, ".yss\"") or std.mem.endsWith(u8, imported, ".yss.zig\"");
+                    if (p.catalog_prefixes) |names| for (names.items) |n| {
+                        if (eq(n, path)) style_namespace = true;
+                    };
+                    if (!style_namespace) continue;
+                }
+            }
+            if (first.tag == .identifier and (eq(bytes[first.loc.start..first.loc.end], "ui") or eq(bytes[first.loc.start..first.loc.end], "std"))) {
+                _ = probe.next();
+                const member = probe.next();
+                if (member.tag != .identifier or !eq(bytes[member.loc.start..member.loc.end], "css")) continue;
+            }
+            if (first.tag == .keyword_struct or first.tag == .keyword_enum or first.tag == .keyword_union) {
+                var open = probe.next();
+                if (open.tag == .l_paren) {
+                    while (open.tag != .r_paren and open.tag != .eof) open = probe.next();
+                    open = probe.next();
+                }
+                if (open.tag == .l_brace) {
+                    var nesting: usize = 1;
+                    var close = open;
+                    while (nesting != 0) {
+                        close = probe.next();
+                        if (close.tag == .eof) return p.fail(p.pos, "unterminated style namespace");
+                        if (close.tag == .l_brace) nesting += 1;
+                        if (close.tag == .r_brace) nesting -= 1;
+                    }
+                    try p.catalogRoots(out, bytes[open.loc.end..close.loc.start], path);
+                    z = probe;
+                    previous = .semicolon;
+                    continue;
+                }
+            }
+            try p.add(out, try p.fmt(" .@{s} = {s},", .{ try p.quote(try p.normalizedTokens(path)), path }));
+            // Leave all initializer tokens to the normal depth tracker.
+        }
+    }
+
     /// `signal(...)` / `computed(...)` / `ref(...)` / `parts(...)` Yix built-ins in component body:
     /// file-level function/const with same name silently shadowed, rejected directly.
     fn rejectBuiltinShadowing(p: *Parser) Error!void {
@@ -968,21 +1144,27 @@ const Parser = struct {
     }
 
     fn component(p: *Parser, name: []const u8, params: []const u8, is_pub: bool) Error![]const u8 {
+        p.template_path = name;
         p.flow_seq.* = 0;
         p.derive_seq = 0;
         p.symbols.clearRetainingCapacity();
         p.mount_code = .empty;
+        p.preview_setup_safe = true;
+        p.view_attach_code = .empty;
+        p.view_detach_code = .empty;
         p.slotted = false;
         p.slot_names = &.{};
         p.slots_used = .empty;
+        p.optional_slots = &.{};
         var slot_list: List([]const u8) = .empty;
+        var optional_list: List([]const u8) = .empty;
         var fields: List(u8) = .empty;
         var aliases: List(u8) = .empty;
         var models: List(u8) = .empty;
         var model_count: usize = 0;
         // `name: Text`: text children in tag go to this param (`<Button>Save</Button>` -> label).
         var text_child: ?[]const u8 = null;
-        var q: Parser = .{ .a = p.a, .source = try p.dup(params), .origins = p.origins, .flow_seq = p.flow_seq };
+        var q: Parser = .{ .a = p.a, .module_path = p.module_path, .source = try p.dup(params), .origins = p.origins, .flow_seq = p.flow_seq };
         while (q.token().tag != .eof) {
             if (q.token().tag == .keyword_comptime) return p.fail(p.pos, "comptime component parameters are not implemented");
             const name_token = try q.expect(.identifier);
@@ -1011,10 +1193,15 @@ const Parser = struct {
             if (nesting != 0) return p.fail(p.pos, "unbalanced component parameter");
             const ty = trim(params[start .. equal orelse q.pos]);
             if (ty.len == 0) return p.fail(p.pos, "component parameters require a type");
-            if (eq(ty, "View")) {
+            if (eq(ty, "View") or eq(ty, "?View")) {
                 // Slots: `children` takes tag children, others are named slots (caller writes
-                // `header={<.../>}`).
+                // `header={<.../>}`). `?View`: optional named slot, built only when filled.
                 if (equal != null) return p.fail(p.pos, "a View parameter (slot) takes no default");
+                if (ty[0] == '?') {
+                    if (eq(n, "children")) return p.fail(p.pos, "children cannot be optional; only named slots take ?View");
+                    try optional_list.append(p.a, n);
+                    p.optional_slots = optional_list.items;
+                }
                 p.slotted = true;
                 for (slot_list.items) |prev| if (eq(prev, n)) return p.failFmt(p.absolute(p.pos), "slot `{s}` is declared twice", .{n});
                 try slot_list.append(p.a, n);
@@ -1074,7 +1261,9 @@ const Parser = struct {
         }
         p.model_count = model_count;
         if (text_child) |t| try p.add(&fields, try p.fmt("    /// Text children of the tag go into this parameter (ui.view.textChild)\n    pub const text_child = \"{s}\";\n", .{try p.snake(t)}));
-        const generated_body = try p.body(name);
+        const body_code = try p.body(name);
+        const generated_body = try p.fmt("    try ui.view.previewCheckSetup(scope, {});\n{s}", .{ p.preview_setup_safe, body_code });
+        try p.add(&fields, try p.fmt("    pub const __yix_preview_setup = true;\n    pub const __yix_preview_builder = {s};\n    pub const __yix_preview_mount = __yix_{s};\n", .{ name, name }));
         // Omit unused parameter aliases so Zig's unused-local check stays useful.
         var used_aliases: List(u8) = .empty;
         for (p.symbols.items) |s| {
@@ -1094,12 +1283,34 @@ const Parser = struct {
             for (p.slot_names) |sn| {
                 for (p.slots_used.items) |u| {
                     if (eq(u, sn)) break;
-                } else return p.failFmt(p.absolute(p.pos), "component declares {s}: View but the template has no {{{s}}}", .{ sn, sn });
+                } else return p.failFmt(p.absolute(p.pos), "component declares {s}: {s}View but the template has no {{{s}}}", .{ sn, if (p.isOptionalSlot(sn)) "?" else "", sn });
             }
-            return p.fmt("fn {s}(args: anytype) ui.view.SlottedOf(__yix_{s}) {{\n    return ui.view.slotted(__yix_{s}, ui.reactive.props.coerce({s}Props, args));\n}}\n{s}const {s}Props = struct {{\n{s}}};\nfn __yix_{s}(__yix_props: {s}Props, scope: *ui.Scope, cx: *ui.Cx) anyerror!ui.view.ViewParts {{\n{s}{s}{s}\n}}", .{ name, name, name, name, if (is_pub) "pub " else "", name, fields.items, name, name, unused, used_aliases.items, generated_body });
+            // Optional slots: the component receives which named slots the caller filled.
+            const presence_param = if (p.optional_slots.len != 0) " __yix_present: ui.view.SlotPresence," else "";
+            return p.fmt("fn {s}(args: anytype) ui.view.SlottedOf(__yix_{s}) {{\n    return ui.view.slotted(__yix_{s}, ui.reactive.props.coerce({s}Props, args));\n}}\n{s}const {s}Props = struct {{\n{s}}};\nfn __yix_{s}(__yix_props: {s}Props,{s} scope: *ui.Scope, cx: *ui.Cx) anyerror!ui.view.ViewParts {{\n{s}{s}{s}\n}}", .{ name, name, name, name, if (is_pub) "pub " else "", name, fields.items, name, name, presence_param, unused, used_aliases.items, generated_body });
         }
         return p.fmt("fn {s}(args: anytype) ui.view.ComponentOf(__yix_{s}) {{\n    return ui.view.component(__yix_{s}, ui.reactive.props.coerce({s}Props, args));\n}}\n{s}const {s}Props = struct {{\n{s}}};\nfn __yix_{s}(__yix_props: {s}Props, scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {{\n{s}{s}{s}\n}}", .{ name, name, name, name, if (is_pub) "pub " else "", name, fields.items, name, name, unused, used_aliases.items, generated_body });
     }
+    /// A deliberately small syntax proof. It runs before evaluating generated
+    /// view expressions or setup. Calls outside deferred lifecycle statements
+    /// are unknown; even an unchanged call requires L3 rather than speculation.
+    fn previewExpressionSafe(p: *Parser, raw: []const u8) Error!bool {
+        var z = std.zig.Tokenizer.init(try p.a.dupeSentinel(u8, raw, 0));
+        var prev: Token.Tag = .eof;
+        while (true) {
+            const item = z.next();
+            switch (item.tag) {
+                .eof => return true,
+                .builtin, .period_asterisk, .keyword_volatile, .keyword_resume, .keyword_suspend, .semicolon, .keyword_break, .keyword_continue, .keyword_unreachable, .keyword_asm, .keyword_while, .keyword_defer, .keyword_errdefer, .keyword_return => return false,
+                .l_paren => if (prev == .identifier or prev == .r_paren or prev == .r_bracket or prev == .r_brace or prev == .asterisk or prev == .question_mark or prev == .period or prev == .period_asterisk) {
+                    return false;
+                },
+                else => {},
+            }
+            prev = item.tag;
+        }
+    }
+
     fn body(p: *Parser, name: []const u8) Error![]const u8 {
         var out: List(u8) = .empty;
         while (p.token().tag != .r_brace) {
@@ -1109,21 +1320,40 @@ const Parser = struct {
             if (t.tag == .keyword_return) {
                 const paren = p.eat(.l_paren);
                 if (p.token().tag != .angle_bracket_left) return p.fail(p.pos, "a View component returns one root tag");
+                const template_start = p.token().loc.start;
+                const op_start = if (p.preview) |c| c.ops.items.len else 0;
                 const tag = try p.element();
+                const template_end = p.pos;
+                if (p.preview) |c| try c.components.append(p.a, .{
+                    .name = name,
+                    .start = template_start,
+                    .end = p.pos,
+                    .ops = try p.a.dupe(PreviewOp, c.ops.items[op_start..]),
+                    .isolated = !p.slotted and p.view_attach_code.items.len == 0 and p.view_detach_code.items.len == 0,
+                });
                 if (paren) _ = try p.expect(.r_paren);
                 _ = try p.expect(.semicolon);
-                // Root node records component name (DevTools tree / jump source; matches
-                // hand-written component_name).
-                if (p.slotted) {
-                    var slot_vars: List(u8) = .empty;
-                    var named: List(u8) = .empty;
-                    var default: []const u8 = "null";
-                    for (p.slot_names) |sn| {
-                        try p.add(&slot_vars, try p.fmt("    var __yix_slot_{s}: ?ui.view.SlotPoint = null;\n", .{sn}));
-                        if (eq(sn, "children")) default = "__yix_slot_children" else try p.add(&named, try p.fmt(" .{s} = __yix_slot_{s},", .{ sn, sn }));
-                    }
-                    try p.add(&out, try p.fmt("{s}    const __yix_root = try ui.view.render(scope, cx, {s});\n    __yix_root.meta.ownership.meta.component_name = \"{s}\";\n{s}    return ui.view.slottedParts(__yix_root, {s}, .{{{s} }});\n", .{ slot_vars.items, tag, name, p.mount_code.items, default, named.items }));
-                } else try p.add(&out, try p.fmt("    const __yix_root = try ui.view.render(scope, cx, {s});\n    __yix_root.meta.ownership.meta.component_name = \"{s}\";\n{s}    return __yix_root;\n", .{ tag, name, p.mount_code.items }));
+                var view_code: List(u8) = .empty;
+                var named: List(u8) = .empty;
+                var default: []const u8 = "null";
+                if (p.slotted) for (p.slot_names) |sn| {
+                    try p.add(&view_code, try p.fmt("    var __yix_slot_{s}: ?ui.view.SlotPoint = null;\n", .{sn}));
+                    if (eq(sn, "children")) default = "__yix_slot_children" else try p.add(&named, try p.fmt(" .{s} = __yix_slot_{s},", .{ sn, sn }));
+                };
+                try p.add(&view_code, try p.fmt("    try ui.view.previewCheckSetup(scope, {});\n    try ui.view.emit(scope, cx, __yix_sink, {s});\n    const __yix_root = __yix_sink.root.?.* orelse return error.ViewEmptyRoot;\n    __yix_root.meta.ownership.meta.component_name = \"{s}\";\n{s}", .{ try p.previewExpressionSafe(p.source[template_start..template_end]), tag, name, try p.fmt("{s}{s}", .{ p.view_detach_code.items, p.view_attach_code.items }) }));
+                try p.add(&view_code, if (p.slotted)
+                    try p.fmt("    return ui.view.slottedParts(__yix_root, {s}, .{{{s} }});\n", .{ default, named.items })
+                else
+                    "    return __yix_root;\n");
+                var captured: List(Symbol) = .empty;
+                try captured.appendSlice(p.a, try p.rowCaptures());
+                if (p.optional_slots.len != 0) try captured.append(p.a, .{ .name = "__yix_present", .reactive = false });
+                const renamed = try p.rowReferences(view_code.items, captured.items, "__yix_view_ctx", "__yix_view_scope", "__yix_view_cx");
+                const used = try p.usedCaptures(captured.items, &.{renamed}, &.{"__yix_view_ctx"});
+                const ctx = try p.context(used, false);
+                const unused_ctx = if (used.len == 0) "    _ = __yix_view_ctx;\n" else "";
+                // Instance onMount stays outside the repeatable view callback.
+                try p.add(&out, try p.fmt("    const __yix_view = try ui.view.renderComponentView(scope, cx, {s}, struct {{ fn __yix_render(__yix_view_ctx: anytype, __yix_view_scope: *ui.Scope, __yix_view_cx: *ui.Cx, __yix_sink: ui.view.Sink) anyerror!{s} {{\n{s}{s}    }} }}.__yix_render);\n{s}    return __yix_view;\n", .{ ctx, if (p.slotted) "ui.view.ViewParts" else "*ui.Node", unused_ctx, renamed, p.mount_code.items }));
             } else if (t.tag == .keyword_var or t.tag == .keyword_const) {
                 const n = p.word(try p.expect(.identifier));
                 const ty = if (p.eat(.colon)) try p.spanTo(.equal) else "";
@@ -1133,6 +1363,11 @@ const Parser = struct {
                 const call = try p.localBuiltin(expr);
                 const builtin: []const u8 = if (call) |c| c.name else "";
                 const call_inner: []const u8 = if (call) |c| c.inner else "";
+                if (eq(builtin, "signal") or eq(builtin, "computed")) {
+                    p.preview_setup_safe = p.preview_setup_safe and try p.previewExpressionSafe(call_inner);
+                } else if (!eq(builtin, "ref")) {
+                    p.preview_setup_safe = p.preview_setup_safe and try p.previewExpressionSafe(expr);
+                }
                 if (eq(builtin, "signal")) {
                     if (t.tag != .keyword_var) return p.fail(start, "signal declarations must use var");
                     if (ty.len == 0) return p.fail(start, "signal declarations require an explicit value type");
@@ -1174,7 +1409,7 @@ const Parser = struct {
                     try p.add(&out, try p.markZigSrc(p.source[start..p.pos]));
                     try p.add(&out, "\n");
                 }
-            } else if (t.tag == .identifier and (eq(p.word(t), "effect") or eq(p.word(t), "onMount") or eq(p.word(t), "onUnmount")) and p.token().tag == .l_paren) {
+            } else if (t.tag == .identifier and (eq(p.word(t), "effect") or eq(p.word(t), "onMount") or eq(p.word(t), "onUnmount") or eq(p.word(t), "onViewAttach") or eq(p.word(t), "onViewDetach")) and p.token().tag == .l_paren) {
                 // effect(stmt): rerun when sources change; onMount(stmt): run once after root
                 // mount;
                 // onUnmount(stmt): run at unmount.
@@ -1182,10 +1417,10 @@ const Parser = struct {
                 p.event_name = kind;
                 const raw = trim(try p.balanced(.l_paren, .r_paren));
                 _ = try p.expect(.semicolon);
-                const mode: StatementMode = if (eq(kind, "effect")) .effect else if (eq(kind, "onMount")) .mount else .unmount;
+                const mode: StatementMode = if (eq(kind, "effect")) .effect else if (eq(kind, "onMount") or eq(kind, "onViewAttach")) .mount else .unmount;
                 const code = try p.statements(raw, mode);
-                if (mode == .mount) try p.add(&p.mount_code, code) else try p.add(&out, code);
-            } else return p.fail(start, "component bodies support declarations, effect / onMount / onUnmount and a root return; move helpers to ordinary Zig functions");
+                if (eq(kind, "onViewAttach")) try p.add(&p.view_attach_code, code) else if (eq(kind, "onViewDetach")) try p.add(&p.view_detach_code, code) else if (mode == .mount) try p.add(&p.mount_code, code) else try p.add(&out, code);
+            } else return p.fail(start, "component bodies support declarations, effect / onMount / onUnmount / onViewAttach / onViewDetach and a root return; move helpers to ordinary Zig functions");
         }
         _ = p.take();
         return out.items;
@@ -1195,12 +1430,17 @@ const Parser = struct {
         p.depth += 1;
         defer p.depth -= 1;
         if (p.depth > 128) return p.fail(p.pos, "template nesting exceeds 128");
+        const site_start = p.token().loc.start;
+        const preview_start = if (p.preview) |c| c.ops.items.len else 0;
         _ = try p.expect(.angle_bracket_left);
         const nt = try p.expect(.identifier);
         var name = p.word(nt);
         while (p.eat(.period)) name = try p.fmt("{s}.{s}", .{ name, p.word(try p.expect(.identifier)) });
         // Component tag name copied to generated (jump/hover lands on component definition).
         const name_out = try p.mark(p.source[nt.loc.start..p.pos]);
+        var template_attributes: List(u8) = .empty;
+        var hole_attributes: List(u8) = .empty;
+        var preview_attributes: List(PreviewAttribute) = .empty;
         var props: List(u8) = .empty;
         var attrs: List(u8) = .empty;
         var icon_src: ?[]const u8 = null;
@@ -1226,16 +1466,50 @@ const Parser = struct {
                 } else value = "true";
             }
             try p.requireCamel(key_at, key, "attribute");
+            const normalized_value = try p.normalizedTokens(value);
+            const is_literal = !eq(try p.templateLiteral(value), "null");
+            if (p.preview != null) try preview_attributes.append(p.a, .{ .name = try p.snake(key), .value = normalized_value, .literal = is_literal });
+            const static_style = eq(key, "style") and try p.previewStaticStyle(normalized_value);
+            if (eq(key, "style")) if (p.catalog_prefixes) |names| {
+                var z = std.zig.Tokenizer.init(try p.a.dupeSentinel(u8, normalized_value, 0));
+                const first = z.next();
+                if (first.tag == .identifier) try names.append(p.a, normalized_value[first.loc.start..first.loc.end]);
+            };
+            try p.add(&hole_attributes, try p.fmt("{s} = {s}; ", .{ key, if (is_literal or static_style) "@static" else normalized_value }));
+            const attr_kind: []const u8 = if (isEventKey(key)) "event" else if (eq(key, "ref")) "reference" else if (eq(key, "style")) "style" else "property";
+            try p.add(&template_attributes, try p.fmt(" .{{ .name = {s}, .tokens = {s}, .kind = .{s}, .literal = {s} }},", .{ try p.quote(try p.snake(key)), try p.quote(normalized_value), attr_kind, try p.templateLiteral(value) }));
             if (trim(value).len != 0 and trim(value)[0] == '<') {
                 if (!is_component) return p.failFmt(key_at, "`{s}` has an element value; element values only go on component attributes (named slots)", .{key});
                 var q = try p.sub(trim(value));
-                const content = q.element() catch |err| {
+                q.template_path = try p.fmt("{s}/slot:{s}", .{ p.template_path, key });
+                if (p.preview != null) preview_attributes.items[preview_attributes.items.len - 1].slot = true;
+                const content = q.branch() catch |err| {
                     p.diagnostic = q.diagnostic;
                     return err;
                 };
                 if (q.token().tag != .eof) return p.failFmt(key_at, "the value of `{s}` must be a single element", .{key});
                 try p.add(&named_slots, try p.fmt(" .{s} = {s},", .{ key, content }));
                 continue;
+            }
+            if (is_component and std.mem.startsWith(u8, trim(value), "if") and std.mem.indexOfScalar(u8, value, '<') != null) {
+                // `icon={if (cond) <icon …/>}`: a slot that exists only when cond holds at mount
+                // (slots are structure; an absent one builds nothing).
+                var q = try p.sub(trim(value));
+                if (q.token().tag == .keyword_if) {
+                    _ = q.take();
+                    const cond = trim(try q.balanced(.l_paren, .r_paren));
+                    if (q.token().tag == .angle_bracket_left) {
+                        const content = q.element() catch |err| {
+                            p.diagnostic = q.diagnostic;
+                            return err;
+                        };
+                        if (q.token().tag == .keyword_else) return p.failFmt(key_at, "`{s}={{if (…) <…/>}}` takes no else: when the condition is false the slot is absent", .{key});
+                        if (q.token().tag != .eof) return p.failFmt(key_at, "the value of `{s}` must be a single element", .{key});
+                        const cond_code = try p.expression(cond);
+                        try p.add(&named_slots, try p.fmt(" .{s} = if (ui.view.atMount({s})) {s} else null,", .{ key, cond_code, content }));
+                        continue;
+                    }
+                }
             }
             if (eq(key, "ref")) {
                 // After mount, write node (component element mounts to result) into ref handle.
@@ -1316,7 +1590,7 @@ const Parser = struct {
                         break :either try p.fmt("if (comptime ui.view.isEventProp({s}, \"{s}\")) {s} else {s}", .{ name, mapped, as_event, as_value });
                     },
                 };
-            } else if (isEventKey(key) and !eq(key, "onEvent")) value = try p.handler(value, !is_component and !isTypedHostEvent(key)) else if (!eq(key, "style") and !eq(key, "box") and !eq(key, "parts") and !eq(key, "a11y") and !eq(key, "tint")) value = if (is_component) try p.attrExpression(value, name, mapped) else try p.expression(value) else {
+            } else if (isEventKey(key) and !eq(key, "onEvent")) value = try p.handler(value, !is_component and !isTypedHostEvent(key)) else if (!eq(key, "style") and !eq(key, "box") and !eq(key, "parts") and !eq(key, "a11y") and !eq(key, "state") and !eq(key, "tint")) value = if (is_component) try p.attrExpression(value, name, mapped) else try p.expression(value) else {
                 try p.rejectEnv(value);
                 value = try p.mark(value);
             }
@@ -1327,7 +1601,13 @@ const Parser = struct {
         }
         const self_close = p.eat(.slash);
         _ = try p.expect(.angle_bracket_right);
+
+        const slot_start = p.pos;
+        const slot_at = if (p.preview) |c| c.ops.items.len else 0;
         const child_content = if (self_close) Children{} else try p.children(name);
+        if (p.preview) |c| if (is_component and c.ops.items.len > slot_at) {
+            try c.regions.append(p.a, .{ .name = try p.fmt("{s}/slot:children", .{p.template_path}), .start = p.absolute(slot_start), .end = p.absolute(p.pos), .ops = try p.a.dupe(PreviewOp, c.ops.items[slot_at..]), .isolated = true, .region = true });
+        };
         const host_container = eq(name, "box") or eq(name, "row") or eq(name, "col") or eq(name, "grid");
         if ((child_content.slot_end != null or child_content.slot_mark) and !host_container) return p.fail(nt.loc.start, "a slot ({children} / {name}) must be inside box, row, col or grid");
         const ps = try p.fmt(".{{{s} }}", .{props.items});
@@ -1367,9 +1647,26 @@ const Parser = struct {
                 if (child_content.nodes.len != 0) result = try p.fmt("ui.view.with({s}, {s})", .{ result, cs });
             }
         } else return p.fail(nt.loc.start, "unknown host tag; host tags are box, row, col, grid, text, icon, image, canvas and spacer");
+        if (is_component) result = try p.fmt("__yix_builder_{d}: {{ try ui.view.previewCheckBuilder(scope, {s}); break :__yix_builder_{d} {s}; }}", .{ site_start, name_out, site_start, result });
         if (ref_target) |r| result = try p.fmt("ui.view.ref({s}, {s})", .{ r, result });
         if (attrs.items.len != 0) result = try p.fmt("ui.view.templateAttrs(.{{{s} }}, {s})", .{ attrs.items, result });
-        return result;
+        // Metadata describes lexical receivers; concrete capture/receiver types
+        // are completed and checked by Zig's template schema instantiation.
+        const raw = p.source[site_start..p.pos];
+        const dependencies = try p.deps(try plain(p.a, result));
+        const ctx = try p.context(dependencies, false);
+        const tokens = if (is_component or ref_target != null) try p.normalizedTokens(raw) else try p.fmt("{s} {s}{s}", .{ name, hole_attributes.items, if (eq(name, "text") and child_content.args) child_content.identity else "" });
+        const literal = if (eq(name, "text") and !child_content.args) (if (child_content.literal.len == 0) "\"\"" else child_content.literal) else "null";
+        if (p.preview) |c| {
+            const container = (eq(name, "box") or eq(name, "row") or eq(name, "col")) and !p.slotted and ref_target == null;
+            if (!container) c.ops.shrinkRetainingCapacity(preview_start);
+            const names = try p.a.alloc([]const u8, dependencies.len);
+            for (dependencies, names) |symbol, *capture| capture.* = symbol.name;
+            try c.ops.insert(p.a, preview_start, .{ .kind = if (container) .element else .hole, .path = p.template_path, .receiver = name, .tokens = tokens, .identity_tokens = if (is_component) try p.previewIdentity(site_start, p.pos) else null, .attributes = preview_attributes.items, .literal = if (!eq(literal, "null")) literal else null, .captures = names, .fragments = if (eq(name, "text")) child_content.fragments else &.{} });
+            if (container) try c.ops.append(p.a, .{ .kind = .close });
+        }
+        const root_source = if (p.depth == 1 and !p.in_branch and !eq(p.module_path, "<memory>")) ", .source = __yix_preview_source, .catalog = __YixStyleCatalog" else "";
+        return p.fmt("ui.view.templateSite(.{{ .module = {s}, .path = {s}, .receiver = {s}, .tokens = {s}, .literal_text = {s}, .attributes = &.{{{s} }}{s} }}, {s}, {s})", .{ try p.quote(p.module_path), try p.quote(p.template_path), try p.quote(name), try p.quote(tokens), literal, template_attributes.items, root_source, ctx, result });
     }
     /// Template attrs and component params camelCase only (generated Zig fields snake_case).
     /// Abbreviations
@@ -1388,14 +1685,51 @@ const Parser = struct {
         return out.items;
     }
 
-    const Children = struct { nodes: []const u8 = "", text: ?[]const u8 = null, literal: []const u8 = "", args: bool = false, has_elements: bool = false, slot_end: ?[]const u8 = null, slot_mark: bool = false };
+    const Children = struct { fragments: []const []const u8 = &.{}, identity: []const u8 = "", nodes: []const u8 = "", text: ?[]const u8 = null, literal: []const u8 = "", args: bool = false, has_elements: bool = false, slot_end: ?[]const u8 = null, slot_mark: bool = false };
 
     /// `{name}` is this component's slot?
     fn slotName(p: *Parser, name: []const u8) ?[]const u8 {
         for (p.slot_names) |sn| if (eq(sn, name)) return sn;
         return null;
     }
-    const TextRun = struct { format: List(u8) = .empty, args: List(u8) = .empty, literal: List(u8) = .empty };
+    fn isOptionalSlot(p: *Parser, name: []const u8) bool {
+        for (p.optional_slots) |sn| if (eq(sn, name)) return true;
+        return false;
+    }
+    /// `{if (name) <tag>…{name}…</tag>}` with `name: ?View`: the element exists only when the
+    /// caller filled the slot. Decided once at mount (slots are structure), so it compiles to a
+    /// plain optional element instead of a reactive branch. Returns null for any other `{…}`.
+    fn optionalSlotGuard(p: *Parser, expr: []const u8) Error!?[]const u8 {
+        if (p.optional_slots.len == 0) return null;
+        var q = try p.sub(expr);
+        errdefer if (q.diagnostic) |d| {
+            p.diagnostic = d;
+        };
+        if (q.token().tag != .keyword_if) return null;
+        _ = q.take();
+        if (!q.eat(.l_paren)) return null;
+        if (q.token().tag != .identifier) return null;
+        const name = q.word(q.take());
+        if (!p.isOptionalSlot(name)) return null;
+        // Slot boxes are fixed at mount; a reactive branch rebuilds its nodes.
+        if (p.in_branch) return p.failFmt(p.absolute(p.pos), "{{{s}}} (a slot) cannot be inside control flow", .{name});
+        _ = try q.expect(.r_paren);
+        if (q.token().tag != .angle_bracket_left) return q.failFmt(q.absolute(q.pos), "{{if ({s}) …}} on an optional slot takes one element", .{name});
+        q.in_branch = p.in_branch;
+        q.slot_guard = name;
+        const guarded = try q.element();
+        if (q.token().tag == .keyword_else) return q.failFmt(q.absolute(q.pos), "{{if ({s}) …}} on an optional slot takes no else: an absent slot builds nothing", .{name});
+        if (q.token().tag != .eof) return q.fail(q.pos, "unexpected tokens after the optional slot element");
+        var used = false;
+        for (q.slots_used.items) |u| {
+            for (p.slots_used.items) |prev| if (eq(prev, u)) return p.failFmt(p.absolute(p.pos), "{{{s}}} appears more than once", .{u});
+            try p.slots_used.append(p.a, u);
+            if (eq(u, name)) used = true;
+        }
+        if (!used) return p.failFmt(p.absolute(p.pos), "{{if ({s}) …}} must contain {{{s}}}", .{ name, name });
+        return try p.fmt("if (__yix_present.has(\"{s}\")) {s} else null", .{ name, guarded });
+    }
+    const TextRun = struct { format: List(u8) = .empty, args: List(u8) = .empty, literal: List(u8) = .empty, fragments: List([]const u8) = .empty, interpolation_count: usize = 0, identity: List(u8) = .empty };
     fn appendText(p: *Parser, run: *TextRun, raw: []const u8) Error!void {
         var normalized: List(u8) = .empty;
         if (std.mem.indexOfScalar(u8, raw, '\n') != null) {
@@ -1433,7 +1767,7 @@ const Parser = struct {
         try p.add(&run.format, try p.quote(escaped.items));
     }
     fn interpolate(p: *Parser, run: *TextRun, raw: []const u8) Error!void {
-        var q: Parser = .{ .a = p.a, .source = try p.dup(raw), .origins = p.origins, .flow_seq = p.flow_seq };
+        var q: Parser = .{ .a = p.a, .module_path = p.module_path, .source = try p.dup(raw), .origins = p.origins, .flow_seq = p.flow_seq };
         var nesting: usize = 0;
         var colon: ?usize = null;
         while (q.token().tag != .eof) {
@@ -1453,6 +1787,11 @@ const Parser = struct {
         }
         const expr = trim(raw[0 .. colon orelse raw.len]);
         const value = try p.expression(expr);
+        run.interpolation_count += 1;
+        try run.fragments.append(p.a, try p.a.dupe(u8, run.literal.items));
+        run.literal.clearRetainingCapacity();
+        try p.add(&run.identity, try p.normalizedTokens(raw));
+        try p.add(&run.identity, " @interpolation ");
         if (run.format.items.len != 0) try p.add(&run.format, " ++ ");
         try p.add(&run.format, try p.fmt("ui.view.yixFormat(@TypeOf({s}), {s})", .{ value, try p.quote(if (colon) |c| raw[c + 1 ..] else "") }));
         try p.add(&run.args, try p.fmt(" {s},", .{value}));
@@ -1468,7 +1807,18 @@ const Parser = struct {
     }
     fn flush(p: *Parser, nodes: *List(u8), r: *TextRun) Error!void {
         if (r.format.items.len == 0) return;
-        try p.add(nodes, try p.fmt("{s}ui.view.text(.{{}}, {s}),", .{ try p.childBreak(0), try p.textValue(r.*) }));
+        if (r.args.items.len != 0 and r.fragments.items.len == r.interpolation_count) try r.fragments.append(p.a, try p.a.dupe(u8, r.literal.items));
+        const value = try p.textValue(r.*);
+        const ctx = try p.context(try p.deps(try plain(p.a, value)), false);
+        const tokens = if (r.args.items.len == 0) "text" else r.identity.items;
+        const literal = if (r.args.items.len == 0) try p.quote(r.literal.items) else "null";
+        if (p.preview) |c| {
+            const dependencies = try p.deps(try plain(p.a, value));
+            const names = try p.a.alloc([]const u8, dependencies.len);
+            for (dependencies, names) |symbol, *capture| capture.* = symbol.name;
+            try c.ops.append(p.a, .{ .kind = .text, .path = p.template_path, .receiver = "text", .tokens = tokens, .literal = if (r.args.items.len == 0) literal else null, .captures = names, .fragments = if (r.args.items.len == 0) &.{} else try p.a.dupe([]const u8, r.fragments.items) });
+        }
+        try p.add(nodes, try p.fmt("{s}ui.view.templateSite(.{{ .module = {s}, .path = {s}, .receiver = \"text\", .tokens = {s}, .literal_text = {s} }}, {s}, ui.view.text(.{{}}, {s})),", .{ try p.childBreak(0), try p.quote(p.module_path), try p.quote(p.template_path), try p.quote(tokens), literal, ctx, value }));
         r.* = .{};
     }
     fn children(p: *Parser, name: []const u8) Error!Children {
@@ -1496,7 +1846,10 @@ const Parser = struct {
                 const offset = p.pos;
                 const expr = try p.balanced(.l_brace, .r_brace);
                 if (p.slotName(trim(expr))) |sn| {
-                    if (p.in_branch) return p.failFmt(p.absolute(offset), "{{{s}}} (a slot) cannot be inside control flow", .{sn});
+                    const optional = p.isOptionalSlot(sn);
+                    if (optional and !(p.slot_guard != null and eq(p.slot_guard.?, sn)))
+                        return p.failFmt(p.absolute(offset), "{{{s}}} is an optional slot (?View); place it inside {{if ({s}) <box …>{{{s}}}</box>}}", .{ sn, sn, sn });
+                    if (p.in_branch and !optional) return p.failFmt(p.absolute(offset), "{{{s}}} (a slot) cannot be inside control flow", .{sn});
                     for (p.slots_used.items) |u| if (eq(u, sn)) return p.failFmt(p.absolute(offset), "{{{s}}} appears more than once", .{sn});
                     try p.slots_used.append(p.a, sn);
                     try p.flush(&nodes, &run);
@@ -1511,6 +1864,12 @@ const Parser = struct {
                         has_elements = true;
                         try p.add(&nodes, try p.fmt("{s}ui.view.slotMark(&__yix_slot_{s}),", .{ try p.childBreak(0), sn }));
                     }
+                    continue;
+                }
+                if (try p.optionalSlotGuard(expr)) |code| {
+                    try p.flush(&nodes, &run);
+                    has_elements = true;
+                    try p.add(&nodes, try p.fmt("{s}{s},", .{ try p.childBreak(0), code }));
                     continue;
                 }
                 var q = try p.sub(expr);
@@ -1535,13 +1894,86 @@ const Parser = struct {
         const tv = if (run.format.items.len != 0) try p.textValue(run) else null;
         const literal = try p.quote(run.literal.items);
         const args = run.args.items.len != 0;
+        const identity = try p.a.dupe(u8, run.identity.items);
+        if (args) try run.fragments.append(p.a, try p.a.dupe(u8, run.literal.items));
+        const fragments = try p.a.dupe([]const u8, run.fragments.items);
         try p.flush(&nodes, &run);
-        return .{ .nodes = nodes.items, .text = tv, .literal = literal, .args = args, .has_elements = has_elements, .slot_end = slot_end, .slot_mark = slot_mark };
+        return .{ .fragments = fragments, .identity = identity, .nodes = nodes.items, .text = tv, .literal = literal, .args = args, .has_elements = has_elements, .slot_end = slot_end, .slot_mark = slot_mark };
+    }
+    fn previewStaticStyle(p: *Parser, raw: []const u8) Error!bool {
+        var z = std.zig.Tokenizer.init(try p.a.dupeSentinel(u8, raw, 0));
+        var tok = z.next();
+        if (tok.tag == .identifier) {
+            while (true) {
+                tok = z.next();
+                if (tok.tag == .eof) return true;
+                if (tok.tag != .period or z.next().tag != .identifier) return false;
+            }
+        }
+        if (tok.tag != .period or z.next().tag != .l_brace) return false;
+        while (true) {
+            tok = z.next();
+            if (tok.tag == .r_brace) return z.next().tag == .eof;
+            if (tok.tag != .period or z.next().tag != .identifier or z.next().tag != .equal) return false;
+            tok = z.next();
+            if (tok.tag == .period) {
+                if (z.next().tag != .identifier) return false;
+            } else if (tok.tag != .number_literal and !eq(raw[tok.loc.start..tok.loc.end], "true") and !eq(raw[tok.loc.start..tok.loc.end], "false")) return false;
+            tok = z.next();
+            if (tok.tag == .r_brace) return z.next().tag == .eof;
+            if (tok.tag != .comma) return false;
+        }
+    }
+
+    fn templateLiteral(p: *Parser, raw: []const u8) Error![]const u8 {
+        const src = trim(raw);
+        var z = std.zig.Tokenizer.init(try p.dup(src));
+        const first = z.next();
+        const second = z.next();
+        if (second.tag == .eof) {
+            if (first.tag == .string_literal) return p.fmt(".{{ .text = {s} }}", .{src});
+            if (eq(src, "true") or eq(src, "false")) return p.fmt(".{{ .boolean = {s} }}", .{src});
+            if (first.tag == .number_literal) return p.fmt(".{{ .number = {s} }}", .{src});
+        }
+        if (first.tag == .period and second.tag == .identifier and z.next().tag == .eof)
+            return p.fmt(".{{ .enum_name = {s} }}", .{try p.quote(src[second.loc.start..second.loc.end])});
+        return "null";
+    }
+    fn normalizedTokens(p: *Parser, raw: []const u8) Error![]const u8 {
+        const src = try p.dup(try plain(p.a, raw));
+        var z = std.zig.Tokenizer.init(src);
+        var out: List(u8) = .empty;
+        while (true) {
+            const tok = z.next();
+            if (tok.tag == .eof) break;
+            if (tok.tag == .doc_comment or tok.tag == .container_doc_comment) continue;
+            try p.add(&out, src[tok.loc.start..tok.loc.end]);
+            try out.append(p.a, ' ');
+        }
+        return out.items;
     }
     fn sub(p: *Parser, s: []const u8) Error!Parser {
-        return .{ .a = p.a, .source = try p.dup(s), .origins = p.origins, .flow_seq = p.flow_seq, .symbols = p.symbols, .depth = p.depth, .loop_depth = p.loop_depth, .slotted = p.slotted, .slot_names = p.slot_names, .in_branch = true, .model_count = p.model_count };
+        return .{ .a = p.a, .module_path = p.module_path, .preview = p.preview, .catalog_prefixes = p.catalog_prefixes, .source = try p.dup(s), .origins = p.origins, .flow_seq = p.flow_seq, .symbols = p.symbols, .depth = p.depth, .loop_depth = p.loop_depth, .slotted = p.slotted, .slot_names = p.slot_names, .optional_slots = p.optional_slots, .in_branch = true, .template_path = p.template_path, .model_count = p.model_count };
     }
     fn branch(p: *Parser) Error![]const u8 {
+        const start = p.token().loc.start;
+        const at = if (p.preview) |c| c.ops.items.len else 0;
+        const result = try p.branchInner();
+        if (p.preview) |c| {
+            const ops = try p.a.dupe(PreviewOp, c.ops.items[at..]);
+            var key_tokens: []const u8 = "";
+            if (ops.len != 0) {
+                for (ops[0].attributes) |attribute| {
+                    if (eq(attribute.name, "key")) key_tokens = attribute.value;
+                }
+                // The root's key is already validated as controller ABI. Keep
+                // metadata aligned with the compiled root schema too.
+                try c.regions.append(p.a, .{ .name = p.template_path, .start = p.absolute(start), .end = p.absolute(p.pos), .ops = ops, .isolated = !p.slotted, .key_tokens = key_tokens, .region = true });
+            }
+        }
+        return result;
+    }
+    fn branchInner(p: *Parser) Error![]const u8 {
         if (p.token().tag == .angle_bracket_left) return p.element();
         // Nested control flow directly in branch ok (`if (h) for (xs) |x| <Row/>`) no wrapper box
         // needed.
@@ -1560,6 +1992,48 @@ const Parser = struct {
         return p.fail(p.pos, "control flow branches contain a tag or nested control flow");
     }
     fn control(p: *Parser) Error![]const u8 {
+        const start = p.token().loc.start;
+        const preview_start = if (p.preview) |c| c.ops.items.len else 0;
+        const result = try p.controlBody();
+        const raw = p.source[start..p.pos];
+        const ctx = try p.context(try p.deps(raw), false);
+        if (p.preview) |c| {
+            c.ops.shrinkRetainingCapacity(preview_start);
+            const dependencies = try p.deps(raw);
+            const names = try p.a.alloc([]const u8, dependencies.len);
+            for (dependencies, names) |symbol, *capture| capture.* = symbol.name;
+            // Keep the full compiled token descriptor, plus a syntax-only
+            // controller identity with branch bodies replaced by lexical ids.
+            // Key expressions remain part of that identity, never body data.
+            const identity = try p.previewIdentity(start, p.pos);
+            try c.ops.append(p.a, .{ .kind = .hole, .path = p.template_path, .receiver = "control", .tokens = try p.normalizedTokens(raw), .identity_tokens = identity, .captures = names });
+        }
+        return p.fmt("ui.view.templateSite(.{{ .module = {s}, .path = {s}, .receiver = \"control\", .tokens = {s} }}, {s}, {s})", .{ try p.quote(p.module_path), try p.quote(p.template_path), try p.quote(try p.normalizedTokens(raw)), ctx, result });
+    }
+    fn previewIdentity(p: *Parser, start: usize, end: usize) Error![]const u8 {
+        const c = p.preview orelse return p.normalizedTokens(p.source[start..end]);
+        const begin = p.absolute(start);
+        const limit = p.absolute(end);
+        var identity: List(u8) = .empty;
+        var cursor = begin;
+        while (cursor < limit) {
+            var nearest: ?PreviewComponent = null;
+            for (c.regions.items) |region| {
+                if (region.start < cursor or region.end > limit) continue;
+                if (nearest == null or region.start < nearest.?.start or (region.start == nearest.?.start and region.end > nearest.?.end)) nearest = region;
+            }
+            if (nearest) |region| {
+                try identity.appendSlice(p.a, try p.normalizedTokens(p.source[start + cursor - begin .. start + region.start - begin]));
+                try identity.appendSlice(p.a, try p.fmt(" @region {s} @key {s} ", .{ region.name, region.key_tokens }));
+                cursor = region.end;
+            } else {
+                try identity.appendSlice(p.a, try p.normalizedTokens(p.source[start + cursor - begin .. end]));
+                break;
+            }
+        }
+        return identity.items;
+    }
+    fn controlBody(p: *Parser) Error![]const u8 {
         p.depth += 1;
         defer p.depth -= 1;
         if (p.depth > 128) return p.fail(p.pos, "template nesting exceeds 128");
@@ -1571,6 +2045,9 @@ const Parser = struct {
         // all branches of same control flow share capture context.
         p.flow_seq.* += 1;
         const id = p.flow_seq.*;
+        const saved_path = p.template_path;
+        p.template_path = try p.fmt("{s}/{s}:{d}", .{ saved_path, @tagName(t.tag), id });
+        defer p.template_path = saved_path;
         if (t.tag == .keyword_if) {
             const captured = try p.rowCaptures();
             const capture = try p.captureName();
@@ -1604,7 +2081,10 @@ const Parser = struct {
                 // Branch with payload: payload is capture value following source (same tag payload
                 // change doesn't rebuild branch).
                 const pre = if (payload) |pn| try p.fmt("const {s} = try ui.view.branchValue(scope, {s}, ui.view.payloadOf(@TypeOf({s}.peek()), {s})); ", .{ pn, names.src, names.src, key }) else "";
+                const case_path = p.template_path;
+                p.template_path = try p.fmt("{s}/case:{s}", .{ case_path, key });
                 const case_body = try p.branchBody(if (payload) |pn| &.{pn} else &.{});
+                p.template_path = case_path;
                 try p.add(&cases, try p.fmt(" {s} => {{ {s}return ui.view.emit(scope, cx, {s}, .{{ {s} }}); }},", .{ key, pre, names.sink, case_body }));
                 if (!p.eat(.comma) and p.token().tag != .r_brace) return p.fail(p.pos, "expected comma after switch branch");
             }
@@ -1715,6 +2195,9 @@ const Parser = struct {
     fn lazyBranch(p: *Parser, id: usize, k: usize, cap: ?[]const u8) Error![]const u8 {
         const names = try p.branchNames(id, k);
         const caps: []const []const u8 = if (cap) |c| &.{c} else &.{};
+        const saved_path = p.template_path;
+        p.template_path = try p.fmt("{s}/branch:{d}", .{ saved_path, k });
+        defer p.template_path = saved_path;
         const content = try p.branchBody(caps);
         return p.wrapBranch(names, try p.fmt("return ui.view.emit(scope, cx, {s}, .{{ {s} }});", .{ names.sink, content }), caps, false);
     }
@@ -1957,18 +2440,24 @@ const Parser = struct {
                 if (t.tag == .keyword_try) break :blk true;
             }
         };
-        const run = if (fallible)
-            try p.fmt("struct {{ fn __yix_run({s}) void {{ body({s}) catch |err| ui.on.reportError(\"{s}\", err); }} fn body({s}) anyerror!void {{ {s}{s} }} }}.__yix_run", .{ params, if (capture) |cap| try p.fmt("__yix_ctx, {s}", .{cap}) else "__yix_ctx", p.event_name, params, batch, out.items })
+        const hook = if (mode == .mount or mode == .unmount)
+            try p.fmt("if (comptime @import(\"builtin\").is_test) __yix_ctx.__yix_owner.recordTestHook(.{s}); ", .{p.event_name})
         else
-            try p.fmt("struct {{ fn __yix_run({s}) void {{ {s}{s} }} }}.__yix_run", .{ params, batch, out.items });
+            "";
+        const run = if (fallible and mode == .mount)
+            try p.fmt("struct {{ fn __yix_run({s}) anyerror!void {{ {s}{s} }} }}.__yix_run", .{ params, try p.fmt("{s}{s}", .{ hook, batch }), out.items })
+        else if (fallible)
+            try p.fmt("struct {{ fn __yix_run({s}) void {{ body({s}) catch |err| ui.on.reportError(\"{s}\", err); }} fn body({s}) anyerror!void {{ {s}{s} }} }}.__yix_run", .{ params, if (capture) |cap| try p.fmt("__yix_ctx, {s}", .{cap}) else "__yix_ctx", p.event_name, params, try p.fmt("{s}{s}", .{ hook, batch }), out.items })
+        else
+            try p.fmt("struct {{ fn __yix_run({s}) void {{ {s}{s} }} }}.__yix_run", .{ params, try p.fmt("{s}{s}", .{ hook, batch }), out.items });
         return switch (mode) {
             .host_event => p.fmt("try ui.on.bind(scope, {s}, {s})", .{ ctx, run }),
             .event => p.fmt("try ui.on.bindAny(scope, {s}, {s})", .{ ctx, run }),
             // effect built -> run once, rerun on source changes; belongs to component scope,
             // destroyed on unmount.
-            .effect => p.fmt("    try scope.createEffect({s}, {s});\n", .{ ctx, run }),
-            .mount => p.fmt("    {s}({s});\n", .{ run, ctx }),
-            .unmount => p.fmt("    {{\n        const __yix_cleanup_ctx = {s};\n        const __YixCleanup = @TypeOf(__yix_cleanup_ctx);\n        const __yix_cleanup = try scope.createState(__YixCleanup, __yix_cleanup_ctx);\n        try scope.onCleanup(__YixCleanup, __yix_cleanup, struct {{ fn __yix_run(__yix_c: *__YixCleanup) void {{ ({s})(__yix_c.*); }} }}.__yix_run);\n    }}\n", .{ ctx, run }),
+            .effect => p.fmt("    try ui.view.setupEffect(scope, {s}, {s});\n", .{ ctx, run }),
+            .mount => p.fmt("    try ui.view.runLifecycleAction(scope, \"{s}\", {s}, {s});\n", .{ p.event_name, ctx, run }),
+            .unmount => p.fmt("    try ui.view.setupCleanup(scope, {s}, {s});\n", .{ ctx, run }),
         };
     }
     /// Compile event stmt at `text[at.*..]`, advance `at`; false if no stmt.

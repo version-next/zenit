@@ -49,6 +49,7 @@ const SizeSpec = struct {
     input_id: []const u8,
     status_id: []const u8,
     owner_id: []const u8,
+    owner_panel_id: []const u8,
     reset_id: []const u8,
     apply_id: []const u8,
 };
@@ -62,6 +63,7 @@ fn sizeSpec(comptime size: ControlSize, comptime key: []const u8, comptime title
         .input_id = prefix ++ ".input",
         .status_id = prefix ++ ".status",
         .owner_id = prefix ++ ".owner",
+        .owner_panel_id = prefix ++ ".owner.panel",
         .reset_id = prefix ++ ".reset",
         .apply_id = prefix ++ ".apply",
     };
@@ -87,9 +89,9 @@ const Styles = struct {
     fn card(t: *const ui.theme.Values) ui.BoxStyle {
         return .{
             .gap = 16,
-            .padding = ui.Padding.all(20),
+            .padding = ui.Padding.all(t.tokens.space.space600),
             .background = t.tokens.color.bg_primary,
-            .border = .{ .width = 1, .color = t.tokens.color.border, .radius = t.tokens.radius.lg },
+            .border = .{ .overlay = true, .width = 1, .color = t.tokens.color.border, .radius = t.tokens.radius.panel },
         };
     }
     fn cardTitle(t: *const ui.theme.Values) ui.TextStyle {
@@ -99,13 +101,14 @@ const Styles = struct {
         return .{ .width = .{ .px = field_width }, .gap = 6 };
     }
     fn fieldLabel(t: *const ui.theme.Values) ui.TextStyle {
-        return .{ .font_size = 12, .font_weight = 600, .color = t.tokens.color.fg_secondary };
+        return .{ .font_size = t.tokens.font_size.sm, .font_weight = 600, .color = t.tokens.color.fg_primary };
     }
     fn fieldRow(_: *const ui.theme.Values) ui.BoxStyle {
         return .{ .gap = 16, .align_items = .start };
     }
     fn footer(t: *const ui.theme.Values) ui.BoxStyle {
         return .{
+            .border_overlay = true,
             .width = .{ .grow = .{} },
             .gap = 8,
             .align_items = .center,
@@ -133,12 +136,14 @@ fn filterToolbar(spec: SizeSpec, scope: *ui.Scope, cx: *ui.Cx) !*ui.Node {
                 .placeholder = "Status",
                 .width = 130,
             })),
-            v.attrs(.{ .parts = .{ .trigger = spec.owner_id } }, W.Select(.{
+            v.attrs(.{ .parts = .{ .trigger = spec.owner_id, .panel = spec.owner_panel_id } }, W.Select(.{
                 .size = spec.size,
                 .options = &owner_options,
                 .placeholder = "Owner",
                 .leading_icon = ui.icons.user,
                 .width = 150,
+                // The panel sizes to its rows, so long owner names stay readable.
+                .panel_width = .content,
             })),
             v.attrs(.{ .test_id = spec.reset_id }, W.Button(.{ .label = "Reset", .variant = .secondary, .size = spec.size })),
             v.attrs(.{ .test_id = spec.apply_id }, W.Button(.{

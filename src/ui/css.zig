@@ -64,15 +64,31 @@ const conditions = [_][]const u8{ "selected", "expanded", "hover", "active", "fo
 
 /// Style object: compile-time constant, can go directly into `.style` (alone, tuple, or in
 /// `v.when`).
-pub fn css(comptime spec: anytype) Css(specOf(spec)) {
+pub fn css(comptime spec: anytype) if (preview_enabled and isCss(@TypeOf(spec))) @TypeOf(spec) else Css(specOf(spec)) {
+    if (comptime preview_enabled and isCss(@TypeOf(spec))) return spec;
     return .{};
 }
 
 pub fn Css(comptime spec_value: anytype) type {
+    return CssImpl(spec_value, null, false);
+}
+
+const preview_enabled = @import("zenit_environment").dev_preview;
+const reload = if (preview_enabled) @import("style_reload.zig") else struct {};
+const PreviewDescriptor = struct { path: []const u8, name: []const u8, source: []const u8 };
+
+/// Generated YSS keeps its compiled type shell; only value resolution changes in preview.
+pub fn previewCss(comptime path: []const u8, comptime name: []const u8, comptime source: []const u8, comptime spec_value: anytype) CssImpl(specOf(spec_value), if (preview_enabled) .{ .path = path, .name = name, .source = source } else null, false) {
+    return .{};
+}
+
+fn CssImpl(comptime spec_value: anytype, comptime descriptor: ?PreviewDescriptor, comptime box_projection: bool) type {
     comptime if (specError(@TypeOf(spec_value), true)) |msg| @compileError("ui.css: " ++ msg);
     return struct {
         pub const zenit_style_part = .css;
         pub const spec = spec_value;
+        pub const preview_id = if (descriptor) |d| d.path ++ ":" ++ d.name ++ ":root" else null;
+        pub const preview_compiled = if (descriptor != null) Css(spec_value) else @This();
         pub const has_hover = @hasField(@TypeOf(spec_value), "_hover");
         /// `_active`: pressed on node, pointer still inside node (native button press highlight)
         pub const has_active = @hasField(@TypeOf(spec_value), "_active");
@@ -84,25 +100,37 @@ pub fn Css(comptime spec_value: anytype) type {
         /// Spec lists icon_color (icon tint): mutually exclusive with media element's tint=
         pub const sets_icon_color = mentionsField(@TypeOf(spec_value), "icon_color");
 
+        fn declaration() if (preview_enabled) ?*const reload.ir.Declaration else void {
+            if (comptime descriptor) |d| {
+                reload.observeGeneration();
+                return reload.lookup(d.path, d.name, d.source);
+            }
+            if (comptime preview_enabled) return null;
+        }
+
         /// base layer
         pub fn box(t: *const ThemeTokens) BoxStyle {
+            if (comptime descriptor != null) if (declaration()) |d| return reload.evaluateBox(d.base, t, box_projection) catch unreachable;
             return boxFrom(spec_value, t);
         }
 
         /// `_hover` layer (empty if absent)
         pub fn hoverBox(t: *const ThemeTokens) BoxStyle {
             if (!has_hover) return .{};
+            if (comptime descriptor != null) if (declaration()) |d| return reload.evaluateCondition(d.base, "hover", t, box_projection);
             return boxFrom(spec_value._hover, t);
         }
 
         /// `_active` layer (empty if absent)
         pub fn activeBox(t: *const ThemeTokens) BoxStyle {
             if (!has_active) return .{};
+            if (comptime descriptor != null) if (declaration()) |d| return reload.evaluateCondition(d.base, "active", t, box_projection);
             return boxFrom(spec_value._active, t);
         }
 
         /// All condition layers: defer to component to apply by its state (`cs.resolve(state)`).
         pub fn conditional(t: *const ThemeTokens) ConditionalStyle {
+            if (comptime descriptor != null) if (declaration()) |d| return reload.evaluateConditional(d.base, t, box_projection) catch unreachable;
             return conditionalFrom(spec_value, t);
         }
 
@@ -111,17 +139,22 @@ pub fn Css(comptime spec_value: anytype) type {
         /// used on `<text>`, view applies to text node's own box style per `box_part`.
         pub fn text(base: TextStyle, t: *const ThemeTokens) TextStyle {
             comptime if (firstStateCondition(@TypeOf(spec_value)) != null or has_active) @compileError("ui.css on text: only _hover applies to text (the text node's own hover); switch other text states with cva / sva variants");
+            if (comptime descriptor != null) if (declaration()) |d| return reload.evaluateText(d.base, base, t) catch unreachable;
             return textFrom(comptime textSpec(spec_value), base, t);
         }
 
         /// Text `_hover` layer stacked onto `base` (returned as-is if absent)
         pub fn textHover(base: TextStyle, t: *const ThemeTokens) TextStyle {
             if (!has_hover) return base;
+            if (comptime descriptor != null) if (declaration()) |d| {
+                for (d.base.conditions) |c| if (reload.conditionEqual(c.name, "hover")) return reload.evaluateText(c.layer.*, base, t) catch unreachable;
+                return base;
+            };
             return textFrom(spec_value._hover, base, t);
         }
 
         /// Box part when used on `<text>` (only box fields); null if no box fields
-        pub const box_part: ?type = if (hasBoxOnlyFields(@TypeOf(spec_value))) Css(boxSpec(spec_value)) else null;
+        pub const box_part: ?type = if (hasBoxOnlyFields(@TypeOf(spec_value))) CssImpl(boxSpec(spec_value), descriptor, true) else null;
     };
 }
 
@@ -210,14 +243,24 @@ fn applyTextSpec(out: *TextStyle, spec: anytype, t: *const ThemeTokens) void {
     if (@hasField(S, "typography")) {
         const patch = resolveInto(sv.TypographyPatch, .typography, spec.typography, t);
         inline for (@import("zenit_reflection").fields(sv.TypographyPatch)) |f| {
-            if (@field(patch, f.name)) |value| @field(out, f.name) = value;
+            if (@field(patch, f.name)) |value| {
+                @field(out, f.name) = value;
+                markDeclared(out, f.name);
+            }
         }
     }
     inline for (@import("zenit_reflection").fields(S)) |f| {
         if (comptime isConditionKey(f.name) or isMetaKey(f.name) or std.mem.eql(u8, f.name, "typography")) continue;
         const name = comptime textName(f.name);
         @field(out, name) = resolveInto(@FieldType(TextStyle, name), comptime catOf(name), @field(spec, f.name), t);
+        markDeclared(out, name);
     }
+}
+
+/// An inheritable text property the style states itself: the ancestor's value yields to it
+/// (TextProps.color_set / font_size_set / font_weight_set).
+fn markDeclared(out: *TextStyle, comptime name: []const u8) void {
+    if (comptime @hasField(TextStyle, name ++ "_set")) @field(out, name ++ "_set") = true;
 }
 
 fn conditionalFrom(comptime spec: anytype, t: *const ThemeTokens) ConditionalStyle {
@@ -253,6 +296,24 @@ fn layerSpec(comptime specs: anytype, comptime slot: ?[]const u8) blk: {
 
 fn applyRecipeLayer(out: anytype, comptime specs: anytype, comptime slot: ?[]const u8, t: *const ThemeTokens) void {
     const Out = @TypeOf(out.*);
+    // Keep generated CSS descriptors when composed into handwritten recipes.
+    // Metadata remains comptime, while the actual layer resolves this generation.
+    if (comptime preview_enabled and (Out == ConditionalStyle or Out == TextStyle)) {
+        const layer = comptime if (slot) |name| (if (@hasField(@TypeOf(specs), name)) @field(specs, name) else .{}) else specs;
+        if (comptime isCss(@TypeOf(layer))) {
+            const S = @TypeOf(layer);
+            if (comptime @TypeOf(S.preview_id) != @TypeOf(null)) {
+                if (Out == TextStyle) {
+                    comptime if (hasAnyCondition(@TypeOf(S.spec)))
+                        @compileError("ui.cva / ui.sva on text: conditions apply to boxes; use a variant for text state");
+                    out.* = S.text(out.*, t);
+                } else {
+                    out.* = out.merge(S.conditional(t));
+                }
+                return;
+            }
+        }
+    }
     if (Out == ConditionalStyle) {
         applyConditionalSpec(out, comptime layerSpec(specs, slot), t);
     } else if (Out == TextStyle) {
@@ -261,8 +322,12 @@ fn applyRecipeLayer(out: anytype, comptime specs: anytype, comptime slot: ?[]con
             @compileError("ui.cva / ui.sva on text: conditions apply to boxes; use a variant for text state");
         applyTextSpec(out, spec, t);
     } else {
-        inline for (@import("zenit_reflection").fields(@TypeOf(specs))) |f|
-            applyConditionalSpec(&@field(out, f.name), comptime specOf(@field(specs, f.name)), t);
+        inline for (@import("zenit_reflection").fields(@TypeOf(specs))) |f| {
+            if (comptime preview_enabled)
+                applyRecipeLayer(&@field(out, f.name), @field(specs, f.name), null, t)
+            else
+                applyConditionalSpec(&@field(out, f.name), comptime specOf(@field(specs, f.name)), t);
+        }
     }
 }
 
@@ -575,6 +640,7 @@ pub fn paramStyle(comptime A: type) type {
         };
 
         pub fn resolve(args: A, t: *const ThemeTokens) BoxStyle {
+            if (preview_enabled) reload.observeGeneration();
             return A.resolve(args, t);
         }
 
@@ -889,6 +955,15 @@ fn editDistance(comptime a: []const u8, comptime b: []const u8) usize {
 /// - `of(.{ .dim = value or reactive source })`: a style part to put in `.style`; the value may
 ///   be an enum literal, any enum with the same option names, or a reactive source of those.
 pub fn cva(comptime config: anytype) type {
+    return CvaImpl(config, null);
+}
+
+pub fn previewCva(comptime path: []const u8, comptime name: []const u8, comptime source: []const u8, comptime config: anytype) type {
+    return CvaImpl(config, if (preview_enabled) .{ .path = path, .name = name, .source = source } else null);
+}
+
+fn CvaImpl(comptime config: anytype, comptime descriptor: ?PreviewDescriptor) type {
+    @setEvalBranchQuota(200_000);
     const C = @TypeOf(config);
     comptime {
         for (@import("zenit_reflection").fields(C)) |f| {
@@ -952,6 +1027,8 @@ pub fn cva(comptime config: anytype) type {
 
     return struct {
         const Recipe = @This();
+        pub const preview_id = if (descriptor) |d| d.path ++ ":" ++ d.name ++ ":root" else null;
+        pub const preview_compiled = if (descriptor != null) cva(config) else @This();
         pub const Variants = VariantsT;
         pub const has_hover = any_hover;
         pub const has_active = any_active;
@@ -969,12 +1046,22 @@ pub fn cva(comptime config: anytype) type {
         }
 
         pub fn resolve(variants: Variants, t: *const ThemeTokens) ConditionalStyle {
+            if (preview_enabled) reload.observeGeneration();
+            if (comptime descriptor) |d| {
+                reload.observeGeneration();
+                if (reload.lookup(d.path, d.name, d.source)) |decl| return reload.evaluateRecipe(decl, variants, t) catch unreachable;
+            }
             var out: ConditionalStyle = .{};
             applyRecipe(&out, config, null, variants, t);
             return out;
         }
 
         pub fn resolveText(variants: Variants, base: TextStyle, t: *const ThemeTokens) TextStyle {
+            if (preview_enabled) reload.observeGeneration();
+            if (comptime descriptor) |d| {
+                reload.observeGeneration();
+                if (reload.lookup(d.path, d.name, d.source)) |decl| return reload.evaluateRecipeText(decl, variants, base, t) catch unreachable;
+            }
             var out = base;
             applyRecipe(&out, config, null, variants, t);
             return out;
@@ -995,6 +1082,25 @@ pub fn cva(comptime config: anytype) type {
             };
             return struct {
                 args: Args,
+                pub const zenit_style_part = .cva;
+                pub const R = Recipe;
+
+                /// Runtime per-state layers merged onto the recipe's before the node's state
+                /// resolves them (ConditionalStyle.merge: base onto base, hover onto hover, …):
+                /// a caller's base sits under the recipe's :hover / :active / :disabled, where a
+                /// later part of a style tuple would win over every state of this one. `layers`
+                /// is a ConditionalStyle or a source of one; since any condition may appear, the
+                /// element must give every semantic state (state= or a11y).
+                pub fn merge(self: @This(), layers: anytype) Merged(Args, @TypeOf(layers)) {
+                    return .{ .args = self.args, .layers = layers };
+                }
+            };
+        }
+
+        pub fn Merged(comptime Args: type, comptime Layers: type) type {
+            return struct {
+                args: Args,
+                layers: Layers,
                 pub const zenit_style_part = .cva;
                 pub const R = Recipe;
             };
@@ -1065,6 +1171,7 @@ pub fn sva(comptime config: anytype) type {
         }
 
         pub fn resolve(vs: V, t: *const ThemeTokens) Slots {
+            if (preview_enabled) reload.observeGeneration();
             var out: Slots = .{};
             applyRecipe(&out, config, null, vs, t);
             return out;
@@ -1115,11 +1222,13 @@ pub fn sva(comptime config: anytype) type {
                 pub const toDim = convert;
                 pub const transitions = transitionsOf(layerSpec(base, n));
                 pub fn resolve(vs: V, t: *const ThemeTokens) ConditionalStyle {
+                    if (preview_enabled) reload.observeGeneration();
                     var out: ConditionalStyle = .{};
                     applyRecipe(&out, config, n, vs, t);
                     return out;
                 }
                 pub fn resolveText(vs: V, base_text: TextStyle, t: *const ThemeTokens) TextStyle {
+                    if (preview_enabled) reload.observeGeneration();
                     var out = base_text;
                     applyRecipe(&out, config, n, vs, t);
                     return out;

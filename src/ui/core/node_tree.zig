@@ -8,11 +8,111 @@
 //! setStructureNotifyCallback).
 
 const std = @import("std");
+const node_interaction_untrusted = @import("node_interaction.zig");
 const world_mod = @import("world.zig");
 const node_mod = @import("node.zig");
 
 const Node = node_mod.Node;
 const Allocator = std.mem.Allocator;
+
+/// Diagnostic renderer seam. Production builds erase the fields and every call.
+/// Subscribe before creating nodes; callbacks may copy patches but MUST NOT mutate
+/// nodes or subscriptions. This is a forest protocol, independent of Cx.root:
+/// detached retained nodes and rootless overlays stay alive until destroy.
+pub const host_enabled = @import("builtin").is_test or @import("zenit_environment").dev_preview;
+pub const HostId = u64;
+pub const HostPatch = union(enum) {
+    create: struct { id: HostId, world: u16, element: u32, tag: @import("types.zig").ElementTag, node: *const Node },
+    /// Move an existing child, inserting before anchor (null means append).
+    /// Covers first insert, reparent and reorder without changing identity.
+    place: struct { id: HostId, parent: HostId, before: ?HostId },
+    retained_remove: HostId,
+    destroy: HostId,
+    dirty: HostId,
+};
+pub const Host = struct {
+    context: *anyopaque,
+    patch: *const fn (*anyopaque, HostPatch) void,
+    next: ?*Host = null,
+
+    pub fn attach(self: *Host) void {
+        if (comptime !host_enabled) return;
+        if (host_notifying) @panic("renderer host callback reentry");
+        var current = hosts;
+        while (current) |h| : (current = h.next) {
+            if (h == self) @panic("renderer host already attached");
+        }
+        self.next = hosts;
+        hosts = self;
+    }
+    pub fn detach(self: *Host) void {
+        if (comptime !host_enabled) return;
+        if (host_notifying) @panic("renderer host callback reentry");
+        var link = &hosts;
+        while (link.*) |h| {
+            if (h == self) {
+                link.* = h.next;
+                self.next = null;
+                return;
+            }
+            link = &h.next;
+        }
+    }
+};
+var hosts: ?*Host = null;
+var host_notifying = false;
+var host_generation: HostId = 0;
+
+fn publishHost(patch: HostPatch) void {
+    if (comptime !host_enabled) return;
+    if (host_notifying) @panic("renderer host callback reentry");
+    host_notifying = true;
+    defer host_notifying = false;
+    var current = hosts;
+    while (current) |h| : (current = h.next) h.patch(h.context, patch);
+}
+
+pub inline fn hostCreated(node: *Node) void {
+    if (comptime !host_enabled) return;
+    // A process-lifetime generation, independent of pointer/ElementId/u8 reuse.
+    // Never wrap: a stale patch must never address a new node, even after 256 frees.
+    host_generation = std.math.add(HostId, host_generation, 1) catch @panic("renderer host identity exhausted");
+    node.host_id = host_generation;
+    publishHost(.{ .create = .{ .id = node.host_id, .world = node.world_id, .element = node.element_id_raw, .tag = node.tag, .node = node } });
+}
+/// Advances on every node mutation that reaches the host channel: every dirty mark (all
+/// node_dirty mark functions start with hostDirty), placement and retained removal. Event-time
+/// hit refreshes compare it with its value at the last before-render tick: with no mutation since,
+/// re-running the tick at the same frame time cannot change the scene (cx_render.ensureHitTestSceneFresh).
+pub var g_scene_mutation_gen: u64 = 0;
+
+/// Advances whenever a node starts retiring (Node.pending_free_cx set) or
+/// freeing (Node.freeing set). A traversal that saw no advance since it began
+/// knows every node on its stack still passes the check it made on entry
+/// (render_engine/tick.zig isRetiring).
+pub var g_retire_gen: u64 = 0;
+
+pub inline fn hostDestroyed(node: *const Node) void {
+    g_scene_mutation_gen +%= 1;
+    if (comptime !host_enabled) return;
+    publishHost(.{ .destroy = node.host_id });
+}
+pub inline fn hostDirty(node: *const Node) void {
+    g_scene_mutation_gen +%= 1;
+    if (comptime !host_enabled) return;
+    if (node.freeing) return;
+    publishHost(.{ .dirty = node.host_id });
+}
+fn hostPlaced(parent: *const Node, child: *const Node, before: ?*const Node) void {
+    g_scene_mutation_gen +%= 1;
+    if (comptime !host_enabled) return;
+    publishHost(.{ .place = .{ .id = child.host_id, .parent = parent.host_id, .before = if (before) |b| b.host_id else null } });
+}
+fn hostRetained(child: *const Node) void {
+    g_scene_mutation_gen +%= 1;
+    if (comptime !host_enabled) return;
+    publishHost(.{ .retained_remove = child.host_id });
+}
 
 // ---------------------------------------------------------------------------
 // Structure callback unit (moved wholesale from node.zig)
@@ -108,6 +208,7 @@ pub fn appendChild(self: *Node, allocator: Allocator, child: *Node) !void {
     // has_custom_draw_subtree).
     if (child.frame_state.state_bits.flags.has_text_subtree) self.markSubtreeText();
     if (child.frame_state.state_bits.flags.has_before_render_subtree) self.markSubtreeBeforeRenderHook();
+    if (child.frame_state.state_bits.flags.has_untrusted_before_render_subtree) node_interaction_untrusted.markSubtreeUntrustedBeforeRenderHook(self);
     child.frame_state.state_bits.dirty.runtime.dirty = true;
     child.frame_state.state_bits.dirty.runtime.subtree_dirty = true;
     child.frame_state.state_bits.dirty.runtime.full_rebuild = false;
@@ -117,6 +218,7 @@ pub fn appendChild(self: *Node, allocator: Allocator, child: *Node) !void {
     // P0-3 phase 3: sync parent-child chain directly to owner World; no more
     // process-level callback.
     syncWorldStructure(self, child, .append);
+    hostPlaced(self, child, null);
 }
 
 /// Insert child before anchor; null anchor is equivalent to appendChild. Anchor
@@ -143,6 +245,7 @@ pub fn insertChildBefore(self: *Node, allocator: Allocator, child: *Node, before
     if (child.frame_state.state_bits.flags.has_custom_draw_subtree) self.markCustomDrawSubtree();
     if (child.frame_state.state_bits.flags.has_text_subtree) self.markSubtreeText();
     if (child.frame_state.state_bits.flags.has_before_render_subtree) self.markSubtreeBeforeRenderHook();
+    if (child.frame_state.state_bits.flags.has_untrusted_before_render_subtree) node_interaction_untrusted.markSubtreeUntrustedBeforeRenderHook(self);
     child.frame_state.state_bits.dirty.runtime.dirty = true;
     child.frame_state.state_bits.dirty.runtime.subtree_dirty = true;
     child.frame_state.state_bits.dirty.runtime.full_rebuild = false;
@@ -151,6 +254,7 @@ pub fn insertChildBefore(self: *Node, allocator: Allocator, child: *Node, before
     self.markOrderDirty();
     self.markLayoutDirty();
     syncWorldInsertBefore(self, child, anchor, index);
+    hostPlaced(self, child, anchor);
 }
 
 /// World sync for insertChildBefore. O(1) linked-list insert with world_ref;
@@ -209,6 +313,7 @@ pub fn replaceChildOrder(self: *Node, allocator: Allocator, ordered_children: []
     for (self.children.items) |child| {
         syncWorldStructure(self, child, .unlink);
         child.parent = null;
+        hostRetained(child);
     }
     self.children.clearRetainingCapacity();
     g_structure_revision +%= 1;
@@ -219,11 +324,13 @@ pub fn replaceChildOrder(self: *Node, allocator: Allocator, ordered_children: []
         if (child.frame_state.state_bits.flags.has_custom_draw_subtree) self.markCustomDrawSubtree();
         if (child.frame_state.state_bits.flags.has_text_subtree) self.markSubtreeText();
         if (child.frame_state.state_bits.flags.has_before_render_subtree) self.markSubtreeBeforeRenderHook();
+        if (child.frame_state.state_bits.flags.has_untrusted_before_render_subtree) node_interaction_untrusted.markSubtreeUntrustedBeforeRenderHook(self);
         if (membership_changed) {
             child.frame_state.state_bits.dirty.runtime.dirty = true;
             child.frame_state.state_bits.dirty.runtime.subtree_dirty = true;
         }
         syncWorldStructure(self, child, .append);
+        hostPlaced(self, child, null);
     }
     if (membership_changed) self.markRuntimeIndexDirty();
     self.markOrderDirty();
@@ -264,6 +371,7 @@ fn removeChildRetainedInternal(self: *Node, child: *Node, full_runtime_rebuild: 
     self.markLayoutDirty();
     // P0-3 phase 3: same as above, direct owner World.
     syncWorldStructure(self, child, .unlink);
+    hostRetained(child);
 }
 
 /// Remove all children, recursively fire onCleanup. Note: doesn't free memory;

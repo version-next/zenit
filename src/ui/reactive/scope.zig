@@ -22,11 +22,18 @@ pub const ALIVE_SENTINEL: u32 = 0x5C0E_A11E;
 pub const DEAD_SENTINEL: u32 = 0x5C0E_DEAD;
 
 pub const Scope = struct {
+    /// Only the template oracle uses this provenance. Ordinary scopes are never
+    /// inferred to be transparent from their shape or their resource counts.
+    pub const TestPreviewBoundary = enum { none, region_view, slot_setup };
+    test_preview_boundary: if (@import("builtin").is_test) TestPreviewBoundary else void = if (@import("builtin").is_test) .none else {},
     allocator: Allocator,
     parent: ?*Scope,
     children: std.ArrayList(*Scope),
     signals: std.ArrayList(*SignalBase),
     effects: std.ArrayList(*EffectBase),
+    // Append-only while alive; synchronous component rebuild tickets may remove
+    // their own tail-era entry after callbacks settle. No compaction/reordering
+    // or removal by other code is allowed before disposal consumes the list.
     cleanups: std.ArrayList(CleanupEntry),
     resources: std.ArrayList(ResourceEntry),
     owner: *SignalOwner,
@@ -55,6 +62,9 @@ pub const Scope = struct {
     pub const ResourceEntry = struct {
         ptr: *anyopaque,
         destroyFn: ResourceDestroyFn,
+        // Complete memo ownership provenance for the test graph oracle, erased
+        // from non-test layouts; no UI/template dependency in reactive modules.
+        test_graph_node_raw: if (@import("builtin").is_test) ?u32 else void = if (@import("builtin").is_test) null else {},
     };
 
     /// create Scope
@@ -213,6 +223,17 @@ pub const Scope = struct {
     /// create child Scope
     pub fn childScope(self: *Scope) !*Scope {
         return Scope.init(self.allocator, self, self.owner);
+    }
+
+    /// Framework safe-point teardown of an owned child. The surrounding callback
+    /// guard pins the owner while child cleanups run; requests to destroy the
+    /// owner are deferred until the caller has stopped using it. Unlike dispose,
+    /// this retires the child before a replacement view starts binding refs.
+    pub fn disposeChildAtSafePoint(self: *Scope, child: *Scope) void {
+        std.debug.assert(child.parent == self);
+        std.debug.assert(self.owner.reactive_callback_depth > 0);
+        std.debug.assert(!self.owner.inReactiveComputation());
+        child.disposeNow();
     }
 
     /// create Signal in this Scope
@@ -597,6 +618,102 @@ test "Scope: reactive callbacks defer disposal until their facade returns" {
         }
     }.compute);
     try std.testing.expectEqual(@as(u32, 42), memo.get());
+}
+
+const SettledProbe = struct {
+    owner: *SignalOwner,
+    entry: SignalOwner.SettledTask = .{},
+    runs: usize = 0,
+    ran_inside_computation: bool = false,
+
+    fn request(self: *SettledProbe) void {
+        self.owner.runOutsideComputation(&self.entry, @ptrCast(self), run);
+    }
+
+    fn run(ptr: *anyopaque) void {
+        const self: *SettledProbe = @ptrCast(@alignCast(ptr));
+        self.runs += 1;
+        if (self.owner.inReactiveComputation()) self.ran_inside_computation = true;
+    }
+};
+
+test "SignalOwner.runOutsideComputation: 计算内的请求在写入的 effect drain 结束后运行，计算外立即运行" {
+    const allocator = std.testing.allocator;
+    var owner = try SignalOwner.init(allocator);
+    defer owner.deinit();
+    const scope = try Scope.init(allocator, null, owner);
+    defer scope.dispose();
+
+    var probe = SettledProbe{ .owner = owner };
+    probe.request(); // no computation on the stack: runs now
+    try std.testing.expectEqual(@as(usize, 1), probe.runs);
+
+    const trigger = try scope.createSignal(u32, 0);
+    const chained = try scope.createSignal(u32, 0);
+    var seen_in_effect: usize = 0;
+    // first effect requests twice (coalesced) and writes a signal that runs a second effect
+    try scope.createEffect(.{ .trigger = trigger, .chained = chained, .probe = &probe }, struct {
+        fn run(c: anytype) void {
+            const v = c.trigger.get();
+            if (v == 0) return;
+            c.probe.request();
+            c.probe.request();
+            c.chained.set(v);
+        }
+    }.run);
+    // second effect checks the task has not run while effects are still draining
+    try scope.createEffect(.{ .chained = chained, .probe = &probe, .seen = &seen_in_effect }, struct {
+        fn run(c: anytype) void {
+            if (c.chained.get() != 0) c.seen.* = c.probe.runs;
+        }
+    }.run);
+
+    trigger.set(1);
+    try std.testing.expectEqual(@as(usize, 1), seen_in_effect);
+    try std.testing.expectEqual(@as(usize, 2), probe.runs);
+    try std.testing.expect(!probe.ran_inside_computation);
+
+    // batch: effects drain at endBatch, the task right after
+    owner.beginBatch();
+    trigger.set(2);
+    try std.testing.expectEqual(@as(usize, 2), probe.runs);
+    owner.endBatch();
+    try std.testing.expectEqual(@as(usize, 3), probe.runs);
+    try std.testing.expect(!probe.ran_inside_computation);
+}
+
+test "SignalOwner.runOutsideComputation: effect 首跑与 untrack 内的请求；取消后不运行" {
+    const allocator = std.testing.allocator;
+    var owner = try SignalOwner.init(allocator);
+    defer owner.deinit();
+    const scope = try Scope.init(allocator, null, owner);
+    defer scope.dispose();
+
+    var probe = SettledProbe{ .owner = owner };
+    // initial run of a new effect: settles when createEffect returns; untrack does not hide the
+    // computation below its sentinel
+    try scope.createEffect(&probe, struct {
+        fn run(p: *SettledProbe) void {
+            p.owner.untrack(SettledProbe.request, p);
+            if (p.runs != 0) p.ran_inside_computation = true;
+        }
+    }.run);
+    try std.testing.expectEqual(@as(usize, 1), probe.runs);
+    try std.testing.expect(!probe.ran_inside_computation);
+
+    // a cancelled request (its owner went away) never runs
+    var gone = SettledProbe{ .owner = owner };
+    const trigger = try scope.createSignal(u32, 0);
+    try scope.createEffect(.{ .trigger = trigger, .gone = &gone }, struct {
+        fn run(c: anytype) void {
+            if (c.trigger.get() == 0) return;
+            c.gone.request();
+            c.gone.entry.cancel();
+        }
+    }.run);
+    trigger.set(1);
+    try std.testing.expectEqual(@as(usize, 0), gone.runs);
+    try std.testing.expect(owner.settled_tasks.head == null);
 }
 
 test "Scope: nested scopes dispose correctly" {

@@ -1,0 +1,66 @@
+const ui = @import("ui");
+pub const Mode = enum { a, b };
+const S = struct {
+    pub const A = ui.css(.{ .gap = 3 });
+    pub const B = ui.css(.{ .gap = 17 });
+};
+pub var mounts: usize = 0;
+pub var unmounts: usize = 0;
+fn mounted() void { mounts += 1; }
+fn unmounted() void { unmounts += 1; }
+pub fn Row(id: []const u8 = "lp5.row.value", button: []const u8 = "lp5.row.button") View {
+    var value: u32 = signal(5);
+    onMount(mounted());
+    onUnmount(unmounted());
+    return <box><box testId={button} onClick={value += 1}/><text testId={id}>row {value}</text></box>;
+}
+pub fn Regions() View {
+    var items: []const u32 = signal(&.{1, 2});
+    var shown: bool = signal(true);
+    var mode: Mode = signal(.a);
+    return <col>
+        <box testId="lp5.list.add" onClick={items = &.{1, 2, 3}}/>
+        <box testId="lp5.list.remove" onClick={items = &.{2}}/>
+        {for (items) |item| <box key={item}><Row/><text>RowOriginal</text></box>}
+        {if (shown) <box><text testId="lp5.if">IfOriginal</text></box> else <text testId="lp5.if.else">IfElse</text>}
+        {switch (mode) { .a => <box><text testId="lp5.match">MatchOriginal</text></box>, .b => <text testId="lp5.match.else">MatchElse</text> }}
+    </col>;
+}
+
+pub fn SlotFrame(children: View, header: View) View {
+    return <col><box>{header}</box><box>{children}</box></col>;
+}
+pub fn Slots() View {
+    var value: u32 = signal(11);
+    return <col><box testId="lp5.slot.button" onClick={value += 1}/><text testId="lp5.slot.value">slot setup {value}</text><SlotFrame header={<box><text>HeaderOriginal</text></box>}><box testId="lp5.slot.body" style={S.A}><text>DefaultOriginal</text><box style={S.B}/></box></SlotFrame></col>;
+}
+
+pub fn Moves() View {
+    return <col><Row id="lp5.left" button="lp5.left.button"/><text>MoveDivider</text><Row id="lp5.right" button="lp5.right.button"/></col>;
+}
+pub fn Ambiguous() View {
+    return <col><Row/><Row/><text>AmbiguousOriginal</text></col>;
+}
+
+pub fn AllocatorMoves() View {
+    return <col><Row id="alloc.left"/><text>alloc divider</text><Row id="alloc.right"/>
+        <Row id="alloc.0"/><Row id="alloc.1"/><Row id="alloc.2"/><Row id="alloc.3"/>
+        <Row id="alloc.4"/><Row id="alloc.5"/><Row id="alloc.6"/><Row id="alloc.7"/>
+    </col>;
+}
+
+pub fn NestedDerived(bad: bool) View {
+    var shown: bool = signal(true);
+    return <col>{if (shown) <box>{if (bad) <text>nested</text>}<text>NestedOriginal</text></box>}</col>;
+}
+
+pub fn Branchless() View {
+    var shown: bool = signal(true);
+    return <col>{if (shown) <text>SingleBranch</text>}</col>;
+}
+
+pub const CaseMode = enum { a, b, c };
+pub fn Cases() View {
+    var selected: CaseMode = signal(.a);
+    return <col>{switch (selected) { .a => <text>CaseA</text>, else => <text>CaseDefault</text> }}</col>;
+}

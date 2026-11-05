@@ -31,6 +31,7 @@ extern fn zenit_d12_render_pass_begin(*NativeCommands, [*]const NativeColorAttac
 extern fn zenit_d12_render_pass_regions(*NativeRenderPass, ?[*]const u32, u32) c_int;
 extern fn zenit_d12_render_pass_clear_opaque(*NativeRenderPass, *const [4]f32, u32, u32, u32, u32) c_int;
 extern fn zenit_d12_render_pass_draw(*NativeRenderPass, *NativeRenderPipeline, *const NativeDraw) c_int;
+extern fn zenit_d12_render_pass_draw_entries(*NativeRenderPass, *NativeRenderPipeline, *const NativeDraw, [*]const NativeBindingEntry, [*]const u32, u32) c_int;
 extern fn zenit_d12_render_pass_end(*NativeRenderPass) c_int;
 const NativeRenderPipeline = opaque {};
 const NativeVertexAttribute = extern struct { location: u32, slot: u32, format: u32, offset: u32, stride: u32, step: u32 };
@@ -42,7 +43,7 @@ extern fn zenit_d12_render_pipeline_retain(*NativeRenderPipeline) void;
 extern fn zenit_d12_render_pipeline_layout(*NativeRenderPipeline) *NativePipelineLayout;
 extern fn zenit_d12_render_pipeline_release(*NativeRenderPipeline) void;
 const NativeBindGroup = opaque {};
-const NativeBindingEntry = extern struct { binding: u32, array_index: u32, buffer: ?*NativeBuffer, offset: u64, size: u64, stride: u32, view: ?*NativeView, sampler: ?*NativeSampler };
+pub const NativeBindingEntry = extern struct { binding: u32, array_index: u32, buffer: ?*NativeBuffer, offset: u64, size: u64, stride: u32, view: ?*NativeView, sampler: ?*NativeSampler };
 extern fn zenit_d12_bind_group_create(*NativeDevice, *NativePipelineLayout, u32, [*]const NativeBindingEntry, u32, *?*NativeBindGroup) c_int;
 extern fn zenit_d12_bind_group_release(*NativeBindGroup) void;
 extern fn zenit_d12_commands_dispatch(*NativeCommands, *NativeComputePipeline, [*]const *NativeBindGroup, u32, u32, u32, u32) c_int;
@@ -50,6 +51,7 @@ pub const LayoutBinding = extern struct { group: u32, binding: u32, kind: u32, c
 extern fn zenit_d12_pipeline_layout_create(*NativeDevice, u32, [*]const LayoutBinding, u32, *?*NativePipelineLayout) c_int;
 extern fn zenit_d12_pipeline_layout_bindings(*NativePipelineLayout, *u32, *u32) ?[*]const LayoutBinding;
 extern fn zenit_d12_pipeline_layout_release(*NativePipelineLayout) void;
+extern fn zenit_d12_pipeline_layout_owner(*NativePipelineLayout) *NativeDevice;
 extern fn zenit_d12_pipeline_layout_table(*NativePipelineLayout, u32, c_int) u32;
 extern fn zenit_d12_compute_pipeline_create(*NativeDevice, *NativePipelineLayout, *anyopaque, *?*NativeComputePipeline) c_int;
 extern fn zenit_d12_compute_pipeline_release(*NativeComputePipeline) void;
@@ -84,6 +86,8 @@ extern fn zenit_d12_device_release(*NativeDevice) void;
 extern fn zenit_d12_device_vertex_viewport_index(*NativeDevice) c_int;
 extern fn zenit_d12_device_is_software(*NativeDevice) c_int;
 extern fn zenit_d12_buffer_create(*NativeDevice, u64, u32, *?*NativeBuffer) c_int;
+extern fn zenit_d12_texture_ledger_label(*NativeTexture, [*]const u8, usize) void;
+extern fn zenit_d12_buffer_ledger_label(*NativeBuffer, [*]const u8, usize) void;
 extern fn zenit_d12_buffer_retain(*NativeBuffer) void;
 extern fn zenit_d12_buffer_release(*NativeBuffer) void;
 extern fn zenit_d12_buffer_mapping(*NativeBuffer) ?[*]u8;
@@ -194,11 +198,7 @@ pub const Device = struct {
         if (desc.entries.len > 1000000) return error.InvalidBindGroup;
         const native = try allocator.alloc(NativeBindingEntry, desc.entries.len);
         defer allocator.free(native);
-        for (desc.entries, native) |entry, *out| {
-            if (entry.buffer) |buffer| if (entry.offset > buffer.size) return error.InvalidBindGroup;
-            if (entry.buffer == null and (entry.offset != 0 or entry.size != null or entry.stride != 0)) return error.InvalidBindGroup;
-            out.* = .{ .binding = entry.binding, .array_index = entry.array_index, .buffer = if (entry.buffer) |buffer| buffer.raw else null, .view = if (entry.texture_view) |view| view.raw else null, .sampler = if (entry.sampler) |sampler| sampler.raw else null, .offset = entry.offset, .size = if (entry.buffer) |buffer| entry.size orelse (buffer.size - entry.offset) else 0, .stride = entry.stride };
-        }
+        for (desc.entries, native) |entry, *out| out.* = try nativeBindingEntry(entry);
         var raw: ?*NativeBindGroup = null;
         try nativeStatus(zenit_d12_bind_group_create(self.raw, desc.layout.raw, desc.group, native.ptr, @intCast(native.len), &raw), error.InvalidBindGroup);
         return .{ .raw = raw.? };
@@ -291,6 +291,8 @@ pub const Device = struct {
             .@"2d" => 2,
             .@"3d" => 3,
         }, desc.size.width, desc.size.height, desc.size.depth, desc.mip_level_count, format, @bitCast(desc.usage), desc.sample_count, &raw), error.InvalidTextureDescriptor);
+        // ZENIT_GPU_LEDGER names resources by label (no-op when off).
+        if (desc.label) |label| zenit_d12_texture_ledger_label(raw.?, label.ptr, label.len);
         return .{ .raw = raw.?, .size = desc.size, .format = desc.format, .mip_level_count = desc.mip_level_count, .dimension = desc.dimension, .memory = desc.memory, .sample_count = desc.sample_count };
     }
     pub fn createBuffer(self: *Device, allocator: std.mem.Allocator, desc: gpu.BufferDescriptor) !Buffer {
@@ -303,6 +305,7 @@ pub const Device = struct {
             1 => return error.InvalidBufferDescriptor,
             else => return error.BufferCreationFailed,
         }
+        if (desc.label) |label| zenit_d12_buffer_ledger_label(raw.?, label.ptr, label.len);
         return .{ .raw = raw.?, .size = desc.size, .usage = desc.usage };
     }
 };
@@ -677,6 +680,20 @@ pub const ComputePipeline = struct {
     }
 };
 
+/// Native form of one bind group entry (also used by entry draws).
+pub fn nativeBindingEntry(entry: BindGroupEntry) !NativeBindingEntry {
+    if (entry.buffer) |buffer| if (entry.offset > buffer.size) return error.InvalidBindGroup;
+    if (entry.buffer == null and (entry.offset != 0 or entry.size != null or entry.stride != 0)) return error.InvalidBindGroup;
+    return .{ .binding = entry.binding, .array_index = entry.array_index, .buffer = if (entry.buffer) |buffer| buffer.raw else null, .view = if (entry.texture_view) |view| view.raw else null, .sampler = if (entry.sampler) |sampler| sampler.raw else null, .offset = entry.offset, .size = if (entry.buffer) |buffer| entry.size orelse (buffer.size - entry.offset) else 0, .stride = entry.stride };
+}
+/// Whether bind_group_create accepts these entries for `group` (the group is
+/// created and released; for error attribution, not for per-draw use).
+pub fn validateBindGroupEntries(layout: *const PipelineLayout, group: u32, entries: []const NativeBindingEntry) bool {
+    var raw: ?*NativeBindGroup = null;
+    if (zenit_d12_bind_group_create(zenit_d12_pipeline_layout_owner(layout.raw), layout.raw, group, entries.ptr, @intCast(entries.len), &raw) != 0) return false;
+    zenit_d12_bind_group_release(raw.?);
+    return true;
+}
 /// Supply exactly one buffer, texture_view or sampler.
 /// D3D12 buffer interpretation is explicit: zero stride = byte-address,
 /// nonzero stride = structured buffer. Uniform buffers require zero stride.
@@ -876,15 +893,26 @@ pub const RenderPass = struct {
     }
     /// Record a complete non-indexed draw and immutable descriptor tables.
     pub fn draw(self: *RenderPass, desc: DrawDescriptor) !void {
-        return self.recordDraw(desc, null, 0, 0);
+        return self.recordDraw(desc, null, 0, 0, null);
+    }
+    /// Draw with bind groups given as native entries (`group_counts[i]` per
+    /// group, concatenated): the same validation and recorded draw as binding
+    /// groups created from them, without per-draw bind group objects.
+    pub fn drawEntries(self: *RenderPass, desc: DrawDescriptor, entries: []const NativeBindingEntry, group_counts: []const u32) !void {
+        if (desc.bind_groups.len != 0 or group_counts.len > 4) return error.InvalidDraw;
+        var total: usize = 0;
+        for (group_counts) |count| total += count;
+        if (total != entries.len) return error.InvalidDraw;
+        return self.recordDraw(desc, null, 0, 0, .{ .entries = entries, .group_counts = group_counts });
     }
     /// Index contents may be GPU-written: callers must keep effective vertex
     /// indices within the bound vertex ranges. Instance and index byte bounds
     /// are validated before recording, without reading GPU-owned data.
     pub fn drawIndexed(self: *RenderPass, desc: IndexedDrawDescriptor) !void {
-        return self.recordDraw(.{ .pipeline = desc.pipeline, .vertex_buffers = desc.vertex_buffers, .bind_groups = desc.bind_groups, .vertex_count = desc.index_count, .instance_count = desc.instance_count, .first_instance = desc.first_instance, .scissor = desc.scissor, .viewport = desc.viewport, .blend_constant = desc.blend_constant, .stencil_reference = desc.stencil_reference }, desc.index_buffer, desc.first_index, desc.base_vertex);
+        return self.recordDraw(.{ .pipeline = desc.pipeline, .vertex_buffers = desc.vertex_buffers, .bind_groups = desc.bind_groups, .vertex_count = desc.index_count, .instance_count = desc.instance_count, .first_instance = desc.first_instance, .scissor = desc.scissor, .viewport = desc.viewport, .blend_constant = desc.blend_constant, .stencil_reference = desc.stencil_reference }, desc.index_buffer, desc.first_index, desc.base_vertex, null);
     }
-    fn recordDraw(self: *RenderPass, desc: DrawDescriptor, index: ?IndexBinding, first_index: u32, base_vertex: i32) !void {
+    const EntryGroups = struct { entries: []const NativeBindingEntry, group_counts: []const u32 };
+    fn recordDraw(self: *RenderPass, desc: DrawDescriptor, index: ?IndexBinding, first_index: u32, base_vertex: i32, direct: ?EntryGroups) !void {
         const raw = self.raw orelse return error.RenderPassAlreadyEnded;
         if (desc.vertex_buffers.len > 32 or desc.bind_groups.len > 4) return error.InvalidDraw;
         var groups: [4]*NativeBindGroup = undefined;
@@ -897,7 +925,11 @@ pub const RenderPass = struct {
         const scissor = desc.scissor orelse Scissor{ .width = std.math.maxInt(u32), .height = std.math.maxInt(u32) };
         if (index) |binding| if (binding.offset > binding.buffer.size) return error.InvalidDraw;
         const native: NativeDraw = .{ .buffers = &bindings, .buffer_count = @intCast(desc.vertex_buffers.len), .first_vertex = desc.first_vertex, .vertices = desc.vertex_count, .first_instance = desc.first_instance, .instances = desc.instance_count, .x = scissor.x, .y = scissor.y, .width = scissor.width, .height = scissor.height, .blend = desc.blend_constant, .stencil_reference = desc.stencil_reference, .groups = &groups, .group_count = @intCast(desc.bind_groups.len), .index_buffer = if (index) |b| b.buffer.raw else null, .index_offset = if (index) |b| b.offset else 0, .index_size = if (index) |b| b.size orelse (b.buffer.size - b.offset) else 0, .index_format = if (index) |b| @as(u32, @backingInt(b.format)) + 1 else 0, .first_index = first_index, .base_vertex = base_vertex, .has_viewport = @intFromBool(desc.viewport != null), .viewport = if (desc.viewport) |v| .{ v.x, v.y, v.width, v.height, v.min_depth, v.max_depth } else .{ 0, 0, 0, 0, 0, 1 } };
-        try nativeStatus(zenit_d12_render_pass_draw(raw, desc.pipeline.raw, &native), error.InvalidDraw);
+        if (direct) |d| {
+            const status = zenit_d12_render_pass_draw_entries(raw, desc.pipeline.raw, &native, d.entries.ptr, d.group_counts.ptr, @intCast(d.group_counts.len));
+            if (status == 6) return error.InvalidBindGroup;
+            try nativeStatus(status, error.InvalidDraw);
+        } else try nativeStatus(zenit_d12_render_pass_draw(raw, desc.pipeline.raw, &native), error.InvalidDraw);
     }
     pub fn end(self: *RenderPass) !void {
         const raw = self.raw orelse return error.RenderPassAlreadyEnded;

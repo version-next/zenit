@@ -29,6 +29,31 @@ extern fn zenit_windows_desktop_observer_destroy(*anyopaque) void;
 extern fn zenit_windows_desktop_observer_clock() i64;
 extern fn zenit_windows_desktop_observer_capture(*anyopaque, u32, u32, i64) c_int;
 
+/// WARP already admits one render frame at a time. FIFO presentation can
+/// nevertheless stall the shared queue behind DXGI for hundreds of ms. Sync
+/// interval zero lets DWM prefer the latest completed frame; no tearing flag is
+/// enabled. Hardware adapters keep FIFO pacing.
+fn surfaceConfig(device: *gpu.Backend.Device, width: u32, height: u32) gpu.Backend.SurfaceConfiguration {
+    return .{
+        .format = gpu.color_format,
+        .width = width,
+        .height = height,
+        .usage = .color_target_and_read,
+        .present_mode = if (device.isSoftware()) .immediate else .fifo,
+        .maximum_frame_latency = surfaceFrameLatency(),
+    };
+}
+
+/// A flip-model swap chain holds latency + 1 window-sized buffers for the
+/// window's whole life (unlike CAMetalLayer drawables, which idle trim
+/// releases). ZENIT_WINDOWS_FRAME_LATENCY=1..3 overrides the default.
+fn surfaceFrameLatency() u32 {
+    var buf: [8]u8 = undefined;
+    const value = @import("zenit_environment").getInto("ZENIT_WINDOWS_FRAME_LATENCY", &buf) orelse return render_pacing.maximum_frame_latency;
+    const parsed = std.fmt.parseInt(u32, value, 10) catch return render_pacing.maximum_frame_latency;
+    return std.math.clamp(parsed, 1, 3);
+}
+
 pub const Painter = struct {
     pub const NativePaintItem = legacy.PaintItem;
     state: *State,
@@ -91,22 +116,20 @@ pub const Painter = struct {
         state.width = size[0];
         state.height = size[1];
         state.surface = gpu.Backend.Surface.init(window.getNativeSurfaceHandle());
-        // WARP already admits one render frame at a time. FIFO presentation can
-        // nevertheless stall the shared queue behind DXGI for hundreds of ms.
-        // Sync interval zero lets DWM prefer the latest completed frame; no
-        // tearing flag is enabled. Hardware adapters keep FIFO pacing.
-        try state.surface.configure(a, state.device, .{ .format = gpu.color_format, .width = state.width, .height = state.height, .usage = .color_target_and_read, .present_mode = if (state.device.isSoftware()) .immediate else .fifo });
+        try state.surface.configure(a, state.device, surfaceConfig(state.device, state.width, state.height));
         errdefer state.surface.deinit();
         try state.renderer.init(a, io, state.device, state.queue, &state.surface, .{ .clear_color = .{ .r = clear[0], .g = clear[1], .b = clear[2], .a = clear[3] } });
         errdefer state.renderer.deinit();
         if (state.shared_gpu) |shared| try state.renderer.image_renderer.setSharedTextureStore(&shared.images);
-        state.renderer.retain_present_copy = @import("test_harness").enabled;
-        const desktop_observer = if (capture_directory != null and @import("zenit_environment").has("ZENIT_WINDOWS_DESKTOP_CAPTURE"))
+        // Test builds keep a copy of each presented frame for screenshots, except
+        // memory/CPU measurement runs (ZENIT_E2E_MEASURE), as on macOS.
+        state.renderer.retain_present_copy = @import("test_harness").enabled and !@import("zenit_environment").flag("ZENIT_E2E_MEASURE");
+        const desktop_observer = if (capture_directory != null and @import("zenit_environment").flag("ZENIT_WINDOWS_DESKTOP_CAPTURE"))
             zenit_windows_desktop_observer_create(window.getNativeSurfaceHandle()) orelse return error.DesktopObserverUnavailable
         else
             null;
         state.renderer.desktop_capture_stamp = desktop_observer != null;
-        return .{ .desktop_observer = desktop_observer, .state = state, .allocator = a, .image_renderer = &state.renderer.image_renderer, .capture_directory = capture_directory, .trace_frames = @import("zenit_environment").has("ZENIT_WINDOWS_FRAME_TIMING"), .trace_window_id = window.getWindowId() };
+        return .{ .desktop_observer = desktop_observer, .state = state, .allocator = a, .image_renderer = &state.renderer.image_renderer, .capture_directory = capture_directory, .trace_frames = @import("zenit_environment").flag("ZENIT_WINDOWS_FRAME_TIMING"), .trace_window_id = window.getWindowId() };
     }
 
     pub fn deinit(self: *Painter, window: *platform.Window) void {
@@ -168,7 +191,7 @@ pub const Painter = struct {
         if (size[0] == 0 or size[1] == 0) return;
         if (size[0] != self.state.width or size[1] != self.state.height) {
             self.state.renderer.prepareSurfaceResize(cx);
-            try self.state.surface.configure(self.allocator, self.state.device, .{ .format = gpu.color_format, .width = size[0], .height = size[1], .usage = .color_target_and_read, .present_mode = if (self.state.device.isSoftware()) .immediate else .fifo });
+            try self.state.surface.configure(self.allocator, self.state.device, surfaceConfig(self.state.device, size[0], size[1]));
             self.state.width = size[0];
             self.state.height = size[1];
         }
@@ -249,6 +272,12 @@ pub const Painter = struct {
         self.capture_count += 1;
     }
 
+    /// Release frame-loop resources of a window that stopped presenting (see
+    /// AppRenderer.trimIdleResources). False while its last frame still runs.
+    pub fn trimIdle(self: *Painter) bool {
+        return self.state.renderer.trimIdleResources();
+    }
+
     pub fn setRetainedEnabled(self: *Painter, enabled: bool) void {
         self.state.renderer.retained_enabled = enabled;
     }
@@ -258,6 +287,7 @@ pub const Painter = struct {
     }
     pub fn resetTiming(self: *Painter) void {
         self.state.renderer.timing_ring.reset();
+        self.state.renderer.stage_totals = .{};
         self.state.renderer.gpu_timing_ring.reset();
         self.state.renderer.gpu_timing_disjoint_samples = 0;
         self.state.renderer.gpu_timing_failed_samples = 0;

@@ -12,7 +12,8 @@ pub fn set(node: *core.Node, cx: *core.Cx, content: []const u8, color: core.Colo
     const same_content = if (old) |text| text.owned and std.mem.eql(u8, text.content, content) else false;
     if (same_content and core.Color.eql(old.?.color, color) and old.?.font_size == font_size) return;
     const bytes = if (same_content) old.?.content else try cx.allocator.dupe(u8, content);
-    node.setText(.{ .content = bytes, .owned = true, .color = color, .font_size = font_size });
+    // The row's color is its own (placeholder / disabled tones), never the field's text color.
+    node.setText(.{ .content = bytes, .owned = true, .color = color, .color_set = true, .font_size = font_size });
     if (!same_content or old.?.font_size != font_size) node.markSizingDirty();
     node.markRenderDirty();
 }

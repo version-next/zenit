@@ -83,9 +83,13 @@ const tab_glass_bleed: f32 = 8;
 /// Button width over the even share of the platter interior (100.7 / 94, measured for 3 tabs).
 pub const tab_button_overlap: f32 = 100.7 / 94.0;
 /// UIButton.Configuration.glass (system_controls_*): 34.33 tall capsule, 12 pt side padding,
-/// 17 pt title; an image-only button is a 34.33 pt circle.
+/// 17 pt title. An image-only button is a 48 pt circle around its 24 pt image, 12 pt all round
+/// (system_controls_*, system_buttonsizes_*: buttonSize .mini / .small 44, .medium 48, .large 64);
+/// it clears the HIG's 44 x 44 pt hit region and matches the bottom toolbar's 48 pt platters.
 pub const button_height: f32 = 34.33;
 pub const button_padding: f32 = 12;
+pub const button_image_diameter: f32 = 48;
+pub const button_image_size: f32 = 24;
 
 /// Ink over bar glass, per material family (captures: icons 21 over 205 light, 247 over 89 dark;
 /// titles pure black / white; inline subtitle 72 light / 194 dark).
@@ -1075,7 +1079,7 @@ pub const GlassTabBarBuilder = struct {
         }
         // The clear lens over the plain tabs and the platter. The accent copies go above it (native
         // _UILiquidLensView: the portal sits over the glass layers with its own displacement):
-        // the lens's rim samples 20-40 pt deep (tab_lens_sample_depth) and must find the platter
+        // the lens's rim samples 20-40 pt deep (glass.metal tab_lens_field) and must find the platter
         // there, not the accent glyphs.
         const lens = try glass_box.GlassBox(.{
             .width = btn_w,
@@ -1167,7 +1171,7 @@ pub const GlassButtonStyle = enum { glass, prominent_glass, clear_glass, promine
 
 pub const GlassButtonProps = struct {
     title: []const u8 = "",
-    /// Image-only when title is empty: a 34.33 pt circle
+    /// Image-only when title is empty: a 48 pt circle (24 pt image)
     icon: ?svg_assets.Asset = null,
     /// Accessibility name for an image-only button
     label: []const u8 = "",
@@ -1209,8 +1213,8 @@ pub const GlassButtonBuilder = struct {
             else => null,
         };
         const g = try glass_box.GlassBox(.{
-            .width = if (icon_only) button_height else null,
-            .height = button_height,
+            .width = if (icon_only) button_image_diameter else null,
+            .height = if (icon_only) button_image_diameter else button_height,
             .shape = if (icon_only) @as(glass_box.GlassBoxShape, .circle) else .capsule,
             .idiom = p.idiom,
             .glass_style = if (clear) glass_box.GlassEffectStyle.clear else .regular,
@@ -1226,7 +1230,7 @@ pub const GlassButtonBuilder = struct {
         g.box.behavior.interaction.a11y = .{ .role = .button, .label = if (icon_only) p.label else p.title };
         var item: Item = .{ .bar = rt, .glass = g.state, .node = g.box, .role = if (p.style == .prominent_glass) .prominent else .plain, .on_click = p.on_click };
         if (icon_only) {
-            if (p.icon) |ic| item.icon = try iconNode(cx, g.body, ic, 20);
+            if (p.icon) |ic| item.icon = try iconNode(cx, g.body, ic, button_image_size);
         } else {
             item.label = try textNode(cx, g.body, p.title, 17, 400, p.idiom);
         }
@@ -1516,9 +1520,14 @@ test "GlassBottomToolbar and GlassButton: measured sizes and styles" {
     const prom = tb.runtime.items.items[2].node.globalRect();
     try std.testing.expectApproxEqAbs(@as(f32, 402 - 28 - 48), prom.x, 0.5);
     try std.testing.expectApproxEqAbs(@as(f32, 48), prom.w, 0.01);
-    // buttons: 34.33 tall; clear style is clear glass; image-only is a circle
+    // buttons: 34.33 tall; clear style is clear glass; image-only is a 48 pt circle (native
+    // system_controls_*: UIButton 48 x 48, image 24 x 24 at 12, 12)
     try std.testing.expectApproxEqAbs(button_height, glass.runtime.items.items[0].node.globalRect().h, 0.01);
     try std.testing.expectEqual(glass_box.GlassEffectStyle.clear, clear.runtime.items.items[0].glass.variant);
     const h = heart.runtime.items.items[0].node.globalRect();
-    try std.testing.expectApproxEqAbs(button_height, h.w, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 48), h.w, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 48), h.h, 0.01);
+    const hi = heart.runtime.items.items[0].icon.?.globalRect();
+    try std.testing.expectApproxEqAbs(@as(f32, 12), hi.x - h.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 24), hi.w, 0.01);
 }

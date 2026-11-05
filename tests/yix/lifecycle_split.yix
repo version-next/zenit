@@ -1,0 +1,78 @@
+const ui = @import("ui");
+
+pub var log: [512]i32 = @splat(0);
+pub var log_len: usize = 0;
+pub var last_ref: ?*ui.view.Ref(*ui.Node) = null;
+pub var last_instance: ?*ui.view.ComponentInstance = null;
+fn note(n: i32) void {
+    log[log_len] = n;
+    log_len += 1;
+}
+fn remember(r: *ui.view.Ref(*ui.Node)) void {
+    last_ref = r;
+    last_instance = ui.view.componentInstance(r.get().?);
+    note(if (r.get() != null) 10 else 0);
+}
+fn attached(r: *ui.view.Ref(*ui.Node)) void {
+    note(if (r.get() != null) 1 else 0);
+}
+fn detached(r: *ui.view.Ref(*ui.Node)) void {
+    note(if (r.get() != null) -1 else -2);
+}
+pub fn Split() View {
+    var count: i32 = signal(7);
+    const doubled = computed(count * 2);
+    const handle = ref();
+    onMount(remember(handle));
+    onUnmount(note(-10));
+    onViewAttach(attached(handle));
+    onViewDetach(detached(handle));
+    return <col ref={handle} focusable={count > 0} onClick={count += 1}>
+        <text>count {count}; doubled {doubled}</text>
+        <text>template {count + 1}</text>
+    </col>;
+}
+/// A component used directly as another component's single root.
+pub fn Nested() View {
+    return <Split />;
+}
+
+// Both default and named slot insertion points move with each view.
+pub fn Holder(header: View, children: View) View {
+    return <col>
+        <row>{header}</row>
+        <box>{children}</box>
+    </col>;
+}
+
+pub fn Decorated() View {
+    return <box><Split testId="nested attrs" style={.{ .gap = 5 }} /></box>;
+}
+
+pub var slot_sentinel: u32 = 0;
+fn slotReady(r: *ui.view.Ref(*ui.Node)) void {
+    slot_sentinel = r.get().?.alive_sentinel;
+}
+fn slotCleanup(r: *ui.view.Ref(*ui.Node)) void {
+    @import("std").debug.assert(r.get().?.alive_sentinel == slot_sentinel);
+}
+fn ignoreKey() void {}
+pub fn SlotChild() View {
+    const handle = ref();
+    onViewAttach(slotReady(handle));
+    onViewDetach(slotCleanup(handle));
+    return <box ref={handle} onKeyDown={ignoreKey()}><text>slot child</text></box>;
+}
+pub fn SlottedForOom() View {
+    return <Holder header={<text>header</text>}><SlotChild /></Holder>;
+}
+
+// A real setup/view component exercises the Portal host lease. A plain text
+// Portal cannot detect an extra attachment scope in one build configuration.
+fn ComponentPortal(args: anytype) @TypeOf(ui.view.portal(Split(.{}))) {
+    _ = args;
+    return ui.view.portal(Split(.{}));
+}
+pub fn PortalOwner() View {
+    return <box><ComponentPortal /></box>;
+}

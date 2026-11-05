@@ -11,4 +11,7 @@ pub const panel = ui.paramStyle(struct { width: ?f32, background: ?ui.Color, ton
 /// Multi-layer shadow + token fallback (switches theme)
 pub const framed = ui.paramStyle(struct { fill: ?ui.Color, pub const declared = &[_][]const u8{ "shadows", "background", }; pub fn resolve(args: @This(), t: *const ui.theme.Values) ui.BoxStyle { return ui.boxFrom(.{ .shadows = .{ ui.tokenRef(.shadow, "md"), .{ .offset_x = 0, .offset_y = 2, .blur = 4, .spread = 0, .color = ui.tokenRef(.color, "accent") }, }, .background = ui.orElse(args.fill, ui.tokenRef(.color, "bg-secondary")), }, t); } });
 
+/// Plain style whose {zig} reads the theme: resolves per theme like a parameterized style
+pub const themed_ring = ui.paramStyle(struct { pub const declared = &[_][]const u8{ "outline", }; pub fn resolve(args: @This(), t: *const ui.theme.Values) ui.BoxStyle { _ = args; return ui.boxFrom(.{ .outline = ui.Outline{ .color = t.tokens.color.accent, .width = 2, .offset = 1 }, }, t); } }).of(.{});
+
 //# yix-map params.yss

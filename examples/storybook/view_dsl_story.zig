@@ -112,7 +112,7 @@ const S = struct {
             .gap = t.tokens.space.space100,
             .padding = ui.Padding.all(t.tokens.space.space200),
             .corner_radius = t.tokens.radius.lg,
-            .border = .{ .width = 1, .color = t.tokens.color.border },
+            .border = .{ .overlay = true, .width = 1, .color = t.tokens.color.border },
         };
     }
     const Row = ui.sva(.{
@@ -126,20 +126,20 @@ const S = struct {
                 .align_items = .center,
                 .cursor = .pointer,
                 .background = TOKENS.color.bg_secondary,
-                ._hover = .{ .border = .{ .width = TOKENS.border_width.thin, .color = TOKENS.color.accent } },
+                ._hover = .{ .border = .{ .overlay = true, .width = TOKENS.border_width.thin, .color = TOKENS.color.accent } },
             },
             .dot = .{
                 .width = ui.arb.px(10),
                 .height = ui.arb.px(10),
                 .corner_radius = TOKENS.radius.full,
-                .border = .{ .width = TOKENS.border_width.thin, .color = TOKENS.color.fg_secondary },
+                .border = .{ .overlay = true, .width = TOKENS.border_width.thin, .color = TOKENS.color.fg_secondary },
             },
             .label = .{ .font_size = TOKENS.font_size.lg, .color = TOKENS.color.fg_primary },
         },
         .variants = .{ .done = .{
             .false = .{},
             .true = .{
-                .root = .{ .background = TOKENS.color.success_subtle, .border = .{ .width = TOKENS.border_width.thin, .color = TOKENS.color.success } },
+                .root = .{ .background = TOKENS.color.success_subtle, .border = .{ .overlay = true, .width = TOKENS.border_width.thin, .color = TOKENS.color.success } },
                 .dot = .{ .background = TOKENS.color.success, .border_color = TOKENS.color.success },
                 .label = .{ .color = TOKENS.color.fg_secondary },
             },

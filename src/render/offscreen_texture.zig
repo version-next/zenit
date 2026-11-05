@@ -125,9 +125,8 @@ pub const OffscreenTexturePool = struct {
     ///
     /// If capacity is below the workset (111 there), the pool is perpetually full -> new textures
     /// are
-    /// all transient -> **destroyed at end of frame and rebuilt next frame** (40+ same-size creates
-    /// per
-    /// cycle). Worse, the downsample chain can't get a texture -> `break`, `actual_levels` ends
+    /// all transient (historically destroyed at end of frame and rebuilt next frame: 40+ same-size
+    /// creates per cycle; transients now persist, but only MAX_TRANSIENT of them). Worse, the downsample chain can't get a texture -> `break`, `actual_levels` ends
     /// mid-path, and blur level jumps between e.g. 5/5 and 4/5. All glass islands share this pool
     /// and
     /// reuse lag is fixed (REUSE_LAG_FRAMES=3), so **unrelated islands jitter in sync with a
@@ -162,7 +161,7 @@ pub const OffscreenTexturePool = struct {
     /// `acquire` complete failure (pool **and** transient full) cumulative count.
     ///
     /// WARNING semantic boundary, don't misuse: pool full but transient free is **not counted**;
-    /// that path 'create one, destroy at end of frame' shows up as perf thrash, **not** visual
+    /// that path (overflow into the MAX_TRANSIENT LRU) shows up as perf thrash, **not** visual
     /// degradation. Corollary: `> 0` is definitely a visual downgrade; `== 0` **doesn't mean** the
     /// pool is large enough. Judge adequacy by `ZENIT_DEBUG_PASSCOUNT` `[offpool] create`
     /// frequency.
@@ -266,6 +265,9 @@ pub const OffscreenTexturePool = struct {
         /// Content already drawn. Freshly allocated texture undefined, must draw once before
         /// reuse.
         retained_primed: bool = false,
+        /// `retained_id` names a glass owner (backdrop_blur cross-frame composite
+        /// reuse), not a layer: the two id spaces overlap, so lookups match both.
+        retained_glass: bool = false,
         /// Damage-rect: prior-frame per-item baseline **bypath slot** index. NO_DAMAGE_SLOT = entry
         /// has no valid baseline (= next miss repaints the full layer).
         ///
@@ -309,11 +311,18 @@ pub const OffscreenTexturePool = struct {
         return null;
     }
 
+    /// Overflow storage once the pool cannot place a texture. Kept across
+    /// frames like pool entries (same in-flight guard, same idle deadline) so a
+    /// workset slightly above MAX_POOL reuses them instead of recreating them
+    /// every frame; LRU-replaced when all MAX_TRANSIENT slots are taken.
     const TransientEntry = struct {
         texture: gpu.Backend.Texture,
         width: u32,
         height: u32,
         in_use: bool,
+        reusable_after_frame: u64 = 0,
+        last_used_frame: u64 = 0,
+        last_used_ns: u64 = 0,
     };
 
     fn bumpGeneration(generation: *u32) void {
@@ -373,13 +382,15 @@ pub const OffscreenTexturePool = struct {
         }
         for (&self.transients, 0..) |*entry, slot| {
             if (entry.*) |*e| {
-                if (!e.in_use and e.width == width and e.height == height and e.texture.format == format) {
+                if (!e.in_use and e.reusable_after_frame <= frame_index and e.width == width and e.height == height and e.texture.format == format) {
                     e.in_use = true;
+                    e.last_used_frame = frame_index;
+                    e.last_used_ns = self.clock_ns;
                     return self.transientLease(slot);
                 }
             }
         }
-        if (@import("zenit_environment").has("ZENIT_DEBUG_PASSCOUNT")) {
+        if (@import("zenit_environment").flag("ZENIT_DEBUG_PASSCOUNT")) {
             var retained_n: usize = 0;
             for (self.entries) |m| {
                 if (m) |e| {
@@ -434,10 +445,9 @@ pub const OffscreenTexturePool = struct {
             };
             return self.pooledLease(slot);
         }
-        for (&self.transients, 0..) |*entry, slot| {
-            if (entry.* != null) continue;
+        if (self.freeTransientSlot(frame_index)) |slot| {
             const new_texture = createTextureWithFormat(device, width, height, format) orelse return null;
-            entry.* = .{ .texture = new_texture, .width = width, .height = height, .in_use = true };
+            self.transients[slot] = .{ .texture = new_texture, .width = width, .height = height, .in_use = true, .last_used_frame = frame_index, .last_used_ns = self.clock_ns };
             return self.transientLease(slot);
         }
         // Pool + transient full. Caller (blur chain, opacity layer) **silently degrade**: one
@@ -457,15 +467,51 @@ pub const OffscreenTexturePool = struct {
         return null;
     }
 
+    /// An empty transient slot, else the least recently used free transient
+    /// (destroyed here), preferring one past its in-flight guard. A guarded one
+    /// may go too: the guard only gates *reusing* a texture's storage, while
+    /// dropping the owner never frees storage that recorded commands still
+    /// reference (see `releaseTransients`), so a steady overflow burst wider
+    /// than the slots allocates instead of running dry. Null only when every
+    /// transient is held by a live lease.
+    fn freeTransientSlot(self: *OffscreenTexturePool, frame_index: u64) ?usize {
+        var best: ?usize = null;
+        var best_key: u128 = std.math.maxInt(u128);
+        for (&self.transients, 0..) |*entry, slot| {
+            const e = if (entry.*) |*value| value else return slot;
+            if (e.in_use) continue;
+            const guarded: u128 = @intFromBool(e.reusable_after_frame > frame_index);
+            const key = (guarded << 64) | e.last_used_frame;
+            if (key < best_key) {
+                best = slot;
+                best_key = key;
+            }
+        }
+        const slot = best orelse return null;
+        self.destroyTransient(slot);
+        return slot;
+    }
+
+    fn destroyTransient(self: *OffscreenTexturePool, slot: usize) void {
+        if (self.transients[slot]) |*e| e.texture.destroy();
+        self.transients[slot] = null;
+        bumpGeneration(&self.transient_generations[slot]);
+    }
+
     /// Create new offscreen RT.
     ///
     /// Private storage: these offscreen RTs are **pure GPU intermediates** (opacity layer
     /// composite, backdrop blur ping-pong); the CPU never reads/writes them. The only frame pixel
-    /// read-back in the codebase is the e2e screenshot, which reads the drawable, not the pool
-    /// (renderer.zig:214). Shared would put these textures on the CPU-visible coherency path on
-    /// Apple Silicon, wasting bandwidth and compression; Private lets the driver enable lossless
-    /// compression. If read-back is ever needed, use a separate staging blit; don't revert the
-    /// whole pool to Shared.
+    /// read-back in the codebase is the e2e screenshot, which reads the drawable, not the pool.
+    /// Shared would put these textures on the CPU-visible coherency path on Apple Silicon. If
+    /// read-back is ever needed, use a separate staging blit; don't revert the whole pool to
+    /// Shared.
+    ///
+    /// Compression: Metal only adds PixelFormatView for declared foreign `view_formats`, which
+    /// the pool never declares. The pool still requests ShaderWrite on Metal (bank-batched blur
+    /// writes), and on Apple GPUs ShaderWrite alone also keeps the driver from enabling lossless
+    /// compression (measured on M4 Max: a Private BGRA8 4096^2 RT|ShaderRead texture allocates
+    /// +512 KiB of compression metadata; adding either ShaderWrite or PixelFormatView drops it).
     fn createTexture(device: *gpu.Backend.Device, width: u32, height: u32) ?gpu.Backend.Texture {
         return createTextureWithFormat(device, width, height, gpu.color_format);
     }
@@ -476,7 +522,11 @@ pub const OffscreenTexturePool = struct {
             .label = "Zenit.Offscreen",
             .size = .{ .width = width, .height = height },
             .format = format,
-            .usage = .{ .texture_binding = true, .render_attachment = true, .copy_src = true, .copy_dst = true },
+            // Metal glass passes write pool textures from fragment functions
+            // (backdrop_blur bank batch). ShaderWrite disables lossless
+            // compression for the pool (see createTexture); no foreign view
+            // format is declared, so no PixelFormatView is added.
+            .usage = .{ .texture_binding = true, .render_attachment = true, .copy_src = true, .copy_dst = true, .storage_binding = gpu.backend_kind == .metal },
             .memory = .device_local,
         }) catch null;
     }
@@ -549,9 +599,11 @@ pub const OffscreenTexturePool = struct {
             },
             .transient => {
                 if (slot >= MAX_TRANSIENT or self.transient_generations[slot] != lease.generation) return false;
-                if (self.transients[slot]) |*entry| entry.texture.destroy() else return false;
-                self.transients[slot] = null;
-                bumpGeneration(&self.transient_generations[slot]);
+                const entry = if (self.transients[slot]) |*value| value else return false;
+                // Free for eviction now (freeTransientSlot); reuse of its storage waits out
+                // the guard.
+                entry.in_use = false;
+                entry.reusable_after_frame = frame_index + REUSE_LAG_FRAMES;
                 return true;
             },
         }
@@ -572,6 +624,9 @@ pub const OffscreenTexturePool = struct {
             .pooled => {
                 if (slot >= MAX_POOL or self.pool_generations[slot] != lease.generation) return false;
                 const entry = if (self.entries[slot]) |*value| value else return false;
+                // A retained entry is held across frames by its owner and guards
+                // its own in-flight reads (acquireRetained); never shared here.
+                if (entry.retained_id != NO_RETAINED_OWNER) return false;
                 entry.in_use = false;
                 entry.reusable_after_frame = 0;
                 return true;
@@ -598,19 +653,16 @@ pub const OffscreenTexturePool = struct {
         self.releaseTransients();
     }
 
-    /// Drop per-frame owner handles after encoding. Also called by resetFrame
-    /// for standalone pool users. This prevents the last frame's transients
-    /// from surviving indefinitely when the app stops submitting frames.
+    /// End-of-encoder hand-back of transients (also run by resetFrame). The
+    /// textures stay allocated for later frames; any still marked in use was
+    /// written or sampled by this frame and waits out the in-flight guard
+    /// before reuse. Idle maintenance (`maintain`/`trimIdle`) frees them.
     pub fn releaseTransients(self: *OffscreenTexturePool) void {
-        // Transients are per-frame owner handles. Recorded Metal commands
-        // retain resources; D3D12 keeps D12RenderRefs/D12CopyRefs through the
-        // queue fence; Linux command state owns retainedTexture() references.
-        // Dropping this owner never releases storage still referenced by GPU
-        // work. A wallclock TTL here would be dead: every frame drops them.
-        for (&self.transients, 0..) |*entry, slot| {
-            if (entry.*) |*value| value.texture.destroy();
-            entry.* = null;
-            bumpGeneration(&self.transient_generations[slot]);
+        for (&self.transients) |*entry| {
+            const e = if (entry.*) |*value| value else continue;
+            if (!e.in_use) continue;
+            e.in_use = false;
+            e.reusable_after_frame = @max(e.reusable_after_frame, e.last_used_frame + REUSE_LAG_FRAMES);
         }
     }
 
@@ -619,6 +671,9 @@ pub const OffscreenTexturePool = struct {
     /// quarantine is then unnecessary; ownership and content validity remain.
     pub fn notifyGpuIdle(self: *OffscreenTexturePool) void {
         for (&self.entries) |*entry| {
+            if (entry.*) |*e| e.reusable_after_frame = 0;
+        }
+        for (&self.transients) |*entry| {
             if (entry.*) |*e| e.reusable_after_frame = 0;
         }
     }
@@ -642,6 +697,32 @@ pub const OffscreenTexturePool = struct {
         height: u32,
         frame_index: u64,
     ) ?RetainedAcquire {
+        return self.acquireRetainedIn(device, retained_id, false, content_version, width, height, frame_index);
+    }
+
+    /// `acquireRetained` for a glass composite kept across frames, by glass owner id.
+    pub fn acquireRetainedGlass(
+        self: *OffscreenTexturePool,
+        device: *gpu.Backend.Device,
+        owner_id: u32,
+        content_version: u64,
+        width: u32,
+        height: u32,
+        frame_index: u64,
+    ) ?RetainedAcquire {
+        return self.acquireRetainedIn(device, owner_id, true, content_version, width, height, frame_index);
+    }
+
+    fn acquireRetainedIn(
+        self: *OffscreenTexturePool,
+        device: *gpu.Backend.Device,
+        retained_id: u32,
+        glass: bool,
+        content_version: u64,
+        width: u32,
+        height: u32,
+        frame_index: u64,
+    ) ?RetainedAcquire {
         if (retained_id == NO_RETAINED_OWNER) return null;
         // 0 = fingerprint invalid (prescan didn't cover / layer count over limit). Better
         // every-frame repaint.
@@ -649,11 +730,23 @@ pub const OffscreenTexturePool = struct {
 
         for (&self.entries, 0..) |*entry, slot| {
             if (entry.*) |*e| {
-                if (e.retained_id != retained_id) continue;
+                if (e.retained_id != retained_id or e.retained_glass != glass) continue;
                 // Identity matched but size changed: old content stale, rebuild in-place new size.
                 if (e.width != width or e.height != height) {
                     // Still in in-flight guard, can't overwrite, this frame degrade normal path.
                     if (e.reusable_after_frame > frame_index) return null;
+                    // Move ownership to a free texture of the new size (or a new
+                    // slot) and demote the old texture to a normal entry instead of
+                    // destroying it: layers whose size oscillates (animated glass,
+                    // morphing panels) then reach a steady state without creates.
+                    // Only a full pool falls back to the in-place replacement.
+                    const target = self.findReusable(width, height, gpu.color_format, frame_index) orelse
+                        self.placeNewTexture(device, width, height, frame_index);
+                    if (target) |new_slot| {
+                        self.demoteRetained(slot, frame_index);
+                        self.adoptAsRetained(new_slot, retained_id, glass, content_version, frame_index);
+                        return .{ .lease = self.pooledLease(new_slot), .content_matches = false };
+                    }
                     const fresh = createTexture(device, width, height) orelse return null;
                     e.texture.destroy();
                     e.texture = fresh;
@@ -705,7 +798,14 @@ pub const OffscreenTexturePool = struct {
             }
         }
 
-        // First claim: create new texture pinned to this layer.
+        // First claim. Adopt a free texture of the same size before creating
+        // one: a retained entry demoted after RETAINED_IDLE_NS (or by a resize)
+        // keeps its texture in the pool, and an intermittently drawn layer must
+        // not allocate again every time it comes back.
+        if (self.findReusable(width, height, gpu.color_format, frame_index)) |reuse_slot| {
+            self.adoptAsRetained(reuse_slot, retained_id, glass, content_version, frame_index);
+            return .{ .lease = self.pooledLease(reuse_slot), .content_matches = false };
+        }
         var new_texture = createTexture(device, width, height) orelse return null;
         const slot: usize = blk: {
             for (self.entries[0..self.count], 0..) |entry, i| if (entry == null) break :blk i;
@@ -730,8 +830,65 @@ pub const OffscreenTexturePool = struct {
             .retained_id = retained_id,
             .retained_content_version = content_version,
             .retained_primed = false,
+            .retained_glass = glass,
         };
         return .{ .lease = self.pooledLease(slot), .content_matches = false };
+    }
+
+    /// A normal (unowned) entry of exactly this size and format that is free and
+    /// past its in-flight guard, i.e. one size-based `acquire` could hand out.
+    fn findReusable(self: *const OffscreenTexturePool, width: u32, height: u32, format: gpu.TextureFormat, frame_index: u64) ?usize {
+        for (&self.entries, 0..) |*entry, slot| {
+            const e = if (entry.*) |*value| value else continue;
+            if (e.retained_id != NO_RETAINED_OWNER or e.in_use or e.reusable_after_frame > frame_index) continue;
+            if (e.width == width and e.height == height and e.texture.format == format) return slot;
+        }
+        return null;
+    }
+
+    /// Create a color-format texture in a vacant slot (never evicts). Returns
+    /// the slot holding it as a free normal entry, or null.
+    fn placeNewTexture(self: *OffscreenTexturePool, device: *gpu.Backend.Device, width: u32, height: u32, frame_index: u64) ?usize {
+        const slot: usize = blk: {
+            for (self.entries[0..self.count], 0..) |entry, i| if (entry == null) break :blk i;
+            if (self.count < MAX_POOL) break :blk self.count;
+            return null;
+        };
+        const texture = createTexture(device, width, height) orelse return null;
+        if (slot == self.count) self.count += 1;
+        self.entries[slot] = .{ .texture = texture, .width = width, .height = height, .in_use = false, .last_used_frame = frame_index, .last_used_ns = self.clock_ns };
+        bumpGeneration(&self.pool_generations[slot]);
+        return slot;
+    }
+
+    /// Turn a free normal entry into `retained_id`'s exclusive, unprimed texture.
+    fn adoptAsRetained(self: *OffscreenTexturePool, slot: usize, retained_id: u32, glass: bool, content_version: u64, frame_index: u64) void {
+        const e = &self.entries[slot].?;
+        std.debug.assert(e.retained_id == NO_RETAINED_OWNER and e.damage_slot == NO_DAMAGE_SLOT);
+        e.retained_id = retained_id;
+        e.retained_glass = glass;
+        e.retained_content_version = content_version;
+        e.retained_primed = false;
+        e.in_use = true;
+        e.last_used_frame = frame_index;
+        e.last_used_ns = self.clock_ns;
+        e.old_size = false;
+        bumpGeneration(&self.pool_generations[slot]);
+    }
+
+    /// Return a retained entry's texture to size-based reuse. The GPU may still
+    /// read it this frame, so it waits out the normal in-flight guard; idle
+    /// maintenance reclaims it on the normal-entry deadline.
+    fn demoteRetained(self: *OffscreenTexturePool, slot: usize, frame_index: u64) void {
+        const e = &self.entries[slot].?;
+        self.releaseDamageSlot(e);
+        e.retained_id = NO_RETAINED_OWNER;
+        e.retained_glass = false;
+        e.retained_primed = false;
+        e.retained_content_version = 0;
+        e.in_use = false;
+        e.reusable_after_frame = frame_index + REUSE_LAG_FRAMES;
+        bumpGeneration(&self.pool_generations[slot]);
     }
 
     /// Mark retained texture content done drawing, next frame can directly reuse. Must
@@ -752,7 +909,7 @@ pub const OffscreenTexturePool = struct {
     pub fn retainedDamageItems(self: *OffscreenTexturePool, retained_id: u32) ?[]const DamageItem {
         for (&self.entries) |*entry| {
             if (entry.*) |*e| {
-                if (e.retained_id != retained_id) continue;
+                if (e.retained_id != retained_id or e.retained_glass) continue;
                 if (e.damage_slot == NO_DAMAGE_SLOT or e.damage_slot >= MAX_DAMAGE_SLOTS) continue;
                 const slot = &self.damage_slots[e.damage_slot];
                 return slot.items[0..slot.count];
@@ -766,7 +923,7 @@ pub const OffscreenTexturePool = struct {
     pub fn storeRetainedDamageItems(self: *OffscreenTexturePool, retained_id: u32, items: ?[]const DamageItem) void {
         for (&self.entries) |*entry| {
             if (entry.*) |*e| {
-                if (e.retained_id != retained_id) continue;
+                if (e.retained_id != retained_id or e.retained_glass) continue;
                 if (items) |list| {
                     if (list.len <= MAX_DAMAGE_ITEMS) {
                         // Slots exhausted -> fall to release(invalid) below = full-layer repaint.
@@ -807,6 +964,10 @@ pub const OffscreenTexturePool = struct {
             const delay = deadline(&e) -| now_ns;
             nearest = if (nearest) |n| @min(n, delay) else delay;
         };
+        for (self.transients) |entry| if (entry) |e| {
+            const delay = (e.last_used_ns +| POOL_IDLE_NS) -| now_ns;
+            nearest = if (nearest) |n| @min(n, delay) else delay;
+        };
         return nearest;
     }
 
@@ -828,6 +989,7 @@ pub const OffscreenTexturePool = struct {
                 {
                     self.releaseDamageSlot(e);
                     e.retained_id = NO_RETAINED_OWNER;
+                    e.retained_glass = false;
                     e.retained_primed = false;
                     e.retained_content_version = 0;
                     e.in_use = false;
@@ -843,6 +1005,25 @@ pub const OffscreenTexturePool = struct {
                 bumpGeneration(&self.pool_generations[slot]);
             }
         }
+        for (&self.transients, 0..) |*entry, slot| {
+            const e = if (entry.*) |*value| value else continue;
+            if (!e.in_use and now_ns >= e.last_used_ns +| POOL_IDLE_NS) self.destroyTransient(slot);
+        }
+    }
+
+    /// The window stopped presenting and every submitted use completed:
+    /// destroy all pooled storage, retained baselines included. The next frame
+    /// recaptures and repaints offscreen content in full.
+    pub fn trimIdle(self: *OffscreenTexturePool) void {
+        std.debug.assert(!self.encoder_active);
+        for (&self.entries, 0..) |*entry, slot| {
+            const e = if (entry.*) |*value| value else continue;
+            self.releaseDamageSlot(e);
+            e.texture.destroy();
+            entry.* = null;
+            bumpGeneration(&self.pool_generations[slot]);
+        }
+        for (0..MAX_TRANSIENT) |slot| self.destroyTransient(slot);
     }
 
     // Frame-age sweeps retained only for legacy explicit callers/tests. The
@@ -863,6 +1044,11 @@ pub const OffscreenTexturePool = struct {
                 bumpGeneration(&self.pool_generations[slot]);
             }
         }
+        for (&self.transients, 0..) |*entry, slot| {
+            const e = if (entry.*) |*value| value else continue;
+            if (e.in_use or e.reusable_after_frame > frame_index) continue;
+            if (frame_index >= e.last_used_frame + POOL_IDLE_FRAMES) self.destroyTransient(slot);
+        }
     }
 
     /// Recycle retained entries unclaimed consecutive `RETAINED_IDLE_FRAMES` frames, revert
@@ -880,6 +1066,7 @@ pub const OffscreenTexturePool = struct {
                 // baseline => diff is wrong => missing damage regions, stale pixels.
                 self.releaseDamageSlot(e);
                 e.retained_id = NO_RETAINED_OWNER;
+                e.retained_glass = false;
                 e.retained_primed = false;
                 e.retained_content_version = 0;
                 e.in_use = false;
@@ -907,9 +1094,10 @@ pub const OffscreenTexturePool = struct {
     pub fn dropRetained(self: *OffscreenTexturePool, retained_id: u32, frame_index: u64) void {
         for (&self.entries, 0..) |*entry, slot| {
             if (entry.*) |*e| {
-                if (e.retained_id != retained_id) continue;
+                if (e.retained_id != retained_id or e.retained_glass) continue;
                 self.releaseDamageSlot(e); // Like sweepRetained: without retained status, baseline must be invalidated.
                 e.retained_id = NO_RETAINED_OWNER;
+                e.retained_glass = false;
                 e.retained_primed = false;
                 e.retained_content_version = 0;
                 e.in_use = false;
@@ -1229,6 +1417,32 @@ test "retained: dropRetained releases ownership immediately" {
     try std.testing.expect(pool.entries[0].?.reusable_after_frame > 200);
 }
 
+test "retained: a glass owner and a layer with the same id keep separate textures" {
+    var pool = OffscreenTexturePool{};
+    seedRetained(&pool, 0, 42, 7, 128, 128);
+    seedRetained(&pool, 1, 42, 7, 64, 64);
+    pool.entries[1].?.retained_glass = true;
+    const layer = pool.acquireRetained(undefined, 42, 7, 128, 128, 5) orelse return error.TestUnexpectedResult;
+    const glass = pool.acquireRetainedGlass(undefined, 42, 7, 64, 64, 5) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(layer.lease.eql(pool.pooledLease(0)) and layer.content_matches);
+    try std.testing.expect(glass.lease.eql(pool.pooledLease(1)) and glass.content_matches);
+    // Dropping the layer never releases the glass; damage baselines are layer-only.
+    pool.dropRetained(42, 6);
+    try std.testing.expectEqual(NO_RETAINED_OWNER, pool.entries[0].?.retained_id);
+    try std.testing.expectEqual(@as(u32, 42), pool.entries[1].?.retained_id);
+    pool.storeRetainedDamageItems(42, null);
+    try std.testing.expectEqual(@as(?[]const DamageItem, null), pool.retainedDamageItems(42));
+}
+
+test "retained: an in-frame release never hands out a retained texture early" {
+    var pool = OffscreenTexturePool{};
+    seedRetained(&pool, 0, 42, 7, 128, 128);
+    pool.entries[0].?.reusable_after_frame = 9;
+    try std.testing.expect(!pool.releaseForReuseInFrame(pool.pooledLease(0)));
+    try std.testing.expect(pool.entries[0].?.in_use);
+    try std.testing.expectEqual(@as(u64, 9), pool.entries[0].?.reusable_after_frame);
+}
+
 test "retained: zero fingerprint is rejected" {
     var pool = OffscreenTexturePool{};
     seedRetained(&pool, 0, 42, 0, 128, 128);
@@ -1464,6 +1678,7 @@ test "memory snapshot separates retained idle transient and unsupported formats 
 }
 
 test "wallclock maintenance waits for a fence and invalidates retained damage without frames" {
+    // SKIP-REASON: drives the null backend's fake GPU objects; real backends cover this path in their own suites.
     if (comptime gpu.backend_kind != .null_backend) return error.SkipZigTest;
     var device = gpu.Backend.Device{};
     var pool: OffscreenTexturePool = .{};
@@ -1488,6 +1703,7 @@ test "wallclock maintenance waits for a fence and invalidates retained damage wi
 }
 
 test "resize grace retires old sizes but preserves a newly reused size" {
+    // SKIP-REASON: drives the null backend's fake GPU objects; real backends cover this path in their own suites.
     if (comptime gpu.backend_kind != .null_backend) return error.SkipZigTest;
     var device = gpu.Backend.Device{};
     var pool: OffscreenTexturePool = .{};
@@ -1511,6 +1727,7 @@ test "resize grace retires old sizes but preserves a newly reused size" {
 }
 
 test "retained downgrade invalidates leases before size-based reuse" {
+    // SKIP-REASON: drives the null backend's fake GPU objects; real backends cover this path in their own suites.
     if (comptime gpu.backend_kind != .null_backend) return error.SkipZigTest;
     var device = gpu.Backend.Device{};
     var pool: OffscreenTexturePool = .{};
@@ -1525,4 +1742,123 @@ test "retained downgrade invalidates leases before size-based reuse" {
     try std.testing.expect(!reused.eql(old.lease));
     try std.testing.expect(pool.resolveTexture(reused) != null);
     try std.testing.expectEqual(@as(u32, 1), device.texture_count);
+}
+
+test "transients persist across frames and steady overflow frames create nothing" {
+    // SKIP-REASON: Null supplies deterministic allocation without a live GPU.
+    if (comptime gpu.backend_kind != .null_backend) return error.SkipZigTest;
+    var device = gpu.Backend.Device{};
+    var pool = OffscreenTexturePool{};
+    defer pool.deinit();
+    const ms = std.time.ns_per_ms;
+    // Retained layers drawn every frame pin the whole pool, so each frame's
+    // extra request overflows into a transient.
+    var frame: u64 = 1;
+    var steady_creates: usize = 0;
+    while (frame <= 40) : (frame += 1) {
+        pool.setClock(frame * 16 * ms);
+        pool.resetFrame();
+        for (0..OffscreenTexturePool.MAX_POOL) |id| {
+            const claim = pool.acquireRetained(&device, @intCast(id), 1, 4, 4, frame) orelse return error.TestUnexpectedResult;
+            if (!claim.content_matches) try std.testing.expect(pool.markRetainedPrimed(claim.lease));
+        }
+        const before = device.texture_count;
+        const lease = pool.acquire(&device, 32, 32, frame) orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(TextureLease.Kind.transient, lease.kind);
+        try std.testing.expect(pool.release(lease, frame));
+        pool.releaseTransients();
+        if (frame > 10) steady_creates += device.texture_count - before;
+    }
+    try std.testing.expectEqual(@as(usize, 0), steady_creates);
+    // The in-flight guard bounds the rotation to REUSE_LAG_FRAMES textures.
+    var live: usize = 0;
+    for (pool.transients) |entry| live += @intFromBool(entry != null);
+    try std.testing.expectEqual(@as(usize, OffscreenTexturePool.REUSE_LAG_FRAMES), live);
+    // Idle maintenance frees them on the normal pool deadline.
+    try std.testing.expect(pool.nextMaintenanceDelayNs(frame * 16 * ms) != null);
+    pool.maintain(frame * 16 * ms + OffscreenTexturePool.POOL_IDLE_NS, true);
+    for (pool.transients) |entry| try std.testing.expect(entry == null);
+}
+
+test "steady overflow bursts larger than the transient slots never run dry" {
+    // SKIP-REASON: Null supplies deterministic allocation without a live GPU.
+    if (comptime gpu.backend_kind != .null_backend) return error.SkipZigTest;
+    var device = gpu.Backend.Device{};
+    var pool = OffscreenTexturePool{};
+    defer pool.deinit();
+    const ms = std.time.ns_per_ms;
+    // A saturated pool and 20 sequential overflow layers per frame: guarded slots must give way
+    // (dropping an owner never frees storage recorded commands still reference), not return null.
+    var frame: u64 = 1;
+    while (frame <= 8) : (frame += 1) {
+        pool.setClock(frame * 16 * ms);
+        pool.resetFrame();
+        for (0..OffscreenTexturePool.MAX_POOL) |id| {
+            const claim = pool.acquireRetained(&device, @intCast(id), 1, 4, 4, frame) orelse return error.TestUnexpectedResult;
+            if (!claim.content_matches) try std.testing.expect(pool.markRetainedPrimed(claim.lease));
+        }
+        for (0..20) |_| {
+            const lease = pool.acquire(&device, 32, 32, frame) orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqual(TextureLease.Kind.transient, lease.kind);
+            try std.testing.expect(pool.release(lease, frame));
+        }
+        pool.releaseTransients();
+    }
+}
+
+test "trimIdle releases persistent transients and invalidates their leases" {
+    // SKIP-REASON: Null supplies deterministic allocation without a live GPU.
+    if (comptime gpu.backend_kind != .null_backend) return error.SkipZigTest;
+    var device = gpu.Backend.Device{};
+    var pool = OffscreenTexturePool{};
+    defer pool.deinit();
+    while (pool.count < OffscreenTexturePool.MAX_POOL) _ = pool.acquire(&device, 4, 4, 1) orelse return error.TestUnexpectedResult;
+    const lease = pool.acquire(&device, 8, 8, 1) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(TextureLease.Kind.transient, lease.kind);
+    pool.releaseTransients();
+    try std.testing.expect(pool.resolveTexture(lease) != null);
+    pool.trimIdle();
+    try std.testing.expect(pool.resolveTexture(lease) == null);
+    for (pool.transients) |entry| try std.testing.expect(entry == null);
+}
+
+test "retained layers reuse demoted textures on reclaim and on oscillating resize" {
+    // SKIP-REASON: Null supplies deterministic allocation without a live GPU.
+    if (comptime gpu.backend_kind != .null_backend) return error.SkipZigTest;
+    var device = gpu.Backend.Device{};
+    var pool = OffscreenTexturePool{};
+    defer pool.deinit();
+    const ms = std.time.ns_per_ms;
+
+    // Intermittent layer: demoted after RETAINED_IDLE_NS, reclaimed later.
+    pool.setClock(0);
+    _ = pool.acquireRetained(&device, 7, 1, 64, 64, 1) orelse return error.TestUnexpectedResult;
+    pool.maintain(OffscreenTexturePool.RETAINED_IDLE_NS + ms, true);
+    try std.testing.expectEqual(NO_RETAINED_OWNER, pool.entries[0].?.retained_id);
+    const created = device.texture_count;
+    pool.setClock(OffscreenTexturePool.RETAINED_IDLE_NS + 2 * ms);
+    const back = pool.acquireRetained(&device, 7, 1, 64, 64, 200) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(!back.content_matches);
+    try std.testing.expectEqual(created, device.texture_count);
+    try std.testing.expectEqual(@as(u32, 7), pool.entries[back.lease.slot].?.retained_id);
+
+    // A layer whose size alternates every 10 frames needs two textures total.
+    var other = OffscreenTexturePool{};
+    defer other.deinit();
+    var other_device = gpu.Backend.Device{};
+    var frame: u64 = 1;
+    while (frame <= 120) : (frame += 1) {
+        other.setClock(frame * 16 * ms);
+        other.resetFrame();
+        const size: u32 = if ((frame / 10) % 2 == 0) 64 else 128;
+        if (other.acquireRetained(&other_device, 9, 1, size, size, frame)) |claim| {
+            if (!claim.content_matches) _ = other.markRetainedPrimed(claim.lease);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), other_device.texture_count);
+    var owned: usize = 0;
+    for (other.entries) |entry| if (entry) |e| {
+        owned += @intFromBool(e.retained_id == 9);
+    };
+    try std.testing.expectEqual(@as(usize, 1), owned);
 }

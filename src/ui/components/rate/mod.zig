@@ -41,18 +41,20 @@ pub const RateProps = struct {
     size: f32 = 24,
     /// Called after user changes score and lands (landed value)
     on_change: ?Handler(f32) = null,
-    /// Star icon. Default filled star (common.star_filled, bright/dim via tint only);
+    /// Star icon. Default filled / outlined stars (accent / border_strong);
     /// can swap custom SVG (heart, outline star etc).
     star_icon_asset: svg_assets.Asset = svg_assets.common.star_filled,
 };
 
 /// Rate runtime (scope-owned). View = f(value, disabled) applied by effect;
-/// hover preview only tints stars, doesn't touch data source.
+/// Hover preview updates star appearance without touching the data source.
 pub const RateRuntime = struct {
     value: reactive.Bound(f32),
     disabled: Source(bool),
     on_change: ?Handler(f32),
     count: u8,
+    default_star: bool = true,
+    icon_px: f32 = 18,
     /// Currently displayed score (data source value clamped to [0, count])
     shown: f32 = 0,
     is_disabled: bool = false,
@@ -112,7 +114,16 @@ pub const RateRuntime = struct {
         for (self.stars[0..self.count], 0..) |star, i| {
             const active = @as(f32, @floatFromInt(i)) < display_val;
             if (star.children.items.len > 0) {
-                _ = star.children.items[0].setTint(styles.starColor(active, t));
+                const icon = star.children.items[0];
+                // setIcon / setTint write the icon raw: mark the icon itself, the node whose
+                // content changed (its cross-frame copies are keyed on its own dirty bits).
+                if (self.default_star) {
+                    const asset = if (active) svg_assets.common.star_filled else svg_assets.common.star;
+                    icon.setIcon(.{ .icon_id = asset.icon_id.?, .rep = asset.pickRep(self.icon_px).?, .tint = styles.starColor(active, t) });
+                    icon.markRenderDirty();
+                } else {
+                    if (icon.setTint(styles.starColor(active, t))) icon.markRenderDirty();
+                }
             }
             star.markRenderDirty();
         }
@@ -196,7 +207,7 @@ pub const RateBuilder = struct {
         for (0..star_count) |i| star_elems[i] = starView(&stars[i], p.size, p.star_icon_asset, icon_px, t);
 
         const container = try view.render(my_scope, cx, view.row(.{
-            .style = .{ .width = .{ .fit = .{} }, .height = .{ .fit = .{} }, .gap = 4 },
+            .style = .{ .width = .{ .fit = .{} }, .height = .{ .fit = .{} }, .no_cross_stretch = true, .gap = 0 },
             // Rating is 'pick one value from 0..count', ARIA maps to role=slider.
             // Exposing each star separately would make AT users hear 5 times before knowing current
             // score.
@@ -220,6 +231,8 @@ pub const RateBuilder = struct {
             .disabled = p.disabled,
             .on_change = p.on_change,
             .count = star_count,
+            .default_star = p.star_icon_asset.svg_data.ptr == svg_assets.common.star_filled.svg_data.ptr,
+            .icon_px = p.size * styles.star_icon_scale,
             // Not equal to any display value: first view must apply
             .shown = std.math.nan(f32),
             // Negate first: ensure disabled state applied on first view

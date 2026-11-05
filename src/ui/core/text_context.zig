@@ -97,7 +97,24 @@ pub const TextContext = struct {
         text_layout.setMeasureCtxFn(self.measure_ctx_fn, self.measure_ctx);
         if (self.manage_legacy_font_hooks) {
             layout_engine.setContextFontHooks(self, self.legacy_font_resolve_fn, self.font_props_measure_fn, self.font_resolve_ctx);
+            if (self.font_ranges_fn != null) layout_engine.setContextLineMetrics(self, selectedLineMetrics, self);
         }
+    }
+
+    fn selectedLineMetrics(ctx: *anyopaque, props: *const @import("types.zig").TextProps) ?layout_engine.TextLineMetrics {
+        const self: *TextContext = @ptrCast(@alignCast(ctx));
+        if (self.font_ranges_fn == null) return null;
+        const line = self.visualLine(.{
+            .text = props.content,
+            .font_family = "system",
+            .font_size = props.font_size,
+            .font_weight = props.font_weight,
+            .use_italic = props.use_italic_font,
+            .font_family_id = props.font_family,
+            .use_monospace = props.use_monospace_font,
+            .use_symbols = props.use_symbols_font,
+        }) catch return null;
+        return .{ .ascent = line.ascent, .descent = line.descent };
     }
 
     /// Mount FontSystem to enable cx.shapeText to find Font and invoke TextShaper.
@@ -476,6 +493,43 @@ const TestHooks = struct {
         return @as(f32, @floatFromInt(len)) * 3;
     }
 };
+
+test "TextContext selected baseline uses cached line and clears with provider or owner" {
+    const Bridge = struct {
+        fn ranges(_: *anyopaque, _: ShapeTextOpts, _: *text_module.Font, _: std.mem.Allocator) anyerror!?*text_module.FontRanges {
+            return error.OutOfMemory;
+        }
+    };
+    var tc = TextContext.init(std.testing.allocator, 4);
+    defer tc.deinit();
+    tc.manage_legacy_font_hooks = true;
+    tc.setFontRangesProvider(&tc, Bridge.ranges);
+    const props = @import("types.zig").TextProps{ .content = "A", .font_size = 20, .line_height = 1 };
+    const opts = ShapeTextOpts{ .text = "A", .font_family = "system", .font_size = 20 };
+    const stops = [_]text_core_module.text_coordinates.CaretStop{
+        .{ .position = .{ .byte = .{ .value = 0 }, .affinity = .downstream }, .x = .{ .value = 0 }, .strong_direction = .ltr },
+        .{ .position = .{ .byte = .{ .value = 1 }, .affinity = .downstream }, .x = .{ .value = 10 }, .strong_direction = .ltr },
+    };
+    try tc.shaping_cache.insertVisual(text_shaping.shapingKey(opts), .{
+        .source_start = .{ .value = 0 },
+        .source_end = .{ .value = 1 },
+        .caret_stops = &stops,
+        .width = 10,
+        .ascent = 18,
+        .descent = 4,
+    });
+    tc.syncLegacyMeasureHooks();
+    try std.testing.expectEqual(@as(f32, 17), layout_engine.firstTextBaseline(&props));
+    // Provider clear invalidates its metrics immediately, before the next frame.
+    tc.setFontRangesProvider(null, null);
+    try std.testing.expectEqual(@as(f32, 15), layout_engine.firstTextBaseline(&props));
+    tc.setFontRangesProvider(&tc, Bridge.ranges);
+    tc.syncLegacyMeasureHooks();
+    // A partial context has no font backend: unavailable shaping falls back.
+    try std.testing.expectEqual(@as(f32, 15), layout_engine.firstTextBaseline(&props));
+    tc.clearManagedFontHooks();
+    try std.testing.expectEqual(@as(f32, 15), layout_engine.firstTextBaseline(&props));
+}
 
 test "TextContext: 空文本宽度为 0，不碰任何钩子" {
     TestHooks.reset();

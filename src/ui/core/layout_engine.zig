@@ -1,5 +1,7 @@
 const std = @import("std");
+const testing = std.testing;
 const Allocator = std.mem.Allocator;
+const id_hash = @import("id_hash.zig");
 
 const types = @import("types.zig");
 const node_mod = @import("node.zig");
@@ -20,15 +22,22 @@ const AlignItems = types.AlignItems;
 /// be diagnosed through `layout_depth_limit_hits` instead of crashing.
 pub const max_layout_recursion_depth: usize = 128;
 pub var layout_depth_limit_hits: u64 = 0;
+/// Independent budget: min-content probes must not consume the active layout
+/// walk's depth or silently truncate an otherwise shallow layout.
+pub var min_content_depth_limit_hits: u64 = 0;
+var g_min_content_recursion_depth: usize = 0;
 
 /// Number of frame_allocator allocation failures during layout.
 ///
-/// The >512-children slow paths (shrink_deltas for flex_shrink, placements for grid) degrade on
+/// The wide-child slow paths (FlexItem scratch for flex, placements for grid) degrade on
 /// allocation failure instead of crashing, like `layout_depth_limit_hits`. Degrading yields
-/// **silently wrong layout** (shrink not applied => overflow; grid not laid out), so this counter
+/// **degraded layout** (clamped bases without flex redistribution; grid not laid out), so this counter
 /// makes OOM distinguishable from a layout bug.
 pub var layout_alloc_failure_hits: u64 = 0;
 var g_layout_recursion_depth: usize = 0;
+// Deterministic work counters for incremental/baseline regressions only.
+var test_layout_calls: usize = 0;
+var test_flex_item_probes: usize = 0;
 
 /// display: none—node and subtree don't participate in layout (no space, gap excluded, no parent
 /// expansion).
@@ -58,9 +67,13 @@ fn collapseDisplayNone(node: *Node) void {
 fn settleHiddenSubtree(n: *Node, depth: usize) void {
     n.frame_state.state_bits.dirty.core.layout = false;
     n.frame_state.state_bits.dirty.core.subtree_layout = false;
-    node_mod.fireMountIfNeeded(n);
+    n.frame_state.frame_local.runtime.layout_mount_pending = !n.frame_state.state_bits.flags.is_mounted;
+    if (!suppress_layout_mounts) node_mod.fireMountIfNeeded(n);
     if (depth >= max_layout_recursion_depth) return;
-    for (n.children.items) |c| settleHiddenSubtree(c, depth + 1);
+    for (n.children.items) |c| {
+        settleHiddenSubtree(c, depth + 1);
+        n.frame_state.frame_local.runtime.layout_mount_pending = n.frame_state.frame_local.runtime.layout_mount_pending or c.frame_state.frame_local.runtime.layout_mount_pending;
+    }
 }
 
 fn enterLayoutRecursion() bool {
@@ -97,33 +110,42 @@ const IntrinsicCacheEntry = struct {
     content_version: u32,
 };
 
+const IntrinsicKind = enum(u1) { max_content, min_content };
+
 var g_intrinsic_cache: std.AutoHashMapUnmanaged(u64, IntrinsicCacheEntry) = .{};
 var g_intrinsic_cache_refcount: u32 = 0;
 var g_intrinsic_cache_allocator: Allocator = undefined;
+/// Node ids are never reused, so every destroyed node leaves tombstones behind.
+var g_intrinsic_cache_removals: id_hash.TombstoneBudget = .{};
 
-/// A destroyed node can never hit this memo again; remove both axis keys.
+/// A destroyed node can never hit this memo again; remove both axes and kinds.
 pub fn forgetIntrinsicCache(world_id: u16, node_id: u32) void {
     if (g_intrinsic_cache_refcount == 0) return;
-    _ = g_intrinsic_cache.remove(intrinsicCacheKey(world_id, node_id, false));
-    _ = g_intrinsic_cache.remove(intrinsicCacheKey(world_id, node_id, true));
+    inline for (.{ IntrinsicKind.max_content, IntrinsicKind.min_content }) |kind| {
+        inline for (.{ false, true }) |is_main_row| {
+            if (g_intrinsic_cache.remove(intrinsicCacheKey(world_id, node_id, is_main_row, kind)) and
+                g_intrinsic_cache_removals.noteRemoval(g_intrinsic_cache.count(), g_intrinsic_cache.capacity()))
+                g_intrinsic_cache.rehash(std.hash_map.AutoContext(u64){});
+        }
+    }
 }
 
 pub fn intrinsicCacheMemoryStats() struct { entries: usize, capacity: usize, slot_bytes: usize } {
     return .{ .entries = g_intrinsic_cache.count(), .capacity = g_intrinsic_cache.capacity(), .slot_bytes = g_intrinsic_cache.capacity() * (@sizeOf(u64) + @sizeOf(IntrinsicCacheEntry) + 1) };
 }
 
-fn intrinsicCacheKey(world_id: u16, node_id: u32, is_main_row: bool) u64 {
+fn intrinsicCacheKey(world_id: u16, node_id: u32, is_main_row: bool, kind: IntrinsicKind) u64 {
     // The key must include world_id: this table is process-wide, while node.id is a per-Cx counter
     // and ids of two windows fully overlap. Without world_id, a node in window B would hit the
     // intrinsic size of the same-id node in window A (content_version is also a small per-node
     // counter and easily equal), mixing up layouts.
-    return (@as(u64, world_id) << 33) | (@as(u64, node_id) << 1) |
-        (if (is_main_row) @as(u64, 1) else 0);
+    return (@as(u64, world_id) << 34) | (@as(u64, node_id) << 2) |
+        (@as(u64, @backingInt(kind)) << 1) | (if (is_main_row) @as(u64, 1) else 0);
 }
 
-fn intrinsicCacheLookup(node: *const Node, is_main_row: bool) ?f32 {
+fn intrinsicCacheLookup(node: *const Node, is_main_row: bool, kind: IntrinsicKind) ?f32 {
     if (g_intrinsic_cache_refcount == 0) return null;
-    const key = intrinsicCacheKey(node.world_id, node.id, is_main_row);
+    const key = intrinsicCacheKey(node.world_id, node.id, is_main_row, kind);
     if (g_intrinsic_cache.get(key)) |entry| {
         if (entry.content_version == node.meta.per_frame.caches.versions.content) {
             return entry.value;
@@ -132,9 +154,9 @@ fn intrinsicCacheLookup(node: *const Node, is_main_row: bool) ?f32 {
     return null;
 }
 
-fn intrinsicCacheStore(node: *const Node, is_main_row: bool, value: f32) void {
+fn intrinsicCacheStore(node: *const Node, is_main_row: bool, kind: IntrinsicKind, value: f32) void {
     if (g_intrinsic_cache_refcount == 0) return;
-    const key = intrinsicCacheKey(node.world_id, node.id, is_main_row);
+    const key = intrinsicCacheKey(node.world_id, node.id, is_main_row, kind);
     // Safe degradation: this is a pure memoization cache. A failed write only means re-measuring
     // next time with an identical result (intrinsicCacheStore has no side effects).
     g_intrinsic_cache.put(g_intrinsic_cache_allocator, key, .{
@@ -154,6 +176,7 @@ pub fn enableIntrinsicCache(allocator: Allocator) void {
     if (g_intrinsic_cache_refcount == 0) {
         g_intrinsic_cache_allocator = allocator;
         g_intrinsic_cache = .{};
+        g_intrinsic_cache_removals.reset();
     }
     g_intrinsic_cache_refcount += 1;
 }
@@ -177,20 +200,17 @@ pub const LayoutContext = struct {
     /// existing layoutNode test fixtures).
     shaping_cache: ?*shaping_cache_mod.ShapingCache = null,
     font_system: ?*text_module.FontSystem = null,
-    /// Parent flex_shrink pinned this node on one axis (see isShrinkableFit): its own
+    /// Parent flex allocation pinned this node on one axis: its own
     /// layoutChildren fit backfill end must not re-fit this axis per child actual size,
     /// else shrink gets propped back to content height, ScrollArea never scrolls.
     /// Only matches == this node, grandchild sees mismatch.
     frozen_node: ?*const Node = null,
     frozen_axis_is_width: bool = false,
+    frozen_both_axes: bool = false,
+    /// Wrap probes and scratch-OOM degradation defer onMount until final layout.
+    defer_mount: bool = false,
+    initial_containing_block: ?Size = null,
 };
-
-/// CSS flex item auto-min: overflow != visible (here overflow_hidden) items min
-/// size 0, can be squeezed below content; normal fit items min is content itself.
-fn isShrinkableFit(child: *const Node, is_row: bool) bool {
-    const main_sizing = if (is_row) child.style.width else child.style.height;
-    return main_sizing == .fit and child.style.overflow_hidden and child.style.flex_shrink > 0;
-}
 
 /// Fast count Unicode chars (not bytes) in UTF-8 string.
 /// For text intrinsic estimate.
@@ -215,16 +235,20 @@ fn countUtf8Chars(bytes: []const u8) usize {
 ///   effective_min = max(sizing_mm.min, ext.min)
 ///   effective_max = min(sizing_mm.max, ext.max)
 ///
-/// Defaults (fit{}/grow{} min=0,max=inf; ext same) merge unchanged.
+/// Auto minimum markers normalize to zero here; the flex main resolver applies
+/// the content-based automatic minimum separately.
 pub fn effectiveMinMax(sizing: Sizing, node: *const Node, comptime is_width: bool) struct { min: f32, max: f32 } {
+    const floor = if (is_width) node.style.contentInsets().horizontal() else node.style.contentInsets().vertical();
     const ext_min: f32 = if (is_width) node.style.min_width() else node.style.min_height();
     const ext_max: f32 = if (is_width) node.style.max_width() else node.style.max_height();
-    return switch (sizing) {
+    const result: struct { min: f32, max: f32 } = switch (sizing) {
         .grow => |mm| .{ .min = @max(mm.min, ext_min), .max = @min(mm.max, ext_max) },
         .fit => |mm| .{ .min = @max(mm.min, ext_min), .max = @min(mm.max, ext_max) },
         // px / percent -> ext clamp (layout later reclamped by ext, no repeat here)
         else => .{ .min = ext_min, .max = ext_max },
     };
+    // CSS Sizing: min wins over a conflicting max, including intrinsic probes.
+    return .{ .min = @max(floor, result.min), .max = @max(floor, @max(result.min, result.max)) };
 }
 
 /// resolveSize for known child sizing + container available space -> child
@@ -233,8 +257,8 @@ pub fn effectiveMinMax(sizing: Sizing, node: *const Node, comptime is_width: boo
 fn resolveSize(sizing: Sizing, available: f32, intrinsic: f32) f32 {
     return switch (sizing) {
         .px => |v| v,
-        .grow => |mm| std.math.clamp(available, mm.min, mm.max),
-        .fit => |mm| std.math.clamp(intrinsic, mm.min, mm.max),
+        .grow => |mm| @max(@max(0, mm.min), @min(available, mm.max)),
+        .fit => |mm| @max(@max(0, mm.min), @min(intrinsic, mm.max)),
         .percent => |p| available * p / 100.0,
     };
 }
@@ -302,10 +326,16 @@ var g_drawn_text_measure: ?DrawnTextMeasureFn = null;
 var g_drawn_text_measure_ctx: ?*anyopaque = null;
 var drawn_text_measure_debug_logged = false;
 var g_context_font_owner: ?*anyopaque = null;
+pub const TextLineMetrics = struct { ascent: f32, descent: f32 };
+pub const TextLineMetricsFn = *const fn (*anyopaque, *const types.TextProps) ?TextLineMetrics;
+var g_context_line_metrics: ?TextLineMetricsFn = null;
+var g_context_line_metrics_ctx: ?*anyopaque = null;
 
 /// Load once app startup; pass null unload (revert to findFont old path).
 pub fn setShapeFontResolver(f: ?ShapeFontResolveFn, ctx: ?*anyopaque) void {
     g_context_font_owner = null;
+    g_context_line_metrics = null;
+    g_context_line_metrics_ctx = null;
     g_shape_font_resolver = f;
     g_shape_font_resolver_ctx = ctx;
 }
@@ -326,6 +356,14 @@ pub fn setContextFontHooks(owner: *anyopaque, resolve: ?ShapeFontResolveFn, meas
     g_context_font_owner = owner;
 }
 
+/// The active window may supply metrics for its selected font ranges. Layout
+/// alignment and painting must use the same baseline as that shaped line.
+pub fn setContextLineMetrics(owner: *anyopaque, metrics: ?TextLineMetricsFn, ctx: ?*anyopaque) void {
+    if (g_context_font_owner != owner) return;
+    g_context_line_metrics = metrics;
+    g_context_line_metrics_ctx = ctx;
+}
+
 pub fn clearContextFontHooks(owner: *anyopaque) void {
     if (g_context_font_owner != owner) return;
     setShapeFontResolver(null, null);
@@ -336,6 +374,8 @@ pub fn clearContextFontHooks(owner: *anyopaque) void {
 /// Passing null removes it and restores the internal shaping fallback.
 pub fn setDrawnTextMeasure(f: ?DrawnTextMeasureFn, ctx: ?*anyopaque) void {
     g_context_font_owner = null;
+    g_context_line_metrics = null;
+    g_context_line_metrics_ctx = null;
     g_drawn_text_measure = f;
     g_drawn_text_measure_ctx = ctx;
 }
@@ -397,11 +437,11 @@ fn measureIntrinsicTextWidthCtx(
     t: types.TextProps,
 ) f32 {
     const layout_spans = if (t.spans_affect_layout) t.spans else &.{};
-    if (t.wrap != .none) {
+    if (t.layoutWrap() != .none) {
         const layout = text_layout.computeTextLayout(
             t.content,
             std.math.inf(f32),
-            t.wrap,
+            t.layoutWrap(),
             t.max_lines,
             t.font_size,
             t.line_height,
@@ -456,7 +496,7 @@ pub fn shapeViaPipeline(
     if (g_drawn_text_measure) |measure| {
         if (g_drawn_text_measure_ctx) |ctx| {
             if (measure(ctx, text, font_size, font_weight, use_italic, use_monospace, font_family, use_symbols, monospace_char_width)) |width| {
-                if (!drawn_text_measure_debug_logged and @import("zenit_environment").has("ZENIT_TEXT_MEASURE_IDENTITY_CHECK")) {
+                if (!drawn_text_measure_debug_logged and @import("zenit_environment").flag("ZENIT_TEXT_MEASURE_IDENTITY_CHECK")) {
                     drawn_text_measure_debug_logged = true;
                     std.log.info("[text-measure-source] drawn-active", .{});
                 }
@@ -585,23 +625,24 @@ fn calcIntrinsicSize(node: *Node, comptime is_main_row: bool) f32 {
         node.frame_state.state_bits.dirty.core.subtree_layout;
     // Cache lookup (by node.id + content_version)
     if (!subtree_dirty) {
-        if (intrinsicCacheLookup(node, is_main_row)) |cached| return cached;
+        if (intrinsicCacheLookup(node, is_main_row, .max_content)) |cached| return cached;
     }
 
     if (!enterLayoutRecursion()) return 0;
     defer leaveLayoutRecursion();
 
     const result = calcIntrinsicSizeUncached(node, is_main_row);
-    intrinsicCacheStore(node, is_main_row, result);
+    intrinsicCacheStore(node, is_main_row, .max_content, result);
     return result;
 }
 
 fn calcIntrinsicSizeUncached(node: *Node, comptime is_main_row: bool) f32 {
-    // Text node: estimate text size + node self padding
-    if (node.getText()) |t| {
-        const pad = if (is_main_row) node.style.padding.horizontal() else node.style.padding.vertical();
+    // Text node: estimate text size + node self padding. Measured with the resolved (inherited)
+    // properties paint uses, never the raw TextProps.
+    if (node.resolveTextProps()) |t| {
+        const pad = if (is_main_row) node.style.contentInsets().horizontal() else node.style.contentInsets().vertical();
         // Multi-line text: use computed text_layout
-        if (t.wrap != .none) {
+        if (t.layoutWrap() != .none) {
             if (node.layoutTextLayout()) |tl| {
                 if (is_main_row) {
                     return tl.max_line_width + pad;
@@ -622,9 +663,9 @@ fn calcIntrinsicSizeUncached(node: *Node, comptime is_main_row: bool) f32 {
     }
 
     // Container node: sum children main-axis
-    if (node.children.items.len == 0) return 0;
+    if (node.children.items.len == 0) return if (is_main_row) node.style.contentInsets().horizontal() else node.style.contentInsets().vertical();
 
-    const pad = if (is_main_row) node.style.padding.horizontal() else node.style.padding.vertical();
+    const pad = if (is_main_row) node.style.contentInsets().horizontal() else node.style.contentInsets().vertical();
     // Absolute children don't participate in intrinsic (avoid overlay impact layout)
     var flow_count: usize = 0;
     for (node.children.items) |child| {
@@ -664,8 +705,16 @@ fn calcIntrinsicSizeUncached(node: *Node, comptime is_main_row: bool) f32 {
 /// flex-grow in fit-content).
 fn calcChildIntrinsicSize(child: *Node, comptime is_main_row: bool) f32 {
     if (isOutOfFlow(child)) return 0;
-    // flex_basis > 0 -> intrinsic main-axis (fit parent compute use)
-    if (child.style.flex_basis() > 0) return child.style.flex_basis();
+    // Match the flex resolver: zero is a definite basis, not the auto sentinel.
+    // A basis only contributes on the parent's main axis. Engines disagree on
+    // the intrinsic contribution of a flex-basis (2026-10-18: Chromium clamps
+    // to min(basis, width), Firefox/WebKit ignore the basis); zenit follows
+    // Chromium so intrinsic sizing and the fit backfill stay consistent. See
+    // fixtures fit-parent-basis-* (informational, not must_match).
+    if (child.parent) |parent| {
+        if (parent.style.grid() == null and parent.style.direction.isRow() == is_main_row and child.style.flex_basis() >= 0)
+            return child.style.flex_basis();
+    }
     const sizing = if (is_main_row) child.style.width else child.style.height;
     return switch (sizing) {
         .px => |v| v,
@@ -674,7 +723,17 @@ fn calcChildIntrinsicSize(child: *Node, comptime is_main_row: bool) f32 {
         // one works one doesn't (small popup bust-oversized bug).
         .grow, .fit => blk: {
             const mm = effectiveMinMax(sizing, child, is_main_row);
-            break :blk std.math.clamp(calcIntrinsicSize(child, is_main_row), mm.min, mm.max);
+            const opposite = if (is_main_row) child.style.height else child.style.width;
+            const value = if (child.style.aspect_ratio() > 0 and opposite == .px)
+                aspectTransfer(opposite.px, child.style.aspect_ratio(), is_main_row)
+            else
+                calcIntrinsicSize(child, is_main_row);
+            if (child.parent) |parent| {
+                if (parent.style.grid() == null and parent.style.flex_wrap() == .no_wrap and
+                    parent.style.direction.isRow() == is_main_row)
+                    break :blk @max(mm.min, @min(value, mm.max));
+            }
+            break :blk std.math.clamp(value, mm.min, mm.max);
         },
         .percent => 0,
     };
@@ -689,55 +748,436 @@ const ResolvedAxisMargins = struct {
     end: f32,
 };
 
-/// Main size: flex_basis/px/grow/fit/percent, unified minus flex_shrink shrink.
-/// `is_row` pick width or height, only difference between row/column.
-fn resolveMainAxisSize(
-    child: *Node,
-    comptime is_row: bool,
-    available: Size,
-    shrink_delta: f32,
-    flex_unit: f32,
-) f32 {
-    const sizing = if (is_row) child.style.width else child.style.height;
-    const avail = if (is_row) available.width else available.height;
+// Resolve physical margins before the final reverse-axis mirroring. Auto
+// margins must stay on their CSS physical side in row/column-reverse too.
+fn flexMainMargins(child: *const Node, row: bool, reverse: bool, auto_unit: f32) ResolvedAxisMargins {
+    const margin = child.style.marginSpec();
+    const physical = if (row) ResolvedAxisMargins{
+        .start = if (child.style.marginLeftIsAuto()) auto_unit else margin.left,
+        .end = if (child.style.marginRightIsAuto()) auto_unit else margin.right,
+    } else ResolvedAxisMargins{
+        .start = if (child.style.marginTopIsAuto()) auto_unit else margin.top,
+        .end = if (child.style.marginBottomIsAuto()) auto_unit else margin.bottom,
+    };
+    return if (reverse) .{ .start = physical.end, .end = physical.start } else physical;
+}
 
-    // flex_basis > 0 and non-grow -> use flex_basis as main
-    if (child.style.flex_basis() > 0 and sizing != .grow) {
-        return @max(0, child.style.flex_basis() - shrink_delta);
+/// CSS §9.7 state; only flow children occupy scratch slots.
+const FlexItem = struct {
+    base: f32,
+    target: f32,
+    min: f32,
+    max: f32,
+    grow: f32,
+    shrink: f32,
+    scaled_shrink: f32,
+    violation: f32 = 0,
+    frozen: bool = false,
+
+    fn clamp(self: FlexItem, value: f32) f32 {
+        // CSS min wins over max when the constraints conflict.
+        return @max(self.min, @min(value, self.max));
     }
-    return @max(0, switch (sizing) {
-        .px => |v| v - shrink_delta,
-        // grow allocated per flex_unit, skips shrink (shrink only when flex_total==0)
-        .grow => child.style.flex * flex_unit,
-        .fit => calcIntrinsicSize(child, is_row) - shrink_delta,
-        .percent => |p| avail * p / 100.0 - shrink_delta,
-    });
+};
+
+// Single-line scratch: 32 * @sizeOf(FlexItem) = 1152 B. On 64-bit targets,
+// wrap also stores 32 pointers (256 B) and 32 FlexLine values (768 B, including
+// usize alignment/padding): 2176 B per frame, 272 KiB across the 128-frame guard.
+// Other layout locals/callees consume stack too; this is the scratch bound,
+// not a claim that the complete call chain occupies exactly this amount.
+const flex_stack_capacity: usize = 32;
+
+/// Min-content is distinct from the cached, possibly already wrapped max-content
+/// measurement. Share the text line-break and span measurement primitives.
+fn flexMinContent(node: *Node, comptime width: bool) f32 {
+    const subtree_dirty = node.frame_state.state_bits.dirty.core.layout or
+        node.frame_state.state_bits.dirty.core.subtree_layout;
+    if (!subtree_dirty) {
+        if (intrinsicCacheLookup(node, width, .min_content)) |cached| return cached;
+    }
+    if (g_min_content_recursion_depth >= max_layout_recursion_depth) {
+        min_content_depth_limit_hits +|= 1;
+        return 0;
+    }
+    g_min_content_recursion_depth += 1;
+    defer g_min_content_recursion_depth -= 1;
+    const hits_before = min_content_depth_limit_hits;
+    const result = flexMinContentUncached(node, width);
+    // Never memoize a truncated descendant as a complete measurement.
+    if (hits_before == min_content_depth_limit_hits)
+        intrinsicCacheStore(node, width, .min_content, result);
+    return result;
+}
+
+fn flexMinContentUncached(node: *Node, comptime width: bool) f32 {
+    const pad = if (width) node.style.contentInsets().horizontal() else node.style.contentInsets().vertical();
+    if (node.resolveTextProps()) |text| {
+        // This is a text leaf: use the shared primitive without borrowing the
+        // unrelated active layout walk's remaining recursion budget.
+        if (!width) return calcIntrinsicSizeUncached(node, false);
+        if (text.layoutWrap() == .none or text.layoutWrap() == .newline_only) return measureIntrinsicTextWidth(text) + pad;
+        var start: usize = 0;
+        var pos: usize = 0;
+        var longest: f32 = 0;
+        const layout_spans = if (text.spans_affect_layout) text.spans else &.{};
+        var graphemes = @import("text_core").grapheme.BoundaryCursor.init(text.content);
+        while (pos < text.content.len) {
+            const len = if (text.layoutWrap() == .char or text.layoutWrap() == .break_all)
+                graphemes.next(pos) - pos
+            else
+                @min(text_layout.utf8CharLen(text.content[pos]), text.content.len - pos);
+            const cp = text_layout.decodeUtf8(text.content[pos..][0..len]);
+            const end = pos + len;
+            const next = if (end < text.content.len) text_layout.decodeUtf8(text.content[end..]) else 0;
+            if (end == text.content.len or cp == '\n' or (text.layoutWrap() == .char or text.layoutWrap() == .break_all) or (text.layoutWrap() != .keep_all and text_layout.isBreakableCluster(cp, next))) {
+                // Wrapping discards trailing break whitespace (white-space:pre-wrap).
+                var trimmed = end;
+                while (trimmed > start and std.ascii.isWhitespace(text.content[trimmed - 1])) : (trimmed -= 1) {}
+                longest = @max(longest, text_layout.measureTextWidthWithSpans(text.content, @intCast(start), @intCast(trimmed), text.font_size, text.font_weight, text.use_italic_font, text.use_monospace_font, layout_spans));
+                start = end;
+            }
+            pos = end;
+        }
+        return longest + pad;
+    }
+    var result: f32 = 0;
+    var count: usize = 0;
+    const sum = node.style.direction.isRow() == width;
+    for (node.children.items) |child| {
+        if (isOutOfFlow(child)) continue;
+        const sizing = if (width) child.style.width else child.style.height;
+        const mm = effectiveMinMax(sizing, child, width);
+        var content = switch (sizing) {
+            .px => |v| v,
+            .percent => @as(f32, 0), // cyclic intrinsic percentage
+            .grow, .fit => flexMinContent(child, width),
+        };
+        const opposite = if (width) child.style.height else child.style.width;
+        if (child.style.aspect_ratio() > 0 and opposite == .px)
+            content = @max(content, aspectTransfer(opposite.px, child.style.aspect_ratio(), width));
+        var minimum = mm.min;
+        const basis = child.style.flex_basis();
+        if (sum and node.style.grid() == null and node.style.flex_wrap() == .no_wrap and basis >= 0) {
+            // §9.9.1: a non-growable item's intrinsic contribution cannot
+            // grow past its definite basis. Keep its actual min-size floor;
+            // otherwise fit > basis:0/min:0 incorrectly acquires width:100.
+            const child_padding = if (width) child.style.contentInsets().horizontal() else child.style.contentInsets().vertical();
+            const outer_basis = @max(child_padding, basis);
+            if (sizing != .grow or child.style.flex <= 0) content = @min(content, outer_basis);
+            if (child.style.flex_shrink <= 0) content = @max(content, outer_basis);
+            const ext = child.style.getExt();
+            const explicit_min = if (width) ext.min_width else ext.min_height;
+            const own_min = switch (sizing) {
+                .grow, .fit => |v| v.min,
+                else => @as(f32, -1),
+            };
+            if (explicit_min < 0 and own_min < 0 and !child.style.overflow_hidden and child.style.overflow == .visible) {
+                minimum = @min(flexMinContent(child, width), switch (sizing) {
+                    .px => |v| v,
+                    else => std.math.inf(f32),
+                });
+                minimum = @min(minimum, mm.max);
+            }
+        }
+        const contribution = @max(minimum, @min(content, mm.max)) + childMarginForAxis(child, width);
+        if (sum) result += contribution else result = @max(result, contribution);
+        count += 1;
+    }
+    if (sum and count > 1) result += @as(f32, @floatFromInt(count - 1)) * node.style.gap;
+    return result + pad;
+}
+
+fn aspectTransfer(value: f32, ratio: f32, to_width: bool) f32 {
+    return if (to_width) value * ratio else value / ratio;
+}
+
+// A measured number alone is not a definite percentage basis. In particular,
+// fit ancestors must not turn a cyclic percentage into a ratio suggestion.
+var test_axis_definiteness_probes: usize = 0;
+
+fn axisDefinite(node: *const Node, width: bool, depth: usize) bool {
+    if (comptime @import("builtin").is_test) test_axis_definiteness_probes += 1;
+    if (depth >= max_layout_recursion_depth) return false;
+    const sizing = if (width) node.style.width else node.style.height;
+    return switch (sizing) {
+        .px => true,
+        .fit => false,
+        .percent, .grow => if (node.parent) |parent| axisDefinite(parent, width, depth + 1) else true,
+    };
+}
+
+fn containingAxisDefinite(child: *const Node, width: bool) bool {
+    return if (child.parent) |parent| axisDefinite(parent, width, 0) else true;
+}
+
+fn gridAxisDefinite(child: *const Node, width: bool) bool {
+    const parent = child.parent orelse return true;
+    if (axisDefinite(parent, width, 0)) return true;
+    const gc = parent.style.grid() orelse return false;
+    const count = if (width) gc.column_count else gc.row_count;
+    if (count == 0) return false;
+    const tracks = if (width) &gc.columns else &gc.rows;
+    for (tracks[0..@min(count, GridConfig.MAX_TRACKS)]) |track| switch (track) {
+        .px => {},
+        else => return false,
+    };
+    return true;
+}
+
+fn definiteSize(sizing: Sizing, available: f32, basis_definite: bool) ?f32 {
+    return switch (sizing) {
+        .px => |v| v,
+        .percent => |v| if (basis_definite) available * v / 100 else null,
+        else => null,
+    };
+}
+
+// A definite cross-size (including a definite nowrap stretch) supplies a
+// transferred size suggestion. Ratios use border-box dimensions in this engine.
+fn aspectMainSuggestion(child: *Node, comptime row: bool, available: Size) ?f32 {
+    const ar = child.style.aspect_ratio();
+    if (!(ar > 0) or !std.math.isFinite(ar)) return null;
+    const sizing = if (row) child.style.height else child.style.width;
+    const avail = if (row) available.height else available.width;
+    const cross_definite = containingAxisDefinite(child, !row);
+    var cross = definiteSize(sizing, avail, cross_definite);
+    if (cross == null) if (child.parent) |parent| {
+        const parent_cross = if (row) parent.style.height else parent.style.width;
+        if ((sizing == .fit or sizing == .grow) and cross_definite and parent.style.flex_wrap() == .no_wrap and parent_cross != .fit and stretches(child, row, parent.style.align_items))
+            cross = avail - childMarginForAxis(child, !row);
+    };
+    const mm = effectiveMinMax(sizing, child, !row);
+    return if (cross) |v| aspectTransfer(std.math.clamp(v, mm.min, mm.max), ar, row) else null;
+}
+
+fn aspectCrossSize(child: *Node, row: bool, main: f32, natural: f32) f32 {
+    const ar = child.style.aspect_ratio();
+    const sizing = if (row) child.style.height else child.style.width;
+    if (!(ar > 0) or !std.math.isFinite(ar)) return natural;
+    // Most nodes have no ratio. Do not walk their ancestor chain merely to
+    // evaluate a call argument; percentage definiteness matters only here.
+    const basis_definite = if (child.parent != null and child.parent.?.style.grid() != null)
+        gridAxisDefinite(child, !row)
+    else
+        containingAxisDefinite(child, !row);
+    if (definiteSize(sizing, natural, basis_definite) != null) return natural;
+    const mm = if (row) effectiveMinMax(sizing, child, false) else effectiveMinMax(sizing, child, true);
+    return std.math.clamp(aspectTransfer(main, ar, !row), mm.min, mm.max);
+}
+
+fn flexContentSize(child: *Node, comptime row: bool, available: Size) f32 {
+    if (child.resolveTextProps()) |text| {
+        if (row) return measureIntrinsicTextWidth(text) + child.style.contentInsets().horizontal();
+        const cross_align = if (child.parent) |parent| resolveCrossAlign(child, parent.style.align_items) else types.AlignItems.stretch;
+        const mm = effectiveMinMax(child.style.width, child, true);
+        const width = std.math.clamp(resolveCrossAxisSize(child, false, available, cross_align), mm.min, mm.max);
+        return measureNode(child, .{ .definite_width = width }).height;
+    }
+    return calcIntrinsicSize(child, row);
+}
+
+fn makeFlexItem(child: *Node, comptime row: bool, available: Size) FlexItem {
+    if (comptime @import("builtin").is_test) test_flex_item_probes += 1;
+    const sizing = if (row) child.style.width else child.style.height;
+    const avail = if (row) available.width else available.height;
+    const padding = if (row) child.style.contentInsets().horizontal() else child.style.contentInsets().vertical();
+    const basis = child.style.flex_basis();
+    // auto consults the main size; content ignores it. 0 is a definite basis.
+    const suggestion = aspectMainSuggestion(child, row, available);
+    const base = if (basis >= 0) basis else if (basis == types.FlexBasis.content)
+        flexContentSize(child, row, available)
+    else switch (sizing) {
+        .px => |v| v,
+        .percent => |v| avail * v / 100,
+        .grow, .fit => suggestion orelse flexContentSize(child, row, available),
+    };
+    const mm = effectiveMinMax(sizing, child, row);
+    const ext = child.style.getExt();
+    const ext_min = if (row) ext.min_width else ext.min_height;
+    const own_min = switch (sizing) {
+        .grow, .fit => |v| v.min,
+        else => @as(f32, -1),
+    };
+    var minimum = mm.min;
+    if (ext_min < 0 and own_min < 0 and !child.style.overflow_hidden and child.style.overflow == .visible) {
+        minimum = if (!row and child.resolveTextProps() != null) flexContentSize(child, row, available) else flexMinContent(child, row);
+        // Flexbox §4.5: non-replaced content minimum is the larger of
+        // content and transferred suggestions, capped by the specified size.
+        if (suggestion) |v| minimum = @max(minimum, v);
+        // Specified size suggestion caps the content-based minimum.
+        minimum = @min(minimum, switch (sizing) {
+            .px => |v| v,
+            .percent => |v| avail * v / 100,
+            else => std.math.inf(f32),
+        });
+        minimum = @min(minimum, mm.max);
+    }
+    var item = FlexItem{
+        .base = @max(padding, base),
+        .target = 0,
+        .min = @max(padding, minimum),
+        .max = @max(padding, mm.max),
+        .grow = if (sizing == .grow) @max(0, child.style.flex) else 0,
+        .shrink = @max(0, child.style.flex_shrink),
+        .scaled_shrink = @max(0, base - padding) * @max(0, child.style.flex_shrink),
+    };
+    item.target = item.clamp(item.base);
+    return item;
+}
+
+/// CSS Flexbox §9.7. Each pass freezes at least one item, so bounded by n+1
+/// passes; the usual unconstrained case takes a single linear pass.
+fn resolveFlexibleLengths(items: []FlexItem, available: f32) void {
+    var hypothetical: f32 = 0;
+    for (items) |item| hypothetical += item.target;
+    const growing = hypothetical < available;
+    var initial_free = available;
+    for (items) |*item| {
+        const factor = if (growing) item.grow else item.shrink;
+        item.frozen = factor == 0 or (if (growing) item.base > item.target else item.base < item.target);
+        // §9.7 step 4 explicitly uses frozen target sizes, and unfrozen flex
+        // bases, for initial free space. This is intentional and matches CSS.
+        if (item.frozen) initial_free -= item.target else initial_free -= item.base;
+    }
+    for (0..items.len + 1) |_| {
+        var free = available;
+        var factors: f32 = 0;
+        var scaled: f32 = 0;
+        var active: usize = 0;
+        for (items) |item| {
+            free -= if (item.frozen) item.target else item.base;
+            if (!item.frozen) {
+                active += 1;
+                factors += if (growing) item.grow else item.shrink;
+                scaled += item.scaled_shrink;
+            }
+        }
+        if (active == 0) return;
+        if (factors < 1 and @abs(initial_free * factors) < @abs(free)) free = initial_free * factors;
+        var total_violation: f32 = 0;
+        for (items) |*item| {
+            if (item.frozen) continue;
+            const proposed = if (growing)
+                item.base + (if (factors > 0) free * item.grow / factors else 0)
+            else
+                item.base - (if (scaled > 0) @abs(free) * item.scaled_shrink / scaled else 0);
+            item.target = item.clamp(proposed);
+            item.violation = item.target - proposed;
+            total_violation += item.violation;
+        }
+        for (items) |*item| {
+            // Intentional numerical deviation from §9.7's exact-zero test:
+            // sub-0.0001px cancellation is treated as zero so f32 roundoff
+            // cannot keep an otherwise settled set active. Targets are still
+            // individually clamped; this does not relax oracle tolerances.
+            if (@abs(total_violation) < 0.0001 or
+                (total_violation > 0 and item.violation > 0) or
+                (total_violation < 0 and item.violation < 0)) item.frozen = true;
+        }
+    }
 }
 
 /// Cross size: px/grow/fit/percent, plus align-stretch override.
 /// Cross not participate in flex_shrink.
-fn resolveCrossAxisSize(
-    child: *Node,
-    comptime is_row: bool,
-    available: Size,
-    cross_align: types.AlignItems,
-) f32 {
+// Cross auto sizing is intrinsic unless stretch applies. Auto margins suppress
+// stretch; clamp after the stretch calculation, with min winning over max.
+fn resolveCrossAxisSize(child: *Node, is_row: bool, available: Size, cross_align: AlignItems) f32 {
     const sizing = if (is_row) child.style.height else child.style.width;
     const avail = if (is_row) available.height else available.width;
     const margin_cross = if (is_row) child.style.marginVertical() else child.style.marginHorizontal();
-
-    var size = switch (sizing) {
+    const auto_margin = crossAutoMargins(child, is_row);
+    var size: f32 = switch (sizing) {
         .px => |v| v,
-        .grow => |mm| std.math.clamp(avail - margin_cross, mm.min, mm.max),
-        .fit => calcIntrinsicSize(child, !is_row),
-        .percent => |p| avail * p / 100.0,
+        .grow, .fit => if (is_row) calcIntrinsicSize(child, false) else calcIntrinsicSize(child, true),
+        .percent => |v| avail * v / 100,
     };
-    // stretch override: only applies to content-driven sizing (grow / fit); px / percent are
-    // explicit sizes
-    if ((sizing == .grow or sizing == .fit) and cross_align == .stretch) {
-        size = avail - margin_cross;
+    if ((sizing == .grow or sizing == .fit) and cross_align == .stretch and !auto_margin) size = avail - margin_cross;
+    const mm = if (is_row) effectiveMinMax(sizing, child, false) else effectiveMinMax(sizing, child, true);
+    return @max(mm.min, @min(size, mm.max));
+}
+
+fn crossAutoMargins(child: *const Node, row: bool) bool {
+    return if (row) child.style.marginTopIsAuto() or child.style.marginBottomIsAuto() else child.style.marginLeftIsAuto() or child.style.marginRightIsAuto();
+}
+fn stretches(child: *Node, row: bool, align_items: AlignItems) bool {
+    const sizing = if (row) child.style.height else child.style.width;
+    return (sizing == .grow or sizing == .fit) and resolveCrossAlign(child, align_items) == .stretch and !crossAutoMargins(child, row);
+}
+
+// Shared by layout and paint: baseline of the first line, relative to its line
+// box top. A custom baseline_ratio remains an explicit Zenit text extension.
+pub fn firstTextBaseline(t: *const types.TextProps) f32 {
+    const height = t.font_size * t.line_height;
+    if (t.baseline_ratio > 0) return height * t.baseline_ratio;
+    if (g_context_line_metrics) |metrics_fn| {
+        if (g_context_line_metrics_ctx) |ctx| {
+            if (metrics_fn(ctx, t)) |metrics| {
+                if (std.math.isFinite(metrics.ascent) and std.math.isFinite(metrics.descent) and metrics.ascent >= 0 and metrics.descent >= 0) {
+                    const ascent = @round(metrics.ascent);
+                    const descent = @round(metrics.descent);
+                    return @floor((height - ascent - descent) / 2) + ascent;
+                }
+            }
+        }
     }
-    return size;
+    if (comptime @hasDecl(text_module.Font, "getAscent") and @hasDecl(text_module.Font, "getDescent")) {
+        if (resolveTextFont(t.content, t.font_size, t.font_weight, t.use_italic_font, t.use_monospace_font, t.font_family)) |font| {
+            // CSS host font metrics are pixel-rounded before half-leading is
+            // assigned (Lora 16px: 16/4 -> baseline 17; 32px: 32/9 -> 33).
+            // Keep paint and alignment on that same line-box baseline.
+            const ascent = @round(font.getAscent());
+            const descent = @round(font.getDescent());
+            return @floor((height - ascent - descent) / 2) + ascent;
+        }
+    }
+    return height * 0.75;
+}
+
+fn baselineAlign(align_items: AlignItems) bool {
+    return align_items == .baseline or align_items == .first_baseline;
+}
+
+// Flexbox §8.5: a flex container exports a participating first-line baseline,
+// otherwise the first item's baseline. Empty/orthogonal boxes synthesize from
+// their border box. Traversal is bounded separately from layout recursion.
+fn firstBaseline(node: *Node, row: bool, depth: usize) f32 {
+    const r = node.rectFromWorldOrFallback();
+    if (!row or depth >= max_layout_recursion_depth) return if (row) r.h else r.w;
+    if (node.resolveTextProps()) |t| return if (t.content.len == 0) r.h else node.style.contentInsets().top + firstTextBaseline(&t);
+    var first: ?*Node = null;
+    // The line collector cached the raw child-slice boundary before flexing.
+    // Reusing it avoids intrinsic probes during each ancestor baseline export.
+    const end = if (node.style.direction.isRow() and node.style.flex_wrap() != .no_wrap and node.style.grid() == null)
+        @min(node.frame_state.first_flex_line_end, node.children.items.len)
+    else
+        node.children.items.len;
+    for (node.children.items[0..end]) |child| {
+        if (isOutOfFlow(child)) continue;
+        if (first == null) first = child;
+        if (node.style.direction.isRow() and baselineAlign(resolveCrossAlign(child, node.style.align_items)) and !crossAutoMargins(child, true)) {
+            return child.rectFromWorldOrFallback().y + firstBaseline(child, true, depth + 1);
+        }
+    }
+    if (first) |child| return child.rectFromWorldOrFallback().y + firstBaseline(child, true, depth + 1);
+    return r.h;
+}
+
+const Distribution = struct { offset: f32 = 0, gap: f32 = 0 };
+// Negative distributed free space uses flex-start for between/around/evenly,
+// preserving fixed gutters even on reversed axes. This follows the direction
+// of CSSWG #11937 / the January 2026 safe-fallback edit; those do not directly
+// settle around/evenly in non-scroll containers. Chromium/Firefox differ from
+// WebKit/Zenit there; the affected fixtures document report-only disagreement.
+fn distribute(justify: types.JustifyContent, free: f32, count: usize, gap: f32) Distribution {
+    const n: f32 = @floatFromInt(count);
+    return switch (justify) {
+        .start => .{ .gap = gap },
+        .end => .{ .offset = free, .gap = gap },
+        .center => .{ .offset = free / 2, .gap = gap },
+        .space_between => .{ .gap = gap + (if (count > 1 and free > 0) free / (n - 1) else 0) },
+        .space_around => if (free < 0 or count == 0) .{ .gap = gap } else .{ .offset = free / n / 2, .gap = gap + free / n },
+        .space_evenly => if (free < 0) .{ .gap = gap } else .{ .offset = free / (n + 1), .gap = gap + free / (n + 1) },
+    };
 }
 
 fn resolveAxisMargins(
@@ -770,16 +1210,16 @@ fn resolveAxisMargins(
 pub fn measureNode(node: *Node, constraints: types.LayoutConstraints) Size {
     if (!enterLayoutRecursion()) {
         return Size.init(
-            std.math.clamp(node.style.padding.horizontal(), constraints.min_width, constraints.max_width),
-            std.math.clamp(node.style.padding.vertical(), constraints.min_height, constraints.max_height),
+            std.math.clamp(node.style.contentInsets().horizontal(), constraints.min_width, constraints.max_width),
+            std.math.clamp(node.style.contentInsets().vertical(), constraints.min_height, constraints.max_height),
         );
     }
     defer leaveLayoutRecursion();
 
-    // text node
-    if (node.getText()) |t| {
-        const pad_w = node.style.padding.horizontal();
-        const pad_h = node.style.padding.vertical();
+    // text node (resolved properties: what paint draws)
+    if (node.resolveTextProps()) |t| {
+        const pad_w = node.style.contentInsets().horizontal();
+        const pad_h = node.style.contentInsets().vertical();
 
         // width
         const text_w = blk: {
@@ -795,7 +1235,7 @@ pub fn measureNode(node: *Node, constraints: types.LayoutConstraints) Size {
 
         // height: performs text wrapping with definite width
         const text_h = blk: {
-            if (t.wrap != .none) {
+            if (t.layoutWrap() != .none) {
                 const avail_w = if (constraints.definite_width) |dw|
                     dw - pad_w
                 else if (constraints.max_width < std.math.inf(f32))
@@ -808,7 +1248,7 @@ pub fn measureNode(node: *Node, constraints: types.LayoutConstraints) Size {
                     const tl = text_layout.computeTextLayout(
                         t.content,
                         avail_w,
-                        t.wrap,
+                        t.layoutWrap(),
                         t.max_lines,
                         t.font_size,
                         t.line_height,
@@ -840,14 +1280,14 @@ pub fn measureNode(node: *Node, constraints: types.LayoutConstraints) Size {
     // container node: recursively measure children
     if (node.children.items.len == 0) {
         return Size.init(
-            std.math.clamp(node.style.padding.horizontal(), constraints.min_width, constraints.max_width),
-            std.math.clamp(node.style.padding.vertical(), constraints.min_height, constraints.max_height),
+            std.math.clamp(node.style.contentInsets().horizontal(), constraints.min_width, constraints.max_width),
+            std.math.clamp(node.style.contentInsets().vertical(), constraints.min_height, constraints.max_height),
         );
     }
 
     const is_row = node.style.direction.isRow();
-    const pad_w = node.style.padding.horizontal();
-    const pad_h = node.style.padding.vertical();
+    const pad_w = node.style.contentInsets().horizontal();
+    const pad_h = node.style.contentInsets().vertical();
 
     var main_total: f32 = 0;
     var cross_max: f32 = 0;
@@ -907,9 +1347,58 @@ pub fn measureNode(node: *Node, constraints: types.LayoutConstraints) Size {
     );
 }
 
+// Geometry is a transaction: no application callback may invalidate tree borrows
+// while flex/grid/backfill still use them. Publish only after the outer walk.
+var suppress_layout_mounts = false;
+
 pub fn layoutNode(node: *Node, available: Size, ctx: LayoutContext) void {
+    var frame_ctx = ctx;
+    if (g_layout_recursion_depth == 0 and frame_ctx.initial_containing_block == null) frame_ctx.initial_containing_block = available;
+    if (g_layout_recursion_depth != 0) {
+        layoutNodeImpl(node, available, frame_ctx);
+        return;
+    }
+    const previous = suppress_layout_mounts;
+    suppress_layout_mounts = true;
+    layoutNodeImpl(node, available, frame_ctx);
+    suppress_layout_mounts = previous;
+    if (!previous and !ctx.defer_mount and node.frame_state.frame_local.runtime.layout_mount_pending) {
+        // A callback may destroy the outer root itself. A stack watch guards
+        // the retry write without reading released memory or allocating scratch.
+        var watch = @import("node_lifecycle.zig").ReleaseWatch{ .node = node };
+        watch.begin();
+        defer watch.end();
+        if (publishLayoutMounts(node, 0) and watch.alive) node.markLayoutDirty();
+    }
+}
+
+// A structure change invalidates every borrowed ancestor/sibling slice. Unwind
+// without reading any of them again; the mutation dirties the surviving tree
+// and remaining first mounts are published by its next layout. No scratch/OOM.
+var test_mount_publication_visits: usize = 0;
+
+fn publishLayoutMounts(node: *Node, depth: usize) bool {
+    if (!node.frame_state.frame_local.runtime.layout_mount_pending or depth >= max_layout_recursion_depth) return false;
+    if (comptime @import("builtin").is_test) test_mount_publication_visits += 1;
+    const tree = @import("node_tree.zig");
+    for (node.children.items) |child| {
+        if (publishLayoutMounts(child, depth + 1)) return true;
+    }
+    if (node.frame_state.state_bits.dirty.core.layout) return false;
+    const revision = tree.structureRevision();
+    const lifetime = @import("node_lifecycle.zig").releaseRevision();
+    // Clear before invoking user code: the callback may release this node.
+    node.frame_state.frame_local.runtime.layout_mount_pending = false;
+    node_mod.fireMountIfNeeded(node);
+    return tree.structureRevision() != revision or @import("node_lifecycle.zig").releaseRevision() != lifetime;
+}
+
+fn layoutNodeImpl(node: *Node, available: Size, initial_ctx: LayoutContext) void {
+    var ctx = initial_ctx;
     if (!enterLayoutRecursion()) return;
     defer leaveLayoutRecursion();
+    if (comptime @import("builtin").is_test) test_layout_calls += 1;
+    const alloc_failures_before = layout_alloc_failure_hits;
 
     // GlyphRun pipeline globals: measureIntrinsicTextWidth's call chain has no ctx parameter, so
     // the layout pass sets/restores globals at entry so it can use the cache.
@@ -943,18 +1432,43 @@ pub fn layoutNode(node: *Node, available: Size, ctx: LayoutContext) void {
         const intrinsic_w = calcIntrinsicSize(node, true);
         const intrinsic_h = calcIntrinsicSize(node, false);
 
-        node.setLayoutW(resolveSize(node.style.width, available.width, intrinsic_w));
-        node.setLayoutH(resolveSize(node.style.height, available.height, intrinsic_h));
+        const wm = effectiveMinMax(node.style.width, node, true);
+        const hm = effectiveMinMax(node.style.height, node, false);
+        node.setLayoutW(std.math.clamp(resolveSize(node.style.width, available.width, intrinsic_w), wm.min, wm.max));
+        node.setLayoutH(std.math.clamp(resolveSize(node.style.height, available.height, intrinsic_h), hm.min, hm.max));
+        const ratio = node.style.aspect_ratio();
+        if (ratio > 0 and std.math.isFinite(ratio)) {
+            if (definiteSize(node.style.width, available.width, true)) |_| {
+                if (node.style.height == .fit or node.style.height == .grow)
+                    node.setLayoutH(std.math.clamp(node.rectFromWorldOrFallback().w / ratio, hm.min, hm.max));
+            } else if (definiteSize(node.style.height, available.height, true)) |_| {
+                node.setLayoutW(std.math.clamp(node.rectFromWorldOrFallback().h * ratio, wm.min, wm.max));
+            }
+            ctx.frozen_node = node;
+            ctx.frozen_both_axes = true;
+        }
     }
+
+    // A static box cannot cache its descendants against only its own size:
+    // positioned grandchildren may depend on a farther containing block.
+    if (node.style.position == .static and node.children.items.len > 0)
+        node.frame_state.state_bits.dirty.core.layout = true;
 
     const w = node.rectFromWorldOrFallback().w;
     const h = node.rectFromWorldOrFallback().h;
 
+    // A wrap probe may already have cleaned every descendant without mounting
+    // it. The first published layout must still traverse that subtree, so deep
+    // hooks observe final ancestor positions instead of being skipped forever.
+    if (!ctx.defer_mount and !node.frame_state.state_bits.flags.is_mounted) {
+        node.frame_state.state_bits.dirty.core.layout = true;
+    }
+
     if (node.children.items.len > 0) {
         if (node.frame_state.state_bits.dirty.core.layout) {
             // current node dirty -> full layout children (flex depends on sibling relations)
-            const content_w = w - node.style.padding.horizontal();
-            const content_h = h - node.style.padding.vertical();
+            const content_w = @max(0, w - node.style.contentInsets().horizontal());
+            const content_h = @max(0, h - node.style.contentInsets().vertical());
             if (node.style.grid() != null) {
                 layoutChildrenGrid(node, Size.init(content_w, content_h), ctx);
             } else {
@@ -974,9 +1488,9 @@ pub fn layoutNode(node: *Node, available: Size, ctx: LayoutContext) void {
             // layout results of descendants.
             // Typical scenario: wrapped text deepens, direct child only has subtree_dirty;
             // skip full layout here -> parent keeps old rect, overflow_hidden clips content.
-            if (own_main_fit or own_cross_fit) {
-                const content_w = w - node.style.padding.horizontal();
-                const content_h = h - node.style.padding.vertical();
+            if (own_main_fit or own_cross_fit or crossDependentDirty(node)) {
+                const content_w = @max(0, w - node.style.contentInsets().horizontal());
+                const content_h = @max(0, h - node.style.contentInsets().vertical());
                 if (node.style.grid() != null) {
                     layoutChildrenGrid(node, Size.init(content_w, content_h), ctx);
                 } else {
@@ -996,8 +1510,8 @@ pub fn layoutNode(node: *Node, available: Size, ctx: LayoutContext) void {
                     }
                 }
                 if (need_full) {
-                    const content_w = w - node.style.padding.horizontal();
-                    const content_h = h - node.style.padding.vertical();
+                    const content_w = @max(0, w - node.style.contentInsets().horizontal());
+                    const content_h = @max(0, h - node.style.contentInsets().vertical());
                     layoutChildrenGrid(node, Size.init(content_w, content_h), ctx);
                 } else {
                     for (node.children.items) |child| {
@@ -1042,8 +1556,8 @@ pub fn layoutNode(node: *Node, available: Size, ctx: LayoutContext) void {
                     }
 
                     if (must_full_layout) {
-                        const content_w = w - node.style.padding.horizontal();
-                        const content_h = h - node.style.padding.vertical();
+                        const content_w = @max(0, w - node.style.contentInsets().horizontal());
+                        const content_h = @max(0, h - node.style.contentInsets().vertical());
                         layoutChildren(node, Size.init(content_w, content_h), ctx);
                     } else {
                         for (node.children.items) |child| {
@@ -1061,7 +1575,7 @@ pub fn layoutNode(node: *Node, available: Size, ctx: LayoutContext) void {
                                 } else if (child.style.position == .absolute and absoluteChildNeedsResolve(child)) {
                                     layoutAbsoluteChild(node, child, ctx);
                                 } else {
-                                    layoutNode(child, Size.init(child.rectFromWorldOrFallback().w, child.rectFromWorldOrFallback().h), ctx);
+                                    relayoutFlexChild(node, child, ctx);
                                 }
                             }
                         }
@@ -1086,8 +1600,8 @@ pub fn layoutNode(node: *Node, available: Size, ctx: LayoutContext) void {
                     }
 
                     if (must_full_layout) {
-                        const content_w = w - node.style.padding.horizontal();
-                        const content_h = h - node.style.padding.vertical();
+                        const content_w = @max(0, w - node.style.contentInsets().horizontal());
+                        const content_h = @max(0, h - node.style.contentInsets().vertical());
                         layoutChildren(node, Size.init(content_w, content_h), ctx);
                     } else {
                         for (node.children.items) |child| {
@@ -1105,7 +1619,7 @@ pub fn layoutNode(node: *Node, available: Size, ctx: LayoutContext) void {
                                 } else if (child.style.position == .absolute and absoluteChildNeedsResolve(child)) {
                                     layoutAbsoluteChild(node, child, ctx);
                                 } else {
-                                    layoutNode(child, Size.init(child.rectFromWorldOrFallback().w, child.rectFromWorldOrFallback().h), ctx);
+                                    relayoutFlexChild(node, child, ctx);
                                 }
                             }
                         }
@@ -1135,12 +1649,26 @@ pub fn layoutNode(node: *Node, available: Size, ctx: LayoutContext) void {
         computeChildrenBBox(node);
     }
 
-    node.frame_state.state_bits.dirty.core.layout = false;
+    // Allocation-free degradation is usable on the first frame, but must be
+    // retried next frame. Preserve the retry through every affected ancestor.
+    node.frame_state.state_bits.dirty.core.layout = alloc_failures_before != layout_alloc_failure_hits or
+        (ctx.defer_mount and !node.frame_state.state_bits.flags.is_mounted);
     node.frame_state.state_bits.dirty.core.subtree_layout = false;
+    if (ctx.defer_mount) for (node.children.items) |child| {
+        const bits = child.frame_state.state_bits;
+        if (bits.dirty.core.layout or bits.dirty.core.subtree_layout)
+            node.frame_state.state_bits.dirty.core.subtree_layout = true;
+    };
+
+    node.frame_state.frame_local.runtime.layout_mount_pending = !node.frame_state.state_bits.flags.is_mounted;
+    for (node.children.items) |child| {
+        node.frame_state.frame_local.runtime.layout_mount_pending = node.frame_state.frame_local.runtime.layout_mount_pending or child.frame_state.frame_local.runtime.layout_mount_pending;
+    }
 
     // trigger onMount lifecycle hook (current node only).
     // children fire in their own layoutNode call tail, avoiding full-tree scan per frame.
-    node_mod.fireMountIfNeeded(node);
+    if (!suppress_layout_mounts and !ctx.defer_mount and alloc_failures_before == layout_alloc_failure_hits)
+        node_mod.fireMountIfNeeded(node);
 }
 
 /// compute children's painted bounding box union (relative to this node, includes translate
@@ -1227,218 +1755,306 @@ fn batchReverseChildren(
     }
 }
 
-/// compute child size on main axis (comptime branch avoids runtime comptime parameter call)
-fn calcChildMainSize(child: *Node, comptime is_row: bool, available: Size) f32 {
-    const main_sizing = if (is_row) child.style.width else child.style.height;
-    return switch (main_sizing) {
-        .px => |v| v,
-        .grow => 0, // flex children in wrap use minimum size
-        .fit => calcIntrinsicSize(child, is_row),
-        .percent => |p| if (is_row) available.width * p / 100.0 else available.height * p / 100.0,
-    };
+fn lineBaseline(children: []*Node, row: bool, align_items: AlignItems, reverse: bool) f32 {
+    var result: f32 = -std.math.inf(f32);
+    for (children) |child| {
+        if (isOutOfFlow(child) or crossAutoMargins(child, row) or !baselineAlign(resolveCrossAlign(child, align_items))) continue;
+        const r = child.rectFromWorldOrFallback();
+        const size = if (row) r.h else r.w;
+        const baseline = firstBaseline(child, row, 0);
+        const m = flexCrossMargins(child, row, reverse, 0);
+        result = @max(result, m.start + if (reverse) size - baseline else baseline);
+    }
+    return if (result == -std.math.inf(f32)) 0 else result;
 }
 
-/// compute child size on cross axis
-fn calcChildCrossSize(child: *Node, comptime is_row: bool, available: Size) f32 {
-    const cross_sizing = if (is_row) child.style.height else child.style.width;
-    const margin_cross = if (is_row) child.style.marginVertical() else child.style.marginHorizontal();
-    return switch (cross_sizing) {
-        .px => |v| v,
-        .grow => |mm| if (is_row)
-            std.math.clamp(@max(@as(f32, 0), available.height - margin_cross), mm.min, mm.max)
-        else
-            std.math.clamp(@max(@as(f32, 0), available.width - margin_cross), mm.min, mm.max),
-        .fit => calcIntrinsicSize(child, !is_row),
-        .percent => |p| if (is_row) available.height * p / 100.0 else available.width * p / 100.0,
-    };
+fn flexCrossMargins(child: *Node, row: bool, reverse: bool, available: f32) ResolvedAxisMargins {
+    const m = child.style.marginSpec();
+    const size = if (row) child.rectFromWorldOrFallback().h else child.rectFromWorldOrFallback().w;
+    const start_auto = if (row) child.style.marginTopIsAuto() else child.style.marginLeftIsAuto();
+    const end_auto = if (row) child.style.marginBottomIsAuto() else child.style.marginRightIsAuto();
+    const start = if (row) m.top else m.left;
+    const end = if (row) m.bottom else m.right;
+    // §9.6: overflow ignores auto on the physical start side; end takes the
+    // deficit. Do this in physical coordinates even for wrap-reverse.
+    const resolved = resolveAxisMargins(available, size, start, end, start_auto, end_auto);
+    if (!reverse) return resolved;
+    if (start_auto or end_auto) {
+        const physical_start = resolved.start;
+        return .{ .start = available - size - physical_start, .end = physical_start };
+    }
+    return .{ .start = end, .end = start };
 }
 
-/// compute child's basis size (for flex_shrink weighted calculation)
-/// flex_basis > 0 returns flex_basis, else returns main axis actual size
-fn childBasisSize(child: *Node, is_row: bool, available: Size) f32 {
-    if (child.style.flex_basis() > 0) return child.style.flex_basis();
-    const main_sizing = if (is_row) child.style.width else child.style.height;
-    return switch (main_sizing) {
-        .px => |v| v,
-        .grow => 0,
-        .fit => if (is_row) calcIntrinsicSize(child, true) else calcIntrinsicSize(child, false),
-        .percent => |p| if (is_row) available.width * p / 100.0 else available.height * p / 100.0,
-    };
-}
+const FlexLine = struct { start: usize, end: usize, cross: f32 = 0 };
 
-/// flex wrap layout: children auto-wrap when overflowing
 fn layoutChildrenWrap(parent: *Node, available: Size, ctx: LayoutContext) void {
-    if (parent.style.direction.isRow()) {
-        layoutChildrenWrapImpl(parent, available, true, ctx);
-    } else {
-        layoutChildrenWrapImpl(parent, available, false, ctx);
-    }
+    if (parent.style.direction.isRow()) layoutChildrenWrapImpl(parent, available, true, ctx) else layoutChildrenWrapImpl(parent, available, false, ctx);
 }
 
-fn layoutChildrenWrapImpl(parent: *Node, available: Size, comptime is_row: bool, ctx: LayoutContext) void {
+fn layoutChildrenWrapImpl(parent: *Node, available: Size, comptime row: bool, ctx: LayoutContext) void {
     const style = parent.style;
-    const gap = style.gap;
-    const main_available = if (is_row) available.width else available.height;
-
-    // Pass 1: distribute into rows, wrap when accumulated main axis exceeds available space,
-    // use fixed-size row structure (expanded 64->256 to support large tag/badge wrap layouts)
-    const max_lines = 256;
-    var line_starts: [max_lines]usize = undefined;
-    var line_ends: [max_lines]usize = undefined;
-    var line_cross_sizes: [max_lines]f32 = undefined;
-    var n_lines: usize = 0;
-
     const children = parent.children.items;
-    if (children.len == 0) return;
-
-    var line_start: usize = 0;
-    var line_main: f32 = 0;
-    var line_has_flow = false;
-
-    for (children, 0..) |child, i| {
+    const main = if (row) available.width else available.height;
+    const cross = if (row) available.height else available.width;
+    const reverse = style.flex_wrap() == .wrap_reverse;
+    var count: usize = 0;
+    for (children) |child| {
+        if (isDisplayNone(child)) collapseDisplayNone(child) else if (child.style.position == .absolute) layoutAbsoluteChild(parent, child, ctx) else {
+            count += 1;
+        }
+    }
+    parent.frame_state.first_flex_line_end = children.len;
+    if (count == 0) return;
+    var stack_items: [flex_stack_capacity]FlexItem = undefined;
+    var stack_nodes: [flex_stack_capacity]*Node = undefined;
+    var stack_lines: [flex_stack_capacity]FlexLine = undefined;
+    const items = if (count <= stack_items.len) stack_items[0..count] else ctx.frame_allocator.alloc(FlexItem, count) catch {
+        layout_alloc_failure_hits +|= 1;
+        std.log.warn("[wrap] flex scratch allocation failed; using clamped bases without wrapping or redistribution", .{});
+        layoutChildrenSingle(parent, available, ctx, false);
+        return;
+    };
+    defer if (count > stack_items.len) ctx.frame_allocator.free(items);
+    const lines = if (count <= stack_lines.len) stack_lines[0..count] else ctx.frame_allocator.alloc(FlexLine, count) catch {
+        layout_alloc_failure_hits +|= 1;
+        std.log.warn("[wrap] line scratch allocation failed; using clamped bases without wrapping or redistribution", .{});
+        layoutChildrenSingle(parent, available, ctx, false);
+        return;
+    };
+    defer if (count > stack_lines.len) ctx.frame_allocator.free(lines);
+    const flow = if (count <= stack_nodes.len) stack_nodes[0..count] else ctx.frame_allocator.alloc(*Node, count) catch {
+        layout_alloc_failure_hits +|= 1;
+        std.log.warn("[wrap] node scratch allocation failed; using clamped bases without wrapping or redistribution", .{});
+        layoutChildrenSingle(parent, available, ctx, false);
+        return;
+    };
+    defer if (count > stack_nodes.len) ctx.frame_allocator.free(flow);
+    // §9.3: collect by outer hypothetical size, before flexing each line.
+    var n: usize = 0;
+    var used: f32 = 0;
+    var start: usize = 0;
+    var index: usize = 0;
+    for (children, 0..) |child, raw_index| {
         if (isOutOfFlow(child)) continue;
-        const child_main = calcChildMainSize(child, is_row, available);
-        const child_main_outer = child_main + childMarginForAxis(child, is_row);
-        const needed = if (line_has_flow) child_main_outer + gap else child_main_outer;
-
-        if (line_has_flow and line_main + needed > main_available and n_lines < max_lines) {
-            // end current row
-            line_starts[n_lines] = line_start;
-            line_ends[n_lines] = i;
-            n_lines += 1;
-            line_start = i;
-            line_main = child_main;
-            line_has_flow = true;
-        } else {
-            line_main += needed;
-            line_has_flow = true;
+        flow[index] = child;
+        items[index] = makeFlexItem(child, row, available);
+        const outer = items[index].target + childMarginForAxis(child, row);
+        if (index > start and used + style.gap + outer > main) {
+            if (n == 0) parent.frame_state.first_flex_line_end = raw_index;
+            lines[n] = .{ .start = start, .end = index };
+            n += 1;
+            start = index;
+            used = 0;
         }
+        if (index > start) used += style.gap;
+        used += outer;
+        // Store a flow-only index -> child mapping without another allocation:
+        // lines refer to flow slots; traversal below skips out-of-flow nodes.
+        index += 1;
     }
-    // last row
-    if (n_lines < max_lines) {
-        line_starts[n_lines] = line_start;
-        line_ends[n_lines] = children.len;
-        n_lines += 1;
-    } else {
-        // exceeds max_lines limit, merge remaining children into last row
-        line_ends[max_lines - 1] = children.len;
-        std.log.warn("[layoutChildrenWrap] exceeded max_lines={d}, merging remaining children into last line", .{max_lines});
-    }
-
-    // Pass 2: compute each row's cross-axis height (take max child size in row)
-    for (0..n_lines) |line_idx| {
-        var max_cross: f32 = 0;
-        for (children[line_starts[line_idx]..line_ends[line_idx]]) |child| {
-            if (isOutOfFlow(child)) continue;
-            const cross = calcChildCrossSize(child, is_row, available) + childMarginForAxis(child, !is_row);
-            max_cross = @max(max_cross, cross);
+    lines[n] = .{ .start = start, .end = count };
+    n += 1;
+    var total_cross: f32 = if (n > 1) @as(f32, @floatFromInt(n - 1)) * style.gap else 0;
+    for (lines[0..n]) |*line| {
+        var fixed: f32 = @as(f32, @floatFromInt(line.end - line.start - 1)) * style.gap;
+        for (flow[line.start..line.end]) |child| fixed += childMarginForAxis(child, row);
+        resolveFlexibleLengths(items[line.start..line.end], main - fixed);
+        // Lay out at resolved main size with natural, clamped cross size.
+        // This makes wrapped text and nested containers contribute their actual
+        // hypothetical cross size instead of a pre-flex intrinsic estimate.
+        index = 0;
+        // Leading and margins can put a baseline outside its outer line box.
+        // Keep the signed distances; clamping either side to zero inflates the
+        // line (e.g. Lora line-height:.5 becomes 19px instead of 17px).
+        var before: f32 = -std.math.inf(f32);
+        var after: f32 = -std.math.inf(f32);
+        for (flow[line.start..line.end], line.start..) |child, item_index| {
+            index = item_index;
+            const target = items[index].target;
+            var natural = aspectCrossSize(child, row, target, resolveCrossAxisSize(child, row, available, .start));
+            if (row) {
+                if (computeWrapTextLayoutForWidth(child, target)) |h| {
+                    if (child.style.height == .grow or child.style.height == .fit) {
+                        const mm = effectiveMinMax(child.style.height, child, false);
+                        natural = @max(mm.min, @min(h, mm.max));
+                    }
+                }
+            }
+            setFlexSize(child, row, target, natural);
+            var child_ctx = ctx;
+            child_ctx.defer_mount = true;
+            child_ctx.frozen_node = child;
+            child_ctx.frozen_axis_is_width = row;
+            child_ctx.frozen_both_axes = child.style.aspect_ratio() > 0;
+            if (needsFlexLayout(child, child_ctx))
+                layoutNode(child, Size.init(if (row) target else natural, if (row) natural else target), child_ctx);
+            const size = if (row) child.rectFromWorldOrFallback().h else child.rectFromWorldOrFallback().w;
+            const m = flexCrossMargins(child, row, reverse, size + childMarginForAxis(child, !row));
+            if (row and baselineAlign(resolveCrossAlign(child, style.align_items)) and !crossAutoMargins(child, row)) {
+                const b = firstBaseline(child, row, 0);
+                before = @max(before, m.start + if (reverse) size - b else b);
+                after = @max(after, m.end + if (reverse) b else size - b);
+            } else line.cross = @max(line.cross, size + childMarginForAxis(child, !row));
         }
-        line_cross_sizes[line_idx] = max_cross;
+        line.cross = @max(line.cross, before + after);
+        total_cross += line.cross;
     }
-
-    // Pass 3: layout each row
-    const pad_main_start: f32 = if (is_row) style.padding.left else style.padding.top;
-    const pad_cross_start: f32 = if (is_row) style.padding.top else style.padding.left;
-    var cross_cursor: f32 = pad_cross_start;
-
-    for (0..n_lines) |line_idx| {
-        var main_cursor: f32 = pad_main_start;
-        const line_cross = line_cross_sizes[line_idx];
-
-        for (children[line_starts[line_idx]..line_ends[line_idx]]) |child| {
-            if (isOutOfFlow(child)) continue;
-            const child_main = calcChildMainSize(child, is_row, available);
-            const child_cross = calcChildCrossSize(child, is_row, available);
-            const margin_main = childMarginForAxis(child, is_row);
-            const margin_cross = childMarginForAxis(child, !is_row);
-            const child_cross_outer = child_cross + margin_cross;
-
-            // cross axis alignment
-            const cross_offset: f32 = switch (style.align_items) {
-                .center => (line_cross - child_cross_outer) / 2.0,
-                .end => line_cross - child_cross_outer,
+    const cross_sizing = if (row) style.height else style.width;
+    const frozen_cross = ctx.frozen_node == parent and (ctx.frozen_both_axes or ctx.frozen_axis_is_width != row);
+    var final_cross = cross;
+    if (cross_sizing == .fit and !frozen_cross) {
+        const pad = if (row) style.contentInsets().vertical() else style.contentInsets().horizontal();
+        const mm = effectiveMinMax(cross_sizing, parent, !row);
+        const size = @max(mm.min, @min(total_cross + pad, mm.max));
+        if (row) parent.setLayoutH(size) else parent.setLayoutW(size);
+        final_cross = size - pad;
+    }
+    const free = final_cross - total_cross;
+    var line_distribution = Distribution{ .gap = style.gap };
+    switch (style.align_content) {
+        .normal, .stretch => if (free > 0) {
+            for (lines[0..n]) |*line| line.cross += free / @as(f32, @floatFromInt(n));
+        },
+        .start => {},
+        .end => line_distribution.offset = free,
+        .center => line_distribution.offset = free / 2,
+        .space_between => line_distribution = distribute(.space_between, free, n, style.gap),
+        // Same flex-start overflow fallback as justify, mirrored by wrap-reverse.
+        .space_around => line_distribution = distribute(.space_around, free, n, style.gap),
+        .space_evenly => line_distribution = distribute(.space_evenly, free, n, style.gap),
+    }
+    const pad_main = if (row) style.contentInsets().left else style.contentInsets().top;
+    const pad_cross = if (row) style.contentInsets().top else style.contentInsets().left;
+    var cross_cursor = line_distribution.offset;
+    for (lines[0..n]) |line| {
+        used = @as(f32, @floatFromInt(line.end - line.start - 1)) * style.gap;
+        var autos: usize = 0;
+        index = 0;
+        var baseline: f32 = -std.math.inf(f32);
+        for (flow[line.start..line.end], line.start..) |child, item_index| {
+            index = item_index;
+            used += items[index].target + childMarginForAxis(child, row);
+            autos += if (row) @as(usize, @intFromBool(child.style.marginLeftIsAuto())) + @intFromBool(child.style.marginRightIsAuto()) else @as(usize, @intFromBool(child.style.marginTopIsAuto())) + @intFromBool(child.style.marginBottomIsAuto());
+            if (stretches(child, row, style.align_items)) {
+                const line_available = if (row) Size.init(available.width, line.cross) else Size.init(line.cross, available.height);
+                const size = resolveCrossAxisSize(child, row, line_available, .stretch);
+                setFlexSize(child, row, items[index].target, size);
+                var child_ctx = ctx;
+                child_ctx.defer_mount = true;
+                child_ctx.frozen_node = child;
+                child_ctx.frozen_both_axes = true;
+                child_ctx.frozen_axis_is_width = row;
+                if (needsFlexLayout(child, child_ctx))
+                    layoutNode(child, Size.init(child.rectFromWorldOrFallback().w, child.rectFromWorldOrFallback().h), child_ctx);
+            }
+            if (row and baselineAlign(resolveCrossAlign(child, style.align_items)) and !crossAutoMargins(child, row)) {
+                const size = child.rectFromWorldOrFallback().h;
+                const m = flexCrossMargins(child, row, reverse, line.cross);
+                const b = firstBaseline(child, row, 0);
+                baseline = @max(baseline, m.start + if (reverse) size - b else b);
+            }
+        }
+        const remaining = main - used;
+        const auto_unit = if (autos > 0 and remaining > 0) remaining / @as(f32, @floatFromInt(autos)) else 0;
+        const distribution = distribute(if (auto_unit > 0) .start else style.justify, remaining, line.end - line.start, style.gap);
+        var cursor = distribution.offset;
+        index = 0;
+        for (flow[line.start..line.end], line.start..) |child, item_index| {
+            index = item_index;
+            const r = child.rectFromWorldOrFallback();
+            const size = if (row) r.h else r.w;
+            const margins = flexMainMargins(child, row, style.direction.isReverse(), auto_unit);
+            const m = flexCrossMargins(child, row, reverse, line.cross);
+            const align_items = resolveCrossAlign(child, style.align_items);
+            const extra = line.cross - size - childMarginForAxis(child, !row);
+            const offset: f32 = if (crossAutoMargins(child, row)) 0 else switch (align_items) {
+                .end => extra,
+                .center => extra / 2,
+                .baseline, .first_baseline => if (row) baseline - m.start - (if (reverse) size - firstBaseline(child, row, 0) else firstBaseline(child, row, 0)) else 0,
                 else => 0,
             };
-
-            const new_w = if (is_row)
-                child_main
-            else if (style.align_items == .stretch)
-                @max(@as(f32, 0), line_cross - margin_cross)
-            else
-                child_cross;
-            const new_h = if (is_row)
-                (if (style.align_items == .stretch) @max(@as(f32, 0), line_cross - margin_cross) else child_cross)
-            else
-                child_main;
-            if (child.rectFromWorldOrFallback().w != new_w or child.rectFromWorldOrFallback().h != new_h) {
-                child.frame_state.state_bits.dirty.core.layout = true;
-            }
-
-            if (is_row) {
-                child.setLayoutX(main_cursor + child.style.margin.left);
-                child.setLayoutY(cross_cursor + cross_offset + child.style.margin.top);
-                child.setLayoutW(new_w);
-                child.setLayoutH(new_h);
-            } else {
-                child.setLayoutY(main_cursor + child.style.margin.top);
-                child.setLayoutX(cross_cursor + cross_offset + child.style.margin.left);
-                child.setLayoutH(new_h);
-                child.setLayoutW(new_w);
-            }
-
-            layoutNode(child, Size.init(child.rectFromWorldOrFallback().w, child.rectFromWorldOrFallback().h), ctx);
-            main_cursor += child_main + margin_main + gap;
+            const main_pos = if (style.direction.isReverse()) main - cursor - margins.start - items[index].target else cursor + margins.start;
+            const logical_cross = cross_cursor + m.start + offset;
+            const cross_pos = if (reverse) final_cross - logical_cross - size else logical_cross;
+            const x = if (row) pad_main + main_pos else pad_cross + cross_pos;
+            const y = if (row) pad_cross + cross_pos else pad_main + main_pos;
+            if (r.x != x or r.y != y) child.frame_state.state_bits.dirty.core.layout = true;
+            child.setLayoutX(x);
+            child.setLayoutY(y);
+            applyRelativeInset(child, available);
+            // Publish mount only with final line placement. Descendants probed
+            // above also receive a final layout before any callback can reenter.
+            var final_ctx = ctx;
+            final_ctx.frozen_node = child;
+            final_ctx.frozen_axis_is_width = row;
+            final_ctx.frozen_both_axes = stretches(child, row, style.align_items);
+            if (needsFlexLayout(child, final_ctx))
+                layoutNode(child, Size.init(r.w, r.h), final_ctx);
+            cursor += items[index].target + margins.start + margins.end + distribution.gap;
         }
-
-        cross_cursor += line_cross + gap;
+        cross_cursor += line.cross + line_distribution.gap;
     }
+}
 
-    // fit container backfill: wrap's actual cross-axis size = sum of all row heights
-    if (n_lines > 0) {
-        const pad_cross_end: f32 = if (is_row) style.padding.bottom else style.padding.right;
-        // cross_cursor added extra gap, subtract it and add padding
-        const total_cross = cross_cursor - gap + pad_cross_end;
-        const cross_fit = if (is_row) style.height == .fit else style.width == .fit;
-        if (cross_fit) {
-            if (is_row) {
-                const mm = effectiveMinMax(style.height, parent, false);
-                parent.setLayoutH(std.math.clamp(total_cross, mm.min, mm.max));
-            } else {
-                const mm = effectiveMinMax(style.width, parent, true);
-                parent.setLayoutW(std.math.clamp(total_cross, mm.min, mm.max));
-            }
+fn applyRelativeInset(child: *Node, available: Size) void {
+    if (child.style.position != .relative) return;
+    const inset = child.style.inset();
+    const dx = inset.left.resolve(available.width) orelse -(inset.right.resolve(available.width) orelse 0);
+    const dy = inset.top.resolve(available.height) orelse -(inset.bottom.resolve(available.height) orelse 0);
+    const r = child.rectFromWorldOrFallback();
+    child.setLayoutX(r.x + dx);
+    child.setLayoutY(r.y + dy);
+}
+
+fn needsFlexLayout(child: *Node, ctx: LayoutContext) bool {
+    const bits = child.frame_state.state_bits;
+    return bits.dirty.core.layout or bits.dirty.core.subtree_layout or
+        (!ctx.defer_mount and !bits.flags.is_mounted);
+}
+
+// A changed natural cross size affects line sizes, sibling alignment and
+// exported baselines even when the child's main size is fixed.
+fn crossDependentDirty(parent: *Node) bool {
+    const wrap = parent.style.flex_wrap() != .no_wrap;
+    const row = parent.style.direction.isRow();
+    for (parent.children.items) |child| {
+        if (isOutOfFlow(child)) continue;
+        const bits = child.frame_state.state_bits.dirty.core;
+        if (!bits.layout and !bits.subtree_layout) continue;
+        if (wrap) {
+            // Deep changes can alter hypothetical main sizes or automatic
+            // minima and hence line membership. Fixed non-shrinking px items
+            // with auto basis are independent of descendant intrinsic sizes.
+            const main = if (row) child.style.width else child.style.height;
+            if (main != .px or child.style.flex_basis() != types.FlexBasis.auto or child.style.flex_shrink > 0) return true;
         }
+        if (baselineAlign(resolveCrossAlign(child, parent.style.align_items))) return true;
+        const cross = if (row) child.style.height else child.style.width;
+        if ((cross == .fit or cross == .grow) and (wrap or !stretches(child, row, parent.style.align_items))) return true;
     }
+    return false;
+}
 
-    // reverse: flip main axis direction (relative coords, no parent.rect.x/y needed)
-    if (style.direction.isReverse()) {
-        const main_start = if (is_row) style.padding.left else style.padding.top;
-        const main_end = if (is_row) parent.rectFromWorldOrFallback().w - style.padding.right else parent.rectFromWorldOrFallback().h - style.padding.bottom;
+// Incremental subtree layout must preserve the same allocated dimensions as
+// full flex layout. Otherwise a stretched fit child shrinks on the next dirty
+// descendant update, although the parent's constraints did not change.
+fn relayoutFlexChild(parent: *Node, child: *Node, ctx: LayoutContext) void {
+    var child_ctx = ctx;
+    child_ctx.frozen_node = child;
+    child_ctx.frozen_axis_is_width = parent.style.direction.isRow();
+    child_ctx.frozen_both_axes = stretches(child, parent.style.direction.isRow(), parent.style.align_items);
+    const r = child.rectFromWorldOrFallback();
+    layoutNode(child, Size.init(r.w, r.h), child_ctx);
+}
 
-        for (children) |child| {
-            if (isOutOfFlow(child)) continue;
-            if (is_row) {
-                child.setLayoutX(main_start + (main_end - (child.rectFromWorldOrFallback().x - main_start + child.rectFromWorldOrFallback().w)));
-            } else {
-                child.setLayoutY(main_start + (main_end - (child.rectFromWorldOrFallback().y - main_start + child.rectFromWorldOrFallback().h)));
-            }
-        }
-    }
-
-    // wrap_reverse: flip row direction on cross axis (relative coords)
-    if (style.flex_wrap() == .wrap_reverse) {
-        const cross_start = if (is_row) style.padding.top else style.padding.left;
-        const cross_end = if (is_row) parent.rectFromWorldOrFallback().h - style.padding.bottom else parent.rectFromWorldOrFallback().w - style.padding.right;
-
-        for (children) |child| {
-            if (isOutOfFlow(child)) continue;
-            if (is_row) {
-                child.setLayoutY(cross_start + (cross_end - (child.rectFromWorldOrFallback().y - cross_start + child.rectFromWorldOrFallback().h)));
-            } else {
-                child.setLayoutX(cross_start + (cross_end - (child.rectFromWorldOrFallback().x - cross_start + child.rectFromWorldOrFallback().w)));
-            }
-        }
-    }
+fn setFlexSize(child: *Node, row: bool, main: f32, cross: f32) void {
+    const w = if (row) main else cross;
+    const h = if (row) cross else main;
+    const old = child.rectFromWorldOrFallback();
+    if (old.w != w or old.h != h) child.frame_state.state_bits.dirty.core.layout = true;
+    child.setLayoutW(w);
+    child.setLayoutH(h);
 }
 
 // fitResizeAfterLayout function deleted.
@@ -1475,28 +2091,28 @@ fn absoluteChildNeedsResolve(child: *const Node) bool {
 /// absolute-positioned text nodes previously skipped wrapping, wrap always rendered single-line).
 /// returns wrapped total height (with vertical padding), for fit height use; null if inapplicable.
 fn computeWrapTextLayoutForWidth(child: *Node, child_width: f32) ?f32 {
-    const t = child.getText() orelse {
+    const t = child.resolveTextProps() orelse {
         child.clearTextLayout();
         return null;
     };
-    if (t.wrap == .none) {
+    if (t.layoutWrap() == .none) {
         child.clearTextLayout();
         return null;
     }
-    const text_avail_w = child_width - child.style.padding.horizontal();
+    const text_avail_w = child_width - child.style.contentInsets().horizontal();
     if (text_avail_w <= 0) return null;
     const layout_spans = if (t.spans_affect_layout) t.spans else &.{};
     // cache hit check (layoutOutputPtr gives stable address, isCacheValid takes *const)
     if (child.layoutOutputPtr()) |c_lo| {
         const need_recompute = if (c_lo.artifacts.text_layout) |tl|
-            !text_layout.isCacheValid(tl, t.content, text_avail_w, t.font_weight, t.font_size, t.use_italic_font, t.use_monospace_font, t.wrap, t.max_lines, layout_spans)
+            !text_layout.isCacheValid(tl, t.content, text_avail_w, t.font_weight, t.font_size, t.use_italic_font, t.use_monospace_font, t.layoutWrap(), t.max_lines, layout_spans)
         else
             true;
         if (need_recompute) {
             const computed = text_layout.computeTextLayout(
                 t.content,
                 text_avail_w,
-                t.wrap,
+                t.layoutWrap(),
                 t.max_lines,
                 t.font_size,
                 t.line_height,
@@ -1509,33 +2125,53 @@ fn computeWrapTextLayoutForWidth(child: *Node, child_width: f32) ?f32 {
                 layout_alloc_failure_hits += 1;
                 child.clearTextLayout();
                 child.frame_state.state_bits.dirty.core.layout = true;
-                return computed.total_height + child.style.padding.vertical();
+                return computed.total_height + child.style.contentInsets().vertical();
             };
         }
     }
     if (child.layoutTextLayout()) |tl| {
-        return tl.total_height + child.style.padding.vertical();
+        return tl.total_height + child.style.contentInsets().vertical();
     }
     return null;
+}
+
+fn establishesAbsoluteContainingBlock(node: *const Node) bool {
+    return node.style.position != .static or node.style.layout_isolation or
+        node.style.translate_x != 0 or node.style.translate_y != 0 or
+        node.style.scale_x() != 1 or node.style.scale_y() != 1 or node.style.rotate() != 0 or
+        node.style.will_change_transform();
 }
 
 fn layoutAbsoluteChild(parent: *Node, child: *Node, ctx: LayoutContext) void {
     const inset = child.style.inset();
     const margin = child.style.marginSpec();
+    const wm = effectiveMinMax(child.style.width, child, true);
+    const hm = effectiveMinMax(child.style.height, child, false);
 
-    // CSS absolute positioning uses the containing block established by the
-    // parent's padding edge, not the content box used by in-flow Flex/Grid
-    // children. Zenit paints borders inside the layout rect (border widths do
-    // not consume layout space), so the parent's local rect is its effective
-    // padding-box range and its origin is (0, 0).
-    //
-    // Do not reuse layoutChildren's `available`: that value has already had
-    // parent padding removed. Mixing that content-box size with setLayoutX/Y's
-    // parent-local coordinates shifts right/bottom anchored children by the
-    // parent's total padding and resolves percentages against the wrong box.
-    const parent_rect = parent.rectFromWorldOrFallback();
-    const cb_w = @max(@as(f32, 0), parent_rect.w);
-    const cb_h = @max(@as(f32, 0), parent_rect.h);
+    // Nearest positioned ancestor establishes its padding-box containing block.
+    // Keep the child rect local to its actual (possibly static) parent.
+    var cb = parent;
+    var offset_x: f32 = 0;
+    var offset_y: f32 = 0;
+    while (!establishesAbsoluteContainingBlock(cb)) {
+        const ancestor = cb.parent orelse break;
+        const rect = cb.rectFromWorldOrFallback();
+        offset_x += rect.x;
+        offset_y += rect.y;
+        cb = ancestor;
+    }
+    const initial = !establishesAbsoluteContainingBlock(cb) and cb.parent == null;
+    const border = if (initial or cb.style.border.overlay) [4]f32{ 0, 0, 0, 0 } else cb.style.border.resolvedWidths();
+    const parent_rect = cb.rectFromWorldOrFallback();
+    const initial_size = ctx.initial_containing_block orelse Size.init(parent_rect.w, parent_rect.h);
+    const cb_w = if (initial) initial_size.width else @max(@as(f32, 0), parent_rect.w - border[1] - border[3]);
+    const cb_h = if (initial) initial_size.height else @max(@as(f32, 0), parent_rect.h - border[0] - border[2]);
+    const cb_x = border[3] - offset_x - (if (initial) parent_rect.x else @as(f32, 0));
+    const cb_y = border[0] - offset_y - (if (initial) parent_rect.y else @as(f32, 0));
+    // Static position: a flex/block parent places the box at its content edge; a grid
+    // container treats it as the sole item of an area spanning its padding edges
+    // (CSS Grid 1 §9.1), so no padding is added there.
+    const static_pad = !initial and parent.style.grid() == null;
 
     // --- horizontal axis ---
     const left_val = inset.left.resolve(cb_w);
@@ -1548,11 +2184,11 @@ fn layoutAbsoluteChild(parent: *Node, child: *Node, ctx: LayoutContext) void {
         const available_outer = @max(0, cb_w - left_val.? - right_val.?);
         child_width = switch (child.style.width) {
             .px => |v| v,
-            .grow => |mm| std.math.clamp(available_outer - child.style.marginHorizontal(), mm.min, mm.max),
+            .grow => @max(0, available_outer - child.style.marginHorizontal()),
             .fit => calcIntrinsicSize(child, true),
             .percent => |p| cb_w * p / 100.0,
         };
-        child_width = std.math.clamp(child_width, child.style.min_width(), child.style.max_width());
+        child_width = std.math.clamp(child_width, wm.min, wm.max);
         if (child.style.width == .grow) {
             new_x = left_val.? + (if (child.style.marginLeftIsAuto()) 0 else margin.left);
         } else {
@@ -1570,7 +2206,7 @@ fn layoutAbsoluteChild(parent: *Node, child: *Node, ctx: LayoutContext) void {
         // only left -> offset from left side
         child_width = switch (child.style.width) {
             .px => |v| v,
-            .grow => |mm| std.math.clamp(cb_w - lv - margin.horizontal(), mm.min, mm.max),
+            .grow => @max(0, cb_w - lv - margin.horizontal()),
             .fit => calcIntrinsicSize(child, true),
             .percent => |p| cb_w * p / 100.0,
         };
@@ -1579,20 +2215,21 @@ fn layoutAbsoluteChild(parent: *Node, child: *Node, ctx: LayoutContext) void {
         // only right -> offset from right side
         child_width = switch (child.style.width) {
             .px => |v| v,
-            .grow => |mm| std.math.clamp(cb_w - rv - margin.horizontal(), mm.min, mm.max),
+            .grow => @max(0, cb_w - rv - margin.horizontal()),
             .fit => calcIntrinsicSize(child, true),
             .percent => |p| cb_w * p / 100.0,
         };
         new_x = cb_w - rv - (if (child.style.marginRightIsAuto()) 0 else margin.right) - child_width;
     } else {
-        // no inset -> use containing block origin as static position origin, apply margin
+        // Static position starts at the containing block content edge; explicit
+        // insets above continue to resolve against its padding box.
         child_width = switch (child.style.width) {
             .px => |v| v,
-            .grow => |mm| std.math.clamp(@max(0, cb_w - margin.horizontal()), mm.min, mm.max),
+            .grow => @max(0, @max(0, cb_w - margin.horizontal())),
             .fit => calcIntrinsicSize(child, true),
             .percent => |p| cb_w * p / 100.0,
         };
-        new_x = if (child.style.marginLeftIsAuto()) 0 else margin.left;
+        new_x = (if (static_pad) cb.style.padding.left else @as(f32, 0)) + (if (child.style.marginLeftIsAuto()) @as(f32, 0) else margin.left);
     }
 
     // --- vertical axis ---
@@ -1606,11 +2243,11 @@ fn layoutAbsoluteChild(parent: *Node, child: *Node, ctx: LayoutContext) void {
         const available_outer = @max(0, cb_h - top_val.? - bottom_val.?);
         child_height = switch (child.style.height) {
             .px => |v| v,
-            .grow => |mm| std.math.clamp(available_outer - child.style.marginVertical(), mm.min, mm.max),
+            .grow => @max(0, available_outer - child.style.marginVertical()),
             .fit => calcIntrinsicSize(child, false),
             .percent => |p| cb_h * p / 100.0,
         };
-        child_height = std.math.clamp(child_height, child.style.min_height(), child.style.max_height());
+        child_height = std.math.clamp(child_height, hm.min, hm.max);
         if (child.style.height == .grow) {
             new_y = top_val.? + (if (child.style.marginTopIsAuto()) 0 else margin.top);
         } else {
@@ -1627,7 +2264,7 @@ fn layoutAbsoluteChild(parent: *Node, child: *Node, ctx: LayoutContext) void {
     } else if (top_val) |tv| {
         child_height = switch (child.style.height) {
             .px => |v| v,
-            .grow => |mm| std.math.clamp(cb_h - tv - margin.vertical(), mm.min, mm.max),
+            .grow => @max(0, cb_h - tv - margin.vertical()),
             .fit => calcIntrinsicSize(child, false),
             .percent => |p| cb_h * p / 100.0,
         };
@@ -1635,31 +2272,41 @@ fn layoutAbsoluteChild(parent: *Node, child: *Node, ctx: LayoutContext) void {
     } else if (bottom_val) |bv| {
         child_height = switch (child.style.height) {
             .px => |v| v,
-            .grow => |mm| std.math.clamp(cb_h - bv - margin.vertical(), mm.min, mm.max),
+            .grow => @max(0, cb_h - bv - margin.vertical()),
             .fit => calcIntrinsicSize(child, false),
             .percent => |p| cb_h * p / 100.0,
         };
         new_y = cb_h - bv - (if (child.style.marginBottomIsAuto()) 0 else margin.bottom) - child_height;
     } else {
-        // no inset -> use containing block origin as static position origin, apply margin
+        // Static position starts at the containing block content edge; explicit
+        // insets above continue to resolve against its padding box.
         child_height = switch (child.style.height) {
             .px => |v| v,
-            .grow => |mm| std.math.clamp(@max(0, cb_h - margin.vertical()), mm.min, mm.max),
+            .grow => @max(0, @max(0, cb_h - margin.vertical())),
             .fit => calcIntrinsicSize(child, false),
             .percent => |p| cb_h * p / 100.0,
         };
-        new_y = if (child.style.marginTopIsAuto()) 0 else margin.top;
+        new_y = (if (static_pad) cb.style.padding.top else @as(f32, 0)) + (if (child.style.marginTopIsAuto()) @as(f32, 0) else margin.top);
     }
 
     // independent min/max constraint clamp
-    child_width = std.math.clamp(child_width, child.style.min_width(), child.style.max_width());
-    child_height = std.math.clamp(child_height, child.style.min_height(), child.style.max_height());
+    child_width = std.math.clamp(child_width, wm.min, wm.max);
+    child_height = std.math.clamp(child_height, hm.min, hm.max);
+
+    const ratio = child.style.aspect_ratio();
+    if (ratio > 0) {
+        if (child.style.height != .px and child.style.height != .percent and !(top_val != null and bottom_val != null and child.style.height == .grow)) {
+            child_height = std.math.clamp(child_width / ratio, hm.min, hm.max);
+        } else if (child.style.width != .px and child.style.width != .percent and !(left_val != null and right_val != null and child.style.width == .grow)) {
+            child_width = std.math.clamp(child_height * ratio, wm.min, wm.max);
+        }
+    }
 
     // text wrapping: absolute text nodes also wrap after definite width (canvas overlay label
     // scenario)
     if (computeWrapTextLayoutForWidth(child, child_width)) |wrapped_h| {
         if (child.style.height == .fit) {
-            child_height = std.math.clamp(wrapped_h, child.style.min_height(), child.style.max_height());
+            child_height = std.math.clamp(wrapped_h, hm.min, hm.max);
         }
     }
 
@@ -1668,17 +2315,24 @@ fn layoutAbsoluteChild(parent: *Node, child: *Node, ctx: LayoutContext) void {
     {
         child.frame_state.state_bits.dirty.core.layout = true;
     }
+    new_x += cb_x;
+    new_y += cb_y;
     child.setLayoutX(new_x);
     child.setLayoutY(new_y);
     child.setLayoutW(child_width);
     child.setLayoutH(child_height);
-    layoutNode(child, Size.init(child_width, child_height), ctx);
+    var child_ctx = ctx;
+    if (ratio > 0) {
+        child_ctx.frozen_node = child;
+        child_ctx.frozen_both_axes = true;
+    }
+    layoutNode(child, Size.init(child_width, child_height), child_ctx);
 
     // absolute + fit height correction: text_layout not generated during calcIntrinsicSize,
     // causing wrapped text fit height underestimated as single-line.
     // after layoutNode completes text shaping executes, re-read child's actual content height and
     // update child.rect.h.
-    if (child.style.height == .fit and top_val == null and bottom_val == null and child.children.items.len > 0) {
+    if (ratio <= 0 and child.style.height == .fit and top_val == null and bottom_val == null and child.children.items.len > 0) {
         var actual_content: f32 = 0;
         const child_is_row = child.style.direction.isRow();
         for (child.children.items) |gc| {
@@ -1699,9 +2353,9 @@ fn layoutAbsoluteChild(parent: *Node, child: *Node, ctx: LayoutContext) void {
             };
             if (abs_flow_n > 1) actual_content += @as(f32, @floatFromInt(abs_flow_n - 1)) * child.style.gap;
         }
-        actual_content += child.style.padding.vertical();
+        actual_content += child.style.contentInsets().vertical();
         const mm = effectiveMinMax(child.style.height, child, false);
-        const fit_h = std.math.clamp(actual_content, mm.min, mm.max);
+        const fit_h = std.math.clamp(actual_content, @max(0, mm.min), mm.max);
         if (fit_h != child.rectFromWorldOrFallback().h) {
             child.setLayoutH(fit_h);
         }
@@ -1712,37 +2366,43 @@ fn layoutAbsoluteChild(parent: *Node, child: *Node, ctx: LayoutContext) void {
     // re-anchor by final size, else bottom-right positioned panel overflows containing block
     // (storybook GlassAdapt regular panel: bottom 20 but edge out 22 pt).
     if (left_val == null) if (right_val) |rv| {
-        const x = cb_w - rv - (if (child.style.marginRightIsAuto()) 0 else margin.right) - child.rectFromWorldOrFallback().w;
+        const x = cb_x + cb_w - rv - (if (child.style.marginRightIsAuto()) 0 else margin.right) - child.rectFromWorldOrFallback().w;
         if (x != new_x) child.setLayoutX(x);
     };
     if (top_val == null) if (bottom_val) |bv| {
-        const y = cb_h - bv - (if (child.style.marginBottomIsAuto()) 0 else margin.bottom) - child.rectFromWorldOrFallback().h;
+        const y = cb_y + cb_h - bv - (if (child.style.marginBottomIsAuto()) 0 else margin.bottom) - child.rectFromWorldOrFallback().h;
         if (y != new_y) child.setLayoutY(y);
     };
 }
 
 fn layoutChildren(parent: *Node, available: Size, ctx: LayoutContext) void {
     const style = parent.style;
-    const is_row = style.direction.isRow();
-
     // wrap mode: row-by-row (line-broken) layout
     if (style.flex_wrap() != .no_wrap) {
         layoutChildrenWrap(parent, available, ctx);
         return;
     }
 
-    // pass 1: compute fixed sizes, flex total, and flow child count
-    var used_space: f32 = 0;
-    var flex_total: f32 = 0;
-    var flow_count: usize = 0;
-    var main_auto_margin_count: usize = 0;
+    layoutChildrenSingle(parent, available, ctx, true);
+}
 
+// OOM in either flex path uses clamped bases with no redistribution. Wrap also
+// degrades to one line, so no allocation or partly published line state is needed.
+fn layoutChildrenSingle(parent: *Node, available: Size, initial_ctx: LayoutContext, comptime scratch: bool) void {
+    var ctx = initial_ctx;
+    parent.frame_state.first_flex_line_end = parent.children.items.len;
+    const style = parent.style;
+    const is_row = style.direction.isRow();
+    var flow_count: usize = 0;
+    var flex_total: f32 = 0;
+    var main_auto_margin_count: usize = 0;
+    var margin_space: f32 = 0;
     for (parent.children.items) |child| {
-        // absolute children don't participate in flow layout
         if (isOutOfFlow(child)) continue;
         flow_count += 1;
-
-        const margin_main = if (is_row) child.style.marginHorizontal() else child.style.marginVertical();
+        const sizing = if (is_row) child.style.width else child.style.height;
+        if (sizing == .grow) flex_total += @max(0, child.style.flex);
+        margin_space += if (is_row) child.style.marginHorizontal() else child.style.marginVertical();
         if (is_row) {
             if (child.style.marginLeftIsAuto()) main_auto_margin_count += 1;
             if (child.style.marginRightIsAuto()) main_auto_margin_count += 1;
@@ -1750,204 +2410,70 @@ fn layoutChildren(parent: *Node, available: Size, ctx: LayoutContext) void {
             if (child.style.marginTopIsAuto()) main_auto_margin_count += 1;
             if (child.style.marginBottomIsAuto()) main_auto_margin_count += 1;
         }
-        const main_sizing = if (is_row) child.style.width else child.style.height;
-
-        // when flex_basis > 0, use flex_basis replacing width/height as main axis size contribution
-        if (child.style.flex_basis() > 0 and main_sizing != .grow) {
-            used_space += child.style.flex_basis() + margin_main;
-        } else switch (main_sizing) {
-            .px => |v| used_space += v + margin_main,
-            .grow => {
-                flex_total += child.style.flex;
-                // grow children's self-size doesn't take used_space (allocated from remaining),
-                // but their main-axis margin is real fixed cost, must count with .px/.fit/.percent,
-                // else remaining overestimated, flex children with margin overflow parent.
-                // auto margin already counted as 0 in marginHorizontal/Vertical, won't duplicate
-                // with main_auto_margin_count allocation.
-                used_space += margin_main;
-            },
-            .fit => {
-                // fit's intrinsic only affects layout when flex siblings exist (for computing
-                // remaining).
-                // defer until confirming flex_total > 0 to avoid redundant intrinsic calculation on
-                // many fit children.
-                used_space += margin_main;
-            },
-            .percent => |p| {
-                const main_avail = if (is_row) available.width else available.height;
-                used_space += main_avail * p / 100.0 + margin_main;
-            },
-        }
     }
-
-    // Gap: space_* modes do not use style.gap; spacing is computed from justify.
-    // Only exclude the case where the main axis is .fit (a fit container's size comes from its
-    // content,
-    // so there is no free space to distribute).
-    // Parents with .grow / .px / .percent have a definite main-axis size, so space_* should apply.
     const main_is_fit = if (is_row) style.width == .fit else style.height == .fit;
-    const is_space_mode = !main_is_fit and
-        flex_total == 0 and
-        (style.justify == .space_between or
-            style.justify == .space_around or
-            style.justify == .space_evenly);
+    const cross_is_fit = if (is_row) style.height == .fit else style.width == .fit;
+    const frozen_cross = ctx.frozen_node == parent and (ctx.frozen_both_axes or ctx.frozen_axis_is_width != is_row);
+    const natural_cross = cross_is_fit and !frozen_cross;
 
-    // Fit children's intrinsic size is backfilled only when a precise used_space is needed:
-    // - flex_total > 0: need remaining for flex space
-    // - is_space_mode: need remaining for justify spacing
-    // - justify == .center/.end: need precise remaining for offset
-    // The common case "all children fit/px, no flex no justify" skips calcIntrinsicSize entirely,
-    // avoiding redundant recursion on 3000+ children.
-    // - has_shrinkable_fit: flex_shrink also needs a precise used_space. If "shrinkable fit
-    //   children" exist and backfill is skipped, the overflow sum counts only px children, shrink
-    //   never triggers, and in a fit + max boxed container (popover chrome with autosize-limited
-    //   height) ScrollArea lays out by content height: footer pushed out, list cannot scroll.
-    //   "Shrinkable" follows the CSS flex item auto minimum size: overflow != visible items have
-    //   min 0; normal fit items' min is their content, so they skip backfill, else ScrollArea ->
-    //   content (normal fit) would also count as overflow and content = viewport can no longer
-    //   scroll. Shrink amount allocation is unchanged.
-    //   Only enabled when the parent's main axis is itself fit (fit only overflows from a max
-    //   ceiling): px / grow containers, esp. the "px 0 + overflow_hidden" hiding pattern (Modal
-    //   closed barrier, showNode), rely on children keeping content size while hidden; squeezing
-    //   to 0 leaves a reopened Modal panel at 0 height (native gate panel_infra).
-    var has_shrinkable_fit = false;
-    if (main_is_fit) for (parent.children.items) |child| {
-        if (isOutOfFlow(child)) continue;
-        if (isShrinkableFit(child, is_row)) {
-            has_shrinkable_fit = true;
-            break;
-        }
-    };
-    const needs_precise_remaining = flex_total > 0 or is_space_mode or
-        style.justify == .center or style.justify == .end or has_shrinkable_fit;
-    if (needs_precise_remaining) {
-        for (parent.children.items) |child| {
-            if (isOutOfFlow(child)) continue;
-            const main_sizing = if (is_row) child.style.width else child.style.height;
-            if (main_sizing == .fit) {
-                const intrinsic = if (is_row)
-                    calcChildIntrinsicSize(child, true)
-                else
-                    calcChildIntrinsicSize(child, false);
-                used_space += intrinsic;
-            }
-        }
-    }
-
-    const n_children: f32 = @floatFromInt(flow_count);
-    const gap_count: f32 = if (flow_count > 1)
-        @as(f32, @floatFromInt(flow_count - 1))
-    else
-        0;
-
-    if (!is_space_mode) {
-        used_space += gap_count * style.gap;
-    }
-
-    // remaining space
+    const gap_count: f32 = if (flow_count > 1) @floatFromInt(flow_count - 1) else 0;
+    const fixed_space = margin_space + gap_count * style.gap;
     const main_available = if (is_row) available.width else available.height;
-
-    // flex_shrink: when overflowing with no flex-grow children, distribute shrink amount by CSS
-    // weighted algorithm
-    // fast path: flow_count <= 512 use stack array; else allocate from frame_allocator
-    var shrink_stack: [512]f32 = @as([512]f32, @splat(0));
-    const shrink_deltas: []f32 = if (flow_count <= 512)
-        shrink_stack[0..flow_count]
-    else blk: {
-        const buf = ctx.frame_allocator.alloc(f32, flow_count) catch {
-            // degrade: shrink_deltas empty => skip flex_shrink entirely, no shrink on overflow.
-            layout_alloc_failure_hits +|= 1;
-            std.log.warn("[layoutChildren] shrink_deltas alloc failed (flow_count={d}), flex_shrink disabled for this node", .{flow_count});
-            break :blk &[_]f32{};
-        };
-        @memset(buf, 0);
-        break :blk buf;
+    var flex_stack: [flex_stack_capacity]FlexItem = undefined;
+    const items: []FlexItem = if (!scratch) &.{} else if (flow_count <= flex_stack.len) flex_stack[0..flow_count] else ctx.frame_allocator.alloc(FlexItem, flow_count) catch blk: {
+        layout_alloc_failure_hits +|= 1;
+        std.log.warn("[flex] scratch alloc failed (flow_count={d}), using clamped bases without redistribution", .{flow_count});
+        // No partially initialized scratch escapes. OOM keeps clamped bases (no flex).
+        break :blk &.{};
     };
-    const overflow = used_space - main_available;
-    if (overflow > 0 and flex_total == 0 and shrink_deltas.len > 0) {
-        // compute weighted sum: sum(basis_i * shrink_i)
-        var weighted_total: f32 = 0;
-        var idx: usize = 0;
-        for (parent.children.items) |child| {
-            if (isOutOfFlow(child)) continue;
-            if (idx >= shrink_deltas.len) break;
-            const basis = childBasisSize(child, is_row, available);
-            weighted_total += basis * child.style.flex_shrink;
-            idx += 1;
+    defer if (flow_count > flex_stack.len and items.len > 0) ctx.frame_allocator.free(items);
+    // Degraded geometry is usable, but flow mounts wait for a successful
+    // retry. In particular, a self-destroying mount must not run during this
+    // provisional single-line pass, which still reads items during backfill.
+    if (flow_count > 0 and items.len == 0) ctx.defer_mount = true;
+    var used_space = fixed_space;
+    var item_index: usize = 0;
+    for (parent.children.items) |child| {
+        if (isOutOfFlow(child)) continue;
+        const item = if (is_row) makeFlexItem(child, true, available) else makeFlexItem(child, false, available);
+        if (item_index < items.len) {
+            items[item_index] = item;
+        } else {
+            // OOM has no scratch storage. Publish the already-computed target
+            // to its eventual layout slot and reuse it during placement; do
+            // not run text/min-content measurement a second time.
+            const old_main = if (is_row) child.rectFromWorldOrFallback().w else child.rectFromWorldOrFallback().h;
+            if (old_main != item.target) child.frame_state.state_bits.dirty.core.layout = true;
+            if (is_row) child.setLayoutW(item.target) else child.setLayoutH(item.target);
         }
-
-        if (weighted_total > 0) {
-            idx = 0;
-            for (parent.children.items) |child| {
-                if (isOutOfFlow(child)) continue;
-                if (idx >= shrink_deltas.len) break;
-                const basis = childBasisSize(child, is_row, available);
-                shrink_deltas[idx] = (basis * child.style.flex_shrink / weighted_total) * overflow;
-                idx += 1;
-            }
-            // adjust used_space (after shrink no longer overflows)
-            used_space -= overflow;
-        }
+        item_index += 1;
+        used_space += item.target;
     }
-
-    // The main-fit container's final main-axis size is set by the backfill below
-    // (= clamp(content + padding)) and may differ from main_available (when an ancestor's
-    // cross-axis stretch made it wider). justify / auto-margin remaining space uses the predicted
-    // backfill size so the first pass places children in their final state, avoiding a
-    // "place by stretch width -> reposition after backfill" flip-flop that marks children dirty.
-    // The prediction depends only on the intrinsic estimate; deviations caused by text wrapping etc. are
-    // corrected by repositionMainAxis after backfill.
-    const justify_main_available = if (main_is_fit and flex_total == 0 and needs_precise_remaining) blk: {
-        const pad_main = if (is_row) style.padding.horizontal() else style.padding.vertical();
-        const mm = if (is_row)
-            effectiveMinMax(style.width, parent, true)
-        else
-            effectiveMinMax(style.height, parent, false);
-        break :blk std.math.clamp(used_space + pad_main, mm.min, mm.max) - pad_main;
+    if (items.len > 0) {
+        resolveFlexibleLengths(items, main_available - fixed_space);
+        used_space = fixed_space;
+        for (items) |item| used_space += item.target;
+    }
+    // A non-flexed fit main axis will backfill to its content. Predict that size
+    // for positioning, so an unchanged relayout does not move children twice.
+    const frozen_main = ctx.frozen_node == parent and (ctx.frozen_both_axes or ctx.frozen_axis_is_width == is_row);
+    const justify_available = if (main_is_fit and flex_total == 0 and !frozen_main) blk: {
+        const pad = if (is_row) style.contentInsets().horizontal() else style.contentInsets().vertical();
+        const mm = if (is_row) effectiveMinMax(style.width, parent, true) else effectiveMinMax(style.height, parent, false);
+        break :blk std.math.clamp(used_space + pad, mm.min, mm.max) - pad;
     } else main_available;
-    const remaining = @max(0, justify_main_available - used_space);
-    const flex_unit = if (flex_total > 0) remaining / flex_total else 0;
-    const auto_margin_unit = if (main_auto_margin_count > 0 and flex_total == 0)
+    const remaining = justify_available - used_space;
+    const auto_margin_unit = if (main_auto_margin_count > 0 and remaining > 0)
         remaining / @as(f32, @floatFromInt(main_auto_margin_count))
     else
         0;
-
-    // justify: compute spacing and start offset
-    const pad_start: f32 = if (is_row) style.padding.left else style.padding.top;
-
-    var justify_offset: f32 = 0;
-    var justify_gap: f32 = style.gap;
-
-    if (flex_total > 0 or main_auto_margin_count > 0) {
-        // when flex children exist, justify doesn't apply
-    } else if (is_space_mode) {
-        switch (style.justify) {
-            .space_between => {
-                justify_gap = if (gap_count > 0) remaining / gap_count else 0;
-            },
-            .space_around => {
-                const item_gap = if (n_children > 0) remaining / n_children else 0;
-                justify_gap = item_gap;
-                justify_offset = item_gap / 2.0;
-            },
-            .space_evenly => {
-                const item_gap = if (n_children > 0) remaining / (n_children + 1) else 0;
-                justify_gap = item_gap;
-                justify_offset = item_gap;
-            },
-            else => unreachable,
-        }
-    } else {
-        justify_offset = switch (style.justify) {
-            .start => 0,
-            .end => remaining,
-            .center => remaining / 2.0,
-            .space_between, .space_around, .space_evenly => 0,
-        };
-    }
+    const distribution = distribute(if (main_auto_margin_count > 0 and remaining > 0) .start else style.justify, remaining, flow_count, style.gap);
+    const pad_start: f32 = if (is_row) style.contentInsets().left else style.contentInsets().top;
+    const justify_offset = distribution.offset;
+    const justify_gap = distribution.gap;
 
     var cursor: f32 = pad_start + justify_offset;
-    var shrink_idx: usize = 0;
+    var flex_idx: usize = 0;
 
     for (parent.children.items) |child| {
         if (isDisplayNone(child)) {
@@ -1961,16 +2487,7 @@ fn layoutChildren(parent: *Node, available: Size, ctx: LayoutContext) void {
         }
 
         const margin = child.style.marginSpec();
-        const resolved_main_margins = if (is_row)
-            ResolvedAxisMargins{
-                .start = if (child.style.marginLeftIsAuto()) auto_margin_unit else margin.left,
-                .end = if (child.style.marginRightIsAuto()) auto_margin_unit else margin.right,
-            }
-        else
-            ResolvedAxisMargins{
-                .start = if (child.style.marginTopIsAuto()) auto_margin_unit else margin.top,
-                .end = if (child.style.marginBottomIsAuto()) auto_margin_unit else margin.bottom,
-            };
+        const resolved_main_margins = flexMainMargins(child, is_row, style.direction.isReverse(), auto_margin_unit);
         var child_width: f32 = undefined;
         var child_height: f32 = undefined;
 
@@ -1978,53 +2495,32 @@ fn layoutChildren(parent: *Node, available: Size, ctx: LayoutContext) void {
         // only downgrades inherited stretch)
         const cross_align = resolveCrossAlign(child, style.align_items);
 
-        // get current child's shrink delta
-        const cur_shrink_delta = if (shrink_idx < shrink_deltas.len) shrink_deltas[shrink_idx] else 0;
-        shrink_idx += 1;
-
-        // main axis / cross axis each computed once. previously this was a block of
-        // character-for-character mirrored
-        // if (is_row) / else with identical logic on both sides, width<->height swapped, changing
-        // one side
-        // forgetting the other caused bug only in column layout. extract helper functions taking
-        // params by axis,
-        // rule exists in one place only.
+        const target = if (flex_idx < items.len) items[flex_idx].target else if (is_row) child.rectFromWorldOrFallback().w else child.rectFromWorldOrFallback().h;
+        const main_frozen = if (flex_idx < items.len) items[flex_idx].target != items[flex_idx].base or child.style.flex_basis() >= 0 else true;
+        flex_idx += 1;
         if (is_row) {
-            child_width = resolveMainAxisSize(child, true, available, cur_shrink_delta, flex_unit);
-            child_height = resolveCrossAxisSize(child, true, available, cross_align);
+            child_width = target;
+            child_height = resolveCrossAxisSize(child, true, available, if (natural_cross) .start else cross_align);
+            const mm = effectiveMinMax(child.style.height, child, false);
+            child_height = @max(mm.min, @min(child_height, mm.max));
         } else {
-            child_height = resolveMainAxisSize(child, false, available, cur_shrink_delta, flex_unit);
-            child_width = resolveCrossAxisSize(child, false, available, cross_align);
+            child_height = target;
+            child_width = resolveCrossAxisSize(child, false, available, if (natural_cross) .start else cross_align);
+            const mm = effectiveMinMax(child.style.width, child, true);
+            child_width = @max(mm.min, @min(child_width, mm.max));
         }
 
-        // Independent min/max constraint clamp (CSS min-width/max-width/min-height/max-height).
-        // fit also includes sizing's own fit{.min,.max} (effectiveMinMax is the uniform basis):
-        // looking
-        // only at ext fails because fit{.max=N} takes effect only after children backfill; children
-        // are
-        // placed at unboxed size, overflow cannot be computed, flex_shrink never triggers and px
-        // siblings get pushed out.
-        // grow's mm has different semantics, unchanged.
-        // (effectiveMinMax for px/percent is just ext; grow uses a px placeholder and reverts to
-        // ext)
-        const mm_w = effectiveMinMax(if (child.style.width == .grow) Sizing{ .px = 0 } else child.style.width, child, true);
-        const mm_h = effectiveMinMax(if (child.style.height == .grow) Sizing{ .px = 0 } else child.style.height, child, false);
-        child_width = std.math.clamp(child_width, mm_w.min, mm_w.max);
-        child_height = std.math.clamp(child_height, mm_h.min, mm_h.max);
-
-        // aspect_ratio constraint: infer height from definite width (e.g. image node)
-        if (child.style.aspect_ratio() > 0 and child_width > 0) {
-            const ar = child.style.aspect_ratio();
-            // only applies when height not fixed px (px height priority)
-            if (child.style.height != .px) {
-                child_height = child_width / ar;
-            }
+        if (natural_cross or !stretches(child, is_row, style.align_items)) {
+            if (is_row) child_height = aspectCrossSize(child, true, child_width, child_height) else child_width = aspectCrossSize(child, false, child_height, child_width);
         }
 
         // text wrapping: compute line breaks after width fixed
         if (computeWrapTextLayoutForWidth(child, child_width)) |wrapped_h| {
             // fit height: use post-wrap total height
-            if (child.style.height == .fit) child_height = wrapped_h;
+            if (is_row and (child.style.height == .fit or child.style.height == .grow) and (natural_cross or !stretches(child, true, style.align_items))) {
+                const mm = effectiveMinMax(child.style.height, child, false);
+                child_height = @max(mm.min, @min(wrapped_h, mm.max));
+            }
         }
 
         // position (record old value first, for later marking dirty if changed)
@@ -2040,7 +2536,7 @@ fn layoutChildren(parent: *Node, available: Size, ctx: LayoutContext) void {
                 child.style.marginBottomIsAuto(),
             );
             child.setLayoutX(cursor + resolved_main_margins.start);
-            child.setLayoutY(style.padding.top + resolved_cross.start + switch (cross_align) {
+            child.setLayoutY(style.contentInsets().top + resolved_cross.start + switch (cross_align) {
                 .center => if (child.style.marginTopIsAuto() or child.style.marginBottomIsAuto()) 0 else (available.height - child.style.marginVertical() - child_height) / 2.0,
                 .end => if (child.style.marginTopIsAuto() or child.style.marginBottomIsAuto()) 0 else available.height - child.style.marginVertical() - child_height,
                 else => 0,
@@ -2055,7 +2551,7 @@ fn layoutChildren(parent: *Node, available: Size, ctx: LayoutContext) void {
                 child.style.marginLeftIsAuto(),
                 child.style.marginRightIsAuto(),
             );
-            child.setLayoutX(style.padding.left + resolved_cross.start + switch (cross_align) {
+            child.setLayoutX(style.contentInsets().left + resolved_cross.start + switch (cross_align) {
                 .center => if (child.style.marginLeftIsAuto() or child.style.marginRightIsAuto()) 0 else (available.width - child.style.marginHorizontal() - child_width) / 2.0,
                 .end => if (child.style.marginLeftIsAuto() or child.style.marginRightIsAuto()) 0 else available.width - child.style.marginHorizontal() - child_width,
                 else => 0,
@@ -2073,12 +2569,14 @@ fn layoutChildren(parent: *Node, available: Size, ctx: LayoutContext) void {
         child.setLayoutW(child_width);
         child.setLayoutH(child_height);
 
-        // shrinkable fit item pushed by flex_shrink: main axis size locked here, tell backfill not
-        // to stretch back
+        // A flexed/definite-basis main size must survive recursive fit backfill.
         var child_ctx = ctx;
-        const main_frozen = cur_shrink_delta > 0 and isShrinkableFit(child, is_row);
-        child_ctx.frozen_node = if (main_frozen) child else null;
-        child_ctx.frozen_axis_is_width = is_row;
+        // A changed flex target (or definite basis, including zero) is authoritative.
+        // Unflexed auto/content fit retains its intrinsic wrap backfill.
+        const cross_stretched = (!natural_cross and stretches(child, is_row, style.align_items)) or child.style.aspect_ratio() > 0;
+        child_ctx.frozen_node = if (main_frozen or cross_stretched) child else null;
+        child_ctx.frozen_both_axes = main_frozen and cross_stretched;
+        child_ctx.frozen_axis_is_width = if (main_frozen) is_row else !is_row;
         layoutNode(child, Size.init(child_width, child_height), child_ctx);
 
         // text wrap backfill correction: layoutNode internally may backfill child size due to
@@ -2134,10 +2632,10 @@ fn layoutChildren(parent: *Node, available: Size, ctx: LayoutContext) void {
         const cur_w = parent.rectFromWorldOrFallback().w;
         const cur_h = parent.rectFromWorldOrFallback().h;
         if (!main_fit and !cross_fit) break :fit_resize_block;
-        // parent flex_shrink locked this axis not backfill (see LayoutContext.frozen_node)
+        // Parent flex allocation locked this axis (see LayoutContext.frozen_node).
         const frozen_here = ctx.frozen_node == parent;
-        const skip_w = frozen_here and ctx.frozen_axis_is_width;
-        const skip_h = frozen_here and !ctx.frozen_axis_is_width;
+        const skip_w = frozen_here and (ctx.frozen_axis_is_width or ctx.frozen_both_axes);
+        const skip_h = frozen_here and (!ctx.frozen_axis_is_width or ctx.frozen_both_axes);
 
         var actual_main: f32 = 0;
         var actual_cross: f32 = 0;
@@ -2150,10 +2648,19 @@ fn layoutChildren(parent: *Node, available: Size, ctx: LayoutContext) void {
             actual_cross = @max(actual_cross, child_cross);
             flow_n += 1;
         }
+        if (is_row) {
+            const before = lineBaseline(parent.children.items, true, style.align_items, false);
+            var after: f32 = -std.math.inf(f32);
+            for (parent.children.items) |child| {
+                if (isOutOfFlow(child) or crossAutoMargins(child, true) or !baselineAlign(resolveCrossAlign(child, style.align_items))) continue;
+                after = @max(after, child.style.margin.bottom + child.rectFromWorldOrFallback().h - firstBaseline(child, true, 0));
+            }
+            actual_cross = @max(actual_cross, before + after);
+        }
         if (flow_n > 1) actual_main += @as(f32, @floatFromInt(flow_n - 1)) * pstyle_fit.gap;
 
         if (main_fit) {
-            const new_main = actual_main + (if (is_row) pstyle_fit.padding.horizontal() else pstyle_fit.padding.vertical());
+            const new_main = actual_main + (if (is_row) pstyle_fit.contentInsets().horizontal() else pstyle_fit.contentInsets().vertical());
             if (is_row) {
                 const mm = effectiveMinMax(pstyle_fit.width, parent, true);
                 const v = std.math.clamp(new_main, mm.min, mm.max);
@@ -2165,7 +2672,7 @@ fn layoutChildren(parent: *Node, available: Size, ctx: LayoutContext) void {
             }
         }
         if (cross_fit) {
-            const new_cross = actual_cross + (if (is_row) pstyle_fit.padding.vertical() else pstyle_fit.padding.horizontal());
+            const new_cross = actual_cross + (if (is_row) pstyle_fit.contentInsets().vertical() else pstyle_fit.contentInsets().horizontal());
             if (is_row) {
                 const mm = effectiveMinMax(pstyle_fit.height, parent, false);
                 const v = std.math.clamp(new_cross, mm.min, mm.max);
@@ -2179,19 +2686,23 @@ fn layoutChildren(parent: *Node, available: Size, ctx: LayoutContext) void {
             // backfill correction: after parent cross size growth, grow children cross axis need
             // re-stretch to new space
             const new_cross_avail = if (is_row)
-                parent.rectFromWorldOrFallback().h - pstyle_fit.padding.vertical()
+                parent.rectFromWorldOrFallback().h - pstyle_fit.contentInsets().vertical()
             else
-                parent.rectFromWorldOrFallback().w - pstyle_fit.padding.horizontal();
+                parent.rectFromWorldOrFallback().w - pstyle_fit.contentInsets().horizontal();
             for (parent.children.items) |child| {
                 if (isOutOfFlow(child)) continue;
                 const cross_sizing = if (is_row) child.style.height else child.style.width;
-                if (cross_sizing == .grow) {
-                    const margin_cross = if (is_row) child.style.marginVertical() else child.style.marginHorizontal();
-                    const resolved = std.math.clamp(new_cross_avail - margin_cross, cross_sizing.grow.min, cross_sizing.grow.max);
-                    if (is_row) {
-                        child.setLayoutH(resolved);
-                    } else {
-                        child.setLayoutW(resolved);
+                if ((cross_sizing == .grow or cross_sizing == .fit) and stretches(child, is_row, style.align_items)) {
+                    const resolved = resolveCrossAxisSize(child, is_row, if (is_row) Size.init(available.width, new_cross_avail) else Size.init(new_cross_avail, available.height), .stretch);
+                    const old = child.rectFromWorldOrFallback();
+                    if ((if (is_row) old.h else old.w) != resolved) {
+                        if (is_row) child.setLayoutH(resolved) else child.setLayoutW(resolved);
+                        child.frame_state.state_bits.dirty.core.layout = true;
+                        var stretched_ctx = ctx;
+                        stretched_ctx.frozen_node = child;
+                        stretched_ctx.frozen_both_axes = true;
+                        stretched_ctx.frozen_axis_is_width = is_row;
+                        layoutNode(child, Size.init(child.rectFromWorldOrFallback().w, child.rectFromWorldOrFallback().h), stretched_ctx);
                     }
                 }
             }
@@ -2206,13 +2717,13 @@ fn layoutChildren(parent: *Node, available: Size, ctx: LayoutContext) void {
     // rerun main-axis positioning by final size + child actual size. child coords are
     // parent-relative,
     // translate doesn't affect subtree layout, no recursive relayout needed (O(children)).
-    // when flex_total > 0 justify/auto-margin ineffective, position from pad_start in order,
-    // independent of main size, no relayout. only main-fit backfill changes main size.
+    // Non-fit containers already used post-flex remaining space above. Only a
+    // fit backfill can change the size used for their final positioning here.
     if (main_is_fit and flex_total == 0) {
         const final_main_available = if (is_row)
-            parent.rectFromWorldOrFallback().w - style.padding.horizontal()
+            parent.rectFromWorldOrFallback().w - style.contentInsets().horizontal()
         else
-            parent.rectFromWorldOrFallback().h - style.padding.vertical();
+            parent.rectFromWorldOrFallback().h - style.contentInsets().vertical();
         if (final_main_available != main_available) {
             repositionMainAxis(parent, is_row, final_main_available, main_auto_margin_count);
         }
@@ -2222,9 +2733,10 @@ fn layoutChildren(parent: *Node, available: Size, ctx: LayoutContext) void {
     // backfill can then change its parent's size. Align using those final
     // dimensions; the preliminary alignment above used intrinsic estimates.
     const final_cross_available = if (is_row)
-        parent.rectFromWorldOrFallback().h - style.padding.vertical()
+        parent.rectFromWorldOrFallback().h - style.contentInsets().vertical()
     else
-        parent.rectFromWorldOrFallback().w - style.padding.horizontal();
+        parent.rectFromWorldOrFallback().w - style.contentInsets().horizontal();
+    const baseline = lineBaseline(parent.children.items, is_row, style.align_items, false);
     for (parent.children.items) |child| {
         if (isOutOfFlow(child)) continue;
         const cross_align = resolveCrossAlign(child, style.align_items);
@@ -2239,6 +2751,7 @@ fn layoutChildren(parent: *Node, available: Size, ctx: LayoutContext) void {
         const offset = if (start_auto or end_auto) 0 else switch (cross_align) {
             .center => extra / 2.0,
             .end => extra,
+            .baseline, .first_baseline => if (is_row) baseline - start_margin - firstBaseline(child, true, 0) else 0,
             else => 0,
         };
         // same as batchReverseChildren: position change must mark dirty. this pass re-aligns by
@@ -2247,9 +2760,9 @@ fn layoutChildren(parent: *Node, available: Size, ctx: LayoutContext) void {
         // changing
         // cross size really moves children.
         const new_cross = if (is_row)
-            style.padding.top + resolved.start + offset
+            style.contentInsets().top + resolved.start + offset
         else
-            style.padding.left + resolved.start + offset;
+            style.contentInsets().left + resolved.start + offset;
         const old_cross = if (is_row) child.rectFromWorldOrFallback().y else child.rectFromWorldOrFallback().x;
         if (old_cross != new_cross) {
             child.frame_state.state_bits.dirty.core.layout = true;
@@ -2263,14 +2776,17 @@ fn layoutChildren(parent: *Node, available: Size, ctx: LayoutContext) void {
 
     // reverse: mirror-flip child position on main axis (relative coords)
     if (style.direction.isReverse()) {
-        const main_start = if (is_row) style.padding.left else style.padding.top;
-        const main_end = if (is_row) parent.rectFromWorldOrFallback().w - style.padding.right else parent.rectFromWorldOrFallback().h - style.padding.bottom;
+        const main_start = if (is_row) style.contentInsets().left else style.contentInsets().top;
+        const main_end = if (is_row) parent.rectFromWorldOrFallback().w - style.contentInsets().right else parent.rectFromWorldOrFallback().h - style.contentInsets().bottom;
 
         if (is_row) {
             batchReverseChildren(parent.children.items, true, main_start, main_end);
         } else {
             batchReverseChildren(parent.children.items, false, main_start, main_end);
         }
+    }
+    for (parent.children.items) |child| {
+        if (!isOutOfFlow(child)) applyRelativeInset(child, available);
     }
 }
 
@@ -2298,36 +2814,26 @@ fn repositionMainAxis(parent: *Node, is_row: bool, final_main_available: f32, ma
     }
     if (flow_n > 1) used += @as(f32, @floatFromInt(flow_n - 1)) * style.gap;
 
-    const remaining = @max(0, final_main_available - used);
-    const auto_margin_unit = if (main_auto_margin_count > 0)
+    const remaining = final_main_available - used;
+    const auto_margin_unit = if (main_auto_margin_count > 0 and remaining > 0)
         remaining / @as(f32, @floatFromInt(main_auto_margin_count))
     else
         0;
-    const justify_offset: f32 = if (main_auto_margin_count > 0) 0 else switch (style.justify) {
-        .end => remaining,
-        .center => remaining / 2.0,
-        .start, .space_between, .space_around, .space_evenly => 0,
-    };
-
-    var cursor: f32 = (if (is_row) style.padding.left else style.padding.top) + justify_offset;
+    const distribution = distribute(if (main_auto_margin_count > 0 and remaining > 0) .start else style.justify, remaining, flow_n, style.gap);
+    const justify_offset = distribution.offset;
+    var cursor: f32 = (if (is_row) style.contentInsets().left else style.contentInsets().top) + justify_offset;
     for (parent.children.items) |child| {
         if (isOutOfFlow(child)) continue;
         const r = child.rectFromWorldOrFallback();
-        const m = child.style.marginSpec();
-        const start_m = if (is_row)
-            (if (child.style.marginLeftIsAuto()) auto_margin_unit else m.left)
-        else
-            (if (child.style.marginTopIsAuto()) auto_margin_unit else m.top);
-        const end_m = if (is_row)
-            (if (child.style.marginRightIsAuto()) auto_margin_unit else m.right)
-        else
-            (if (child.style.marginBottomIsAuto()) auto_margin_unit else m.bottom);
+        const main_margins = flexMainMargins(child, is_row, style.direction.isReverse(), auto_margin_unit);
+        const start_m = main_margins.start;
+        const end_m = main_margins.end;
         if (is_row) {
             child.setLayoutX(cursor + start_m);
-            cursor += r.w + start_m + end_m + style.gap;
+            cursor += r.w + start_m + end_m + distribution.gap;
         } else {
             child.setLayoutY(cursor + start_m);
-            cursor += r.h + start_m + end_m + style.gap;
+            cursor += r.h + start_m + end_m + distribution.gap;
         }
     }
 }
@@ -2336,344 +2842,319 @@ fn repositionMainAxis(parent: *Node, is_row: bool, final_main_available: f32, ma
 
 const GridConfig = types.GridConfig;
 
-/// stack placement record
 const Placement = struct {
-    col: u8, // 0-based column index
-    row: u8, // 0-based row index
-    col_span: u8,
-    row_span: u8,
+    col: usize = 0,
+    row: usize = 0,
+    col_span: usize = 0,
+    row_span: usize = 0,
 };
 
-/// grid layout algorithm
+fn gridOverlaps(placements: []const Placement, p: Placement) bool {
+    for (placements) |q| {
+        if (q.col_span != 0 and p.col < q.col + q.col_span and q.col < p.col + p.col_span and
+            p.row < q.row + q.row_span and q.row < p.row + p.row_span) return true;
+    }
+    return false;
+}
+
+const GridTrack = struct {
+    base: f32 = 0,
+    limit: f32 = std.math.inf(f32),
+    growth: f32 = 0,
+    flex: f32 = 0,
+    frozen: bool = false,
+    minimum: types.GridTrackSize.Minimum = .auto,
+    maximum: types.GridTrackSize.Maximum = .auto,
+    fn init(spec: types.GridTrackSize) GridTrack {
+        const minimum: types.GridTrackSize.Minimum = switch (spec) {
+            .px => |v| .{ .px = v },
+            .fr, .auto => .auto,
+            .minmax => |v| v.min,
+        };
+        const maximum: types.GridTrackSize.Maximum = switch (spec) {
+            .px => |v| .{ .px = v },
+            .fr => |v| .{ .fr = v },
+            .auto => .auto,
+            .minmax => |v| v.max,
+        };
+        const base = if (minimum == .px) @max(0, minimum.px) else 0;
+        return .{ .base = base, .growth = base, .limit = if (maximum == .px) @max(base, maximum.px) else std.math.inf(f32), .flex = if (maximum == .fr) @max(0, maximum.fr) else 0, .minimum = minimum, .maximum = maximum };
+    }
+};
+
+fn gridArea(tracks: []const GridTrack, start: usize, span: usize, gap: f32) f32 {
+    var size = @as(f32, @floatFromInt(span - 1)) * gap;
+    for (tracks[start..][0..span]) |t| size += t.base;
+    return size;
+}
+
+const GridContribution = enum { minimum, max_content };
+
+fn gridContribution(child: *Node, comptime width: bool, kind: GridContribution, cross: f32, automatic: bool) f32 {
+    const sizing = if (width) child.style.width else child.style.height;
+    const mm = effectiveMinMax(sizing, child, width);
+    const ext = child.style.getExt();
+    const own_min = switch (sizing) {
+        .grow, .fit => |v| v.min,
+        else => @as(f32, -1),
+    };
+    const raw_min = if (width) ext.min_width else ext.min_height;
+    var content = if (kind == .max_content) calcIntrinsicSize(child, width) else flexMinContent(child, width);
+    if (!width and child.resolveTextProps() != null)
+        content = measureNode(child, .{ .definite_width = cross }).height;
+    if (child.style.aspect_ratio() > 0) {
+        const opposite = if (width) child.style.height else child.style.width;
+        if (opposite == .px) content = @max(content, aspectTransfer(opposite.px, child.style.aspect_ratio(), width));
+    }
+    var value = switch (sizing) {
+        .px => |v| v,
+        .percent => @as(f32, 0), // indefinite intrinsic percentage
+        .fit => content, // explicit max-content on the inline/main mapped axis
+        .grow => if (kind != .minimum or (automatic and raw_min < 0 and own_min < 0 and !child.style.overflow_hidden and child.style.overflow == .visible)) content else mm.min,
+    };
+    value = std.math.clamp(value, mm.min, mm.max);
+    return value + childMarginForAxis(child, width);
+}
+
+// Distribute an item's intrinsic contribution across eligible tracks. Process
+// increasing spans so a spanning item sees all shorter items' established bases.
+fn sizeGridTracks(parent: *Node, placements: []const Placement, tracks: []GridTrack, comptime width: bool, available: f32, cross_tracks: []const GridTrack) void {
+    const gc = parent.style.grid().?;
+    const gap = if (width) gc.column_gap else gc.row_gap;
+    const cross_gap = if (width) gc.row_gap else gridTrackDistribution(parent, cross_tracks, true, @max(0, parent.rectFromWorldOrFallback().w - parent.style.contentInsets().horizontal())).gap;
+    var max_span: usize = 1;
+    for (placements) |p| max_span = @max(max_span, if (width) p.col_span else p.row_span);
+    for (1..max_span + 1) |span| {
+        for (parent.children.items, placements) |child, p| {
+            if (p.col_span == 0 or (if (width) p.col_span else p.row_span) != span) continue;
+            const start = if (width) p.col else p.row;
+            const group = tracks[start..][0..span];
+            var has_auto = false;
+            var has_flex = false;
+            for (group) |t| {
+                has_auto = has_auto or t.minimum == .auto;
+                has_flex = has_flex or t.flex > 0;
+            }
+            const automatic = has_auto and !(span > 1 and has_flex);
+            const cross = if (width or cross_tracks.len == 0) @as(f32, 0) else gridArea(cross_tracks, p.col, p.col_span, cross_gap);
+            // Automatic minima use minimum contributions. There is no separate
+            // min-content track sizing keyword in this supported track subset.
+            var weight: f32 = 0;
+            var minimum_current = @as(f32, @floatFromInt(span - 1)) * gap;
+            for (group) |t| {
+                minimum_current += t.base;
+                if (t.minimum == .auto) weight += if (has_flex and span > 1) t.flex else 1;
+            }
+            if (weight > 0) {
+                const deficit = @max(0, gridContribution(child, width, .minimum, cross, automatic) - minimum_current);
+                for (group) |*t| {
+                    // CSS Grid §12.5 step 4 distributes spanning flex deficits
+                    // to flexible tracks in proportion to their flex factors.
+                    if (t.minimum == .auto) t.base += deficit * (if (has_flex and span > 1) t.flex else @as(f32, 1)) / weight;
+                    t.limit = @max(t.base, t.limit);
+                }
+            }
+            var current = @as(f32, @floatFromInt(span - 1)) * gap;
+            var count: usize = 0;
+            for (group) |t| {
+                current += @max(t.base, t.growth);
+                if (t.maximum == .auto) count += 1;
+            }
+            if (count > 0) {
+                const desired = gridContribution(child, width, .max_content, cross, automatic);
+                const delta = @max(0, desired - current) / @as(f32, @floatFromInt(count));
+                for (group) |*t| if (t.maximum == .auto) {
+                    t.growth = @max(t.base, t.growth) + delta;
+                };
+            }
+        }
+    }
+    var free = available - @as(f32, @floatFromInt(tracks.len - 1)) * gap;
+    for (tracks) |*t| {
+        t.growth = @max(t.base, if (t.maximum == .px) t.limit else t.growth);
+        free -= t.base;
+    }
+    // Maximize non-flex tracks, respecting finite growth limits.
+    for (0..tracks.len + 1) |_| {
+        var count: usize = 0;
+        for (tracks) |t| if (t.flex == 0 and t.base < t.growth) {
+            count += 1;
+        };
+        if (free <= 0 or count == 0) break;
+        const share = free / @as(f32, @floatFromInt(count));
+        for (tracks) |*t| if (t.flex == 0 and t.base < t.growth) {
+            const delta = @min(share, t.growth - t.base);
+            t.base += delta;
+            free -= delta;
+        };
+    }
+    // Find the fr size; tracks whose base exceeds their share freeze and return
+    // to the non-flex set. Factors below one retain unused free space (§12.7).
+    var fraction: f32 = 0;
+    for (0..tracks.len + 1) |_| {
+        var space = available - @as(f32, @floatFromInt(tracks.len - 1)) * gap;
+        var factors: f32 = 0;
+        for (tracks) |t| {
+            if (t.flex > 0 and !t.frozen) factors += t.flex else space -= t.base;
+        }
+        fraction = @max(0, space) / @max(1, factors);
+        var changed = false;
+        for (tracks) |*t| {
+            if (t.flex > 0 and !t.frozen and t.base > fraction * t.flex) {
+                t.frozen = true;
+                changed = true;
+            }
+        }
+        if (!changed) break;
+    }
+    free = available - @as(f32, @floatFromInt(tracks.len - 1)) * gap;
+    var autos: usize = 0;
+    for (tracks) |*t| {
+        if (t.flex > 0 and !t.frozen) t.base = @max(t.base, fraction * t.flex);
+        free -= t.base;
+        if (t.maximum == .auto) autos += 1;
+    }
+    // Default justify-content/align-content normal stretches auto tracks only.
+    const stretch = !width and (parent.style.align_content == .normal or parent.style.align_content == .stretch);
+    if (stretch and free > 0 and autos > 0) for (tracks) |*t| {
+        if (t.maximum == .auto) t.base += free / @as(f32, @floatFromInt(autos));
+    };
+}
+
+fn gridTrackDistribution(parent: *Node, tracks: []const GridTrack, width: bool, available: f32) Distribution {
+    const gc = parent.style.grid().?;
+    const gap = if (width) gc.column_gap else gc.row_gap;
+    var used = @as(f32, @floatFromInt(tracks.len - 1)) * gap;
+    for (tracks) |t| used += t.base;
+    const justify: types.JustifyContent = if (width) parent.style.justify else switch (parent.style.align_content) {
+        .normal, .stretch, .start => .start,
+        .end => .end,
+        .center => .center,
+        .space_between => .space_between,
+        .space_around => .space_around,
+        .space_evenly => .space_evenly,
+    };
+    return distribute(justify, available - used, tracks.len, gap);
+}
+
 fn layoutChildrenGrid(parent: *Node, available: Size, ctx: LayoutContext) void {
     const gc = parent.style.grid() orelse return;
     const children = parent.children.items;
-    if (children.len == 0) return;
-
-    // GridConfig is public and can be constructed without the `grid()` builder,
-    // so its independent count fields are untrusted. Both backing arrays have
-    // exactly MAX_TRACKS entries.
-    const col_count = @min(@as(usize, gc.column_count), GridConfig.MAX_TRACKS);
-    const explicit_row_count = @min(@as(usize, gc.row_count), GridConfig.MAX_TRACKS);
-    const max_rows: usize = 64;
-
-    if (col_count == 0) return;
-
-    // phase A: auto-placement (row-major)
-    // occupation bitmap: [max_rows][MAX_TRACKS] bool
-    var occupied: [max_rows][GridConfig.MAX_TRACKS]bool = @splat(@splat(false));
-    // fast path: children <= 512 use stack array; else allocate from frame_allocator
-    var placements_stack: [512]Placement = undefined;
-    const child_count = children.len;
-    const placements: []Placement = if (child_count <= 512)
-        placements_stack[0..child_count]
-    else blk: {
-        break :blk ctx.frame_allocator.alloc(Placement, child_count) catch {
-            // degrade: the whole grid is not laid out (children keep the previous frame's geometry).
-            layout_alloc_failure_hits +|= 1;
-            std.log.warn("[grid] placements alloc failed (child_count={d}), grid layout skipped", .{child_count});
-            return;
-        };
+    if (children.len == 0 or gc.column_count == 0) return;
+    const a = ctx.frame_allocator;
+    const placements = a.alloc(Placement, children.len) catch {
+        layout_alloc_failure_hits +|= 1;
+        return;
     };
-    var actual_row_count: usize = explicit_row_count;
-
-    // pass 1: place explicitly-positioned children
-    for (children, 0..) |child, i| {
-        if (i >= placements.len) break;
-        // absolute / display:none children don't participate in grid layout (consistent with
-        // flexbox)
-        if (isOutOfFlow(child)) {
-            placements[i] = .{ .col = 0, .row = 0, .col_span = 0, .row_span = 0 }; // mark skipped
-            continue;
-        }
-        if (child.style.grid_placement()) |gp| {
-            if (gp.col_start > 0 and gp.row_start > 0) {
-                const col_index = @as(usize, gp.col_start - 1);
-                const row_index = @as(usize, gp.row_start - 1);
-                // This engine supports implicit rows but not implicit columns;
-                // explicit starts outside either bounded backing table cannot
-                // be represented safely. Treat the placement as skipped.
-                if (col_index >= col_count or row_index >= max_rows or gp.col_span == 0 or gp.row_span == 0) {
-                    placements[i] = .{ .col = 0, .row = 0, .col_span = 0, .row_span = 0 };
-                    continue;
-                }
-                const col: u8 = @intCast(col_index);
-                const row: u8 = @intCast(row_index);
-                placements[i] = .{
-                    .col = col,
-                    .row = row,
-                    .col_span = gp.col_span,
-                    .row_span = gp.row_span,
-                };
-                markOccupied(&occupied, col, row, gp.col_span, gp.row_span, col_count, max_rows);
-                actual_row_count = @max(actual_row_count, @as(usize, row) + gp.row_span);
-            } else {
-                // partially explicit, auto-place later
-                placements[i] = .{ .col = 0, .row = 0, .col_span = gp.col_span, .row_span = gp.row_span };
-            }
-        } else {
-            placements[i] = .{ .col = 0, .row = 0, .col_span = 1, .row_span = 1 };
-        }
-    }
-
-    // pass 2: row-major auto-placement (use usize to avoid u8 overflow)
-    var auto_row: usize = 0;
-    var auto_col: usize = 0;
-    for (children, 0..) |child, i| {
-        if (i >= placements.len) break;
-        // skip absolute children
+    defer a.free(placements);
+    @memset(placements, .{});
+    var cols: usize = @min(gc.column_count, GridConfig.MAX_TRACKS);
+    var rows: usize = @min(gc.row_count, GridConfig.MAX_TRACKS);
+    // Determine the implicit column range before auto placement (§8.5 step 3).
+    for (children) |child| {
         if (isOutOfFlow(child)) continue;
-        const gp = child.style.grid_placement();
-        // skip already explicitly positioned
-        if (gp != null and gp.?.col_start > 0 and gp.?.row_start > 0) continue;
-
-        const cspan: usize = @intCast(placements[i].col_span);
-        const rspan: usize = @intCast(placements[i].row_span);
-
-        // span exceeds column count can't place, mark skipped (col_span=0 same as absolute)
-        if (cspan > col_count or rspan > max_rows) {
-            placements[i] = .{ .col = 0, .row = 0, .col_span = 0, .row_span = 0 };
-            continue;
-        }
-
-        // find first placeable position
-        while (auto_row + rspan <= max_rows) {
-            if (auto_col + cspan <= col_count and !isOccupiedRegion(&occupied, @intCast(auto_col), @intCast(auto_row), @intCast(cspan), @intCast(rspan), col_count, max_rows)) {
-                break;
-            }
-            auto_col += 1;
-            if (auto_col + cspan > col_count) {
-                auto_col = 0;
-                auto_row += 1;
-            }
-        }
-
-        placements[i].col = @intCast(auto_col);
-        placements[i].row = @intCast(auto_row);
-        markOccupied(&occupied, @intCast(auto_col), @intCast(auto_row), @intCast(cspan), @intCast(rspan), col_count, max_rows);
-        actual_row_count = @max(actual_row_count, auto_row + rspan);
-
-        // advance to next position
-        auto_col += cspan;
-        if (auto_col >= col_count) {
-            auto_col = 0;
-            auto_row += 1;
-        }
+        const gp = child.style.grid_placement() orelse types.GridPlacement{};
+        cols = @max(cols, @as(usize, gp.col_start -| 1) + @max(1, @as(usize, gp.col_span)));
     }
-
-    // Phase B: Track sizing
-    var col_sizes: [GridConfig.MAX_TRACKS]f32 = @as([GridConfig.MAX_TRACKS]f32, @splat(0));
-    var row_sizes: [64]f32 = @as([64]f32, @splat(0));
-
-    // B1: fixed px and auto
-    // note: auto track sizing only considers span=1 children.
-    // multi-span children contribution to auto track needs CSS Grid Level 1
-    // "remaining space allocation" algorithm (complex), not yet implemented.
-    var fixed_col_total: f32 = 0;
-    var fr_col_total: f32 = 0;
-    for (0..col_count) |ci| {
-        switch (gc.columns[ci]) {
-            .px => |v| {
-                col_sizes[ci] = v;
-                fixed_col_total += v;
-            },
-            .auto => {
-                // take max intrinsic of all span=1 children in this column
-                var max_w: f32 = 0;
-                for (children, 0..) |child, idx| {
-                    if (idx >= placements.len) break;
-                    if (placements[idx].col == ci and placements[idx].col_span == 1) {
-                        max_w = @max(max_w, calcIntrinsicSize(child, true) + child.style.marginHorizontal());
-                    }
+    // Definite positions, then row-locked items, then sparse row-major cursor.
+    for (0..3) |pass| {
+        var cursor_row: usize = 0;
+        var cursor_col: usize = 0;
+        for (children, 0..) |child, i| {
+            if (isOutOfFlow(child)) continue;
+            const gp = child.style.grid_placement() orelse types.GridPlacement{};
+            const phase: usize = if (gp.row_start > 0 and gp.col_start > 0) 0 else if (gp.row_start > 0) 1 else 2;
+            if (phase != pass) continue;
+            var p = Placement{ .col = gp.col_start -| 1, .row = gp.row_start -| 1, .col_span = @max(1, @as(usize, gp.col_span)), .row_span = @max(1, @as(usize, gp.row_span)) };
+            if (pass == 1) {
+                // §8.5 sparse row-locked placement stays past prior items placed
+                // by this step; only dense packing would backfill their holes.
+                for (children[0..i], placements[0..i]) |earlier, q| {
+                    const egp = earlier.style.grid_placement() orelse continue;
+                    if (q.col_span > 0 and egp.row_start == gp.row_start and egp.col_start == 0)
+                        p.col = @max(p.col, q.col + q.col_span);
                 }
-                col_sizes[ci] = max_w;
-                fixed_col_total += max_w;
-            },
-            .fr => |f| fr_col_total += f,
-        }
-    }
-
-    growMultiSpanAutoColumns(children, placements[0..@min(children.len, placements.len)], gc, col_count, &col_sizes);
-    fixed_col_total = 0;
-    for (0..col_count) |ci| {
-        if (gc.columns[ci] != .fr) {
-            fixed_col_total += col_sizes[ci];
-        }
-    }
-
-    // fr columns: allocate remaining space
-    if (fr_col_total > 0) {
-        const col_gap_total = if (col_count > 1) @as(f32, @floatFromInt(col_count - 1)) * gc.column_gap else 0;
-        const remaining_w = @max(0, available.width - fixed_col_total - col_gap_total);
-        for (0..col_count) |ci| {
-            if (gc.columns[ci] == .fr) {
-                col_sizes[ci] = remaining_w * gc.columns[ci].fr / fr_col_total;
-            }
-        }
-    }
-
-    // B2: Row sizing
-    const row_count_capped = @min(actual_row_count, max_rows);
-    var fixed_row_total: f32 = 0;
-    var fr_row_total: f32 = 0;
-    for (0..row_count_capped) |ri| {
-        if (ri < explicit_row_count) {
-            switch (gc.rows[ri]) {
-                .px => |v| {
-                    row_sizes[ri] = v;
-                    fixed_row_total += v;
-                },
-                .auto => {
-                    var max_h: f32 = 0;
-                    for (children, 0..) |child, idx| {
-                        if (idx >= placements.len) break;
-                        if (placements[idx].row == ri and placements[idx].row_span == 1) {
-                            max_h = @max(max_h, calcIntrinsicSize(child, false) + child.style.marginVertical());
+                while (gridOverlaps(placements, p)) p.col += 1;
+                cols = @max(cols, p.col + p.col_span);
+            } else if (pass == 2) {
+                p.row = cursor_row;
+                if (gp.col_start > 0) {
+                    if (p.col < cursor_col) p.row += 1;
+                    while (gridOverlaps(placements, p)) p.row += 1;
+                } else {
+                    p.col = cursor_col;
+                    while (true) {
+                        if (p.col + p.col_span > cols) {
+                            p.col = 0;
+                            p.row += 1;
                         }
+                        if (!gridOverlaps(placements, p)) break;
+                        p.col += 1;
                     }
-                    row_sizes[ri] = max_h;
-                    fixed_row_total += max_h;
-                },
-                .fr => |f| fr_row_total += f,
-            }
-        } else {
-            // implicit rows: auto sizing
-            var max_h: f32 = 0;
-            for (children, 0..) |child, idx| {
-                if (idx >= 512) break;
-                if (placements[idx].row == ri and placements[idx].row_span == 1) {
-                    max_h = @max(max_h, calcIntrinsicSize(child, false) + child.style.marginVertical());
                 }
+                cursor_row = p.row;
+                cursor_col = p.col;
             }
-            row_sizes[ri] = max_h;
-            fixed_row_total += max_h;
+            placements[i] = p;
+            rows = @max(rows, p.row + p.row_span);
         }
     }
-
-    growMultiSpanAutoRows(children, placements[0..@min(children.len, placements.len)], gc, row_count_capped, &row_sizes);
-    fixed_row_total = 0;
-    for (0..row_count_capped) |ri| {
-        if (ri >= explicit_row_count or gc.rows[ri] != .fr) {
-            fixed_row_total += row_sizes[ri];
-        }
-    }
-
-    // fr rows: allocate remaining space
-    if (fr_row_total > 0) {
-        const row_gap_total = if (row_count_capped > 1) @as(f32, @floatFromInt(row_count_capped - 1)) * gc.row_gap else 0;
-        const remaining_h = @max(0, available.height - fixed_row_total - row_gap_total);
-        for (0..row_count_capped) |ri| {
-            if (ri < explicit_row_count and gc.rows[ri] == .fr) {
-                row_sizes[ri] = remaining_h * gc.rows[ri].fr / fr_row_total;
-            }
-        }
-    }
-
-    // phase C: precompute track offsets
-    // col_offsets[i] = starting x of column i (relative to content left edge)
-    // after last column no more gap needed, but offset array uses [0..col_count) as start positions
-    var col_offsets: [GridConfig.MAX_TRACKS + 1]f32 = @as([(GridConfig.MAX_TRACKS + 1)]f32, @splat(0));
-    for (0..col_count) |ci| {
-        col_offsets[ci + 1] = col_offsets[ci] + col_sizes[ci] + gc.column_gap;
-    }
-
-    var row_offsets: [65]f32 = @as([65]f32, @splat(0));
-    for (0..row_count_capped) |ri| {
-        row_offsets[ri + 1] = row_offsets[ri] + row_sizes[ri] + gc.row_gap;
-    }
-
-    // phase C: child positioning
-    const pad_left = parent.style.padding.left;
-    const pad_top = parent.style.padding.top;
-
-    for (children, 0..) |child, i| {
-        if (i >= placements.len) break;
-
+    if (rows == 0) rows = 1;
+    const col_tracks = a.alloc(GridTrack, cols) catch {
+        layout_alloc_failure_hits +|= 1;
+        return;
+    };
+    defer a.free(col_tracks);
+    const row_tracks = a.alloc(GridTrack, rows) catch {
+        layout_alloc_failure_hits +|= 1;
+        return;
+    };
+    defer a.free(row_tracks);
+    for (col_tracks, 0..) |*t, i| t.* = GridTrack.init(if (i < @min(gc.column_count, GridConfig.MAX_TRACKS)) gc.columns[i] else .auto);
+    for (row_tracks, 0..) |*t, i| t.* = GridTrack.init(if (i < @min(gc.row_count, GridConfig.MAX_TRACKS)) gc.rows[i] else .auto);
+    sizeGridTracks(parent, placements, col_tracks, true, available.width, &.{});
+    sizeGridTracks(parent, placements, row_tracks, false, available.height, col_tracks);
+    const pad = parent.style.contentInsets();
+    const columns = gridTrackDistribution(parent, col_tracks, true, available.width);
+    const rows_distribution = gridTrackDistribution(parent, row_tracks, false, available.height);
+    for (children, placements) |child, p| {
         if (isDisplayNone(child)) {
             collapseDisplayNone(child);
             continue;
         }
-        // absolute children: same as flexbox, not participate in grid positioning
         if (child.style.position == .absolute) {
             layoutAbsoluteChild(parent, child, ctx);
             continue;
         }
-
-        const p = placements[i];
-        // col_span == 0 marks skipped children (span exceeded columns etc)
-        if (p.col_span == 0) continue;
-        const c: usize = @intCast(p.col);
-        const r: usize = @intCast(p.row);
-        const c_end: usize = @min(c + p.col_span, col_count);
-        const r_end: usize = @min(r + p.row_span, row_count_capped);
-
-        // compute cell area (includes span)
-        const cell_x = col_offsets[c];
-        const cell_y = row_offsets[r];
-        // cell size = last spanned track's end - start offset
-        // for multi-span, includes gaps between
-        var cell_w: f32 = 0;
-        for (c..c_end) |ci| {
-            cell_w += col_sizes[ci];
-            if (ci > c) cell_w += gc.column_gap;
-        }
-        var cell_h: f32 = 0;
-        for (r..r_end) |ri| {
-            cell_h += row_sizes[ri];
-            if (ri > r) cell_h += gc.row_gap;
-        }
-
-        // child size + min/max clamp
-        const child_w = std.math.clamp(resolveGridChildSize(child, true, cell_w, cell_h), child.style.min_width(), child.style.max_width());
-        const child_h = std.math.clamp(resolveGridChildSize(child, false, cell_h, cell_w), child.style.min_height(), child.style.max_height());
-
-        // alignment (reuse justify/align_items)
-        const h_align = parent.style.justify;
-        const v_align = resolveCrossAlign(child, parent.style.align_items);
-
-        const resolved_h = resolveAxisMargins(
-            cell_w,
-            child_w,
-            child.style.margin.left,
-            child.style.margin.right,
-            child.style.marginLeftIsAuto(),
-            child.style.marginRightIsAuto(),
-        );
-        const resolved_v = resolveAxisMargins(
-            cell_h,
-            child_h,
-            child.style.margin.top,
-            child.style.margin.bottom,
-            child.style.marginTopIsAuto(),
-            child.style.marginBottomIsAuto(),
-        );
-        const outer_w = child_w + resolved_h.start + resolved_h.end;
-        const outer_h = child_h + resolved_v.start + resolved_v.end;
-        const align_x: f32 = switch (h_align) {
-            .center => if (child.style.marginLeftIsAuto() or child.style.marginRightIsAuto()) 0 else (cell_w - outer_w) / 2.0,
-            .end => if (child.style.marginLeftIsAuto() or child.style.marginRightIsAuto()) 0 else cell_w - outer_w,
+        const cell_w = gridArea(col_tracks, p.col, p.col_span, columns.gap);
+        const cell_h = gridArea(row_tracks, p.row, p.row_span, rows_distribution.gap);
+        var x = pad.left + columns.offset;
+        var y = pad.top + rows_distribution.offset;
+        for (col_tracks[0..p.col]) |t| x += t.base + columns.gap;
+        for (row_tracks[0..p.row]) |t| y += t.base + rows_distribution.gap;
+        const w = resolveGridChildSize(child, true, cell_w, cell_h);
+        var h = resolveGridChildSize(child, false, cell_h, cell_w);
+        h = aspectCrossSize(child, true, w, h);
+        if (computeWrapTextLayoutForWidth(child, w)) |wrapped| if (child.style.height == .fit) {
+            const mm = effectiveMinMax(child.style.height, child, false);
+            h = std.math.clamp(wrapped, mm.min, mm.max);
+        };
+        const hm = resolveAxisMargins(cell_w, w, child.style.margin.left, child.style.margin.right, child.style.marginLeftIsAuto(), child.style.marginRightIsAuto());
+        const vm = resolveAxisMargins(cell_h, h, child.style.margin.top, child.style.margin.bottom, child.style.marginTopIsAuto(), child.style.marginBottomIsAuto());
+        x += hm.start;
+        y += vm.start + if (crossAutoMargins(child, true)) @as(f32, 0) else switch (resolveCrossAlign(child, parent.style.align_items)) {
+            .center => (cell_h - h - vm.start - vm.end) / 2,
+            .end => cell_h - h - vm.start - vm.end,
             else => 0,
         };
-        const align_y: f32 = switch (v_align) {
-            .center => if (child.style.marginTopIsAuto() or child.style.marginBottomIsAuto()) 0 else (cell_h - outer_h) / 2.0,
-            .end => if (child.style.marginTopIsAuto() or child.style.marginBottomIsAuto()) 0 else cell_h - outer_h,
-            else => 0,
-        };
-
-        const new_x = pad_left + cell_x + align_x + resolved_h.start;
-        const new_y = pad_top + cell_y + align_y + resolved_v.start;
-
-        if (child.rectFromWorldOrFallback().w != child_w or child.rectFromWorldOrFallback().h != child_h or
-            child.rectFromWorldOrFallback().x != new_x or child.rectFromWorldOrFallback().y != new_y)
-        {
-            child.frame_state.state_bits.dirty.core.layout = true;
-        }
-        child.setLayoutX(new_x);
-        child.setLayoutY(new_y);
-        child.setLayoutW(child_w);
-        child.setLayoutH(child_h);
-
-        layoutNode(child, Size.init(child_w, child_h), ctx);
+        const old = child.rectFromWorldOrFallback();
+        if (old.x != x or old.y != y or old.w != w or old.h != h) child.frame_state.state_bits.dirty.core.layout = true;
+        child.setLayoutRect(types.ComputedRect.init(x, y, w, h));
+        applyRelativeInset(child, .{ .width = cell_w, .height = cell_h });
+        var child_ctx = ctx;
+        child_ctx.frozen_node = child;
+        child_ctx.frozen_both_axes = true;
+        layoutNode(child, .{ .width = w, .height = h }, child_ctx);
     }
 }
 
@@ -2688,131 +3169,56 @@ pub fn resolveCrossAlign(child: *const Node, parent_align_items: AlignItems) Ali
 }
 
 fn resolveGridChildSize(child: *Node, comptime is_width: bool, cell_main: f32, cell_cross: f32) f32 {
-    _ = cell_cross;
     const sizing = if (is_width) child.style.width else child.style.height;
     const margin_axis = if (is_width) child.style.marginHorizontal() else child.style.marginVertical();
-    return switch (sizing) {
+    const mm = effectiveMinMax(sizing, child, is_width);
+    var size = switch (sizing) {
         .px => |v| v,
         .grow => @max(0, cell_main - margin_axis),
-        .fit => calcIntrinsicSize(child, is_width),
+        .fit => blk: {
+            if (child.parent) |parent| {
+                if (is_width != parent.style.direction.isRow() and stretches(child, !is_width, parent.style.align_items))
+                    break :blk @max(0, cell_main - margin_axis);
+            }
+            break :blk calcIntrinsicSize(child, is_width);
+        },
         .percent => |p| cell_main * p / 100.0,
     };
+    if ((sizing == .fit or sizing == .grow) and child.style.aspect_ratio() > 0) {
+        const opposite = if (is_width) child.style.height else child.style.width;
+        if (definiteSize(opposite, cell_cross, gridAxisDefinite(child, !is_width))) |v| size = aspectTransfer(v, child.style.aspect_ratio(), is_width);
+    }
+    return std.math.clamp(size, mm.min, mm.max);
 }
 
-fn growMultiSpanAutoColumns(
-    children: []const *Node,
-    placements: []const Placement,
-    gc: *const GridConfig,
-    col_count: usize,
-    col_sizes: *[GridConfig.MAX_TRACKS]f32,
-) void {
-    for (children, 0..) |child, idx| {
-        if (idx >= placements.len) break;
-        const p = placements[idx];
-        if (p.col_span <= 1 or p.col_span == 0) continue;
-
-        const start: usize = @intCast(p.col);
-        const end = @min(start + p.col_span, col_count);
-        var current: f32 = if (end > start) @as(f32, @floatFromInt(end - start - 1)) * gc.column_gap else 0;
-        var auto_track_count: usize = 0;
-
-        for (start..end) |ci| {
-            current += col_sizes[ci];
-            if (gc.columns[ci] == .auto) auto_track_count += 1;
+test "intrinsic cache: destroyed nodes do not accumulate tombstones" {
+    enableIntrinsicCache(testing.allocator);
+    defer disableIntrinsicCache();
+    const world_id: u16 = 77;
+    const put = struct {
+        fn f(node_id: u32) !void {
+            inline for (.{ IntrinsicKind.max_content, IntrinsicKind.min_content }) |kind| {
+                inline for (.{ false, true }) |is_main_row| {
+                    try g_intrinsic_cache.put(g_intrinsic_cache_allocator, intrinsicCacheKey(world_id, node_id, is_main_row, kind), .{ .value = 1, .content_version = 0 });
+                }
+            }
         }
-
-        if (auto_track_count == 0) continue;
-
-        const deficit = calcIntrinsicSize(child, true) + child.style.marginHorizontal() - current;
-        if (deficit <= 0) continue;
-
-        const per_track = deficit / @as(f32, @floatFromInt(auto_track_count));
-        for (start..end) |ci| {
-            if (gc.columns[ci] == .auto) col_sizes[ci] += per_track;
+    }.f;
+    for (1..301) |id| try put(@intCast(id));
+    var next: u32 = 1000;
+    for (0..200) |_| {
+        const first = next;
+        for (0..80) |_| {
+            try put(next);
+            next += 1;
+        }
+        for (first..next) |id| {
+            forgetIntrinsicCache(world_id, @intCast(id));
+            try id_hash.expectFewTombstones(&g_intrinsic_cache);
         }
     }
+    for (1..301) |id| forgetIntrinsicCache(world_id, @intCast(id));
 }
-
-fn growMultiSpanAutoRows(
-    children: []const *Node,
-    placements: []const Placement,
-    gc: *const GridConfig,
-    row_count: usize,
-    row_sizes: *[64]f32,
-) void {
-    for (children, 0..) |child, idx| {
-        if (idx >= placements.len) break;
-        const p = placements[idx];
-        if (p.row_span <= 1 or p.col_span == 0) continue;
-
-        const start: usize = @intCast(p.row);
-        const end = @min(start + p.row_span, row_count);
-        var current: f32 = if (end > start) @as(f32, @floatFromInt(end - start - 1)) * gc.row_gap else 0;
-        var auto_track_count: usize = 0;
-
-        for (start..end) |ri| {
-            current += row_sizes[ri];
-            if (isAutoRowTrack(gc, ri)) auto_track_count += 1;
-        }
-
-        if (auto_track_count == 0) continue;
-
-        const deficit = calcIntrinsicSize(child, false) + child.style.marginVertical() - current;
-        if (deficit <= 0) continue;
-
-        const per_track = deficit / @as(f32, @floatFromInt(auto_track_count));
-        for (start..end) |ri| {
-            if (isAutoRowTrack(gc, ri)) row_sizes[ri] += per_track;
-        }
-    }
-}
-
-fn isAutoRowTrack(gc: *const GridConfig, row_index: usize) bool {
-    const explicit_row_count = @min(@as(usize, gc.row_count), GridConfig.MAX_TRACKS);
-    if (row_index >= explicit_row_count) return true;
-    return gc.rows[row_index] == .auto;
-}
-
-/// mark occupation bitmap
-fn markOccupied(
-    occupied: *[64][GridConfig.MAX_TRACKS]bool,
-    col: u8,
-    row: u8,
-    col_span: u8,
-    row_span: u8,
-    col_count: usize,
-    max_rows: usize,
-) void {
-    var r: usize = row;
-    while (r < @min(@as(usize, row) + row_span, max_rows)) : (r += 1) {
-        var c: usize = col;
-        while (c < @min(@as(usize, col) + col_span, col_count)) : (c += 1) {
-            occupied[r][c] = true;
-        }
-    }
-}
-
-/// check if area occupied
-fn isOccupiedRegion(
-    occupied: *const [64][GridConfig.MAX_TRACKS]bool,
-    col: u8,
-    row: u8,
-    col_span: u8,
-    row_span: u8,
-    col_count: usize,
-    max_rows: usize,
-) bool {
-    var r: usize = row;
-    while (r < @min(@as(usize, row) + row_span, max_rows)) : (r += 1) {
-        var c: usize = col;
-        while (c < @min(@as(usize, col) + col_span, col_count)) : (c += 1) {
-            if (occupied[r][c]) return true;
-        }
-    }
-    return false;
-}
-
-const testing = std.testing;
 
 test "measureIntrinsicTextWidth accounts for monospace spans and inline padding" {
     const spans: []const types.TextSpan = &.{
@@ -2954,7 +3360,7 @@ test "measureNode bounds application-provided tree depth" {
         initialized += 1;
     }
     for (nodes[0 .. count - 1], 0..) |*node, i| {
-        try node.children.append(testing.allocator, &nodes[i + 1]);
+        try node.appendChild(testing.allocator, &nodes[i + 1]);
     }
 
     const hits_before = layout_depth_limit_hits;
@@ -2963,6 +3369,60 @@ test "measureNode bounds application-provided tree depth" {
     try testing.expectEqual(@as(usize, 0), g_layout_recursion_depth);
     try testing.expect(std.math.isFinite(measured.width));
     try testing.expect(std.math.isFinite(measured.height));
+}
+
+test "selected line baseline follows active owner and explicit ratio" {
+    const Bridge = struct {
+        fn metrics(ctx: *anyopaque, _: *const types.TextProps) ?TextLineMetrics {
+            return @as(*TextLineMetrics, @ptrCast(@alignCast(ctx))).*;
+        }
+    };
+    var first: u8 = 0;
+    var second: u8 = 0;
+    var a = TextLineMetrics{ .ascent = 23.6, .descent = 6.4 };
+    var b = TextLineMetrics{ .ascent = 12, .descent = 4 };
+    const props = types.TextProps{ .content = "AV ffi Windows", .font_size = 24, .line_height = 1.5 };
+    defer setShapeFontResolver(null, null);
+    setContextFontHooks(&first, null, null, null);
+    setContextLineMetrics(&first, Bridge.metrics, &a);
+    try testing.expectEqual(@as(f32, 27), firstTextBaseline(&props));
+    var explicit = props;
+    explicit.baseline_ratio = 0.5;
+    try testing.expectEqual(@as(f32, 18), firstTextBaseline(&explicit));
+
+    setContextFontHooks(&second, null, null, null);
+    setContextLineMetrics(&second, Bridge.metrics, &b);
+    clearContextFontHooks(&first);
+    setContextLineMetrics(&first, Bridge.metrics, &a); // Inactive owners cannot replace it.
+    try testing.expectEqual(@as(f32, 22), firstTextBaseline(&props));
+    clearContextFontHooks(&second);
+    try testing.expectEqual(@as(f32, 27), firstTextBaseline(&props)); // No-font fallback.
+
+    setContextFontHooks(&first, null, null, null); // Recreated/rebound window.
+    setContextLineMetrics(&first, Bridge.metrics, &b);
+    setDrawnTextMeasure(null, null); // Legacy takeover must release the borrowed context.
+    try testing.expectEqual(@as(f32, 27), firstTextBaseline(&props));
+}
+
+test "selected line baseline rejects unavailable and invalid metrics" {
+    const Bridge = struct {
+        fn metrics(ctx: *anyopaque, _: *const types.TextProps) ?TextLineMetrics {
+            return @as(*?TextLineMetrics, @ptrCast(@alignCast(ctx))).*;
+        }
+    };
+    var owner: u8 = 0;
+    var metrics: ?TextLineMetrics = null;
+    const props = types.TextProps{ .content = "sample", .font_size = 20, .line_height = 1 };
+    defer clearContextFontHooks(&owner);
+    setContextFontHooks(&owner, null, null, null);
+    setContextLineMetrics(&owner, Bridge.metrics, &metrics);
+    try testing.expectEqual(@as(f32, 15), firstTextBaseline(&props));
+    metrics = .{ .ascent = std.math.nan(f32), .descent = 4 };
+    try testing.expectEqual(@as(f32, 15), firstTextBaseline(&props));
+    metrics = .{ .ascent = 12, .descent = -1 };
+    try testing.expectEqual(@as(f32, 15), firstTextBaseline(&props));
+    metrics = .{ .ascent = 12, .descent = std.math.inf(f32) };
+    try testing.expectEqual(@as(f32, 15), firstTextBaseline(&props));
 }
 
 test "managed font hooks clear only the active Cx owner" {
@@ -2994,8 +3454,649 @@ test "intrinsic fit gaps exclude hidden anchors and display-none captions" {
     var first = Node{ .id = 2, .tag = .box, .style = .{ .width = .{ .px = 28 } }, .children = .empty };
     var hidden = Node{ .id = 3, .tag = .anchor, .style = .{ .display = .none }, .children = .empty };
     var last = Node{ .id = 4, .tag = .box, .style = .{ .width = .{ .px = 146 } }, .children = .empty };
-    try parent.children.append(std.testing.allocator, &first);
-    try parent.children.append(std.testing.allocator, &hidden);
-    try parent.children.append(std.testing.allocator, &last);
+    try parent.appendChild(std.testing.allocator, &first);
+    try parent.appendChild(std.testing.allocator, &hidden);
+    try parent.appendChild(std.testing.allocator, &last);
     try std.testing.expectEqual(@as(f32, 182), calcIntrinsicSizeUncached(&parent, true));
+}
+
+// Wide containers exercise both the frame scratch allocation and the OOM fallback.
+// Keep this in test-ui-core (and therefore zig build test), independent of a window.
+test "LC3 flex wide scratch OOM degrades safely and recovers" {
+    try expectFlexScratchRecovery(flex_stack_capacity + 1);
+    // Keep the original >512-child regression as well as the new stack boundary.
+    try expectFlexScratchRecovery(513);
+}
+
+fn expectFlexScratchRecovery(comptime count: usize) !void {
+    const a = std.testing.allocator;
+    const children = try a.alloc(Node, count);
+    defer a.free(children);
+    var parent = Node{ .id = 9000, .tag = .box, .style = .{ .width = .{ .px = @as(f32, @floatFromInt(count * 2)) }, .height = .{ .px = 20 }, .direction = .row }, .children = .empty };
+    defer parent.children.deinit(a);
+    for (children, 0..) |*child, i| {
+        child.* = .{ .id = @intCast(9001 + i), .tag = .box, .style = .{ .width = .{ .grow = .{} }, .height = .{ .px = 20 } }, .children = .empty };
+        try parent.appendChild(a, child);
+    }
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    layoutNode(&parent, .{ .width = @as(f32, @floatFromInt(count * 2)), .height = 20 }, .{ .frame_allocator = arena.allocator() });
+    for (children) |*child| try std.testing.expectApproxEqAbs(@as(f32, 2), child.rectFromWorldOrFallback().w, 0.001);
+    var failing = std.testing.FailingAllocator.init(a, .{ .fail_index = 0 });
+    const old_hits = layout_alloc_failure_hits;
+    parent.frame_state.state_bits.dirty.core.layout = true;
+    layoutNode(&parent, .{ .width = @as(f32, @floatFromInt(count * 2)), .height = 20 }, .{ .frame_allocator = failing.allocator() });
+    try std.testing.expectEqual(old_hits + 1, layout_alloc_failure_hits);
+    for (children) |*child| {
+        try std.testing.expectEqual(@as(f32, 0), child.rectFromWorldOrFallback().w);
+        try std.testing.expect(std.math.isFinite(child.rectFromWorldOrFallback().x));
+    }
+    parent.frame_state.state_bits.dirty.core.layout = true;
+    layoutNode(&parent, .{ .width = @as(f32, @floatFromInt(count * 2)), .height = 20 }, .{ .frame_allocator = arena.allocator() });
+    try std.testing.expectApproxEqAbs(@as(f32, 2), children[count - 1].rectFromWorldOrFallback().w, 0.001);
+    // display:none consumes no flow slot. At 33 -> 32 it also crosses
+    // back to stack scratch, so an allocator that cannot allocate is safe.
+    children[count - 1].style.display = .none;
+    parent.frame_state.state_bits.dirty.core.layout = true;
+    const hidden_allocator = if (count - 1 <= flex_stack_capacity) failing.allocator() else arena.allocator();
+    layoutNode(&parent, .{ .width = @as(f32, @floatFromInt(count * 2)), .height = 20 }, .{ .frame_allocator = hidden_allocator });
+    try std.testing.expectEqual(old_hits + 1, layout_alloc_failure_hits);
+    try std.testing.expectEqual(@as(f32, 0), children[count - 1].rectFromWorldOrFallback().w);
+    try std.testing.expectApproxEqAbs(@as(f32, @as(f32, @floatFromInt(count * 2)) / @as(f32, @floatFromInt(count - 1))), children[0].rectFromWorldOrFallback().w, 0.001);
+    children[count - 1].style.display = .flex;
+    // Scaled shrink also uses the wide path, and min violations must redistribute.
+    parent.style.width = .{ .px = @floatFromInt(count) };
+    for (children) |*child| child.style.width = .{ .px = 2 };
+    var ext: types.StyleExt = .{ .min_width = 2 };
+    children[0].style.ext = &ext;
+    parent.frame_state.state_bits.dirty.core.layout = true;
+    layoutNode(&parent, .{ .width = @floatFromInt(count), .height = 20 }, .{ .frame_allocator = arena.allocator() });
+    try std.testing.expectEqual(@as(f32, 2), children[0].rectFromWorldOrFallback().w);
+    try std.testing.expectApproxEqAbs(@as(f32, @as(f32, @floatFromInt(count - 2)) / @as(f32, @floatFromInt(count - 1))), children[count - 1].rectFromWorldOrFallback().w, 0.001);
+    parent.frame_state.state_bits.dirty.core.layout = true;
+    layoutNode(&parent, .{ .width = @floatFromInt(count), .height = 20 }, .{ .frame_allocator = failing.allocator() });
+    try std.testing.expectEqual(old_hits + 2, layout_alloc_failure_hits);
+    for (children) |*child| try std.testing.expectEqual(@as(f32, 2), child.rectFromWorldOrFallback().w);
+    parent.frame_state.state_bits.dirty.core.layout = true;
+    layoutNode(&parent, .{ .width = @floatFromInt(count), .height = 20 }, .{ .frame_allocator = arena.allocator() });
+    try std.testing.expectApproxEqAbs(@as(f32, @as(f32, @floatFromInt(count - 2)) / @as(f32, @floatFromInt(count - 1))), children[count - 1].rectFromWorldOrFallback().w, 0.001);
+}
+
+test "LC3 automatic minimum respects paint-only text spans" {
+    var node = Node{ .id = 9900, .tag = .text, .style = .{}, .children = .empty };
+    const spans: []const types.TextSpan = &.{.{ .start = 0, .end = 4, .inline_box_padding_left = 20, .inline_box_padding_right = 20 }};
+    var props = types.TextProps{ .content = "word", .wrap = .word, .spans = spans, .spans_affect_layout = false };
+    node.setText(props);
+    const plain = text_layout.measureTextWidthWithSpans(props.content, 0, 4, props.font_size, props.font_weight, props.use_italic_font, props.use_monospace_font, &.{});
+    try std.testing.expectApproxEqAbs(plain, makeFlexItem(&node, true, Size.init(0, 20)).min, 0.001);
+    props.spans_affect_layout = true;
+    node.setText(props);
+    try std.testing.expectApproxEqAbs(plain + 40, makeFlexItem(&node, true, Size.init(0, 20)).min, 0.001);
+}
+
+test "LC3 fit parent honors zero basis only on the main axis" {
+    var parent = Node{ .id = 9910, .tag = .box, .style = .{ .direction = .row }, .children = .empty };
+    defer parent.children.deinit(std.testing.allocator);
+    var ext = types.StyleExt{ .flex_basis = 0, .min_width = 0 };
+    var child = Node{ .id = 9911, .tag = .box, .style = .{ .width = .{ .px = 100 }, .height = .{ .px = 24 }, .ext = &ext }, .children = .empty };
+    try parent.appendChild(std.testing.allocator, &child);
+    try std.testing.expectEqual(@as(f32, 0), calcIntrinsicSize(&parent, true));
+    try std.testing.expectEqual(@as(f32, 24), calcIntrinsicSize(&parent, false));
+    try std.testing.expectEqual(@as(f32, 0), makeFlexItem(&child, true, Size.init(200, 40)).target);
+}
+
+test "LC3 flex scratch OOM reuses measured targets" {
+    const Bridge = struct {
+        var calls: usize = 0;
+        fn measure(_: *anyopaque, _: []const u8, _: f32, _: u16, _: bool, _: bool, _: u16, _: bool, _: f32) ?f32 {
+            calls += 1;
+            return 10;
+        }
+    };
+    const a = std.testing.allocator;
+    const count = flex_stack_capacity + 1;
+    const children = try a.alloc(Node, count);
+    defer a.free(children);
+    var parent = Node{ .id = 9940, .tag = .box, .style = .{ .direction = .row, .width = .{ .px = @floatFromInt(count * 2) }, .height = .{ .px = 20 } }, .children = .empty };
+    defer parent.children.deinit(a);
+    for (children, 0..) |*child, i| {
+        child.* = .{ .id = @intCast(9941 + i), .tag = .text, .style = .{ .width = .{ .px = 2 }, .height = .{ .px = 20 } }, .children = .empty };
+        child.setText(.{ .content = "word", .wrap = .none });
+        try parent.appendChild(a, child);
+    }
+    var marker: u8 = 0;
+    setDrawnTextMeasure(Bridge.measure, &marker);
+    defer setDrawnTextMeasure(null, null);
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    Bridge.calls = 0;
+    layoutNode(&parent, Size.init(@floatFromInt(count * 2), 20), .{ .frame_allocator = arena.allocator() });
+    const normal_calls = Bridge.calls;
+    try std.testing.expect(normal_calls >= count);
+    parent.frame_state.state_bits.dirty.core.layout = true;
+    for (children) |*child| child.frame_state.state_bits.dirty.core.layout = true;
+    var failing = std.testing.FailingAllocator.init(a, .{ .fail_index = 0 });
+    Bridge.calls = 0;
+    const old_hits = layout_alloc_failure_hits;
+    layoutNode(&parent, Size.init(@floatFromInt(count * 2), 20), .{ .frame_allocator = failing.allocator() });
+    try std.testing.expectEqual(old_hits + 1, layout_alloc_failure_hits);
+    try std.testing.expectEqual(normal_calls, Bridge.calls);
+    for (children) |*child| try std.testing.expectEqual(@as(f32, 2), child.rectFromWorldOrFallback().w);
+}
+
+test "LC3 min-content cache separates kinds axes worlds and invalidation" {
+    enableIntrinsicCache(std.testing.allocator);
+    defer disableIntrinsicCache();
+    var node = Node{ .id = 9920, .world_id = 100, .tag = .text, .style = .{}, .children = .empty };
+    node.setText(.{ .content = "a longer word", .wrap = .word });
+    const min_width = flexMinContent(&node, true);
+    const max_width = calcIntrinsicSize(&node, true);
+    try std.testing.expect(min_width < max_width);
+    try std.testing.expectEqual(@as(?f32, min_width), intrinsicCacheLookup(&node, true, .min_content));
+    try std.testing.expectEqual(@as(?f32, max_width), intrinsicCacheLookup(&node, true, .max_content));
+    intrinsicCacheStore(&node, false, .min_content, 42);
+    var other = node;
+    other.world_id += 1;
+    try std.testing.expectEqual(@as(?f32, null), intrinsicCacheLookup(&other, true, .min_content));
+    try std.testing.expectEqual(@as(?f32, 42), intrinsicCacheLookup(&node, false, .min_content));
+
+    node.frame_state.state_bits.dirty.core.layout = false;
+    node.frame_state.state_bits.dirty.core.subtree_layout = false;
+    // A hit must not descend or spend either recursion budget.
+    const old_depth = g_min_content_recursion_depth;
+    g_min_content_recursion_depth = max_layout_recursion_depth;
+    const hits = min_content_depth_limit_hits;
+    try std.testing.expectEqual(min_width, flexMinContent(&node, true));
+    try std.testing.expectEqual(hits, min_content_depth_limit_hits);
+    g_min_content_recursion_depth = old_depth;
+    node.setText(.{ .content = "extraordinarilylong", .wrap = .word });
+    try std.testing.expectEqual(@as(?f32, null), intrinsicCacheLookup(&node, true, .min_content));
+    try std.testing.expect(flexMinContent(&node, true) > min_width);
+    forgetIntrinsicCache(node.world_id, node.id);
+    try std.testing.expectEqual(@as(?f32, null), intrinsicCacheLookup(&node, true, .max_content));
+    try std.testing.expectEqual(@as(?f32, null), intrinsicCacheLookup(&node, true, .min_content));
+    try std.testing.expectEqual(@as(?f32, null), intrinsicCacheLookup(&node, false, .min_content));
+}
+
+test "LC3 min-content depth is independent counted and never caches truncation" {
+    const a = std.testing.allocator;
+    const count = max_layout_recursion_depth + 1;
+    const nodes = try a.alloc(Node, count);
+    defer a.free(nodes);
+    defer for (nodes) |*node| node.children.deinit(a);
+    for (nodes, 0..) |*node, i| node.* = .{ .id = @intCast(10000 + i), .tag = .box, .style = .{ .direction = .column }, .children = .empty };
+    for (nodes[0 .. count - 1], nodes[1..]) |*node, *child| {
+        try node.appendChild(a, child);
+    }
+    nodes[count - 1].style.padding = .all(5);
+    enableIntrinsicCache(a);
+    defer disableIntrinsicCache();
+    const hits = min_content_depth_limit_hits;
+    _ = flexMinContent(&nodes[0], true);
+    try std.testing.expectEqual(hits + 1, min_content_depth_limit_hits);
+    try std.testing.expectEqual(@as(usize, 0), g_min_content_recursion_depth);
+    try std.testing.expectEqual(@as(?f32, null), intrinsicCacheLookup(&nodes[0], true, .min_content));
+    const old_depth = g_layout_recursion_depth;
+    defer g_layout_recursion_depth = old_depth;
+    g_layout_recursion_depth = max_layout_recursion_depth;
+    const layout_hits = layout_depth_limit_hits;
+    try std.testing.expectEqual(@as(f32, 10), flexMinContent(&nodes[count - 1], true));
+    try std.testing.expectEqual(layout_hits, layout_depth_limit_hits);
+    try std.testing.expectEqual(hits + 1, min_content_depth_limit_hits);
+}
+
+test "LC3B wrap scratch OOM publishes clamped bases and recovers" {
+    const a = std.testing.allocator;
+    const count = flex_stack_capacity + 1;
+    var ext = types.StyleExt{ .flex_wrap = .wrap };
+    var parent = Node{ .id = 12000, .tag = .box, .style = .{ .width = .{ .px = 20 }, .height = .{ .px = 330 }, .direction = .row, .align_content = .start, .ext = &ext }, .children = .empty };
+    defer parent.children.deinit(a);
+    var children: [count]Node = undefined;
+    for (&children, 0..) |*child, i| {
+        child.* = .{ .id = @intCast(12001 + i), .tag = .box, .style = .{ .width = .{ .px = 20 }, .height = .{ .px = 10 } }, .children = .empty };
+        try parent.appendChild(a, child);
+    }
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const size = Size.init(20, 330);
+    layoutNode(&parent, size, .{ .frame_allocator = arena.allocator() });
+    try testing.expectEqual(@as(f32, 320), children[count - 1].rectFromWorldOrFallback().y);
+    for (0..3) |fail_index| {
+        var failing = testing.FailingAllocator.init(a, .{ .fail_index = fail_index });
+        const hits = layout_alloc_failure_hits;
+        parent.frame_state.state_bits.dirty.core.layout = true;
+        layoutNode(&parent, size, .{ .frame_allocator = failing.allocator() });
+        try testing.expectEqual(hits + 1, layout_alloc_failure_hits);
+        for (&children, 0..) |*child, i| {
+            try testing.expectEqual(@as(f32, 0), child.rectFromWorldOrFallback().y);
+            try testing.expectEqual(@as(f32, @floatFromInt(i * 20)), child.rectFromWorldOrFallback().x);
+            try testing.expectEqual(@as(f32, 20), child.rectFromWorldOrFallback().w);
+            try testing.expectEqual(@as(f32, 10), child.rectFromWorldOrFallback().h);
+        }
+        try testing.expect(parent.frame_state.state_bits.dirty.core.layout);
+        layoutNode(&parent, size, .{ .frame_allocator = arena.allocator() });
+        try testing.expectEqual(@as(f32, 320), children[count - 1].rectFromWorldOrFallback().y);
+        try testing.expect(!parent.frame_state.state_bits.dirty.core.layout);
+    }
+    ext.flex_wrap = .wrap_reverse;
+    parent.frame_state.state_bits.dirty.core.layout = true;
+    layoutNode(&parent, size, .{ .frame_allocator = arena.allocator() });
+    try testing.expectEqual(@as(f32, 320), children[0].rectFromWorldOrFallback().y);
+    try testing.expectEqual(@as(f32, 0), children[count - 1].rectFromWorldOrFallback().y);
+    children[count - 1].style.display = .none;
+    parent.frame_state.state_bits.dirty.core.layout = true;
+    var failing = testing.FailingAllocator.init(a, .{ .fail_index = 0 });
+    const hits = layout_alloc_failure_hits;
+    layoutNode(&parent, size, .{ .frame_allocator = failing.allocator() });
+    try testing.expectEqual(hits, layout_alloc_failure_hits);
+    try testing.expectEqual(@as(f32, 0), children[count - 1].rectFromWorldOrFallback().w);
+}
+
+test "LC3B wrap first frame OOM retries every scratch failure without zero geometry" {
+    const a = testing.allocator;
+    const count = flex_stack_capacity + 1;
+    for (0..3) |fail_index| {
+        var ext = types.StyleExt{ .flex_wrap = .wrap };
+        var parent = Node{ .id = 15000, .tag = .box, .children = .empty, .style = .{ .width = .{ .px = 40 }, .height = .{ .px = 340 }, .direction = .row, .align_content = .start, .ext = &ext } };
+        @import("node_lifecycle.zig").releaseStandaloneState(&parent);
+        defer @import("node_lifecycle.zig").releaseStandaloneState(&parent);
+        defer parent.children.deinit(a);
+        const Probe = struct {
+            fn mount(raw: *anyopaque) void {
+                const mounts: *usize = @ptrCast(@alignCast(raw));
+                mounts.* += 1;
+            }
+        };
+        var mounts: usize = 0;
+        var children: [count]Node = undefined;
+        for (&children, 0..) |*child, i| {
+            child.* = .{ .id = @intCast(15001 + i), .tag = .box, .children = .empty, .style = .{ .width = .{ .px = 20 }, .height = .{ .px = 10 } } };
+            child.meta.ownership.hooks.on_mount = .{ .callback = Probe.mount, .context = &mounts };
+            @import("node_lifecycle.zig").releaseStandaloneState(child);
+            child.setLayoutRect(types.ComputedRect.init(0, 0, 0, 0));
+            try parent.appendChild(a, child);
+        }
+        defer for (&children) |*child| @import("node_lifecycle.zig").releaseStandaloneState(child);
+        var failing = testing.FailingAllocator.init(a, .{ .fail_index = fail_index });
+        const hits = layout_alloc_failure_hits;
+        layoutNode(&parent, Size.init(40, 340), .{ .frame_allocator = failing.allocator() });
+        try testing.expectEqual(hits + 1, layout_alloc_failure_hits);
+        try testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+        for (&children, 0..) |*child, i| {
+            const r = child.rectFromWorldOrFallback();
+            try testing.expectEqual(@as(f32, 20), r.w);
+            try testing.expectEqual(@as(f32, 10), r.h);
+            try testing.expectEqual(@as(f32, @floatFromInt(i * 20)), r.x);
+            try testing.expectEqual(@as(f32, 0), r.y);
+        }
+        try testing.expectEqual(@as(usize, 0), mounts);
+        try testing.expect(!parent.frame_state.state_bits.flags.is_mounted);
+        try testing.expect(parent.frame_state.state_bits.dirty.core.layout);
+        // No external dirtying: the failed allocation itself schedules recovery.
+        layoutNode(&parent, Size.init(40, 340), .{ .frame_allocator = a });
+        for (&children, 0..) |*child, i| {
+            const r = child.rectFromWorldOrFallback();
+            try testing.expectEqual(@as(f32, @floatFromInt((i % 2) * 20)), r.x);
+            try testing.expectEqual(@as(f32, @floatFromInt((i / 2) * 10)), r.y);
+        }
+        try testing.expectEqual(count, mounts);
+        try testing.expect(parent.frame_state.state_bits.flags.is_mounted);
+        try testing.expect(!parent.frame_state.state_bits.dirty.core.layout);
+    }
+}
+
+test "LC3B large wrap incremental layout skips independent siblings and redundant passes" {
+    const a = testing.allocator;
+    const count = 128;
+    var ext = types.StyleExt{ .flex_wrap = .wrap };
+    var parent = Node{ .id = 16000, .tag = .box, .children = .empty, .style = .{ .width = .{ .px = 200 }, .height = .{ .px = 1000 }, .direction = .row, .align_items = .start, .align_content = .start, .ext = &ext } };
+    @import("node_lifecycle.zig").releaseStandaloneState(&parent);
+    defer @import("node_lifecycle.zig").releaseStandaloneState(&parent);
+    defer parent.children.deinit(a);
+    var cards: [count]Node = undefined;
+    var leaves: [count]Node = undefined;
+    for (&cards, &leaves, 0..) |*card, *leaf, i| {
+        card.* = .{ .id = @intCast(16001 + i * 2), .tag = .box, .children = .empty, .style = .{ .width = .{ .px = 20 }, .height = .{ .px = 20 }, .flex_shrink = 0 } };
+        leaf.* = .{ .id = @intCast(16002 + i * 2), .tag = .box, .children = .empty, .style = .{ .width = .{ .px = 5 }, .height = .{ .px = 5 } } };
+        try card.appendChild(a, leaf);
+        @import("node_lifecycle.zig").releaseStandaloneState(card);
+        @import("node_lifecycle.zig").releaseStandaloneState(leaf);
+        try parent.appendChild(a, card);
+    }
+    defer for (&cards, &leaves) |*card, *leaf| {
+        card.children.deinit(a);
+        @import("node_lifecycle.zig").releaseStandaloneState(card);
+        @import("node_lifecycle.zig").releaseStandaloneState(leaf);
+    };
+    const size = Size.init(200, 1000);
+    layoutNode(&parent, size, .{ .frame_allocator = a });
+    // Deep mutation cannot affect fixed non-shrinking card allocations.
+    leaves[0].style.width = .{ .px = 7 };
+    leaves[0].markLayoutDirty();
+    test_layout_calls = 0;
+    test_flex_item_probes = 0;
+    layoutNode(&parent, size, .{ .frame_allocator = a });
+    try testing.expect(test_layout_calls <= 3);
+    try testing.expect(test_flex_item_probes < 4);
+    try testing.expectEqual(@as(f32, 7), leaves[0].rectFromWorldOrFallback().w);
+    try testing.expectEqual(@as(f32, 240), cards[count - 1].rectFromWorldOrFallback().y);
+    // A full unchanged pass need not lay out clean, mounted cards at all.
+    parent.markLayoutDirty();
+    test_layout_calls = 0;
+    layoutNode(&parent, size, .{ .frame_allocator = a });
+    try testing.expectEqual(@as(usize, 1), test_layout_calls);
+    // Direct size change must still recollect/reposition lines.
+    cards[0].style.width = .{ .px = 40 };
+    cards[0].markLayoutDirty();
+    layoutNode(&parent, size, .{ .frame_allocator = a });
+    try testing.expectEqual(@as(f32, 40), cards[1].rectFromWorldOrFallback().x);
+    try testing.expectEqual(@as(f32, 20), cards[9].rectFromWorldOrFallback().y);
+    // Natural cross changes remain sibling-dependent, including stretch.
+    cards[0].style.height = .{ .fit = .{} };
+    cards[0].markLayoutDirty();
+    layoutNode(&parent, size, .{ .frame_allocator = a });
+    leaves[0].style.height = .{ .px = 40 };
+    leaves[0].markLayoutDirty();
+    layoutNode(&parent, size, .{ .frame_allocator = a });
+    try testing.expectEqual(@as(f32, 40), cards[9].rectFromWorldOrFallback().y);
+}
+
+test "LC3B baseline export reuses collected first line without intrinsic reprobes" {
+    const a = testing.allocator;
+    var ext = types.StyleExt{ .flex_wrap = .wrap };
+    var baseline_ext = types.StyleExt{ .align_self = .baseline };
+    var parent = Node{ .id = 17000, .tag = .box, .children = .empty, .style = .{ .width = .{ .px = 40 }, .height = .{ .px = 100 }, .direction = .row, .align_items = .start, .align_content = .start, .ext = &ext } };
+    @import("node_lifecycle.zig").releaseStandaloneState(&parent);
+    defer @import("node_lifecycle.zig").releaseStandaloneState(&parent);
+    defer parent.children.deinit(a);
+    var children: [3]Node = undefined;
+    for (&children, 0..) |*child, i| {
+        child.* = .{ .id = @intCast(17001 + i), .tag = .box, .children = .empty, .style = .{ .width = .{ .px = 20 }, .height = .{ .px = @as(f32, @floatFromInt(10 + i * 10)) }, .ext = if (i > 0) &baseline_ext else null } };
+        @import("node_lifecycle.zig").releaseStandaloneState(child);
+        try parent.appendChild(a, child);
+    }
+    defer for (&children) |*child| @import("node_lifecycle.zig").releaseStandaloneState(child);
+    layoutNode(&parent, Size.init(40, 100), .{ .frame_allocator = a });
+    test_flex_item_probes = 0;
+    for (0..100) |_| {
+        children[0].frame_state.state_bits.dirty.core.subtree_layout = true;
+        try testing.expectEqual(@as(f32, 20), firstBaseline(&parent, true, 0));
+    }
+    try testing.expectEqual(@as(usize, 0), test_flex_item_probes);
+    parent.style.width = .{ .px = 20 };
+    parent.markLayoutDirty();
+    layoutNode(&parent, Size.init(20, 100), .{ .frame_allocator = a });
+    try testing.expectEqual(@as(f32, 10), firstBaseline(&parent, true, 0));
+    children[0].style.display = .none;
+    parent.markLayoutDirty();
+    layoutNode(&parent, Size.init(20, 100), .{ .frame_allocator = a });
+    try testing.expectEqual(@as(f32, 20), firstBaseline(&parent, true, 0));
+}
+
+test "LC3C nowrap mount destruction and reentry never retain child borrows" {
+    const a = std.testing.allocator;
+    for ([_]u8{ 0, 1, 2 }) |mode| {
+        const root = try Node.create(a, 1, .box, .{ .width = .{ .px = 100 }, .height = .{ .px = 100 }, .direction = .row, .justify = .center });
+        defer root.destroy(a);
+        for (0..3) |i| try root.appendChild(a, try Node.create(a, @intCast(i + 2), .box, .{ .width = .{ .px = 20 }, .height = .{ .px = 20 } }));
+        const Probe = struct {
+            root: *Node,
+            self: *Node,
+            victim: *Node,
+            mode: u8,
+            mounts: usize = 0,
+            cleanup: usize = 0,
+            x: f32 = -1,
+            fn mount(raw: *anyopaque) void {
+                const p: *@This() = @ptrCast(@alignCast(raw));
+                p.mounts += 1;
+                p.x = p.self.rectFromWorldOrFallback().x;
+                if (p.mode == 2) {
+                    layoutNode(p.root, .{ .width = 100, .height = 100 }, .{ .frame_allocator = std.testing.allocator });
+                } else {
+                    const victim = if (p.mode == 0) p.self else p.victim;
+                    p.root.removeChild(victim);
+                    victim.destroy(std.testing.allocator);
+                }
+            }
+            fn cleaned(raw: *anyopaque) void {
+                const p: *@This() = @ptrCast(@alignCast(raw));
+                p.cleanup += 1;
+            }
+        };
+        var probe = Probe{ .root = root, .self = root.children.items[0], .victim = root.children.items[1], .mode = mode };
+        probe.self.meta.ownership.hooks.on_mount = .{ .callback = Probe.mount, .context = &probe };
+        const victim = if (mode == 0) probe.self else probe.victim;
+        victim.meta.ownership.hooks.on_cleanup = .{ .callback = Probe.cleaned, .context = &probe };
+        layoutNode(root, .{ .width = 100, .height = 100 }, .{ .frame_allocator = a });
+        try std.testing.expectEqual(@as(usize, 1), probe.mounts);
+        try std.testing.expectEqual(@as(f32, 20), probe.x);
+        if (mode != 2) {
+            try std.testing.expectEqual(@as(usize, 1), probe.cleanup);
+            try std.testing.expectEqual(@as(usize, 2), root.children.items.len);
+        }
+        layoutNode(root, .{ .width = 100, .height = 100 }, .{ .frame_allocator = a });
+        try std.testing.expectEqual(@as(usize, 1), probe.mounts);
+        // Context must remain live through normal root teardown.
+        if (mode == 2) victim.meta.ownership.hooks.on_cleanup = null;
+    }
+}
+
+test "LC3C mount publication permits direct ancestor destruction" {
+    const a = std.testing.allocator;
+    const root = try Node.create(a, 1, .box, .{ .width = .{ .px = 100 }, .height = .{ .px = 100 } });
+    const child = try Node.create(a, 2, .box, .{ .width = .{ .px = 20 }, .height = .{ .px = 20 } });
+    try root.appendChild(a, child);
+    const Probe = struct {
+        root: *Node,
+        calls: usize = 0,
+        fn mount(raw: *anyopaque) void {
+            const p: *@This() = @ptrCast(@alignCast(raw));
+            p.calls += 1;
+            p.root.destroy(std.testing.allocator);
+        }
+    };
+    var p = Probe{ .root = root };
+    child.meta.ownership.hooks.on_mount = .{ .callback = Probe.mount, .context = &p };
+    layoutNode(root, .{ .width = 100, .height = 100 }, .{ .frame_allocator = a });
+    try testing.expectEqual(@as(usize, 1), p.calls);
+}
+
+test "LC3C grid scratch OOM is atomic and implicit rows exceed old limits" {
+    const a = std.testing.allocator;
+    for (0..3) |fail_index| {
+        const root = try Node.create(a, 1, .box, .{ .width = .{ .px = 100 }, .height = .{ .px = 513 } });
+        defer root.destroy(a);
+        const ext = try root.style.ensureExtFallible(a);
+        const gc = try a.create(GridConfig);
+        gc.* = .{ .column_count = 1 };
+        gc.columns[0] = .{ .px = 100 };
+        ext.grid = gc;
+        for (0..513) |i| try root.appendChild(a, try Node.create(a, @intCast(i + 2), .box, .{ .width = .{ .grow = .{} }, .height = .{ .px = 1 } }));
+        var failing = std.testing.FailingAllocator.init(a, .{ .fail_index = fail_index });
+        const before = layout_alloc_failure_hits;
+        layoutNode(root, .{ .width = 100, .height = 513 }, .{ .frame_allocator = failing.allocator() });
+        try testing.expectEqual(before + 1, layout_alloc_failure_hits);
+        try testing.expect(root.frame_state.state_bits.dirty.core.layout);
+        try testing.expect(!root.frame_state.state_bits.flags.is_mounted);
+        for (root.children.items) |child| {
+            try testing.expectEqual(@as(f32, 0), child.rectFromWorldOrFallback().h);
+            try testing.expect(!child.frame_state.state_bits.flags.is_mounted);
+        }
+        try testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+        layoutNode(root, .{ .width = 100, .height = 513 }, .{ .frame_allocator = a });
+        try testing.expect(!root.frame_state.state_bits.dirty.core.layout);
+        for (root.children.items, 0..) |child, i| {
+            const r = child.rectFromWorldOrFallback();
+            try testing.expectEqual(@as(f32, @floatFromInt(i)), r.y);
+            try testing.expectEqual(@as(f32, 1), r.h);
+            try testing.expect(child.frame_state.state_bits.flags.is_mounted);
+        }
+    }
+}
+
+test "LC3C release during publication preserves remaining mount retries" {
+    const a = std.testing.allocator;
+    const root = try Node.create(a, 1, .box, .{ .width = .{ .px = 100 }, .height = .{ .px = 100 } });
+    defer root.destroy(a);
+    layoutNode(root, .{ .width = 100, .height = 100 }, .{ .frame_allocator = a });
+    const detached = try Node.create(a, 9, .box, .{});
+    for (0..2) |i| try root.appendChild(a, try Node.create(a, @intCast(i + 2), .box, .{ .width = .{ .px = 20 }, .height = .{ .px = 20 } }));
+    const Probe = struct {
+        detached: *Node,
+        first: usize = 0,
+        second: usize = 0,
+        fn firstMount(raw: *anyopaque) void {
+            const p: *@This() = @ptrCast(@alignCast(raw));
+            p.first += 1;
+            p.detached.destroy(std.testing.allocator);
+        }
+        fn secondMount(raw: *anyopaque) void {
+            const p: *@This() = @ptrCast(@alignCast(raw));
+            p.second += 1;
+        }
+    };
+    var p = Probe{ .detached = detached };
+    root.children.items[0].meta.ownership.hooks.on_mount = .{ .callback = Probe.firstMount, .context = &p };
+    root.children.items[1].meta.ownership.hooks.on_mount = .{ .callback = Probe.secondMount, .context = &p };
+    layoutNode(root, .{ .width = 100, .height = 100 }, .{ .frame_allocator = a });
+    try testing.expectEqual(@as(usize, 1), p.first);
+    try testing.expectEqual(@as(usize, 0), p.second);
+    try testing.expect(root.frame_state.state_bits.dirty.core.layout);
+    layoutNode(root, .{ .width = 100, .height = 100 }, .{ .frame_allocator = a });
+    try testing.expectEqual(@as(usize, 1), p.first);
+    try testing.expectEqual(@as(usize, 1), p.second);
+}
+
+test "LC3C deferred outer probes do not mount display none descendants" {
+    const a = std.testing.allocator;
+    const root = try Node.create(a, 1, .box, .{ .width = .{ .px = 100 }, .height = .{ .px = 100 } });
+    defer root.destroy(a);
+    const hidden = try Node.create(a, 2, .box, .{ .display = .none });
+    try root.appendChild(a, hidden);
+    const leaf = try Node.create(a, 3, .box, .{});
+    try hidden.appendChild(a, leaf);
+    layoutNode(root, .{ .width = 100, .height = 100 }, .{ .frame_allocator = a, .defer_mount = true });
+    try testing.expect(!root.frame_state.state_bits.flags.is_mounted);
+    try testing.expect(!hidden.frame_state.state_bits.flags.is_mounted);
+    try testing.expect(!leaf.frame_state.state_bits.flags.is_mounted);
+    layoutNode(root, .{ .width = 100, .height = 100 }, .{ .frame_allocator = a });
+    try testing.expect(root.frame_state.state_bits.flags.is_mounted);
+    try testing.expect(hidden.frame_state.state_bits.flags.is_mounted);
+    try testing.expect(leaf.frame_state.state_bits.flags.is_mounted);
+}
+
+test "LC3C mount publication skips settled trees and retains deferred new mounts" {
+    const a = testing.allocator;
+    const root = try Node.create(a, 1, .box, .{ .width = .{ .px = 100 }, .height = .{ .px = 100 } });
+    defer root.destroy(a);
+    for (0..32) |i| try root.appendChild(a, try Node.create(a, @intCast(i + 2), .box, .{}));
+    layoutNode(root, Size.init(100, 100), .{ .frame_allocator = a });
+    test_mount_publication_visits = 0;
+    layoutNode(root, Size.init(100, 100), .{ .frame_allocator = a });
+    try testing.expectEqual(@as(usize, 0), test_mount_publication_visits);
+    const leaf = try Node.create(a, 40, .box, .{});
+    const Probe = struct {
+        mounts: usize = 0,
+        fn mount(raw: *anyopaque) void {
+            const p: *@This() = @ptrCast(@alignCast(raw));
+            p.mounts += 1;
+        }
+    };
+    var p = Probe{};
+    leaf.meta.ownership.hooks.on_mount = .{ .callback = Probe.mount, .context = &p };
+    try root.children.items[31].appendChild(a, leaf);
+    layoutNode(root, Size.init(100, 100), .{ .frame_allocator = a, .defer_mount = true });
+    try testing.expectEqual(@as(usize, 0), p.mounts);
+    layoutNode(root, Size.init(100, 100), .{ .frame_allocator = a });
+    try testing.expectEqual(@as(usize, 1), p.mounts);
+    try testing.expect(test_mount_publication_visits < 32);
+    test_mount_publication_visits = 0;
+    layoutNode(root, Size.init(100, 100), .{ .frame_allocator = a });
+    try testing.expectEqual(@as(usize, 0), test_mount_publication_visits);
+    try testing.expectEqual(@as(usize, 1), p.mounts);
+    // Cleanup can happen with unchanged geometry, including without a tree
+    // mutation. Both the subtree and its clean ancestors must publish again.
+    const branch = root.children.items[31];
+    node_mod.fireCleanupCallbacks(branch);
+    layoutNode(root, Size.init(100, 100), .{ .frame_allocator = a });
+    try testing.expectEqual(@as(usize, 2), p.mounts);
+    root.removeChild(branch);
+    try root.appendChild(a, branch);
+    layoutNode(root, Size.init(100, 100), .{ .frame_allocator = a });
+    try testing.expectEqual(@as(usize, 3), p.mounts);
+    test_mount_publication_visits = 0;
+    layoutNode(root, Size.init(100, 100), .{ .frame_allocator = a });
+    try testing.expectEqual(@as(usize, 0), test_mount_publication_visits);
+    try testing.expectEqual(@as(usize, 3), p.mounts);
+}
+
+test "LC3C mount callback reparents a sibling into another subtree" {
+    const a = testing.allocator;
+    const root = try Node.create(a, 1, .box, .{ .width = .{ .px = 200 }, .height = .{ .px = 200 } });
+    defer root.destroy(a);
+    const source = try Node.create(a, 2, .box, .{});
+    const target = try Node.create(a, 3, .box, .{});
+    try root.appendChild(a, source);
+    try root.appendChild(a, target);
+    const first = try Node.create(a, 4, .box, .{});
+    const sibling = try Node.create(a, 5, .box, .{});
+    try source.appendChild(a, first);
+    try source.appendChild(a, sibling);
+    const Probe = struct {
+        target: *Node,
+        sibling: *Node,
+        first: usize = 0,
+        moved: usize = 0,
+        cleanup: usize = 0,
+        fn mount(raw: *anyopaque) void {
+            const p: *@This() = @ptrCast(@alignCast(raw));
+            p.first += 1;
+            // appendChild is this checkout's retained move/reparent API.
+            p.target.appendChild(testing.allocator, p.sibling) catch unreachable;
+        }
+        fn movedMount(raw: *anyopaque) void {
+            const p: *@This() = @ptrCast(@alignCast(raw));
+            p.moved += 1;
+        }
+        fn cleaned(raw: *anyopaque) void {
+            const p: *@This() = @ptrCast(@alignCast(raw));
+            p.cleanup += 1;
+        }
+    };
+    var p = Probe{ .target = target, .sibling = sibling };
+    first.meta.ownership.hooks.on_mount = .{ .callback = Probe.mount, .context = &p };
+    sibling.meta.ownership.hooks.on_mount = .{ .callback = Probe.movedMount, .context = &p };
+    sibling.meta.ownership.hooks.on_cleanup = .{ .callback = Probe.cleaned, .context = &p };
+    layoutNode(root, Size.init(200, 200), .{ .frame_allocator = a });
+    try testing.expectEqual(target, sibling.parent.?);
+    try testing.expectEqual(@as(usize, 1), source.children.items.len);
+    try testing.expectEqual(@as(usize, 1), p.first);
+    try testing.expectEqual(@as(usize, 0), p.moved);
+    try testing.expectEqual(@as(usize, 0), p.cleanup);
+    for (0..2) |_| layoutNode(root, Size.init(200, 200), .{ .frame_allocator = a });
+    try testing.expectEqual(@as(usize, 1), p.first);
+    try testing.expectEqual(@as(usize, 1), p.moved);
+    try testing.expectEqual(@as(usize, 0), p.cleanup);
+    // Keep the callback context alive during normal teardown.
+    target.removeChild(sibling);
+    try testing.expectEqual(@as(usize, 1), p.cleanup);
+    sibling.destroy(a);
+}
+
+test "LC3C aspect percentage suggestions require a definite containing axis" {
+    const a = testing.allocator;
+    const root = try Node.create(a, 1, .box, .{ .width = .{ .px = 300 }, .height = .{ .fit = .{} }, .direction = .row, .align_items = .start });
+    defer root.destroy(a);
+    const child = try Node.create(a, 2, .box, .{ .width = .{ .fit = .{} }, .height = .{ .percent = 50 } });
+    try root.appendChild(a, child);
+    const ext = try child.style.ensureExtFallible(a);
+    test_axis_definiteness_probes = 0;
+    layoutNode(root, Size.init(300, 200), .{ .frame_allocator = a });
+    try testing.expectEqual(@as(usize, 0), test_axis_definiteness_probes);
+    ext.aspect_ratio = 2;
+    try testing.expectEqual(@as(?f32, null), aspectMainSuggestion(child, true, Size.init(300, 200)));
+    try testing.expectEqual(@as(?f32, null), definiteSize(child.style.height, 200, false));
+    root.style.height = .{ .px = 200 };
+    try testing.expectEqual(@as(?f32, 200), aspectMainSuggestion(child, true, Size.init(300, 200)));
 }

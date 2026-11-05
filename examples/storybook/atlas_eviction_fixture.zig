@@ -1,16 +1,20 @@
-//! Real-window fault fixture. Registered only in test-mode on macOS.
+//! Real-window review fixtures, registered in test-mode. The VirtualList hit fixture is
+//! platform-neutral and serves every platform; the device fault fixtures borrow the Metal
+//! device and are compiled on macOS only.
 const std = @import("std");
 const zenit_app = @import("zenit_app");
 
 var target: ?*zenit_app.App = null;
 
 pub fn install(app: *zenit_app.App) void {
-    if (!zenit_app.test_harness.enabled or @import("builtin").os.tag != .macos) return;
+    if (!zenit_app.test_harness.enabled) return;
     target = app;
     zenit_app.test_harness.setAppRouteHandler(route);
 }
 
 fn route(path: []const u8, _: []const u8, out: []u8) ?[]const u8 {
+    if (@import("vlist_hit_fixture.zig").route(target orelse return null, path, out)) |reply| return reply;
+    if (comptime @import("builtin").os.tag != .macos) return null;
     if (@import("scope_reentry_fixture.zig").route(target orelse return null, path, out)) |reply| return reply;
     if (@import("cleanup_reentry_fixture.zig").route(target orelse return null, path, out)) |reply| return reply;
     if (@import("event_depth_fixture.zig").route(target orelse return null, path, out)) |reply| return reply;

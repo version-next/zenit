@@ -1,5 +1,11 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+// Freestanding core hosts execute on a single thread without shared memory.
+const ThreadId = if (@import("builtin").os.tag == .freestanding) u32 else std.Thread.Id;
+fn currentThreadId() ThreadId {
+    if (@import("builtin").os.tag == .freestanding) return 0;
+    return std.Thread.getCurrentId();
+}
 
 const backend_mod = @import("vtable.zig");
 const events_mod = @import("events.zig");
@@ -22,7 +28,7 @@ pub const SystemSdk = struct {
     vtable: *const backend_mod.BackendVTable,
     capabilities: capabilities_mod.Capabilities,
     event_queue: events_mod.EventQueue,
-    owner_thread_id: std.Thread.Id,
+    owner_thread_id: ThreadId,
     /// Runtime is iterating slice from events(). Reentrant pump() in meantime
     /// would clear() release iterated payload (UAF); assert pins contract
     /// (align with MultiWindowApp's iterating precedent).
@@ -40,18 +46,18 @@ pub const SystemSdk = struct {
             .vtable = vtable,
             .capabilities = capabilities,
             .event_queue = events_mod.EventQueue.init(allocator),
-            .owner_thread_id = std.Thread.getCurrentId(),
+            .owner_thread_id = currentThreadId(),
         };
     }
 
     pub fn deinit(self: *SystemSdk) void {
-        std.debug.assert(self.owner_thread_id == std.Thread.getCurrentId());
+        std.debug.assert(self.owner_thread_id == currentThreadId());
         self.event_queue.deinit();
         self.vtable.deinit(self.backend_ctx, self.allocator);
     }
 
     fn ensureOwnerThread(self: *const SystemSdk) SdkError!void {
-        if (self.owner_thread_id != std.Thread.getCurrentId()) return SdkError.WrongThread;
+        if (self.owner_thread_id != currentThreadId()) return SdkError.WrongThread;
     }
 
     pub fn getCapabilities(self: *const SystemSdk) capabilities_mod.Capabilities {
@@ -90,7 +96,7 @@ pub const SystemSdk = struct {
     /// Call after system-proxied mouse scenarios like liveResize end;
     /// prevent false events from emitMouseButtonDelta on polling resume.
     pub fn syncInputState(self: *SystemSdk) void {
-        std.debug.assert(self.owner_thread_id == std.Thread.getCurrentId());
+        std.debug.assert(self.owner_thread_id == currentThreadId());
         if (self.vtable.sync_input_state) |func| {
             func(self.backend_ctx);
         }
@@ -274,6 +280,15 @@ pub const SystemSdk = struct {
         if (!self.capabilities.has(.ime)) return SdkError.NotSupported;
         const api = self.vtable.ime orelse return SdkError.NotSupported;
         try api.set_enabled(self.backend_ctx, window_id, enabled);
+    }
+
+    /// Replace the window's reserved key chords (see `ImeVTable.set_reserved_chords`).
+    /// NotSupported on platforms without the hook (their chords make no IME text).
+    pub fn setReservedKeyChords(self: *SystemSdk, window_id: events_mod.WindowId, chords: []const events_mod.ReservedChord) SdkError!void {
+        try self.ensureOwnerThread();
+        const api = self.vtable.ime orelse return SdkError.NotSupported;
+        const set = api.set_reserved_chords orelse return SdkError.NotSupported;
+        try set(self.backend_ctx, window_id, chords);
     }
 
     pub fn discardIme(self: *SystemSdk, window_id: events_mod.WindowId) SdkError!void {

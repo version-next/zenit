@@ -15,7 +15,7 @@ fn a11yOf(indeterminate: bool, percent: f32) ui.A11yProps {
 /// Progress bar: W.Progress(.{ .value = upload_ratio, .show_text = true }).
 /// value (0-100, clamps to range) and status can be signals; indeterminate mode ignores value,
 /// gloss stripe sweeps with frame clock.
-pub fn Progress(value: f32 = 0, status: ProgressStatus = .normal, height: f32 = 4, showText: bool = false, indeterminate: bool = false, width: ?f32 = null) View {
+pub fn Progress(value: f32 = 0, status: ProgressStatus = .normal, height: f32 = 6, showText: bool = false, indeterminate: bool = false, width: ?f32 = null) View {
     const percent = computed(std.math.clamp(value, 0, 100));
     const bar = computed(S.Bar{ .status = status, .height = height });
     const has_text = computed(showText and !indeterminate);

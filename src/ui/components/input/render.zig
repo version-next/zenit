@@ -379,6 +379,59 @@ pub fn syncAccessibilityProps(state: *TextInputState, node: *Node) void {
     }
 }
 
+/// Hand the caret blink to the system compositor (core/compositor_sprite.zig)
+/// while the field is focused without IME preedit: a two-frame loop (lit for
+/// the first half period) timed by the field's own blink clock. The caret is
+/// repainted on every frame, so leaving the sprite needs no overlap frame.
+/// Returns true while the compositor owns the blink.
+fn caretSprite(state: *TextInputState) bool {
+    const cx = state.cx_ref orelse return false;
+    const cursor = state.cursor_node orelse {
+        cx.sprites.unregister(state);
+        return false;
+    };
+    if (!state.focused or state.hasImePreedit()) {
+        cx.sprites.unregister(state);
+        return false;
+    }
+    cx.sprites.registerWith(cx.allocator, cursor.id, caret_period_ms, state, caretDrawAt, caretRepaint, .{
+        .frame_count = 2,
+        .phase = caretPhase,
+        .fresh_on_exit = true,
+    }) catch return false;
+    return cx.sprites.isActive(cursor.id);
+}
+
+const caret_period_ms: f64 = 2 * @as(f64, @floatFromInt(@import("caret_blink.zig").half_period_ns)) / std.time.ns_per_ms;
+
+fn caretDrawAt(ctx: core.DrawContext, context: ?*anyopaque, now_ms: f64) anyerror!void {
+    const state: *TextInputState = @ptrCast(@alignCast(context orelse return));
+    if (now_ms >= caret_period_ms / 2) return;
+    const dl = ctx.display_list orelse return;
+    const header = ctx.display_header orelse return;
+    try dl.append(.{ .fill_rect = .{
+        .header = header,
+        .x = 0,
+        .y = 0,
+        .w = ctx.local_w,
+        .h = ctx.local_h,
+        .color = state.tokens.tokens.color.fg_primary,
+    } });
+}
+
+fn caretRepaint(context: ?*anyopaque) void {
+    const state: *TextInputState = @ptrCast(@alignCast(context orelse return));
+    if (state.cursor_node) |cursor| cursor.markRenderDirty();
+}
+
+fn caretPhase(context: ?*anyopaque) f64 {
+    const state: *TextInputState = @ptrCast(@alignCast(context orelse return 0));
+    const epoch = state.blink.epoch orelse return 0;
+    const now = @import("zenit_time").Instant.now(state.io) catch return 0;
+    const period_ns: u64 = @intFromFloat(caret_period_ms * std.time.ns_per_ms);
+    return @as(f64, @floatFromInt(now.since(epoch) % period_ns)) / std.time.ns_per_ms;
+}
+
 /// Input beforeRender hook: cursor blink, selection highlight, drag handling.
 pub fn inputBeforeRender(node: *Node) void {
     const state: *TextInputState = @ptrCast(@alignCast(node.behavior.events.event_context orelse return));
@@ -390,7 +443,10 @@ pub fn inputBeforeRender(node: *Node) void {
 
     const now = @import("zenit_time").Instant.now(state.io) catch null;
     const blink_visible = (!state.hasImePreedit() or state.ime_cursor_visible) and (if (state.focused and now != null) state.blinkVisible(now.?) else state.focused);
-    if (state.focused and now != null) {
+    // While the compositor blinks the caret (see caretSprite) no frame is
+    // scheduled for the phase flips.
+    const blink_composited = caretSprite(state);
+    if (state.focused and now != null and !blink_composited) {
         if (state.cx_ref) |cx| {
             cx.scheduleRedrawAfterNs(state.nextBlinkDelayNs(now.?));
         }
@@ -399,6 +455,9 @@ pub fn inputBeforeRender(node: *Node) void {
         }
     }
     state.last_blink_visible = blink_visible;
+    if (state.focused and !blink_composited) if (state.cx_ref) |cx| {
+        cx.caret_shown = blink_visible;
+    };
 
     // Cache container global x coordinate.
     state.container_x = coords.global_x;
@@ -463,8 +522,8 @@ pub fn inputBeforeRender(node: *Node) void {
             const content_changed = state.syncDisplayTextContent();
             var text = text_nd.getText() orelse old_text;
             const has_content = state.hasVisualValue();
-            const new_color = if (state.has_error)
-                state.tokens.tokens.color.danger
+            const new_color = if (state.disabled)
+                state.tokens.tokens.color.fg_disabled
             else if (has_content)
                 state.tokens.tokens.color.fg_primary
             else
@@ -482,6 +541,7 @@ pub fn inputBeforeRender(node: *Node) void {
             // syncDisplayTextContent publishes an owned snapshot; retain all
             // of its ownership fields when updating visual properties.
             text.color = new_color;
+            text.color_set = true;
             text.line_height = new_line_height;
             text_nd.setText(text);
             text_nd.style.padding.left = new_padding_left;
@@ -535,11 +595,19 @@ pub fn inputBeforeRender(node: *Node) void {
                 const content_w = state.displayedTextAdvance();
                 const max_scroll = @max(@as(f32, 0), content_w - state.input_inner_w);
                 const eps: f32 = 0.75;
-                const left_on = state.scroll_x > eps;
-                const right_on = state.scroll_x < (max_scroll - eps);
-                if (fade.edges.left != left_on or fade.edges.right != right_on) {
+                const background = if (state.input_container_node) |field| field.getBackground() else Color.TRANSPARENT;
+                // A solid field can cover overflowing glyphs with its own paint.
+                // On transparent/embedded fields retain the hard clip: painting
+                // their translucent tint again would create another dark seam.
+                const can_fade = background.a == 255;
+                const left_on = can_fade and state.scroll_x > eps;
+                const right_on = can_fade and state.scroll_x < (max_scroll - eps);
+                if (fade.edges.left != left_on or fade.edges.right != right_on or
+                    fade.color == null or !Color.eql(fade.color.?, background))
+                {
                     fade.edges.left = left_on;
                     fade.edges.right = right_on;
+                    fade.color = background;
                     node.markRenderDirty();
                 }
             }
@@ -602,19 +670,21 @@ pub fn inputBeforeRender(node: *Node) void {
 
             const cursor_x = @round(container_inner_x + cursor_x_px);
             const cursor_y_px = @round(cursor_y);
-            cursor.setLayoutRect(.{
+            // A composited blink keeps the GPU caret lit: its items are
+            // replaced by the sprite, and must exist for it to stay admitted.
+            syncCursorVisual(cursor, .{
                 .x = cursor_x,
                 .y = cursor_y_px,
                 .w = 1,
                 .h = cursor_h,
-            });
-            cursor.setBackgroundRaw(if (blink_visible) state.tokens.tokens.color.fg_primary else Color.TRANSPARENT);
-            cursor.markRenderDirty();
+            }, if (blink_visible or blink_composited) state.tokens.tokens.color.fg_primary else Color.TRANSPARENT);
 
             // IME cursor rect needs global coordinates.
             if (state.cx_ref) |cx| {
                 const global = node.globalRect();
-                const world_transform = node.frame_state.frame_local.spatial.world.matrix;
+                // Live transform: the hit index stores matrices in hit-layer space (a scrolled
+                // ancestor moves without a rebuild), not world space.
+                const world_transform = node.worldTransform();
                 const has_world_transform = world_transform.a != 1 or world_transform.b != 0 or
                     world_transform.c != 0 or world_transform.d != 1 or world_transform.tx != 0 or world_transform.ty != 0;
                 const caret_world = if (has_world_transform)
@@ -629,9 +699,7 @@ pub fn inputBeforeRender(node: *Node) void {
                 );
             }
         } else {
-            cursor.setLayoutRect(.{ .x = 0, .y = 0, .w = 0, .h = 0 });
-            cursor.setBackgroundRaw(Color.TRANSPARENT);
-            cursor.markRenderDirty();
+            syncCursorVisual(cursor, .{ .x = 0, .y = 0, .w = 0, .h = 0 }, Color.TRANSPARENT);
         }
     }
 
@@ -652,6 +720,18 @@ pub fn inputBeforeRender(node: *Node) void {
     if (inner_width_changed) {
         node.markRenderDirty();
     }
+}
+
+/// Write the caret's frame and color, marking it render-dirty only when either changed. The
+/// hook runs every frame; an unconditional mark kept the caret (and through subtree_render every
+/// ancestor up to the window root) dirty on idle frames, so nothing on that path could be reused.
+fn syncCursorVisual(cursor: *Node, rect: core.ComputedRect, color: Color) void {
+    const old_rect = cursor.rectFromWorldOrFallback();
+    const old_color = cursor.getBackground();
+    cursor.setLayoutRect(rect);
+    cursor.setBackgroundRaw(color);
+    const same_rect = old_rect.x == rect.x and old_rect.y == rect.y and old_rect.w == rect.w and old_rect.h == rect.h;
+    if (!same_rect or !std.meta.eql(old_color, color)) cursor.markRenderDirty();
 }
 
 /// Rebuild text_display_node spans per selection / IME preedit state, rebind slice to text.spans.
@@ -1106,7 +1186,6 @@ fn ensureExtraSelNodes(state: *TextInputState, needed: u8, _: *Node) void {
             .height = .{ .px = 0 },
         }, .{}) catch return;
         overlay.appendChild(cx.allocator, esel) catch return;
-        esel.parent = overlay;
         state.extra_sel_nodes[state.extra_sel_count] = esel;
         state.extra_sel_count += 1;
     }
@@ -1154,7 +1233,7 @@ pub fn countTextareaLines(state: *TextInputState) usize {
 pub fn textareaRenderItem(item_node: *Node, index: usize, cx: *Cx, user_context: ?*anyopaque) void {
     const state: *TextInputState = @ptrCast(@alignCast(user_context orelse return));
     const has_content = state.hasVisualValue();
-    const text_color = if (has_content) state.tokens.tokens.color.fg_primary else state.tokens.tokens.color.fg_secondary;
+    const text_color = if (state.disabled) state.tokens.tokens.color.fg_disabled else if (has_content) state.tokens.tokens.color.fg_primary else state.tokens.tokens.color.fg_secondary;
 
     // WrapMap + TextareaDocument path.
     if (state.textarea_wrap) |wrap| {

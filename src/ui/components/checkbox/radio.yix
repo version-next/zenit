@@ -11,10 +11,10 @@ const RadioOption = mod.RadioOption;
 pub fn Radio(checked: bool = false, label: Text = "", disabled: bool = false) View {
     return (
         <row style={S.RadioParts.slot(.root, .{ .disabled = disabled })} a11y={.{ .role = .radio, .checked = checked, .disabled = disabled, .label = label }}>
-            <box style={S.RadioParts.slot(.circle, .{ .checked = checked })}>
-                <box style={S.RadioParts.slot(.dot, .{ .checked = checked })} />
+            <box style={S.RadioParts.slot(.circle, .{ .checked = checked, .disabled = disabled })}>
+                <box style={S.RadioParts.slot(.dot, .{ .checked = checked, .disabled = disabled })} />
             </box>
-            {if (label.len != 0) <text style={S.RadioParts.slot(.label, .{})}>{label}</text>}
+            {if (label.len != 0) <text style={S.RadioParts.slot(.label, .{ .disabled = disabled })}>{label}</text>}
         </row>
     );
 }
@@ -36,10 +36,10 @@ fn RadioChoice(label: []const u8, checked: bool, disabled: bool, onPick: ?Handle
             onHover={hovered = true}
             onLeave={hovered = false}
         >
-            <box style={S.RadioParts.slot(.circle, .{ .checked = checked, .hovered = hovered })}>
-                <box style={S.RadioParts.slot(.dot, .{ .checked = checked })} />
+            <box style={S.RadioParts.slot(.circle, .{ .checked = checked, .hovered = hovered, .disabled = disabled })}>
+                <box style={S.RadioParts.slot(.dot, .{ .checked = checked, .disabled = disabled })} />
             </box>
-            <text style={S.RadioParts.slot(.label, .{})}>{label}</text>
+            <text style={S.RadioParts.slot(.label, .{ .disabled = disabled })}>{label}</text>
         </row>
     );
 }

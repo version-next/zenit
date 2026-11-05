@@ -21,6 +21,7 @@ const a11y_macos_bridge_mod = @import("../a11y/macos_bridge.zig");
 const actions_mod = @import("../actions.zig");
 const cx_cursor = @import("cx_cursor.zig");
 const cx_hit_target = @import("cx_hit_target.zig");
+const cx_hover = @import("cx_hover.zig");
 const cx_runtime_index = @import("cx_runtime_index.zig");
 const debug_env = @import("debug_env.zig");
 const devtoolsHitDebugEnabled = debug_env.devtoolsHitDebugEnabled;
@@ -42,6 +43,7 @@ pub fn handleMouseDownEx(self: *Cx, x: f32, y: f32, button: MouseButton, modifie
     self.mouse_x = x;
     self.mouse_y = y;
     self.cursor_state.pointer_valid = true;
+    self.hover_sync.pointer_over_content = true;
     defer cx_cursor.updateCursorShape(self);
     self.needs_redraw = true;
     // New press of same key means previous press's up (if swallowed) is lost (can't have two
@@ -79,7 +81,11 @@ pub fn handleMouseDownEx(self: *Cx, x: f32, y: f32, button: MouseButton, modifie
 
         // `close_and_consume` overlay: outside the panel, this press only closes; both press and
         // following release don't dispatch (no click synthesis, no focus change).
-        if (self.overlay_stack.consumeOutsidePress(target)) {
+        // A swallowed press whose release was lost counts as released: it closes its overlay,
+        // and this new press is an ordinary one.
+        const finished_lost_press = self.overlay_stack.consumed_press_layer != null;
+        self.overlay_stack.commitConsumedPress();
+        if (!finished_lost_press and self.overlay_stack.consumeOutsidePress(target)) {
             self.swallowed_press_button = button;
             if (button == .left) self.gesture_arena.reset();
             return;
@@ -104,6 +110,7 @@ pub fn handleMouseDownEx(self: *Cx, x: f32, y: f32, button: MouseButton, modifie
         // Record which overlay this press belongs to before dispatch: handler may close it
         // immediately, invalidating references.
         const press_owner = self.overlay_stack.findPressOwner(target);
+        const press_mark = self.overlay_stack.activationMark();
         _ = self.dispatcher.dispatchMouseDownButton(x, y, target, .left, modifiers);
         rebuildRuntimeIndexesIfCurrentRootDirty(self);
 
@@ -121,6 +128,8 @@ pub fn handleMouseDownEx(self: *Cx, x: f32, y: f32, button: MouseButton, modifie
         self.pressed_handle = target_handle;
         self.notifyPressWatchers();
         self.press_overlay_owner = press_owner;
+        self.outside_press_armed = true;
+        self.outside_press_mark = press_mark;
         self.last_mouse_down_target = self.pressed_node;
         self.last_mouse_down_handle = target_handle;
         self.has_new_mouse_down = true;
@@ -166,6 +175,7 @@ pub fn handleMouseUpEx(self: *Cx, x: f32, y: f32, button: MouseButton, modifiers
     self.mouse_x = x;
     self.mouse_y = y;
     self.cursor_state.pointer_valid = true;
+    self.hover_sync.pointer_over_content = true;
     defer cx_cursor.updateCursorShape(self);
     self.needs_redraw = true;
     // Feed gesture_arena (primary button only)
@@ -176,6 +186,7 @@ pub fn handleMouseUpEx(self: *Cx, x: f32, y: f32, button: MouseButton, modifiers
         if (swallowed == button) {
             self.swallowed_press_button = null;
             if (button == .left) self.gesture_arena.reset();
+            self.overlay_stack.commitConsumedPress();
             return;
         }
     }
@@ -192,6 +203,20 @@ pub fn handleMouseUpEx(self: *Cx, x: f32, y: f32, button: MouseButton, modifiers
         const target = resolveInteractionTarget(raw_target);
         self.dispatcher.dispatchMouseUpButton(x, y, target, button, modifiers);
         rebuildRuntimeIndexesIfCurrentRootDirty(self);
+        // Overlays the press began outside of close now (render phase), after this click's own
+        // handlers ran: a click that navigates away unmounts them with their page.
+        if (button == .left and self.outside_press_armed) {
+            self.outside_press_armed = false;
+            self.has_new_press_release = true;
+            const record: core.PressRelease = .{ .press_handle = self.last_mouse_down_handle, .press_owner = self.press_overlay_owner, .press_mark = self.outside_press_mark };
+            if (self.press_release_count == self.press_releases.len) {
+                // Full batch: keep the newest; the oldest clicks were already superseded.
+                std.mem.copyForwards(core.PressRelease, self.press_releases[0 .. self.press_releases.len - 1], self.press_releases[1..]);
+                self.press_release_count -= 1;
+            }
+            self.press_releases[self.press_release_count] = record;
+            self.press_release_count += 1;
+        }
         if (button == .left and had_pointer_capture) {
             self.resyncPointerAfterCaptureRelease(x, y, target_handle);
         }
@@ -215,6 +240,7 @@ pub fn resyncPointerAfterCaptureRelease(self: *Cx, x: f32, y: f32, fallback_hand
         const synced_handle = if (synced_hit) |result| result.handle else fallback_handle;
         const synced_raw_target = self.node_registry.resolve(synced_handle, &self.perf);
         synced_target = resolveInteractionTarget(synced_raw_target);
+        cx_hover.noteResolved(self);
     }
     self.hovered_node = self.dispatcher.syncHover(synced_target);
     self.hovered_handle = if (self.hovered_node) |n| self.node_registry.handleFor(n) else null;
@@ -258,6 +284,7 @@ pub fn handleMouseMoveEx(self: *Cx, x: f32, y: f32, modifiers: Modifiers) void {
     // frame to re-dispatch; stationary move events shouldn't wake new frame (idle frame-gating
     // depends on this).
     const hit_tests_before = self.perf.hit_test_count;
+    self.input_perf.in_pointer_moves += 1;
     cx_render.ensureHitTestSceneFresh(self);
     if (x != self.mouse_x or y != self.mouse_y) {
         self.needs_redraw = true;
@@ -266,6 +293,7 @@ pub fn handleMouseMoveEx(self: *Cx, x: f32, y: f32, modifiers: Modifiers) void {
     self.mouse_y = y;
     // feed gesture_arena
     self.cursor_state.pointer_valid = true;
+    self.hover_sync.pointer_over_content = true;
     self.gesture_arena.onTouchMove(x, y, @import("zenit_time").nanoTimestamp(self.io));
     if (self.root != null) {
         const has_capture = self.dispatcher.hasPointerCapture();
@@ -278,38 +306,26 @@ pub fn handleMouseMoveEx(self: *Cx, x: f32, y: f32, modifiers: Modifiers) void {
                 .world_y = y,
             });
         self.interaction_index.setHoveredResult(hit);
-        var raw_hovered = if (hit) |result| self.node_registry.resolve(result.handle, &self.perf) else null;
-        // Hover hysteresis: partial interaction rebuild has gaps in collecting new nodes between
-        // subtree rebuilds (hit in several apps), so queries during motion intermittently MISS at
-        // valid coordinates. On MISS, if the previous hovered node is still alive and geometrically
-        // still contains the pointer, keep hover; otherwise the cursor flickers between pointer and
-        // default (seen near file-tab close buttons, where the hover state machine is busiest and
-        // every event marks dirty). On a real leave the old node's rect no longer contains the
-        // pointer and hover is cleared as usual.
-        if (raw_hovered == null and !has_capture) {
-            if (self.hovered_handle) |h| {
-                if (self.node_registry.resolve(h, &self.perf)) |prev| {
-                    const r = prev.rectFromWorldOrFallback();
-                    if (r.w > 0 and r.h > 0 and r.contains(x, y)) raw_hovered = prev;
-                }
-            }
-        }
+        // Hysteresis on MISS lives in hoverTargetForHit (shared with stationary re-resolution).
+        const hovered = if (has_capture) null else cx_hover.hoverTargetForHit(self, hit, x, y);
+        // Hover below is resolved against this committed scene; under capture it is not
+        // resolved at all and stays stale, so release re-resolves (cx_hover.reconcile).
+        if (!has_capture) cx_hover.noteResolved(self);
         if (hitSceneDebugEnabled()) {
             if (hit) |h| {
                 const proxy = self.interaction_index.proxies.items[h.proxy_id];
                 std.debug.print("[hit-move] ({d:.0},{d:.0}) -> id={d} comp={s} aabb=({d:.1},{d:.1},{d:.1},{d:.1})\n", .{
-                    x,                                y,
-                    if (raw_hovered) |n| n.id else 0, if (raw_hovered) |n| (n.meta.ownership.meta.component_name orelse "-") else "-",
-                    proxy.true_aabb.x,                proxy.true_aabb.y,
-                    proxy.true_aabb.w,                proxy.true_aabb.h,
+                    x,                            y,
+                    if (hovered) |n| n.id else 0, if (hovered) |n| (n.meta.ownership.meta.component_name orelse "-") else "-",
+                    proxy.true_aabb.x,            proxy.true_aabb.y,
+                    proxy.true_aabb.w,            proxy.true_aabb.h,
                 });
-            } else if (raw_hovered) |kept| {
+            } else if (hovered) |kept| {
                 std.debug.print("[hit-move] ({d:.0},{d:.0}) -> MISS (hover 滞回保持 id={d})\n", .{ x, y, kept.id });
             } else {
                 std.debug.print("[hit-move] ({d:.0},{d:.0}) -> MISS\n", .{ x, y });
             }
         }
-        const hovered = resolveInteractionTarget(raw_hovered);
         self.perf.mouse_move_hit_test_count += 1;
         self.hovered_node = self.dispatcher.dispatchMouseMoveEx(x, y, hovered, modifiers);
         self.hovered_handle = if (self.hovered_node) |n| self.node_registry.handleFor(n) else null;
@@ -325,7 +341,10 @@ pub fn cancelPointerInteractions(self: *Cx, reason: interaction_drag.CancelReaso
     // Press swallowed by consume becomes invalid with interaction: its release won't come again (or
     // shouldn't), flag left standing would swallow next normal click's release.
     self.swallowed_press_button = null;
-    self.dispatcher.cancelClickSynthesisForActivePointer();
+    // A cancelled press is not a click: it dismisses nothing on a later release.
+    self.outside_press_armed = false;
+    self.overlay_stack.consumed_press_layer = null;
+    self.dispatcher.cancelActivePress();
     self.dispatcher.releasePointerCapture();
     self.cursor_state.leases.clearRetainingCapacity();
     self.cursor_override = null;
@@ -454,9 +473,14 @@ fn routeKeyDown(self: *Cx, key: KeyCode, modifiers: Modifiers) bool {
     if (key == .escape and self.overlay_stack.handleEscape()) return true;
 
     if (key == .tab) {
-        // Dispatch to focused node first (editors need to intercept Tab for indent)
-        if (self.focus_manager.getFocused()) |focused| {
-            const result = self.dispatcher.dispatchKeyDown(focused, .{
+        // Dispatch to focused node first (editors need to intercept Tab for indent).
+        // With nothing focused the application root gets the same first refusal,
+        // as for every other key: app-level chords such as Ctrl+Tab (next
+        // document) must not turn into focus traversal just because the last
+        // click landed on non-focusable chrome or a menu.
+        const tab_target = self.focus_manager.getFocused() orelse unfocusedKeyTarget(self);
+        if (tab_target) |target| {
+            const result = self.dispatcher.dispatchKeyDown(target, .{
                 .key = key,
                 .modifiers = modifiers,
             });
@@ -639,9 +663,29 @@ pub fn handleScroll(self: *Cx, scroll: events_mod.ScrollEvent) void {
     // dispatch both causes screen jump during zoom), same gesture session doesn't receive
     // pan/scroll simultaneously.
     if (self.magnify_target_handle != null and scroll.isTrackpad()) return;
-    self.needs_redraw = true;
+    self.input_perf.in_scroll_events += 1;
+    // A scroll event requests a frame only through what its handlers changed: a handler that
+    // moved content marks it dirty, and the redraw below covers every handler that does not
+    // declare the event inert (event_dispatcher.scroll_effect). A wheel against a pinned end, or
+    // over content that cannot scroll, changes nothing and renders nothing.
+    const scroll_accounting = core.scroll_effect.begin();
+    defer if (core.scroll_effect.finish(scroll_accounting)) {
+        self.needs_redraw = true;
+    };
     // Finish previous gesture that lost ended, then run hit-test
     self.dispatcher.beginScrollEvent(scroll);
+    // A latched gesture or its momentum goes to its owner whatever is under the pointer: no hit
+    // test (hover under the moved content is re-resolved at the next frame, cx_hover). The handler
+    // still reads committed layout, so pending layout is committed first, as for a hit test.
+    if (self.root != null and !self.dispatcher.scrollNeedsHitTarget(scroll) and !devtoolsHitDebugEnabled()) {
+        self.input_perf.in_scroll_latched += 1;
+        const r = self.root.?;
+        if (r.frame_state.state_bits.dirty.core.layout or r.frame_state.state_bits.dirty.core.subtree_layout) {
+            cx_render.ensureHitTestSceneFresh(self);
+        }
+        if (self.root != null) _ = self.dispatcher.dispatchScroll(scroll, null);
+        return;
+    }
     cx_render.ensureHitTestSceneFresh(self);
     if (self.root != null) {
         const scroll_hit = self.hitTestQuery(.{
@@ -728,6 +772,10 @@ fn handleDragPayload(self: *Cx, x: f32, y: f32, kind: u8, paths: []const u8, pay
     // value is a checked panic (verify_interop_probe.sh: releasing a drag-out aborted the whole
     // app).
     if (kind > @backingInt(events_mod.DragEvent.Kind.dropped)) return;
+    // The OS owns the pointer during a drag session and sends no motion: the last pointer
+    // position is stale for stationary hover until the session leaves or drops.
+    self.hover_sync.platform_drag_active = kind == @backingInt(events_mod.DragEvent.Kind.entered) or
+        kind == @backingInt(events_mod.DragEvent.Kind.updated);
     // Take sequence number before any step that can run user code (hit refresh runs before_render
     // hooks): if drag-drop event re-enters during refresh, this event is replaced by it (see
     // re-entry semantics below).

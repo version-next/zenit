@@ -370,13 +370,13 @@ pub const Snapshot = struct {
                 .push_clip => |it| {
                     if (it.shape_kind == .polygon) {
                         const dup = try draw_ctx.frame_allocator.create(display_list_mod.ClipPolygon);
-                        dup.* = it.polygon;
+                        dup.* = display_list_mod.ClipPolygon.of(it.polygon);
                         paint_item.clip_polygon_ptr = dup;
                     }
                 },
                 .begin_blur_layer => |it| {
-                    const dup = try draw_ctx.frame_allocator.create(@TypeOf(it.glass));
-                    dup.* = it.glass;
+                    const dup = try draw_ctx.frame_allocator.create(@TypeOf(it.glass.*));
+                    dup.* = it.glass.*;
                     paint_item.glass_ptr = dup;
                 },
                 .icon_rep => |it| {

@@ -13,14 +13,14 @@ const Padding = core.Padding;
 /// is per-item kind; disabled overrides danger and highlight.
 recipe MenuRow slots(root, label, icon) {
   base {
-    root { width: grow; height: 32; direction: row; align-items: center; justify: space-between; padding: 0 10; corner-radius: 3; background: transparent; }
-    label { font-size: 13; color: fg-primary; }
+    root { width: grow; height: 28; direction: row; align-items: center; justify: space-between; padding: 0 space200; corner-radius: md; background: transparent; }
+    label { font-size: md; color: fg-primary; }
     icon { width: 16; height: 16; icon-color: fg-primary; }
   }
   flag danger { label { color: danger; } icon { icon-color: danger; } }
   flag lit;
   flag disabled { label { color: fg-disabled; } icon { icon-color: fg-disabled; } } else { root { cursor: pointer; } }
-  when lit & !disabled { root { background: list-hover-bg; } }
+  when lit & !disabled { root { background: bg-hover; } }
 }
 
 /// Item list in panel
@@ -30,4 +30,15 @@ style list { width: grow; height: fit; direction: column; padding: 4; }
 style separator { width: grow; height: fit; padding: 4 0; }
 style separator_line { width: grow; height: 1; background: separator; }
 style item_left { width: fit; height: fit; direction: row; align-items: center; gap: 8; }
-style shortcut { color: fg-disabled; font-size: 11; }
+style shortcut { color: fg-secondary; font-size: xs; }
+
+/// Body text line height from COMPONENTS.json Menu rows.
+pub fn rowText(t: *const ui.ThemeTokens) ui.TextStyle {
+    return .{ .font_size = t.tokens.font_size.md, .line_height = 1.4, .color = t.tokens.color.fg_primary };
+}
+
+/// Menu uses aria-activedescendant: the keyboard ring follows the virtual row,
+/// while pointer highlight only paints bg-hover. Foundations: 2px ring + 2px offset.
+style virtual_focus($visible: bool) {
+  when $visible { outline: {ui.Outline{ .color = t.tokens.color.focus_ring, .width = t.tokens.border_width.focus, .offset = t.tokens.size.focus_offset }}; }
+}

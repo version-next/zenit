@@ -3,7 +3,9 @@
 // zenit-entry: fragment blend_fragment_main
 cbuffer BlendUniforms : register(b0, space0) {
     float2 target_size; float2 rect_size; float2 src_uv_scale; float2 inv_offset; float4 inv; float4 params;
+    float4 corner_radii; // layer rounded mask TL, TR, BR, BL (layer-local physical px)
     float4 clip_rect; float4 clip_shape; float4 clip_shape_rect;
+    float4 clip_shape_radii; // kind 1: TL, TR, BR, BL (target physical px)
     float4 warp; // lens warp (physical px): x across the rounded ends, y across the long edges (+ = toward the centre), z fade start, w fade width
     float4 src_uv_origin; // xy = src UV of the quad's origin (grid-aligned rounded layers)
 };
@@ -46,9 +48,15 @@ float3 zb_soft_light(float3 source, float3 destination) {
 float3 zb_difference(float3 source, float3 destination) { return abs(source - destination); }
 float3 zb_exclusion(float3 source, float3 destination) { return source + destination - 2.0 * source * destination; }
 
-float zb_rounded_rect_mask(float2 coord, float2 size, float radius) {
-    if (radius <= 0.5) return 1.0;
+/// Corner radius (TL, TR, BR, BL) of the quadrant `p` lies in, `p` relative to the rect centre.
+float zb_corner_radius(float2 p, float4 radii) {
+    return (p.x < 0.0) ? ((p.y < 0.0) ? radii.x : radii.w) : ((p.y < 0.0) ? radii.y : radii.z);
+}
+
+float zb_rounded_rect_mask(float2 coord, float2 size, float4 radii) {
     float2 half_size = size * 0.5;
+    float radius = zb_corner_radius(coord - half_size, radii);
+    if (radius <= 0.5) return 1.0;
     float2 q = abs(coord - half_size) - half_size + radius;
     float distance = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
     return clamp(0.5 - distance, 0.0, 1.0);
@@ -69,7 +77,7 @@ float zb_clip_coverage(float2 pixel) {
         float2 p = pixel - (clip_shape_rect.xy + half_size);
         float d;
         if (kind == 1u) {
-            float r = min(clip_shape.y, min(half_size.x, half_size.y));
+            float r = min(zb_corner_radius(p, clip_shape_radii), min(half_size.x, half_size.y));
             float2 q = abs(p) - half_size + r;
             d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
         } else {
@@ -92,13 +100,13 @@ float4 blend_fragment_main(VOut input) : SV_Target {
     }
 
     // Lens warp: sample the surface shifted along the contour's normal, fading inward from the
-    // contour (the rounded rect of params.z, inset by params.w).
+    // contour (the rounded rect of corner_radii, inset by params.w).
     float2 sample_local = local;
     if (warp.x != 0.0 || warp.y != 0.0) {
         float2 half_size = rect_size * 0.5;
         float2 clip_half = max(half_size - params.w, float2(0.5, 0.5));
-        float r = min(params.z, min(clip_half.x, clip_half.y));
         float2 p = local - half_size;
+        float r = min(zb_corner_radius(p, corner_radii), min(clip_half.x, clip_half.y));
         float2 q = abs(p) - clip_half + r;
         float inset = max(-(length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r), 0.0);
         // along the contour's normal (see composite.metal)
@@ -113,7 +121,7 @@ float4 blend_fragment_main(VOut input) : SV_Target {
     float2 source_uv = src_uv_origin.xy + (sample_local / rect_size) * src_uv_scale;
     float4 source_premul = source_texture.Sample(texture_sampler, source_uv);
     // params.w: mask inset (the clip rect inside the quad)
-    source_premul *= zb_rounded_rect_mask(local - params.w, rect_size - 2.0 * params.w, params.z) * zb_clip_coverage(fragment_pixel);
+    source_premul *= zb_rounded_rect_mask(local - params.w, rect_size - 2.0 * params.w, corner_radii) * zb_clip_coverage(fragment_pixel);
     float4 source = zb_unpremul(source_premul);
     float4 destination = zb_unpremul(destination_premul);
 

@@ -130,11 +130,11 @@ pub fn main(init: std.process.Init) !void {
         var storage_checked = false;
         for (owner.bindings) |binding| {
             if (binding.group == 0 and binding.binding == 0) {
-                if (binding.kind != 0 or binding.min_size != 336 or binding.stages != 3) return error.UniformReflectionMismatch;
+                if (binding.kind != 0 or binding.min_size != 352 or binding.stages != 3) return error.UniformReflectionMismatch;
                 uniforms_checked = true;
             }
             if (binding.group == 0 and binding.binding == 1) {
-                if (binding.kind != 2 or binding.stride != 112 or binding.stages != 1) return error.StorageReflectionMismatch;
+                if (binding.kind != 2 or binding.stride != 128 or binding.stages != 1) return error.StorageReflectionMismatch;
                 storage_checked = true;
             }
         }
@@ -180,7 +180,7 @@ pub fn main(init: std.process.Init) !void {
     if (device.createBuffer(a, .{ .size = 16, .usage = .{ .vertex = true } })) |_| return error.DestroyedDeviceAccepted else |err| {
         if (err != error.DeviceDestroyed) return err;
     }
-    std.debug.print(marker ++ "_RENDERER_RESOURCES PASS: mode={s} buffer_mapping=true texture_view_retention=true host_texture_zeroed=true descriptor_rejection=true context_ownership=true pipeline_retention=true adapter_negotiation=true uniform_range=336 storage_stride=112 validation_errors=0\n", .{if (software) "software-functional" else "gpu"});
+    std.debug.print(marker ++ "_RENDERER_RESOURCES PASS: mode={s} buffer_mapping=true texture_view_retention=true host_texture_zeroed=true descriptor_rejection=true context_ownership=true pipeline_retention=true adapter_negotiation=true uniform_range=352 storage_stride=128 validation_errors=0\n", .{if (software) "software-functional" else "gpu"});
 }
 
 const Uniforms = extern struct {
@@ -188,10 +188,11 @@ const Uniforms = extern struct {
     scale: f32 = 1,
     clip_kind: u32 = 0,
     clip_rect: [4]f32 = @splat(0),
-    radius: f32 = 0,
+    radii: [4]f32 = @splat(0),
     fill: u32 = 0,
     point_count: u32 = 0,
     contour_count: u32 = 0,
+    clip_pad: u32 = 0,
     endpoints: [2][4]u32 = @splat(@splat(0)),
     points: [16][4]f32 = @splat(@splat(0)),
 };
@@ -200,13 +201,16 @@ const Instance = extern struct {
     uv: [4]f32 = .{ 0, 0, 1, 1 },
     tint: [4]f32 = @splat(1),
     linear: [4]f32 = .{ 1, 0, 0, 1 },
+    radii: [4]f32 = @splat(0),
     translation: [2]f32 = @splat(0),
-    radius: f32 = 0,
     opacity: f32 = 1,
     premultiplied: f32 = 0,
-    padding: [3]f32 = @splat(0),
+    sampling: [4]f32 = @splat(0),
     clip: [4]f32 = .{ 0, 0, -1, -1 },
 };
+comptime {
+    if (@sizeOf(Uniforms) != 352 or @sizeOf(Instance) != 128) @compileError("image CPU ABI mismatch");
+}
 fn verifyCommands(device: *vk.renderer_device.Device, a: std.mem.Allocator) !void {
     const commands = vk.renderer_device;
     var queue = try device.createQueue();
@@ -223,7 +227,7 @@ fn verifyCommands(device: *vk.renderer_device.Device, a: std.mem.Allocator) !voi
     defer uniforms.destroy();
     const cpu_uniforms: Uniforms = .{};
     @memcpy(try uniforms.getMappedRange(3, @sizeOf(Uniforms)), std.mem.asBytes(&cpu_uniforms));
-    var instances = try device.createBuffer(a, .{ .size = 256, .usage = .{ .vertex = true, .map_write = true } });
+    var instances = try device.createBuffer(a, .{ .size = 512, .usage = .{ .vertex = true, .map_write = true } });
     defer instances.destroy();
     const instance: Instance = .{};
     const mapped_instance = try instances.getMappedRange(7, 2 * @sizeOf(Instance));

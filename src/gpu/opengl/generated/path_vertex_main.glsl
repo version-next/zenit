@@ -25,10 +25,11 @@ struct PathUniforms
     uvec4 contour_end_points[2];
     vec4 polygon_points[16];
     vec4 clip_rect;
-    float clip_radius;
+    vec4 clip_radii;
     uint clip_shape_kind;
     uint pad1;
     uint pad2;
+    uint pad6;
     uint grad_dir;
     uint grad_stop_count;
     vec2 grad_center;

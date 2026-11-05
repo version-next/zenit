@@ -69,6 +69,7 @@ pub fn setRecordingCallbacks(
 }
 
 pub const FrameStatsSnapshot = command_executor.FrameStatsSnapshot;
+pub const StageTotals = command_executor.StageTotals;
 pub const CaretRejections = command_executor.CaretRejections;
 pub const AppRouteFn = command_executor.AppRouteFn;
 
@@ -77,6 +78,26 @@ pub const AppRouteFn = command_executor.AppRouteFn;
 pub fn setAppRouteHandler(f: AppRouteFn) void {
     if (!enabled) return;
     command_executor.setAppRouteFn(f);
+}
+
+/// Routes owned by the platform runtime; checked before the app's handler.
+pub fn setRuntimeRouteHandler(f: AppRouteFn) void {
+    if (!enabled) return;
+    command_executor.setRuntimeRouteFn(f);
+}
+
+pub const CpuPatchStatus = command_executor.CpuPatchStatus;
+
+/// Register CPU patch control (/cpu_patches route).
+pub fn setCpuPatchCallback(f: command_executor.CpuPatchFn) void {
+    if (!enabled) return;
+    command_executor.setCpuPatchFn(f);
+}
+
+/// Register the WindowServer window capture (/screenshot/composited route).
+pub fn setCompositedCaptureCallback(f: command_executor.CompositedCaptureFn) void {
+    if (!enabled) return;
+    command_executor.setCompositedCaptureFn(f);
 }
 
 /// Register FrameStats query callback (/stats route)
@@ -141,6 +162,12 @@ pub fn drainCommands() void {
 
 /// Hosts with display-tick coalescing use this one-shot result to keep input
 /// and capture commands immediate while allowing readonly polling to stay idle.
+/// See command_executor.streamNextDelayNs.
+pub fn streamNextDelayNs() ?u64 {
+    if (!enabled or !g_queue_ready) return null;
+    return command_executor.streamNextDelayNs(g_queue.io);
+}
+
 pub fn drainCommandsRequestFrame() bool {
     if (!enabled or !g_queue_ready) return false;
     return command_executor.drainCommandsRequestFrame(&g_queue);

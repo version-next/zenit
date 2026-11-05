@@ -51,6 +51,10 @@ pub const ModalProps = struct {
     /// Opening and closing motion. Set to .none for a fixed presentation.
     enter_transition: overlay_stack.Transition = .scale_fade,
     exit_transition: overlay_stack.Transition = .scale_fade,
+    /// Play the enter transition when `open` is already true as the modal mounts. Default false:
+    /// one mounted open (a page restored with its dialog up) is the open result, not an opening, so
+    /// it appears at once. Set true when the caller mounts it in response to the opening itself.
+    animate_initial_open: bool = false,
     /// User-initiated toggle (X/Esc/mask-click) fires after settling, param is settled toggle
     /// state.
     on_open_change: ?Handler(bool) = null,
@@ -176,6 +180,7 @@ pub const ModalBuilder = struct {
         // Bind OverlayStack layer's real content_node to dialog,
         // let tick() in-out animation (fade) apply on dialog.
         cx.overlay_stack.bindContentNode(allocator, ol.handle, dialog);
+        if (rt.open.read.peek() and !p.animate_initial_open) cx.overlay_stack.skipInitialEnter(ol.handle);
 
         // open controls show/hide (via Effect drive OverlayStack)
         {
@@ -339,7 +344,7 @@ test "Modal: visible signal control" {
     try std.testing.expectEqual(core.Sizing{ .grow = .{} }, result.overlay.style.width);
 
     var exiting_found = false;
-    for (ctx.overlay_stack.layers) |slot| {
+    for (ctx.overlay_stack.layers.items) |slot| {
         if (slot) |layer| {
             try std.testing.expectEqual(overlay_stack.LayerState.exiting, layer.state);
             exiting_found = true;
@@ -432,7 +437,7 @@ test "Modal: exiting keeps overlay visible until commit" {
     try std.testing.expectEqual(core.Sizing{ .grow = .{} }, result.overlay.style.height);
 
     var exiting_found = false;
-    for (ctx.overlay_stack.layers) |slot| {
+    for (ctx.overlay_stack.layers.items) |slot| {
         if (slot) |layer| {
             if (layer.state == .exiting) {
                 exiting_found = true;
@@ -501,6 +506,67 @@ test "Modal: first 10 open frames progress from enter state instead of flashing"
             last_scale = scale;
         }
     }
+}
+
+fn firstOpenFrame(animate_initial_open: bool) !struct { opacity: f32, scale: f32 } {
+    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer ctx.deinit();
+    ctx.setViewport(800, 600);
+    const root = try box(ctx, .{ .width = .{ .px = 800 }, .height = .{ .px = 600 } }, .{});
+    ctx.root = root;
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const result = try Modal(.{ .title = "Mounted open", .width = 400, .open = true, .animate_initial_open = animate_initial_open }).mount(scope, ctx);
+    if (!result.portaled) try root.appendChild(std.testing.allocator, result.overlay);
+    render_engine.current_frame_time_ms += 16.0;
+    render_engine.current_frame_dt_ms = 16.0;
+    ctx.layout();
+    _ = ctx.render();
+    return .{ .opacity = result.dialog.getOpacity(), .scale = result.dialog.style.scale_x() };
+}
+
+test "Modal: mounted open shows at once; animate_initial_open plays the enter transition" {
+    const instant = try firstOpenFrame(false);
+    try std.testing.expectEqual(@as(f32, 1), instant.opacity);
+    try std.testing.expectEqual(@as(f32, 1), instant.scale);
+    const animated = try firstOpenFrame(true);
+    try std.testing.expect(animated.opacity < 0.5);
+    try std.testing.expect(animated.scale < 1);
+}
+
+test "Modal: mounted open skips only the first enter; a close then reopen animates" {
+    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer ctx.deinit();
+    ctx.setViewport(800, 600);
+    const root = try box(ctx, .{ .width = .{ .px = 800 }, .height = .{ .px = 600 } }, .{});
+    ctx.root = root;
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const vis = try scope.createSignal(bool, true);
+    const result = try Modal(.{ .title = "Reopened", .width = 400, .open = vis }).mount(scope, ctx);
+    if (!result.portaled) try root.appendChild(std.testing.allocator, result.overlay);
+    const frame = struct {
+        fn run(c: *Cx) void {
+            render_engine.current_frame_time_ms += 16.0;
+            render_engine.current_frame_dt_ms = 16.0;
+            c.layout();
+            _ = c.overlay_stack.tick(render_engine.current_frame_time_ms, 0.016, 800, 600, std.testing.allocator);
+        }
+    }.run;
+    frame(ctx);
+    try std.testing.expectEqual(@as(f32, 1), result.dialog.getOpacity());
+
+    vis.set(false);
+    for (0..30) |_| frame(ctx);
+    try std.testing.expect(result.dialog.getOpacity() < 0.01);
+
+    vis.set(true);
+    frame(ctx);
+    try std.testing.expect(result.dialog.getOpacity() < 0.5);
+    try std.testing.expect(result.dialog.style.scale_x() < 1);
+    for (0..30) |_| frame(ctx);
+    try std.testing.expectEqual(@as(f32, 1), result.dialog.getOpacity());
+    try std.testing.expectEqual(@as(f32, 1), result.dialog.style.scale_x());
 }
 
 test "Modal: long title wraps instead of overflowing dialog" {

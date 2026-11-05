@@ -234,6 +234,9 @@ pub fn transact(group: GlassGroupMount, tx: GlassTransaction) void {
             }
         }
     }
+    // Inserted / removed members enter or leave the hierarchy: their content goes with the glass.
+    for (tx.inserts) |ins| ins.entry.state.content_follows_presence = true;
+    for (tx.removes) |r| r.state.content_follows_presence = true;
     for (tx.moves) |m| glass_box.glassMorphTo(m.entry.state, .{ .x = m.rect[0], .y = m.rect[1], .w = m.rect[2], .h = m.rect[3], .duration_ms = tx.duration_ms, .easing = .spring_smooth, .liquid = .none });
     for (tx.removes, 0..) |r, ri| {
         if (ri < max_shapes) if (rsrc[ri]) |src| {
@@ -264,6 +267,12 @@ pub fn transact(group: GlassGroupMount, tx: GlassTransaction) void {
         glass_box.glassPlace(ins.entry.state, ins.rect);
         glass_box.glassSetEnabled(ins.entry.state, true);
     }
+}
+
+/// Mount-time presence of a member that later transactions insert / remove: absent hides its glass
+/// and its content until a transaction inserts it.
+pub fn setMemberPresent(entry: GlassShapeEntry, present: bool) void {
+    glass_box.glassSetPresentImmediate(entry.state, present);
 }
 
 /// Retained element with group_index == index (matched source reverse-lookup).
@@ -962,4 +971,61 @@ test "GlassGroup.transact: card expand / collapse reverses mid-way from the curr
         .max_dw = 40,
         .max_dh = 25,
     });
+}
+
+test "GlassGroup: absent / inserted / removed members take their content with them; isEnabled keeps it" {
+    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer ctx.deinit();
+    const root = try box(ctx, .{ .width = .{ .px = 800 }, .height = .{ .px = 300 } }, .{});
+    ctx.root = root;
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const group = try GlassGroup(.{ .spacing = 12, .width = 600, .height = 44 }).mountWithState(scope, ctx);
+    try root.appendChild(std.testing.allocator, group.container);
+    var es: [4]GlassShapeEntry = undefined;
+    for (&es) |*e| {
+        e.* = try GlassShape(.{ .width = 44, .height = 44, .shape = .circle, .padding = Padding.all(0) }).mountIn(group, scope, ctx);
+        e.node.style.position = .absolute;
+        try e.body.appendChild(std.testing.allocator, try box(ctx, .{ .width = .{ .px = 24 }, .height = .{ .px = 24 } }, .{}));
+    }
+    const a = es[0];
+    const near = es[1]; // within spacing of a: grows out of it (matched)
+    const far = es[2]; // beyond spacing: materializes in place
+    const off = es[3]; // glassEffect(isEnabled: false): glass off, content stays
+    glass_box.glassPlace(a.state, .{ 500, 0, 44, 44 });
+    setMemberPresent(near, false);
+    setMemberPresent(far, false);
+    glass_box.glassSetEnabledImmediate(off.state, false);
+    ctx.layout();
+    ctx.frame_time_ms = 1000;
+    ctx.frame_dt_ms = 16;
+    const step = struct {
+        fn run(cx: *Cx, list: []const GlassShapeEntry, n: usize) void {
+            for (0..n) |_| {
+                cx.frame_time_ms += 16;
+                for (list) |e| glass_box.runBeforeRenderHooks(e.node);
+                cx.layout();
+            }
+        }
+    }.run;
+    step(ctx, &es, 1);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), near.state.content.getOpacity(), 1e-3);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), far.state.content.getOpacity(), 1e-3);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), off.state.content.getOpacity(), 1e-3);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), a.state.content.getOpacity(), 1e-3);
+
+    transact(group, .{ .inserts = &.{ .{ .entry = near, .rect = .{ 444, 0, 44, 44 } }, .{ .entry = far, .rect = .{ 0, 0, 44, 44 } } } });
+    step(ctx, &es, 1);
+    // matched: the member is whole from the first frame (its geometry grows out of the source)
+    try std.testing.expectApproxEqAbs(@as(f32, 1), near.state.content.getOpacity(), 1e-3);
+    const mid = far.state.content.getOpacity();
+    try std.testing.expect(mid > 0 and mid < 1);
+    step(ctx, &es, 60);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), far.state.content.getOpacity(), 1e-3);
+
+    transact(group, .{ .removes = &.{ near, far } });
+    step(ctx, &es, 60);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), near.state.content.getOpacity(), 1e-3);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), far.state.content.getOpacity(), 1e-3);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), a.state.content.getOpacity(), 1e-3);
 }

@@ -131,14 +131,14 @@ test "backdrop content UV preserves fractional padding and clipped physical regi
 test "activeRoundedClip skips pure rect ancestors" {
     var encoder: RenderCommandEncoder = undefined;
     encoder.clip_depth = 3;
-    encoder.logical_clip_stack[0] = .{ .x = 0, .y = 0, .w = 200, .h = 120, .radius = 0, .shape_kind = .rect };
-    encoder.logical_clip_stack[1] = .{ .x = 8, .y = 8, .w = 160, .h = 90, .radius = 12, .shape_kind = .rounded_rect };
-    encoder.logical_clip_stack[2] = .{ .x = 12, .y = 12, .w = 120, .h = 60, .radius = 0, .shape_kind = .rect };
+    encoder.logical_clip_stack[0] = .{ .x = 0, .y = 0, .w = 200, .h = 120, .radii = .{ 0, 0, 0, 0 }, .shape_kind = .rect };
+    encoder.logical_clip_stack[1] = .{ .x = 8, .y = 8, .w = 160, .h = 90, .radii = .{ 12, 12, 12, 12 }, .shape_kind = .rounded_rect };
+    encoder.logical_clip_stack[2] = .{ .x = 12, .y = 12, .w = 120, .h = 60, .radii = .{ 0, 0, 0, 0 }, .shape_kind = .rect };
 
     try std.testing.expect(encoder.activeRoundedClip() != null);
     const clip = encoder.activeRoundedClip().?;
     try std.testing.expectEqual(ClipShapeKind.rounded_rect, clip.shape_kind);
-    try std.testing.expectApproxEqAbs(@as(f32, 12), clip.radius, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 12), clip.radii[0], 0.001);
 }
 
 test "restoreSavedClipState preserves parent clip stack after offscreen mutation" {
@@ -149,8 +149,8 @@ test "restoreSavedClipState preserves parent clip stack after offscreen mutation
         .persistent = undefined,
     };
     encoder.clip_depth = 2;
-    encoder.logical_clip_stack[0] = .{ .x = 10, .y = 20, .w = 300, .h = 200, .radius = 0, .shape_kind = .rect };
-    encoder.logical_clip_stack[1] = .{ .x = 30, .y = 40, .w = 120, .h = 80, .radius = 12, .shape_kind = .rounded_rect };
+    encoder.logical_clip_stack[0] = .{ .x = 10, .y = 20, .w = 300, .h = 200, .radii = .{ 0, 0, 0, 0 }, .shape_kind = .rect };
+    encoder.logical_clip_stack[1] = .{ .x = 30, .y = 40, .w = 120, .h = 80, .radii = .{ 12, 12, 12, 12 }, .shape_kind = .rounded_rect };
     encoder.effective_rect_clip_stack[0] = .{ 10, 20, 300, 200 };
     encoder.effective_rect_clip_stack[1] = .{ 30, 40, 120, 80 };
 
@@ -174,7 +174,7 @@ test "restoreSavedClipState preserves parent clip stack after offscreen mutation
 
     // Simulate offscreen-local clip mutations reusing stack slot 0.
     encoder.clip_depth = 1;
-    encoder.logical_clip_stack[0] = .{ .x = 0, .y = 0, .w = 40, .h = 20, .radius = 0, .shape_kind = .rect };
+    encoder.logical_clip_stack[0] = .{ .x = 0, .y = 0, .w = 40, .h = 20, .radii = .{ 0, 0, 0, 0 }, .shape_kind = .rect };
     encoder.effective_rect_clip_stack[0] = .{ 0, 0, 40, 20 };
 
     encoder.restoreSavedClipState(layer);
@@ -204,7 +204,7 @@ test "clip 栈溢出：被忽略的 push 对应的 pop 不能弹掉父级 clip" 
     const empty_poly = ce.ClipPolygon.empty();
     var i: usize = 0;
     while (i < 66) : (i += 1) {
-        try encoder.pushClip(@floatFromInt(i), 0, 500, 500, 0, .rect, empty_poly);
+        try encoder.pushClip(@floatFromInt(i), 0, 500, 500, .{ 0, 0, 0, 0 }, .rect, empty_poly);
     }
     try std.testing.expectEqual(@as(usize, 64), encoder.clip_depth);
     try std.testing.expectEqual(@as(u32, 2), encoder.clip_overflow_depth);
@@ -217,6 +217,105 @@ test "clip 栈溢出：被忽略的 push 对应的 pop 不能弹掉父级 clip" 
     try encoder.popClip();
     try std.testing.expectEqual(@as(usize, 63), encoder.clip_depth);
     try std.testing.expectApproxEqAbs(@as(f32, 62), encoder.logical_clip_stack[encoder.clip_depth - 1].x, 0.001);
+}
+
+test "pushClip: per-corner rounded clip reaches every pipeline mask, clamped like the fill" {
+    var sdf: @import("sdf_renderer.zig").SdfRenderer = undefined;
+    var txt: @import("text_renderer.zig").TextRenderer = undefined;
+    txt.viewport_logical_width = 800;
+    var pgc = PersistentGpuCache{};
+    var encoder = RenderCommandEncoder{
+        .sdf_renderer = &sdf,
+        .text_renderer = &txt,
+        .offscreen_pool = undefined,
+        .persistent = &pgc,
+    };
+    // TL 20, TR square, BR 10, BL oversized: each corner caps at half the shorter side (15).
+    try encoder.pushClip(10, 20, 40, 30, .{ 20, 0, 10, 9999 }, .rounded_rect, ce.ClipPolygon.empty());
+    const expected = [4]f32{ 15, 0, 10, 15 };
+    try std.testing.expectEqual(expected, encoder.activeRoundedClip().?.radii);
+    try std.testing.expectEqual(@as(u32, 1), sdf.clip_shape_kind);
+    try std.testing.expectEqual(expected, sdf.clip_radii);
+    try std.testing.expectEqual([4]f32{ 10, 20, 40, 30 }, sdf.clip_rect);
+    try std.testing.expectEqual(@as(u32, 1), txt.clip_shape_kind);
+    try std.testing.expectEqual(expected, txt.clip_radii);
+
+    // A clip differing in one corner is a different mask (forces a flush boundary).
+    const prev = encoder.activeRoundedClip();
+    try encoder.pushClip(10, 20, 40, 30, .{ 20, 1, 10, 9999 }, .rounded_rect, ce.ClipPolygon.empty());
+    try std.testing.expectEqual([4]f32{ 15, 1, 10, 15 }, sdf.clip_radii);
+    try std.testing.expect(prev != null and prev.?.radii[1] != encoder.activeRoundedClip().?.radii[1]);
+
+    try encoder.popClip();
+    try encoder.popClip();
+    try std.testing.expect(encoder.activeRoundedClip() == null);
+    try std.testing.expectEqual(@as(u32, 0), sdf.clip_shape_kind);
+    try std.testing.expectEqual([4]f32{ 0, 0, 0, 0 }, sdf.clip_radii);
+}
+
+test "pushClipCommand: nested shape clips keep the exact intersection in the single mask slot" {
+    var sdf: @import("sdf_renderer.zig").SdfRenderer = undefined;
+    var txt: @import("text_renderer.zig").TextRenderer = undefined;
+    txt.viewport_logical_width = 800;
+    var pgc = PersistentGpuCache{};
+    var encoder = RenderCommandEncoder{
+        .sdf_renderer = &sdf,
+        .text_renderer = &txt,
+        .offscreen_pool = undefined,
+        .persistent = &pgc,
+    };
+    const none = ce.ClipPolygon.empty();
+    // Parent 100x40 r20; child same box rounding only TR 10 (the review's case): one shape, the
+    // parent's radius kept at every corner.
+    try std.testing.expectEqual(ce.PushClipMode.clip, try encoder.pushClipCommand(0, 0, 100, 40, .{ 20, 20, 20, 20 }, .rounded_rect, none));
+    try std.testing.expectEqual(ce.PushClipMode.clip, try encoder.pushClipCommand(0, 0, 100, 40, .{ 0, 10, 0, 0 }, .rounded_rect, none));
+    try std.testing.expectEqual([4]f32{ 20, 20, 20, 20 }, sdf.clip_radii);
+    try std.testing.expectEqual(@as(u32, 1), sdf.clip_shape_kind);
+    // A pill-radius child over the same box merges after normalisation (9999 -> 20).
+    try std.testing.expectEqual(ce.PushClipMode.clip, try encoder.pushClipCommand(0, 0, 100, 40, .{ 0, 0, 9999, 0 }, .rounded_rect, none));
+    try std.testing.expectEqual([4]f32{ 20, 20, 20, 20 }, sdf.clip_radii);
+    try encoder.popClip();
+    try encoder.popClip();
+    // A child well inside the parent's arcs replaces it in the mask.
+    _ = try encoder.pushClipCommand(20, 8, 60, 24, .{ 4, 4, 4, 4 }, .rounded_rect, none);
+    try std.testing.expectEqual([4]f32{ 20, 8, 60, 24 }, sdf.clip_rect);
+    try std.testing.expectEqual([4]f32{ 4, 4, 4, 4 }, sdf.clip_radii);
+    try encoder.popClip();
+    // A child containing the parent only narrows the rect clip; the parent's shape stays.
+    _ = try encoder.pushClipCommand(-10, -10, 120, 60, .{ 2, 2, 2, 2 }, .rounded_rect, none);
+    try std.testing.expectEqual([4]f32{ 0, 0, 100, 40 }, sdf.clip_rect);
+    try std.testing.expectEqual([4]f32{ 20, 20, 20, 20 }, sdf.clip_radii);
+    try std.testing.expectEqual(ce.ClipShapeKind.rect, encoder.logical_clip_stack[encoder.clip_depth - 1].shape_kind);
+    try encoder.popClip();
+    try std.testing.expectEqual(ce.PushClipMode.clip, try encoder.pushClipCommand(0, 0, 70, 40, .{ 0, 12, 0, 0 }, .rounded_rect, none));
+    if (comptime @import("shape_clip_pair.zig").supported) {
+        // Two crossing shapes pair: the new one is the primary, the parent its partner.
+        try std.testing.expectEqual(@as(u32, 0), encoder.isolated_clip_fallbacks);
+        try std.testing.expectEqual([4]f32{ 0, 12, 0, 0 }, sdf.clip_radii);
+        try std.testing.expectEqual(@as(u32, 1), sdf.clip2.kind);
+        try std.testing.expectEqual([4]f32{ 0, 0, 100, 40 }, sdf.clip2.rect);
+        try std.testing.expectEqual([4]f32{ 20, 20, 20, 20 }, sdf.clip2.radii);
+        // A third shape crossing both inside the rect clip needs an isolation layer; without a
+        // render target none can open, so the innermost shape applies alone and the fallback is
+        // counted.
+        try std.testing.expectEqual(ce.PushClipMode.clip, try encoder.pushClipCommand(5, -5, 60, 50, .{ 10, 10, 10, 10 }, .rounded_rect, none));
+        try std.testing.expectEqual(@as(u32, 1), encoder.isolated_clip_fallbacks);
+        try std.testing.expectEqual([4]f32{ 10, 10, 10, 10 }, sdf.clip_radii);
+        try std.testing.expectEqual(@as(u32, 0), sdf.clip2.kind);
+        try encoder.popClip();
+        // Popping restores the pair.
+        try std.testing.expectEqual(@as(u32, 1), sdf.clip2.kind);
+        try std.testing.expectEqual([4]f32{ 0, 12, 0, 0 }, sdf.clip_radii);
+    } else {
+        // Crossing shapes need an isolation layer; without a render target none can open, so the
+        // innermost shape applies (the pre-isolation behaviour) and the fallback is counted.
+        try std.testing.expectEqual(@as(u32, 1), encoder.isolated_clip_fallbacks);
+        try std.testing.expectEqual([4]f32{ 0, 12, 0, 0 }, sdf.clip_radii);
+    }
+    try encoder.popClip();
+    try encoder.popClip();
+    try std.testing.expect(encoder.activeRoundedClip() == null);
+    try std.testing.expectEqual(@as(u32, 0), sdf.clip_shape_kind);
 }
 
 test "localizeDrawTransformForCurrentTarget subtracts cumulative offscreen offset" {
@@ -302,6 +401,88 @@ test "text without shaped ink bounds fences local sorting" {
     const Kind = enum { none, rect, text, image, shadow, gradient, path, control };
     const command = .{ .kind = Kind.text, .arc_outer_radius = @as(f32, 0), .icon_rep_ptr = @as(?*const u8, null) };
     try std.testing.expectEqual(lsort.PipelineKind.fence, lsort.localSortPipelineKind(command));
+}
+
+const InkGlyph = struct { position: [2]f32, size: [2]f32, skew_x: f32 = 0 };
+
+test "text ink: a command clear of every pending glyph quad may draw before the text" {
+    var ink: ce.InkSet = .{};
+    var nearest = [_]InkGlyph{ .{ .position = .{ 10, 10 }, .size = .{ 8, 12 } }, .{ .position = .{ 20, 10 }, .size = .{ 8, 12 } } };
+    const linear = [_]InkGlyph{};
+    // Glyph run covers x 9..29, y 9..23 (one logical pixel of snapping pad).
+    try std.testing.expect(ink.allows(1, .{ nearest[0..], linear[0..] }, .{ 0, 30, 100, 40 }));
+    try std.testing.expect(!ink.allows(1, .{ nearest[0..], linear[0..] }, .{ 28, 0, 40, 9.5 }));
+    // Touching edges do not overlap.
+    try std.testing.expect(ink.allows(1, .{ nearest[0..], linear[0..] }, .{ 29, 0, 40, 40 }));
+    // A synthetic-italic skew widens the top edge.
+    const skewed = [_]InkGlyph{.{ .position = .{ 50, 10 }, .size = .{ 8, 12 }, .skew_x = 4 }};
+    try std.testing.expect(!ink.allows(1, .{ nearest[0..], skewed[0..] }, .{ 61.5, 0, 70, 40 }));
+}
+
+test "text ink covers glyphs appended after a check and forgets flushed ones" {
+    var ink: ce.InkSet = .{};
+    var glyphs = [_]InkGlyph{ .{ .position = .{ 10, 10 }, .size = .{ 8, 8 } }, .{ .position = .{ 200, 10 }, .size = .{ 8, 8 } } };
+    const none = [_]InkGlyph{};
+    const probe = [4]f32{ 199, 0, 220, 30 };
+    try std.testing.expect(ink.allows(7, .{ glyphs[0..1], none[0..] }, probe));
+    // The second glyph is appended later (any emission path): it must be seen.
+    try std.testing.expect(!ink.allows(7, .{ glyphs[0..2], none[0..] }, probe));
+    // Flushed (generation advanced): nothing pending covers the probe any more.
+    try std.testing.expect(ink.allows(8, .{ glyphs[0..0], none[0..] }, probe));
+    // Flushed and refilled past the old count within one generation change: rescanned from 0.
+    try std.testing.expect(!ink.allows(9, .{ glyphs[1..2], glyphs[0..1] }, probe));
+}
+
+test "text ink: a flush refilled to the same count is a new set of glyphs" {
+    var ink: ce.InkSet = .{};
+    const old = [_]InkGlyph{ .{ .position = .{ 10, 10 }, .size = .{ 8, 8 } }, .{ .position = .{ 30, 10 }, .size = .{ 8, 8 } } };
+    const new = [_]InkGlyph{ .{ .position = .{ 300, 10 }, .size = .{ 8, 8 } }, .{ .position = .{ 330, 10 }, .size = .{ 8, 8 } } };
+    const none = [_]InkGlyph{};
+    try std.testing.expect(!ink.allows(3, .{ old[0..], none[0..] }, .{ 0, 0, 20, 20 }));
+    // Same lengths after the renderer flushed and re-emitted: old quads gone, new ones seen.
+    try std.testing.expect(ink.allows(4, .{ new[0..], none[0..] }, .{ 0, 0, 20, 20 }));
+    try std.testing.expect(!ink.allows(4, .{ new[0..], none[0..] }, .{ 299, 0, 320, 20 }));
+}
+
+test "text ink folds overflowing runs into one box that still covers them" {
+    var ink: ce.InkSet = .{};
+    var glyphs: [40]InkGlyph = undefined;
+    for (&glyphs, 0..) |*g, i| g.* = .{ .position = .{ @floatFromInt(i * 100), 0 }, .size = .{ 10, 10 } };
+    const none = [_]InkGlyph{};
+    for (1..glyphs.len + 1) |n| _ = ink.allows(1, .{ glyphs[0..n], none[0..] }, .{ -100, -100, -90, -90 });
+    for (glyphs) |g| try std.testing.expect(!ink.allows(1, .{ glyphs[0..], none[0..] }, .{ g.position[0] + 2, 2, g.position[0] + 4, 4 }));
+}
+
+test "command paint bounds: SDF quads with shadow reach, offset, and no answer when transformed" {
+    const Kind = enum { none, rect, text, image, shadow, gradient, path, control };
+    const Item = struct {
+        kind: Kind,
+        geom: struct { x: f32, y: f32, w: f32, h: f32 },
+        use_draw_transform: bool = false,
+        rotate: f32 = 0,
+        arc_outer_radius: f32 = 0,
+        shadow_blur: f32 = 0,
+        shadow_offset_x: f32 = 0,
+        shadow_offset_y: f32 = 0,
+        shadow_spread: f32 = 0,
+        shadow2_color: struct { a: f32 = 0 } = .{},
+        shadow2_blur: f32 = 0,
+        shadow2_offset_x: f32 = 0,
+        shadow2_offset_y: f32 = 0,
+    };
+    const rect: Item = .{ .kind = .rect, .geom = .{ .x = 10, .y = 20, .w = 30, .h = 40 } };
+    try std.testing.expectEqual([4]f32{ 104, 9, 136, 51 }, RenderCommandEncoder.commandPaintBounds(rect, 95, -10).?);
+    const shadow: Item = .{ .kind = .shadow, .geom = .{ .x = 10, .y = 20, .w = 30, .h = 40 }, .shadow_blur = 4, .shadow_offset_y = 2 };
+    // Shadow quad: blur * 2 + |offset| on every side.
+    try std.testing.expectEqual([4]f32{ -1, 9, 51, 71 }, RenderCommandEncoder.commandPaintBounds(shadow, 0, 0).?);
+    var moved = rect;
+    moved.use_draw_transform = true;
+    try std.testing.expect(RenderCommandEncoder.commandPaintBounds(moved, 0, 0) == null);
+    moved = rect;
+    moved.rotate = 0.5;
+    try std.testing.expect(RenderCommandEncoder.commandPaintBounds(moved, 0, 0) == null);
+    const text: Item = .{ .kind = .text, .geom = .{ .x = 0, .y = 0, .w = 0, .h = 0 } };
+    try std.testing.expect(RenderCommandEncoder.commandPaintBounds(text, 0, 0) == null);
 }
 
 test "dynamic blur uniform slots advance within a frame" {
@@ -453,6 +634,75 @@ test "FontSelector stable selection prefers oversampling candidate during animat
 
     try std.testing.expect(selector.selectWeightedStable(15, 400) == &font16);
     try std.testing.expect(selector.selectWeightedStable(13, 400) == &font14);
+}
+
+/// Glyph pen positions of `text` as the renderer lays them out (drawTextWithOptions: each glyph
+/// advances by x_advance * requested_size / shaping font px), plus the run's total width.
+fn shapedPenPositions(shaper: *text_module.TextShaper, selector: *FontSelector, text: []const u8, props: font_selector_mod.TextFontProps, out: []f32) !f32 {
+    const font = selector.resolveFonts(text, props).primary;
+    const glyphs = try shaper.shapeWithOptions(text, font, false);
+    defer std.testing.allocator.free(glyphs);
+    const layout_scale = props.font_size / font.pixelSize();
+    var x: f32 = 0;
+    for (glyphs, 0..) |glyph, i| {
+        out[i] = x;
+        x += glyph.x_advance * layout_scale;
+    }
+    return x;
+}
+
+test "text layout is identical under the static and animated raster policies" {
+    // A run switching between static_crisp and animated_stable (an animation starting or
+    // ending) must not move a single glyph. The animated policy used to shape with the nearest
+    // preloaded instance scaled to the requested size; SF's size-dependent tracking then gave
+    // different advances than the exact-size static font, and every glyph jumped at the switch.
+    // Only the raster instance may differ.
+    var fs = try text_module.FontSystem.init(std.testing.allocator, std.testing.io);
+    defer fs.deinit();
+    const Loader = struct {
+        fn load(ctx: *anyopaque, font_size: f32, font_weight: u16) ?*Font {
+            const system: *text_module.FontSystem = @ptrCast(@alignCast(ctx));
+            return system.findFont(.{ .family = "system-ui", .size = font_size, .weight = if (font_weight >= 650) .bold else if (font_weight >= 550) .semibold else .regular }) catch null;
+        }
+    };
+    // The runtime's default slots: the platform UI font at 14 / 18 / 24.
+    const small = try fs.findFont(.{ .family = "system-ui", .size = 14 });
+    defer small.deinit();
+    const medium = try fs.findFont(.{ .family = "system-ui", .size = 18 });
+    defer medium.deinit();
+    const large = try fs.findFont(.{ .family = "system-ui", .size = 24 });
+    defer large.deinit();
+    var selector = FontSelector{ .small = small, .medium = medium, .large = large };
+    selector.weight_loader = .{ .context = @ptrCast(&fs), .load = Loader.load };
+    selector.initDerivedCache(std.testing.allocator);
+    defer selector.deinitDerivedCache();
+    var shaper = try text_module.TextShaper.init(std.testing.allocator);
+    defer shaper.deinit();
+
+    const sample = "Settings  Device name: Mac mini (ThunderLink) 1234567890";
+    var static_x: [128]f32 = undefined;
+    var animated_x: [128]f32 = undefined;
+    var compared: usize = 0;
+    // Plain sizes, then sizes under a non-integer transform scale (an animated scale lowers
+    // the run at font_size * scale).
+    const sizes = [_]f32{ 11, 12, 13, 14, 15, 16, 17, 13 * 0.97, 15 * 0.985, 14 * 1.5, 12.5, 16.25 };
+    for (sizes) |size| {
+        for ([_]u16{ 400, 600 }) |weight| {
+            const static_w = try shapedPenPositions(&shaper, &selector, sample, .{ .font_size = size, .font_weight = weight }, &static_x);
+            const animated_w = try shapedPenPositions(&shaper, &selector, sample, .{ .font_size = size, .font_weight = weight, .force_linear = true }, &animated_x);
+            try std.testing.expectEqual(static_w, animated_w);
+            for (static_x[0..sample.len], animated_x[0..sample.len]) |a, b| try std.testing.expectEqual(a, b);
+            // The animated raster still draws from a preloaded instance (no per-frame derive
+            // while an animated scale walks through sizes).
+            if (weight == 400) {
+                const resolved = selector.resolveFonts(sample, .{ .font_size = size, .font_weight = weight, .force_linear = true });
+                const raster = resolved.raster orelse resolved.primary;
+                try std.testing.expect(raster == small or raster == medium or raster == large);
+            }
+            compared += 1;
+        }
+    }
+    try std.testing.expectEqual(sizes.len * 2, compared);
 }
 
 test "HiDPI: FontSelector.setScaleFactor 传播到基准字体与扩展槽位" {
@@ -670,18 +920,10 @@ test "FontSelector weight_loader 未命中进负缓存：同 (字重, 字号) �
     try std.testing.expectEqual(before, counter2.calls);
 }
 
-test "retained_begin_seq stays aligned when no-op structural blocks are skipped" {
-    // Regression guard (P0 from 2026-07-30 review): encodeCommands skips 'empty struct blocks'
-    // (begin..end with no draw commands), skipping dispatchCommand. Before fix, skipped
-    // begin_opacity_layer did not advance retained_begin_seq while fingerprint prescan already
-    // numbered it; all downstream layers got wrong fingerprint shifted by 1, content changed but
-    // hit, stale content froze.
-    //
-    // Uses duck-typed mock command list (encoder all anytype, render module does not import ui
-    // paint_table). Two empty opacity blocks both collapsed-skipped; assert post-skip seq still
-    // matches prescan numbering total.
-    const MockColor = extern struct { r: u8 = 0, g: u8 = 0, b: u8 = 0, a: u8 = 0 };
-    const MockGlass = struct {
+/// Paint command mock with every field the paint fingerprint reads.
+const FullMock = struct {
+    pub const MockColor = extern struct { r: u8 = 0, g: u8 = 0, b: u8 = 0, a: u8 = 0 };
+    pub const MockGlass = struct {
         backdrop_blur: f32 = 0,
         glass_tint: [4]f32 = .{ 0, 0, 0, 0 },
         glass_intensity: f32 = 0,
@@ -749,7 +991,7 @@ test "retained_begin_seq stays aligned when no-op structural blocks are skipped"
         blur_gradient_stop_str: [4]f32 = .{ 1, 0, 0, 0 },
         blur_gradient_stop_count: u8 = 2,
     };
-    const MockSpan = struct {
+    pub const MockSpan = struct {
         start: u32 = 0,
         end: u32 = 0,
         color: ?MockColor = null,
@@ -759,20 +1001,20 @@ test "retained_begin_seq stays aligned when no-op structural blocks are skipped"
         strikethrough: bool = false,
         bg_color: ?MockColor = null,
     };
-    const MockPt = struct { x: f32 = 0, y: f32 = 0 };
-    const MockPathCmd = union(enum) {
+    pub const MockPt = struct { x: f32 = 0, y: f32 = 0 };
+    pub const MockPathCmd = union(enum) {
         move_to: MockPt,
         line_to: MockPt,
         quad_to: struct { ctrl: MockPt = .{}, end: MockPt = .{} },
         cubic_to: struct { ctrl1: MockPt = .{}, ctrl2: MockPt = .{}, end: MockPt = .{} },
         close: void,
     };
-    const MockPathGeom = struct {
+    pub const MockPathGeom = struct {
         fill_rule: enum(u8) { nonzero, evenodd } = .nonzero,
         commands: []const MockPathCmd = &.{},
     };
-    const Kind = enum { none, rect, text, image, shadow, gradient, path, control };
-    const CtrlKind = enum {
+    pub const Kind = enum { none, rect, text, image, shadow, gradient, path, control };
+    pub const CtrlKind = enum {
         none,
         push_clip,
         pop_clip,
@@ -783,8 +1025,8 @@ test "retained_begin_seq stays aligned when no-op structural blocks are skipped"
         begin_rounded_clip,
         end_rounded_clip,
     };
-    const Geom = struct { x: f32 = 0, y: f32 = 0, w: f32 = 100, h: f32 = 100 };
-    const Radii = struct {
+    pub const Geom = struct { x: f32 = 0, y: f32 = 0, w: f32 = 100, h: f32 = 100 };
+    pub const Radii = struct {
         tl: f32 = 0,
         tr: f32 = 0,
         br: f32 = 0,
@@ -793,7 +1035,7 @@ test "retained_begin_seq stays aligned when no-op structural blocks are skipped"
             return .{ self.tl, self.tr, self.br, self.bl };
         }
     };
-    const MockItem = struct {
+    pub const MockItem = struct {
         kind: Kind = .control,
         control_kind: CtrlKind = .none,
         geom: Geom = .{},
@@ -866,7 +1108,19 @@ test "retained_begin_seq stays aligned when no-op structural blocks are skipped"
         surface_stable_id: u32 = 42,
         surface_content_version: u32 = 1,
     };
+};
 
+test "retained_begin_seq stays aligned when no-op structural blocks are skipped" {
+    // Regression guard (P0 from 2026-07-30 review): encodeCommands skips 'empty struct blocks'
+    // (begin..end with no draw commands), skipping dispatchCommand. Before fix, skipped
+    // begin_opacity_layer did not advance retained_begin_seq while fingerprint prescan already
+    // numbered it; all downstream layers got wrong fingerprint shifted by 1, content changed but
+    // hit, stale content froze.
+    //
+    // Uses duck-typed mock command list (encoder all anytype, render module does not import ui
+    // paint_table). Two empty opacity blocks both collapsed-skipped; assert post-skip seq still
+    // matches prescan numbering total.
+    const MockItem = FullMock.MockItem;
     const begin = MockItem{ .control_kind = .begin_opacity_layer, .opacity = 0.5 };
     const end = MockItem{ .control_kind = .end_opacity_layer };
     // Two empty opacity blocks; tryFindNoOpStructuralBlock folds them entirely.
@@ -1693,6 +1947,23 @@ test "retained plan: backend-independent layer ranges include nested damage and 
     try std.testing.expectEqual(@as(?usize, null), plan.layers[0].end);
 }
 
+test "retained plan: a per-corner clip radius change invalidates the layer content hash" {
+    const Item = DamageMock.MockItem;
+    const begin = Item{ .control_kind = .begin_opacity_layer, .surface_stable_id = 21, .opacity = 0.5 };
+    const end = Item{ .control_kind = .end_opacity_layer };
+    const body = Item{ .kind = .rect, .control_kind = .none, .geom = .{ .x = 0, .y = 0, .w = 80, .h = 40 }, .color = 0xff0000ff };
+    const pop = Item{ .control_kind = .pop_clip };
+    var clip = Item{ .control_kind = .push_clip, .clip_shape_kind = 1, .geom = .{ .x = 0, .y = 0, .w = 80, .h = 40 }, .radii = .{ .tl = 8, .tr = 0, .br = 0, .bl = 8 } };
+    var plan: retained_plan.Plan = .{};
+    plan.compute(&[_]Item{ begin, clip, body, pop, end }, 1);
+    const square_right = plan.retained_hashes[0];
+    try std.testing.expect(square_right != 0);
+    // Only the bottom-left corner changes: cached pixels clipped with the old mask are stale.
+    clip.radii.bl = 0;
+    plan.compute(&[_]Item{ begin, clip, body, pop, end }, 1);
+    try std.testing.expect(plan.retained_hashes[0] != square_right);
+}
+
 test "retained plan: excess nesting and incomplete scopes cannot misassociate native layer boundaries" {
     const Item = DamageMock.MockItem;
     var commands: [140]Item = undefined;
@@ -1796,4 +2067,165 @@ test "FontSelector system UI family: unavailable falls back to the default slot,
     // and the weight loader's miss table survived (no re-query)
     _ = selector.selectWeighted(14, 700);
     try std.testing.expectEqual(@as(u32, 1), weights.calls);
+}
+
+test "frame damage with effects: entries, glass backdrop growth, skips and unbalanced groups" {
+    const FrameDamage = @import("frame_damage.zig").FrameDamage;
+    const M = FullMock.MockItem;
+    const a = std.testing.allocator;
+    const near = M{ .kind = .rect, .control_kind = .none, .geom = .{ .x = 10, .y = 10, .w = 50, .h = 20 }, .color = .{ .r = 1 } };
+    const far = M{ .kind = .rect, .control_kind = .none, .geom = .{ .x = 600, .y = 600, .w = 50, .h = 20 }, .color = .{ .r = 1 } };
+    const glass_begin = M{ .control_kind = .begin_blur_layer, .geom = .{ .x = 100, .y = 100, .w = 40, .h = 40 } };
+    const child = M{ .kind = .rect, .control_kind = .none, .geom = .{ .x = 105, .y = 105, .w = 10, .h = 10 }, .color = .{ .r = 1 } };
+    const glass_end = M{ .control_kind = .end_blur_layer };
+    var plan: FrameDamage = .{};
+    defer plan.deinit(a);
+
+    const frame1 = [_]M{ near, far, glass_begin, child, glass_end };
+    try std.testing.expectEqual(@as(?[4]u32, null), try plan.prepareEffects(a, a, frame1[0..], 1000, 1000, 1, 7));
+    plan.commit();
+    // Nothing changed: copy only.
+    try std.testing.expectEqual(@as(?[4]u32, .{ 0, 0, 0, 0 }), try plan.prepareEffects(a, a, frame1[0..], 1000, 1000, 1, 7));
+    plan.commit();
+
+    // A change far from the glass damages only itself; the rest is skipped.
+    var far2 = far;
+    far2.color = .{ .r = 2 };
+    const frame2 = [_]M{ near, far2, glass_begin, child, glass_end };
+    const d2 = (try plan.prepareEffects(a, a, frame2[0..], 1000, 1000, 1, 7)).?;
+    try std.testing.expect(d2[0] >= 590 and d2[1] >= 590 and d2[0] + d2[2] <= 662 and d2[1] + d2[3] <= 632);
+    try std.testing.expectEqualSlices([2]u32, &.{ .{ 0, 0 }, .{ 2, 4 } }, plan.skip.items);
+    plan.commit();
+
+    // A change inside the glass's sampled margin pulls in its whole backdrop:
+    // a glass composited again under the scissor captures only fresh pixels.
+    var near2 = near;
+    near2.color = .{ .r = 3 };
+    const frame3 = [_]M{ near2, far2, glass_begin, child, glass_end };
+    const d3 = (try plan.prepareEffects(a, a, frame3[0..], 1000, 1000, 1, 7)).?;
+    const read = @import("command_encoder/paint_fingerprint.zig").glassReadBounds(glass_begin);
+    try std.testing.expect(@as(f32, @floatFromInt(d3[0] + d3[2])) >= read[0] + read[2]);
+    try std.testing.expect(@as(f32, @floatFromInt(d3[1] + d3[3])) >= read[1] + read[3]);
+    try std.testing.expectEqualSlices([2]u32, &.{.{ 1, 1 }}, plan.skip.items);
+    plan.commit();
+
+    // Context change (size, scale, resources): full redraw.
+    try std.testing.expectEqual(@as(?[4]u32, null), try plan.prepareEffects(a, a, frame3[0..], 1000, 1000, 1, 8));
+    plan.commit();
+
+    // A group popping a clip opened before it is described but never skipped
+    // (skipping it would unbalance the encoder's clip stack).
+    const clip = M{ .control_kind = .push_clip, .geom = .{ .x = 0, .y = 0, .w = 300, .h = 300 } };
+    const pop = M{ .control_kind = .pop_clip };
+    const frame4 = [_]M{ far2, clip, glass_begin, child, pop, glass_end };
+    _ = try plan.prepareEffects(a, a, frame4[0..], 1000, 1000, 1, 8);
+    plan.commit();
+    var far3 = far2;
+    far3.color = .{ .r = 4 };
+    const frame5 = [_]M{ far3, clip, glass_begin, child, pop, glass_end };
+    _ = (try plan.prepareEffects(a, a, frame5[0..], 1000, 1000, 1, 8)).?;
+    try std.testing.expectEqual(@as(usize, 0), plan.skip.items.len);
+    plan.commit();
+
+    // An external image (its texture can change under an unchanged item) is
+    // damaged every frame.
+    const image = M{ .kind = .image, .control_kind = .none, .geom = .{ .x = 700, .y = 100, .w = 20, .h = 20 } };
+    const frame6 = [_]M{ far3, image };
+    _ = try plan.prepareEffects(a, a, frame6[0..], 1000, 1000, 1, 9);
+    plan.commit();
+    const d6 = (try plan.prepareEffects(a, a, frame6[0..], 1000, 1000, 1, 9)).?;
+    try std.testing.expect(d6[0] <= 700 and d6[0] + d6[2] >= 720 and d6[2] < 60);
+}
+
+test "frame damage computes geometry only for items it has not seen" {
+    const FrameDamage = @import("frame_damage.zig").FrameDamage;
+    const M = FullMock.MockItem;
+    const a = std.testing.allocator;
+    var rows: [40]M = undefined;
+    for (&rows, 0..) |*r, i| r.* = .{ .kind = .rect, .control_kind = .none, .geom = .{ .x = 10, .y = @floatFromInt(i * 20), .w = 200, .h = 18 }, .color = .{ .r = 1 } };
+    var plan: FrameDamage = .{ .verify_geometry = true };
+    defer plan.deinit(a);
+    _ = try plan.prepareEffects(a, a, rows[0..], 1000, 1000, 1, 7);
+    plan.commit();
+    try std.testing.expectEqual(@as(u32, 40), plan.geo_computed);
+    _ = try plan.prepareEffects(a, a, rows[0..], 1000, 1000, 1, 7);
+    plan.commit();
+    try std.testing.expectEqual(@as(u32, 0), plan.geo_computed);
+
+    // One changed row, one inserted, one removed: only the changed and the
+    // inserted one are computed; the rest are found again.
+    var next: [40]M = undefined;
+    @memcpy(next[0..5], rows[0..5]);
+    next[5] = rows[5];
+    next[5].geom.w = 300;
+    next[6] = .{ .kind = .rect, .control_kind = .none, .geom = .{ .x = 500, .y = 500, .w = 5, .h = 5 }, .color = .{ .r = 9 } };
+    @memcpy(next[7..39], rows[6..38]);
+    next[39] = rows[39];
+    const d = (try plan.prepareEffects(a, a, next[0..], 1000, 1000, 1, 7)).?;
+    plan.commit();
+    try std.testing.expectEqual(@as(u32, 2), plan.geo_computed);
+    try std.testing.expectEqual(@as(u64, 0), plan.geo_violations);
+    // The damage still covers the removed row (38: y 760..778) and the changed one.
+    try std.testing.expect(d[1] <= 100 and d[1] + d[3] >= 778);
+    try std.testing.expect(d[0] + d[2] >= 310);
+}
+
+test "frame damage skip ranges keep the retained layer numbering" {
+    const M = FullMock.MockItem;
+    const begin = M{ .control_kind = .begin_opacity_layer, .opacity = 0.5 };
+    const rect = M{ .kind = .rect, .control_kind = .none, .color = .{ .r = 1 } };
+    const end = M{ .control_kind = .end_opacity_layer };
+    const commands = [_]M{ begin, rect, end, begin, rect, end };
+    var encoder = RenderCommandEncoder{
+        .sdf_renderer = undefined,
+        .text_renderer = undefined,
+        .offscreen_pool = undefined,
+        .persistent = undefined,
+    };
+    const skip = [_][2]u32{ .{ 0, 2 }, .{ 3, 5 } };
+    encoder.frame_damage_skip = &skip;
+    try encoder.encodeCommands(commands[0..]);
+    try std.testing.expectEqual(@as(usize, 2), encoder.retained_begin_seq);
+}
+
+test "frame damage skip accepts empty and singleton fixed command arrays" {
+    const M = FullMock.MockItem;
+    var encoder = RenderCommandEncoder{
+        .sdf_renderer = undefined,
+        .text_renderer = undefined,
+        .offscreen_pool = undefined,
+        .persistent = undefined,
+    };
+    // An empty typed array must instantiate without subtracting from zero.
+    const empty = [_]M{};
+    const skip = [_][2]u32{.{ 0, std.math.maxInt(u32) }};
+    encoder.frame_damage_skip = &skip;
+    try encoder.encodeCommands(&empty);
+    try std.testing.expectEqual(@as(usize, 0), encoder.retained_begin_seq);
+    // The inclusive skip end is clipped to one, including when supplied as
+    // maxInt; the exclusive end cannot have the inferred integer type u0.
+    const singleton = [_]M{.{ .control_kind = .begin_opacity_layer, .opacity = 0.5 }};
+    try encoder.encodeCommands(&singleton);
+    try std.testing.expectEqual(@as(usize, 1), encoder.retained_begin_seq);
+}
+
+test "content fingerprint: a group's draw rect and warp and an icon's snapping change it" {
+    const M = FullMock.MockItem;
+    const content = struct {
+        fn of(it: M) u64 {
+            return paint_fp.fullItemDigest(&it);
+        }
+    };
+    const group = M{ .control_kind = .begin_opacity_layer, .use_draw_transform = true, .draw_x = 10, .draw_y = 20, .draw_w = 300, .draw_h = 40, .opacity = 0.5 };
+    const base = content.of(group);
+    var moved = group;
+    moved.draw_w = 300.00003;
+    try std.testing.expect(content.of(moved) != base);
+    moved = group;
+    moved.warp = .{ 0.1, 0, 0, 0 };
+    try std.testing.expect(content.of(moved) != base);
+    const icon = M{ .kind = .image, .control_kind = .none };
+    var unsnapped = icon;
+    unsnapped.icon_snap = !icon.icon_snap;
+    try std.testing.expect(content.of(unsnapped) != content.of(icon));
 }

@@ -28,14 +28,25 @@ const popover_mod = @import("../popover/mod.zig");
 const Popover = popover_mod.Popover;
 const calendar_mod = @import("../calendar/mod.zig");
 const CalendarComp = calendar_mod.Calendar;
+const Input = @import("../input/mod.zig").Input;
 const SimpleDate = calendar_mod.SimpleDate;
 const svg_assets = @import("../../svg_assets.zig");
 const styles = @import("styles.zig");
 const view = @import("../../view.zig");
 
+pub const Time = struct { hour: u8 = 0, minute: u8 = 0, second: u8 = 0 };
+pub const DateTime = struct { date: SimpleDate, time: Time = .{} };
+
 /// DatePicker properties
 pub const DatePickerProps = struct {
     placeholder: []const u8 = "Select date...",
+    /// DateTime mode holds date/time as drafts until Apply. Date-only default stays immediate.
+    show_time: bool = false,
+    /// Atomic DateTime source. Set this for split/controlled date-time validation.
+    /// A non-null local value, or a bound/split/controlled model, owns both parts.
+    /// value/time_value are then ignored. Separate split/controlled parts are rejected.
+    datetime_value: Model(?DateTime) = .{ .local = null },
+    time_value: Model(Time) = .{ .local = .{} },
     /// Selected date: `?SimpleDate` uncontrolled init; `*Signal(?SimpleDate)` controlled
     /// (interaction writes directly); `ui.split` intercepts
     value: Model(?SimpleDate) = .{ .local = null },
@@ -47,6 +58,8 @@ pub const DatePickerProps = struct {
     /// Panel toggle
     open: Model(bool) = .{ .local = false },
     on_open_change: ?Handler(bool) = null,
+    /// Validation state; error border takes precedence over open/focus.
+    invalid: Source(bool) = .{ .value = false },
     /// User selected date and landed, call (settled value)
     on_change: ?Handler(SimpleDate) = null,
     calendar_icon_asset: ?svg_assets.Asset = null,
@@ -55,11 +68,25 @@ pub const DatePickerProps = struct {
     test_id: ?[]const u8 = null,
 };
 
+fn usesDateTimeModel(p: DatePickerProps) bool {
+    return switch (p.datetime_value) {
+        .local => |v| v != null,
+        else => true,
+    };
+}
+
 /// DatePicker runtime (owned by Popover scope). view = f(value, open)
 pub const DatePickerState = struct {
     value: reactive.Bound(?SimpleDate),
+    datetime: ?reactive.Bound(?DateTime) = null,
     /// Currently displayed selected date (derived from data source)
     selected_date: ?SimpleDate = null,
+    time: ?reactive.Bound(Time) = null,
+    draft_date: ?*Signal(?SimpleDate) = null,
+    fields: [3]?*Signal([]const u8) = .{ null, null, null },
+    field_errors: [3]?*Signal([]const u8) = .{ null, null, null },
+    apply_disabled: ?*Signal(bool) = null,
+    draft_time: ?Time = null,
     display_node: *Node,
     trigger_node: *Node,
     leading_icon_node: *Node,
@@ -72,9 +99,11 @@ pub const DatePickerState = struct {
     close: Handler(void),
     toggle: Handler(void),
     disabled: Source(bool),
+    invalid: Source(bool) = .{ .value = false },
     shown_open: bool = false,
     shown_disabled: bool = false,
-    shell_config: control_shell.ControlShellConfig,
+    /// Trigger look the frame and icon tints follow (styleBy / tintBy); syncTriggerVisual writes it.
+    trigger_look: *Signal(styles.TriggerLook),
     /// Embedded calendar visible month; reset to null on each open (follow selected date)
     calendar_month: *Signal(?calendar_mod.YearMonth),
     on_change: ?Handler(SimpleDate),
@@ -85,11 +114,17 @@ pub const DatePickerState = struct {
     a11y_value_buf: [24]u8 = undefined,
 
     fn view(self: *DatePickerState, comptime tracked: bool) void {
-        self.selected_date = self.value.readAs(tracked);
+        self.selected_date = self.currentDate(tracked);
         const open = self.open.read(tracked);
+        _ = self.invalid.read(tracked);
+        if (self.time) |time| _ = time.readAs(tracked);
         // On each open, calendar returns to month of selected date (regardless of opener: click /
         // external open write)
-        if (open and !self.shown_open) self.calendar_month.set(null);
+        if (open and !self.shown_open) {
+            self.calendar_month.set(null);
+            self.resetTimeDraft();
+        }
+        if (!open and self.shown_open) self.resetTimeDraft();
         self.shown_open = open;
         const disabled = self.disabled.read(tracked);
         if (disabled != self.shown_disabled) self.applyDisabled(disabled);
@@ -100,9 +135,7 @@ pub const DatePickerState = struct {
     /// Dynamic disabled: disable styling by recipe, click entry gated by disabled
     fn applyDisabled(self: *DatePickerState, disabled: bool) void {
         self.shown_disabled = disabled;
-        const resolved = self.shell_config.resolvedConditionalStyle(self.cx.tokens).resolve(.{ .is_disabled = disabled });
-        if (resolved.background) |bg| self.trigger_node.setBackground(if (disabled) bg else self.cx.tokens.tokens.color.bg_primary);
-        self.trigger_node.style.cursor = if (disabled) .not_allowed else .pointer;
+        // Frame and cursor: the trigger shell (disabled parameter) and its look (syncTriggerVisual).
         if (self.trigger_node.behavior.interaction.a11y) |*a| a.disabled = disabled;
         self.trigger_node.markRenderDirty();
     }
@@ -121,6 +154,14 @@ pub const DatePickerState = struct {
     /// step)
     fn pick(self: *DatePickerState, date: ?SimpleDate) void {
         const d = date orelse return;
+        if (self.draft_date) |draft| {
+            draft.set(d);
+            return;
+        }
+        self.commitDate(d);
+    }
+
+    fn commitDate(self: *DatePickerState, d: SimpleDate) void {
         const on_change = self.on_change;
         const landed = self.value.commit(d);
         self.close.invoke();
@@ -128,6 +169,78 @@ pub const DatePickerState = struct {
             if (l) |v| {
                 if (on_change) |h| h.call(v);
             }
+        }
+    }
+    fn currentDate(self: *DatePickerState, comptime tracked: bool) ?SimpleDate {
+        if (self.datetime) |dt| return if (dt.readAs(tracked)) |v| v.date else null;
+        return self.value.readAs(tracked);
+    }
+
+    fn currentTime(self: *DatePickerState, comptime tracked: bool) Time {
+        if (self.datetime) |dt| return if (dt.readAs(tracked)) |v| v.time else .{};
+        return self.time.?.readAs(tracked);
+    }
+
+    fn resetTimeDraft(self: *DatePickerState) void {
+        if (self.time == null) return;
+        self.draft_date.?.set(self.currentDate(false));
+        const t = self.currentTime(false);
+        for ([_]u8{ t.hour, t.minute, t.second }, 0..) |n, i| {
+            var buf: [4]u8 = undefined;
+            self.fields[i].?.set(std.fmt.bufPrint(&buf, "{d:0>2}", .{n}) catch "");
+        }
+    }
+
+    fn timeEffect(self: *DatePickerState) void {
+        const limits = [_]u8{ 23, 59, 59 };
+        const errors = [_][]const u8{ "Hour must be 0–23", "Minute must be 0–59", "Second must be 0–59" };
+        var parts: [3]u8 = undefined;
+        var valid = true;
+        for (0..3) |i| {
+            const n = std.fmt.parseInt(u8, self.fields[i].?.get(), 10) catch 255;
+            const ok = n <= limits[i];
+            self.field_errors[i].?.set(if (ok) "" else errors[i]);
+            valid = valid and ok;
+            parts[i] = n;
+        }
+        self.draft_time = if (valid) .{ .hour = parts[0], .minute = parts[1], .second = parts[2] } else null;
+        self.apply_disabled.?.set(!valid or self.draft_date.?.get() == null);
+    }
+
+    fn cancelTime(ptr: *anyopaque) void {
+        const self: *DatePickerState = @ptrCast(@alignCast(ptr));
+        self.resetTimeDraft();
+        self.close.invoke();
+    }
+
+    fn applyTime(ptr: *anyopaque) void {
+        const self: *DatePickerState = @ptrCast(@alignCast(ptr));
+        if (self.disabled.peek()) return;
+        const time = self.draft_time orelse return;
+        const date = self.draft_date.?.peek() orelse return;
+        const close = self.close;
+        const on_change = self.on_change;
+        if (self.datetime) |dt| {
+            const proposal: ?DateTime = .{ .date = date, .time = time };
+            const unchanged = std.meta.eql(dt.peek(), proposal);
+            const landed = dt.commit(proposal);
+            // Rejected proposals leave both parts and the open draft untouched.
+            if (landed) |changed| {
+                close.invoke();
+                if (changed) |v| if (on_change) |h| h.call(v.date);
+            } else if (unchanged) {
+                close.invoke();
+            }
+        } else {
+            // Legacy local/bound parts cannot reject or run write callbacks. Batch makes
+            // all observers see the full value, including on_change and close handlers.
+            const owner = self.cx.owner;
+            owner.beginBatch();
+            _ = self.time.?.commit(time);
+            const landed = self.value.commit(date);
+            owner.endBatch();
+            close.invoke();
+            if (landed) |changed| if (changed) |v| if (on_change) |h| h.call(v);
         }
     }
 };
@@ -139,11 +252,21 @@ pub const DatePickerResult = struct {
     value: ?*Signal(?SimpleDate),
     /// Toggle signal (`ui.split` -> null)
     open: ?*Signal(bool),
+    time: ?*Signal(Time) = null,
+    datetime: ?*Signal(?DateTime) = null,
     /// `ui.view` integration (see src/ui/view_parts.zig).
     pub fn viewParts(self: DatePickerResult) core.ViewParts {
         return .{ .root = self.wrapper };
     }
 };
+
+/// Date/time picker shares the trigger and calendar with DatePicker, with explicit Apply/Cancel.
+pub fn DateTimePicker(props: anytype) DatePickerBuilder {
+    var p = reactive.props.coerce(DatePickerProps, props);
+    p.show_time = true;
+    if (!@hasField(@TypeOf(props), "width")) p.width = 276;
+    return .{ .props = p };
+}
 
 /// Create DatePicker: `W.DatePicker(.{ .value = due })`
 pub fn DatePicker(props: anytype) DatePickerBuilder {
@@ -160,6 +283,17 @@ pub const DatePickerBuilder = struct {
         const allocator = cx.allocator;
         const t = cx.tokens;
         const p = self.props;
+        if (p.show_time and !usesDateTimeModel(p)) {
+            // Independent interceptors cannot promise all-or-nothing acceptance.
+            switch (p.value) {
+                .split, .controlled => return error.NonAtomicDateTimeModels,
+                else => {},
+            }
+            switch (p.time_value) {
+                .split, .controlled => return error.NonAtomicDateTimeModels,
+                else => {},
+            }
+        }
 
         const disabled0 = p.disabled.peek();
         // Static disabled handled by shell; dynamic disabled styled by view via recipe
@@ -188,8 +322,9 @@ pub const DatePickerBuilder = struct {
         // All DatePicker resources, hooks and effects owned by Popover scope: calendar in portal,
         // freed together on unmount
         const my_scope = pop_result.scope;
-        const value = try reactive.resolveModel(?SimpleDate, my_scope, p.value);
-        const initial_value = value.readAs(false);
+        const datetime = if (p.show_time and usesDateTimeModel(p)) try reactive.resolveModel(?DateTime, my_scope, p.datetime_value) else null;
+        const value = try reactive.resolveModel(?SimpleDate, my_scope, if (datetime != null) .{ .local = null } else p.value);
+        const initial_value = if (datetime) |dt| (if (dt.peek()) |v| v.date else null) else value.readAs(false);
         pop_result.wrapper.meta.ownership.meta.component_name = "DatePicker";
         // wrapper is layout container only: semantics on trigger (combobox). Old role=.textbox
         // creates phantom "textbox" wrapper in AX tree containing combobox.
@@ -215,33 +350,32 @@ pub const DatePickerBuilder = struct {
         // padding_y * 2 + line_height.
         const has_value = initial_value != null;
         const cm = control_shell.metrics(t, p.size);
-        const shell_config = control_shell.ControlShellConfig{ .size = p.size, .variant = .field };
+        const trigger_look = try my_scope.createSignal(styles.TriggerLook, .{ .size = p.size, .width = p.width, .has_value = has_value, .invalid = p.invalid.peek(), .disabled = disabled0 });
         const icon_size: core.Sizing = .{ .px = cm.icon_size };
         var label_buf: [24]u8 = undefined;
         const display_text = if (initial_value) |date| formatDisplayDate(date, &label_buf) else p.placeholder;
         const TriggerParts = struct { leading_icon: *Node = undefined, display: *Node = undefined, chevron: *Node = undefined };
         var tparts: TriggerParts = .{};
-        var shell: control_shell.ControlShellResult = undefined;
-        try view.mount(my_scope, cx, pop_result.trigger, view.capture(&shell, control_shell.ControlShell(.{
-            .size = p.size,
+        var shell: core.ViewParts = undefined;
+        // The trigger is a ControlShell (structure, slots, cursor, disabled); the picker's look
+        // stacks on it as an overlay following trigger_look.
+        try view.mount(my_scope, cx, pop_result.trigger, view.attrs(.{ .style = view.styleBy(trigger_look, styles.triggerFrame) }, view.with(control_shell.ControlShell(.{
             .variant = .field,
-            .disabled = static_disabled,
+            .size = p.size,
+            .disabled = p.disabled,
             .leading_icon = true,
             .tag = .button,
-            .style = .{
-                .width = .{ .px = p.width },
-                .background = t.tokens.color.bg_primary,
-                .border = .{ .width = 1, .color = styles.triggerBorderColor(false, has_value, t), .radius = cm.radius },
+            .cursor = .pointer,
+            .content_style = core.BoxStyle{
+                .width = .{ .grow = .{ .min = 0 } },
+                .flex_shrink = 1,
+                .overflow_hidden = true,
+                .min_width = 0,
             },
-            // Border color follows open / has_value driven by syncTriggerVisual; focus and hover
-            // not separately drawn.
-            .interactive = false,
-            .focus_ring = false,
-            .cursor = if (disabled0) .not_allowed else .pointer,
-        }, .{
+        }), .{}).capture(&shell).slots(.{
             .icon = view.capture(&tparts.leading_icon, view.icon(.{
                 .style = .{ .width = icon_size, .height = icon_size },
-                .tint = styles.leadingIconTint(has_value, t),
+                .tint = view.tintBy(trigger_look, styles.triggerLeadingTint),
             }, p.calendar_icon_asset orelse svg_assets.common.calendar)),
             // Display text (view.text copies node-owned copy, label_buf only needs to live until
             // mount)
@@ -250,18 +384,12 @@ pub const DatePickerBuilder = struct {
                 .font_size = cm.font_size,
                 .line_height = cm.line_height,
             } }, display_text)),
-            .content_style = core.BoxStyle{
-                .width = .{ .grow = .{ .min = 0 } },
-                .flex_shrink = 1,
-                .overflow_hidden = true,
-                .min_width = 0,
-            },
             .append = view.capture(&tparts.chevron, view.icon(.{
                 .style = .{ .width = icon_size, .height = icon_size },
-                .tint = styles.chevronTint(false, t),
+                .tint = view.tintBy(trigger_look, styles.triggerChevronTint),
             }, svg_assets.common.chevron_down)),
         })));
-        const trigger = shell.node;
+        const trigger = shell.root.?;
         // aria role combobox + haspopup=dialog (Calendar popover). expanded/value_text follow
         // open/selected date updates via syncTriggerA11y.
         trigger.behavior.interaction.a11y = .{
@@ -295,6 +423,7 @@ pub const DatePickerBuilder = struct {
         const state = try my_scope.allocator.create(DatePickerState);
         state.* = .{
             .value = value,
+            .datetime = datetime,
             .selected_date = initial_value,
             .display_node = display_node,
             .trigger_node = trigger,
@@ -305,8 +434,9 @@ pub const DatePickerBuilder = struct {
             .close = pop_result.close,
             .toggle = pop_result.toggle,
             .disabled = p.disabled,
+            .invalid = p.invalid,
             .shown_disabled = disabled0,
-            .shell_config = shell_config,
+            .trigger_look = trigger_look,
             .calendar_month = calendar_month,
             .on_change = p.on_change,
             .placeholder = p.placeholder,
@@ -317,6 +447,17 @@ pub const DatePickerBuilder = struct {
                 alloc.destroy(@as(*DatePickerState, @ptrCast(@alignCast(ptr))));
             }
         }.cleanup);
+        if (p.show_time) {
+            state.time = try reactive.resolveModel(Time, my_scope, if (datetime != null) .{ .local = .{} } else p.time_value);
+            state.draft_date = try my_scope.createSignal(?SimpleDate, initial_value);
+            state.apply_disabled = try my_scope.createSignal(bool, initial_value == null);
+            const initial_time = state.currentTime(false);
+            for ([_]u8{ initial_time.hour, initial_time.minute, initial_time.second }, 0..) |n, i| {
+                var buf: [4]u8 = undefined;
+                state.fields[i] = try my_scope.createText(std.fmt.bufPrint(&buf, "{d:0>2}", .{n}) catch "", .{});
+                state.field_errors[i] = try my_scope.createSignal([]const u8, "");
+            }
+        }
         // Static disabled completely lazy (no click handler); dynamic disabled still hooks,
         // entry gated by disabled
         if (!static_disabled) pop_result.trigger.behavior.events.on_click = core.Cx.simpleHandler(DatePickerState.onTriggerClick, state);
@@ -348,24 +489,24 @@ pub const DatePickerBuilder = struct {
                 .padding = Padding.ZERO,
             } }, view.capture(&parts.calendar, CalendarComp(.{
                 .value = Model(?SimpleDate){ .split = .{
-                    .read = value.read,
+                    .read = if (state.draft_date) |draft| .{ .signal = draft } else value.read,
                     .write = reactive.Callback(?SimpleDate).from(DatePickerState, state, DatePickerState.pick),
                 } },
                 .month = state.calendar_month,
-                .cell_size = 32,
+                .cell_size = 36,
                 .prev_icon_asset = p.prev_icon_asset orelse svg_assets.common.chevron_left,
                 .next_icon_asset = p.next_icon_asset orelse svg_assets.common.chevron_right,
             }))),
             // Today: Button component (size follows control metrics, hover via button animation);
             // override to shallow fill, no border, full width.
-            view.capture(&parts.today, button_mod.Button(.{
+            if (!p.show_time) view.capture(&parts.today, button_mod.Button(.{
                 .label = "Today",
-                .variant = .secondary,
+                .variant = .ghost,
                 .size = p.size,
                 .base_style = styles.todayBtnOverride(t),
                 .hover_style = .{ .background = t.tokens.color.bg_active },
                 .on_click = core.Cx.simpleHandler(todayClickHandler, @ptrCast(state)),
-            })),
+            })) else null,
         })));
         const panel = parts.panel;
         panel.meta.ownership.meta.component_name = "DatePickerPanel";
@@ -379,21 +520,41 @@ pub const DatePickerBuilder = struct {
         }
         state.panel_node = panel;
         state.calendar_state = @ptrCast(@alignCast(parts.calendar.wrapper.meta.ownership.debug_slots.state_ptrs[0].?));
-        const today_btn = parts.today;
-        if (p.test_id) |tid| {
-            var buf: [128]u8 = undefined;
-            const today_tid = std.fmt.bufPrint(&buf, "{s}.today", .{tid}) catch null;
-            if (today_tid) |s| {
-                today_btn.meta.ownership.meta.test_id = allocator.dupe(u8, s) catch null;
-                today_btn.frame_state.state_bits.flags.test_id_owned = (today_btn.meta.ownership.meta.test_id != null);
+        if (!p.show_time) {
+            const today_btn = parts.today;
+            if (p.test_id) |tid| {
+                var buf: [128]u8 = undefined;
+                const today_tid = std.fmt.bufPrint(&buf, "{s}.today", .{tid}) catch null;
+                if (today_tid) |s| {
+                    today_btn.meta.ownership.meta.test_id = allocator.dupe(u8, s) catch null;
+                    today_btn.frame_state.state_bits.flags.test_id_owned = (today_btn.meta.ownership.meta.test_id != null);
+                }
             }
         }
-
+        if (p.show_time) {
+            var time_inputs: [3]@import("../input/mod.zig").InputResult = undefined;
+            try view.mount(my_scope, cx, panel, view.col(.{ .style = styles.timeEditorStyle }, .{
+                view.text(.{ .style = styles.timeHeadingStyle }, "TIME"),
+                view.row(.{ .style = styles.timeFieldsStyle }, .{
+                    view.capture(&time_inputs[0], Input(.{ .value = state.fields[0].?, .width = 76, .size = .sm, .placeholder = "HH", .error_msg = state.field_errors[0].? })),
+                    view.capture(&time_inputs[1], Input(.{ .value = state.fields[1].?, .width = 76, .size = .sm, .placeholder = "MM", .error_msg = state.field_errors[1].? })),
+                    view.capture(&time_inputs[2], Input(.{ .value = state.fields[2].?, .width = 76, .size = .sm, .placeholder = "SS", .error_msg = state.field_errors[2].? })),
+                }),
+            }));
+            for (time_inputs) |input| {
+                try input.input_container.setStyleInlineFallible(cx.allocator, styles.timeFieldStyle(t));
+            }
+            try view.mount(my_scope, cx, panel, view.row(.{ .style = styles.timeFooterStyle }, .{
+                button_mod.Button(.{ .label = "Cancel", .variant = .secondary, .base_style = styles.timeButtonStyle(cx.tokens), .on_click = Cx.simpleHandler(DatePickerState.cancelTime, state) }),
+                button_mod.Button(.{ .label = "Apply", .disabled = state.apply_disabled.?, .base_style = styles.timeButtonStyle(cx.tokens), .on_click = Cx.simpleHandler(DatePickerState.applyTime, state) }),
+            }));
+            try my_scope.createEffect(state, DatePickerState.timeEffect);
+        }
         // view = f(value, open): display text, border / icon tint, a11y
         state.view(false);
         try my_scope.createEffect(state, DatePickerState.viewEffect);
 
-        return .{ .wrapper = pop_result.wrapper, .value = value.asSignal(), .open = pop_result.open };
+        return .{ .wrapper = pop_result.wrapper, .value = if (datetime == null) value.asSignal() else null, .open = pop_result.open, .time = if (datetime == null and state.time != null) state.time.?.asSignal() else null, .datetime = if (datetime) |dt| dt.asSignal() else null };
     }
 };
 
@@ -409,13 +570,17 @@ fn todayClickHandler(ctx_ptr: *anyopaque) void {
 }
 
 fn updateDisplayLabel(state: *DatePickerState) void {
-    var buf: [24]u8 = undefined;
-    const label = if (state.selected_date) |date| formatDisplayDate(date, &buf) else state.placeholder;
+    var buf: [64]u8 = undefined;
+    var date_buf: [24]u8 = undefined;
+    const label = if (state.selected_date) |date| if (state.time != null) blk: {
+        const t = state.currentTime(false);
+        break :blk std.fmt.bufPrint(&buf, "{s} {d:0>2}:{d:0>2}:{d:0>2}", .{ formatDisplayDate(date, &date_buf), t.hour, t.minute, t.second }) catch "";
+    } else formatDisplayDate(date, &buf) else state.placeholder;
     // Allocating write: inline buffer only 16 bytes, caller's placeholder truncated.
     state.display_node.setTextContent(state.cx.allocator, label) catch {};
     if (state.display_node.getText()) |old| {
         var txt = old;
-        txt.color = styles.displayTextColor(state.selected_date != null, state.cx.tokens);
+        txt.color = styles.triggerForeground(state.selected_date != null, state.disabled.peek(), state.cx.tokens);
         state.display_node.setText(txt);
     }
     state.display_node.markRenderDirty();
@@ -437,14 +602,16 @@ fn syncTriggerA11y(state: *DatePickerState, open: bool) void {
 
 fn syncTriggerVisual(state: *DatePickerState, open: bool) void {
     syncTriggerA11y(state, open);
-    const t = state.cx.tokens;
     const has_value = state.selected_date != null;
 
-    state.trigger_node.setBorderColor(styles.triggerBorderColor(open, has_value, t));
-
-    _ = state.leading_icon_node.setTint(styles.leadingIconTint(has_value, t));
-
-    _ = state.chevron_node.setTint(styles.chevronTint(open, t));
+    var look = state.trigger_look.peek();
+    look.open = open;
+    look.has_value = has_value;
+    look.invalid = state.invalid.peek();
+    look.disabled = state.disabled.peek();
+    state.trigger_look.set(look);
+    if (state.trigger_node.behavior.interaction.a11y) |*a| a.invalid = look.invalid;
+    state.chevron_node.setRotate(state.cx.allocator, if (open) std.math.pi else 0);
 }
 
 fn monthAbbrev(month: u8) []const u8 {
@@ -952,4 +1119,130 @@ test "date_picker: 受控值的 mount 在任意分配点失败时不泄漏（swe
             return r.wrapper;
         }
     }.m);
+}
+
+test "DateTimePicker: invalid time blocks Apply and cancel resets date/time draft" {
+    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer ctx.deinit();
+    const root = try box(ctx, .{ .width = .{ .px = 600 }, .height = .{ .px = 800 } }, .{});
+    ctx.root = root;
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const r = try DateTimePicker(.{ .value = @as(?SimpleDate, .{ .year = 2026, .month = 10, .day = 16 }), .time_value = Time{ .hour = 14, .minute = 30 } }).mount(scope, ctx);
+    try root.appendChild(std.testing.allocator, r.wrapper);
+    const state = stateOf(r);
+    r.open.?.set(true);
+    state.fields[1].?.set("60");
+    try std.testing.expect(state.apply_disabled.?.peek());
+    DatePickerState.applyTime(state);
+    try std.testing.expect(r.open.?.peek());
+    try std.testing.expectEqual(@as(u8, 30), r.time.?.peek().minute);
+    state.pick(.{ .year = 2026, .month = 10, .day = 18 });
+    try std.testing.expectEqual(@as(u8, 16), r.value.?.peek().?.day);
+    DatePickerState.cancelTime(state);
+    try std.testing.expectEqualStrings("30", state.fields[1].?.peek());
+    try std.testing.expectEqual(@as(u8, 16), state.draft_date.?.peek().?.day);
+    r.open.?.set(true);
+    state.pick(.{ .year = 2026, .month = 10, .day = 18 });
+    state.fields[1].?.set("45");
+    DatePickerState.applyTime(state);
+    try std.testing.expect(!r.open.?.peek());
+    try std.testing.expectEqual(@as(u8, 18), r.value.?.peek().?.day);
+    try std.testing.expectEqual(@as(u8, 45), r.time.?.peek().minute);
+}
+
+test "review regression 10: separate rejecting date/time models cannot mount an atomic picker" {
+    var cx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer cx.deinit();
+    const scope = try Scope.init(std.testing.allocator, null, cx.owner);
+    defer scope.dispose();
+    const Reject = struct {
+        fn date(_: *@This(), _: ?SimpleDate) void {}
+        fn time(_: *@This(), _: Time) void {}
+    };
+    cx.root = try box(cx, .{}, .{});
+    var reject: Reject = .{};
+    const date = try scope.createSignal(?SimpleDate, .{ .year = 2026, .month = 10, .day = 16 });
+    const time = try scope.createSignal(Time, .{ .hour = 14 });
+    const a = DateTimePicker(.{ .value = reactive.split(date, cx.on(Reject, &reject, Reject.date)), .time_value = time }).mount(scope, cx);
+    defer if (a) |r| cx.freeNode(r.wrapper) else |_| {};
+    try std.testing.expectError(error.NonAtomicDateTimeModels, a);
+    const b = DateTimePicker(.{ .value = date, .time_value = reactive.split(time, cx.on(Reject, &reject, Reject.time)) }).mount(scope, cx);
+    defer if (b) |r| cx.freeNode(r.wrapper) else |_| {};
+    try std.testing.expectError(error.NonAtomicDateTimeModels, b);
+}
+
+test "review regression 10: atomic split rejects either invalid part without partial writes" {
+    var cx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer cx.deinit();
+    cx.root = try box(cx, .{}, .{});
+    const scope = try Scope.init(std.testing.allocator, null, cx.owner);
+    defer scope.dispose();
+    const Parent = struct {
+        value: *Signal(?DateTime),
+        reject_date: bool,
+        reject_time: bool,
+        writes: usize = 0,
+        fn write(self: *@This(), proposal: ?DateTime) void {
+            self.writes += 1;
+            const v = proposal orelse return;
+            if (self.reject_date and v.date.day == 18) return;
+            if (self.reject_time and v.time.minute == 45) return;
+            self.value.set(v);
+        }
+    };
+    for ([_]bool{ true, false }) |reject_date| {
+        const initial: DateTime = .{ .date = .{ .year = 2026, .month = 10, .day = 16 }, .time = .{ .hour = 14, .minute = 30 } };
+        var parent: Parent = .{ .value = try scope.createSignal(?DateTime, initial), .reject_date = reject_date, .reject_time = !reject_date };
+        const r = try DateTimePicker(.{ .datetime_value = reactive.split(parent.value, cx.on(Parent, &parent, Parent.write)) }).mount(scope, cx);
+        defer cx.freeNode(r.wrapper);
+        const state = stateOf(r);
+        r.open.?.set(true);
+        state.pick(.{ .year = 2026, .month = 10, .day = 18 });
+        state.fields[1].?.set("45");
+        DatePickerState.applyTime(state);
+        try std.testing.expectEqualDeep(@as(?DateTime, initial), parent.value.peek());
+        try std.testing.expectEqual(@as(usize, 1), parent.writes);
+        try std.testing.expect(r.open.?.peek());
+        parent.reject_date = false;
+        parent.reject_time = false;
+        DatePickerState.applyTime(state);
+        try std.testing.expectEqual(@as(u8, 18), parent.value.peek().?.date.day);
+        try std.testing.expectEqual(@as(u8, 45), parent.value.peek().?.time.minute);
+        try std.testing.expectEqual(@as(usize, 2), parent.writes);
+        try std.testing.expect(!r.open.?.peek());
+    }
+}
+
+test "review regression 10: legacy bound observers only see the complete date and time" {
+    var cx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer cx.deinit();
+    cx.root = try box(cx, .{}, .{});
+    const scope = try Scope.init(std.testing.allocator, null, cx.owner);
+    defer scope.dispose();
+    const Observer = struct {
+        date: *Signal(?SimpleDate),
+        time: *Signal(Time),
+        partial: bool = false,
+        fn run(self: *@This()) void {
+            const t = self.time.get();
+            const d = self.date.get();
+            if (t.minute == 45 and d.?.day != 18) self.partial = true;
+        }
+    };
+    var observer: Observer = .{
+        .date = try scope.createSignal(?SimpleDate, .{ .year = 2026, .month = 10, .day = 16 }),
+        .time = try scope.createSignal(Time, .{ .hour = 14, .minute = 30 }),
+    };
+    try scope.createEffect(&observer, Observer.run);
+    const r = try DateTimePicker(.{ .value = observer.date, .time_value = observer.time }).mount(scope, cx);
+    defer cx.freeNode(r.wrapper);
+    r.open.?.set(true);
+    const state = stateOf(r);
+    state.pick(.{ .year = 2026, .month = 10, .day = 18 });
+    state.fields[1].?.set("45");
+    DatePickerState.applyTime(state);
+    try std.testing.expect(!observer.partial);
+    try std.testing.expectEqual(@as(u8, 18), observer.date.peek().?.day);
+    try std.testing.expectEqual(@as(u8, 45), observer.time.peek().minute);
 }

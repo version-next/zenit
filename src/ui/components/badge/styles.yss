@@ -1,32 +1,37 @@
 //! Badge / StatusBadge styling: color, size, spacing, font all reference tokens.
 //! View in badge.yix; BadgeStatus / BadgeSize are public API, defined in mod.zig.
 const ui = @import("../../ui.zig");
+const mod = @import("mod.zig");
 
-/// Badge: root is capsule (pill, corner full), label is text inside. status
+/// Badge: compact tonal counter (4px corners), label is text inside. status
 /// determines bg and text color, size determines height / padding / font, dot
 /// shrinks root to 8x8 dot.
 recipe Badge slots(root, label) {
   base {
-    root { width: fit; justify: center; align-items: center; corner-radius: full; }
-    label { font-weight: 600; }
+    root { width: fit; justify: center; align-items: center; corner-radius: md; }
+    label { font-weight: 500; line-height: 1.2; }
   }
   variant status = info {
-    info    { root { background: accent; }  label { color: button-primary-fg; } }
-    success { root { background: success; } label { color: button-primary-fg; } }
-    warning { root { background: warning; } label { color: button-primary-fg; } }
-    error   { root { background: danger; }  label { color: #ffffff; } }
+    info    { root { background: accent-subtle; }  label { color: accent; } }
+    success { root { background: success-subtle; } label { color: success; } }
+    warning { root { background: warning-subtle; } label { color: warning; } }
+    error   { root { background: danger-subtle; }  label { color: danger; } }
   }
   variant size = md {
     sm { root { height: md; padding: space50 space150; } label { font-size: 10; } }
-    md { root { height: lg; padding: space50 space200; } label { font-size: xs; } }
+    md { root { height: lg; padding: space0 space200; } label { font-size: xs; } }
   }
   flag dot;
   // Dot mode overrides height and padding from size dimension
-  when dot { root { width: 8; height: 8; padding: 0; corner-radius: 4; } }
+  when dot { root { width: 8; height: 8; padding: 0; corner-radius: md; } }
+  when dot & status = info { root { background: accent; } }
+  when dot & status = success { root { background: success; } }
+  when dot & status = warning { root { background: warning; } }
+  when dot & status = error { root { background: danger; } }
 }
 
 /// StatusBadge: status dot + label.
-style status_row { width: fit; height: fit; direction: row; gap: 6; align-items: center; }
+style status_row { width: fit; height: fit; direction: row; gap: space150; align-items: center; }
 
 /// 8x8 status dot (same size as Badge dot mode), bg color same as Badge status
 recipe StatusDot {
@@ -39,4 +44,18 @@ recipe StatusDot {
   }
 }
 
-style status_label { color: fg-primary; font-size: 12; }
+style status_label { color: fg-primary; font-size: sm; }
+
+// The root intentionally retains its text/test-id API. Its vertical inset now
+// explicitly centers the line instead of relying on the old hidden paint offset.
+style centered_label($size: mod.BadgeSize, $dot: bool) {
+  padding: {centeredLabelPadding(t, $size, $dot)};
+}
+pub fn centeredLabelPadding(t: *const ui.theme.ThemeTokens, size: mod.BadgeSize, dot: bool) ui.Padding {
+    if (dot) return ui.Padding.all(0);
+    const height = if (size == .sm) t.tokens.size.md else t.tokens.size.lg;
+    const font_size = if (size == .sm) 10 else t.tokens.font_size.xs;
+    const original_y = if (size == .sm) t.tokens.space.space50 else 0;
+    const x = if (size == .sm) t.tokens.space.space150 else t.tokens.space.space200;
+    return ui.Padding.symmetric(@max(original_y, (height - font_size * 1.2) / 2), x);
+}

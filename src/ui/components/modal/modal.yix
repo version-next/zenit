@@ -22,7 +22,7 @@ pub fn ModalPanel(
     return (
         <box style={.{ S.dialog.of(.{ .width = width, .max_height = maxHeight, .background = background }) }} a11y={.{ .role = .dialog, .modal = true }}>
             {if (hasTitle)
-                <box style={S.header}>
+                <box style={.{ S.header, S.headerCorners }}>
                     <text style={S.title}>{title}</text>
                     <box style={S.close_button} onClick={onClose} testId="modal.close" a11y={.{ .role = .button, .label = "Close" }}>
                         {if (closeIconAsset) |asset| <icon style={S.close_icon} src={asset} /> else <text box={S.close_glyph_box} style={S.close_glyph}>✕</text>}

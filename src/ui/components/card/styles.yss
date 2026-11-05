@@ -3,25 +3,25 @@
 //! View in card.yix; CardVariant is public API defined in mod.zig.
 const ui = @import("../../ui.zig");
 
-/// Card root: when selected, 2px accent border and no hover highlight; hover highlight changes
+/// Card root: when selected, 1px accent-border and no hover highlight; hover highlight changes
 /// border color for outlined, background for others.
 /// Background and border color changes via 120ms transition.
 recipe Card {
   base {
     direction: column;
     background: bg-primary;
-    corner-radius: 6;
+    corner-radius: panel;
     transition: background 120ms ease-out, border-color 120ms ease-out;
   }
   variant kind = default {
-    default  { border: 1 border; }
-    outlined { border: 1 border-strong; }
-    elevated { shadow: md; }
+    default  { background: bg-secondary; border-overlay: true; border: 1 transparent; }
+    outlined { border-overlay: true; border: 1 border; }
+    elevated { border-overlay: true; border: 1 border; }
   }
-  flag selected { border: 2 accent; }
+  flag selected { background: accent-surface; border-overlay: true; border: 1 accent-border; }
   flag hoverable;
   when hoverable & !selected & kind in (default, elevated) {
-    :hover { background: bg-hover; }
+    :hover { background: bg-active; }
   }
   when hoverable & !selected & kind = outlined {
     :hover { border-color: accent; }
@@ -31,14 +31,23 @@ recipe Card {
 /// Shrink to content when size not specified
 style size($width: ?f32, $height: ?f32) { width: $width ?? fit; height: $height ?? fit; }
 
-style header { direction: column; gap: 4; padding: 12; }
+style header { align-self: stretch; direction: column; gap: 2; padding: 14 16 2 16; }
 style title_row { height: 18; }
-style title { color: fg-primary; font-size: 14; font-weight: 600; }
+style title { color: fg-primary; font-size: md; font-weight: 600; }
 style subtitle_row { height: 16; }
-style subtitle { color: fg-secondary; font-size: 12; }
+style subtitle { color: fg-secondary; font-size: sm; }
 
-/// Content area: children go here; when padded = false, flush to edges
+/// Content area: children go here; when padded = false, flush to edges.
+/// Under a header the body sits closer to it: the two read as one block, with no separator.
 recipe Body {
   base { width: grow; direction: column; }
-  flag padded = true { padding: 12; }
+  flag padded = true { padding: 14 16; }
+  flag headed;
+  when padded & headed { padding: 8 16 14 16; }
+}
+
+/// Elevated cards are islands: xs contact shadow + md ambient shadow (Foundations 05).
+pub fn elevation(kind: @import("mod.zig").CardVariant, t: *const ui.ThemeTokens) ui.BoxStyle {
+    if (kind != .elevated) return .{};
+    return .{ .shadows = ui.ShadowList.of(&.{ t.tokens.shadow.xs, t.tokens.shadow.md }) };
 }

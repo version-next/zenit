@@ -3,41 +3,61 @@
 //! View in alert.yix; AlertVariant is public API defined in mod.zig.
 const ui = @import("../../ui.zig");
 
-mixin tone(c) {
-  root { background: mix(c, bg-primary, 0.78); border-color: mix(c, bg-primary, 0.35); }
-  accent { background: c; }
+mixin tone(c, bg, edge) {
+  root { background: bg; border-color: edge; }
+  accent { icon-color: c; }
 }
 
-/// root: full alert (with title, content top-aligned, else centered); accent: left accent bar.
+/// root: full alert (with title, content top-aligned, else centered); accent: leading status icon.
 recipe Alert slots(root, accent) {
   base {
-    root { width: fill; height: fit; direction: row; padding: 12; border-width: 1; corner-radius: 8; }
-    accent { width: 3; height: 24; corner-radius: 2; align-self: stretch; }
+    root { width: fill; height: fit; direction: row; padding: 12; border-overlay: true; border-width: 1; corner-radius: panel; gap: space200; }
+    accent { width: 16; height: 16; }
   }
   variant kind = info {
-    info    { tone(info); }
-    success { tone(success); }
-    warning { tone(warning); }
-    error   { tone(danger); }
+    info    { tone(info, info-alert-bg, transparent); }
+    success { tone(success, success-alert-bg, transparent); }
+    warning { tone(warning, warning-alert-bg, transparent); }
+    error   { tone(danger, danger-alert-bg, transparent); }
   }
   flag titled { root { align-items: start; } } else { root { align-items: center; } }
 }
 
-style content { width: fill; height: fit; direction: column; gap: 4; padding: 0 10; }
-style title { color: fg-primary; font-size: md; font-weight: 600; }
-style message { color: fg-secondary; font-size: sm; }
+style status_alignment { width: 20; height: 22; justify: center; align-items: center; }
+style content { width: fill; height: fit; direction: column; gap: space100; }
+style title { color: fg-primary; font-size: md; font-weight: 600; line-height: 1.4; }
+style message { color: fg-secondary; font-size: md; font-weight: 400; line-height: 1.5; }
 
 /// Close button: hover floats bg-hover (150ms fade-in)
 style close {
-  width: 20;
-  height: 20;
+  width: 24;
+  height: 24;
   background: transparent;
-  corner-radius: sm;
+  corner-radius: md;
   justify: center;
   align-items: center;
   cursor: pointer;
   :hover { background: bg-hover; }
   transition: background 150ms ease-out;
 }
-style close_label { color: fg-secondary; font-size: 12; }
-style close_icon { width: 12; height: 12; icon-color: fg-secondary; }
+style close_label { color: fg-secondary; font-size: lg; }
+style close_icon { width: 14; height: 14; icon-color: fg-tertiary; }
+
+/// COMPONENTS Alert / * contextual action: 4px inset, 24px row, 14px icon.
+style action_inset { no-cross-stretch: true; padding: space100 0 0 0; }
+style action_root {
+  no-cross-stretch: true;
+  height: 24; width: fit; gap: space150; align-items: center;
+  corner-radius: md; cursor: pointer;
+  :hover { background: bg-hover; }
+  :active { background: button-pressed-bg; }
+}
+recipe Action slots(label, icon) {
+  base { label { font-size: sm; font-weight: 500; line-height: 1.2; } icon { width: 14; height: 14; } }
+  variant kind = info {
+    info { label { color: info; } icon { icon-color: info; } }
+    success { label { color: success; } icon { icon-color: success; } }
+    warning { label { color: warning; } icon { icon-color: warning; } }
+    error { label { color: danger; } icon { icon-color: danger; } }
+  }
+}

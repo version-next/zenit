@@ -7,11 +7,15 @@ const c = d12.renderer_commands;
 const a = std.heap.page_allocator;
 // Layer-local mapping: local = inv · pixel + inv_offset (blend_composite.BlendUniforms).
 // The default is the axis-aligned rect at origin (1.25, 0.25).
-const Uniforms = extern struct { target_size: [2]f32 = .{ 8, 4 }, rect_size: [2]f32 = .{ 5.5, 3.5 }, src_uv_scale: [2]f32 = .{ 0.5, 0.5 }, inv_offset: [2]f32 = .{ -1.25, -0.25 }, inv: [4]f32 = .{ 1, 0, 0, 1 }, params: [4]f32, clip_rect: [4]f32 = .{ 0, 0, -1, -1 }, clip_shape: [4]f32 = .{ 0, 0, 0, 0 }, clip_shape_rect: [4]f32 = .{ 0, 0, 0, 0 }, warp: [4]f32 = .{ 0, 0, 0, 0 }, src_uv_origin: [4]f32 = .{ 0, 0, 0, 0 } };
+const Uniforms = extern struct { target_size: [2]f32 = .{ 8, 4 }, rect_size: [2]f32 = .{ 5.5, 3.5 }, src_uv_scale: [2]f32 = .{ 0.5, 0.5 }, inv_offset: [2]f32 = .{ -1.25, -0.25 }, inv: [4]f32 = .{ 1, 0, 0, 1 }, params: [4]f32, corner_radii: [4]f32 = .{ 0, 0, 0, 0 }, clip_rect: [4]f32 = .{ 0, 0, -1, -1 }, clip_shape: [4]f32 = .{ 0, 0, 0, 0 }, clip_shape_rect: [4]f32 = .{ 0, 0, 0, 0 }, clip_shape_radii: [4]f32 = .{ 0, 0, 0, 0 }, warp: [4]f32 = .{ 0, 0, 0, 0 }, src_uv_origin: [4]f32 = .{ 0, 0, 0, 0 } };
 comptime {
     // zero warp = no lens warp, zero src_uv_origin = the quad's own texture origin (the pre-warp
     // contract); the layout must match render/blend_composite.zig BlendUniforms byte for byte
-    if (@sizeOf(Uniforms) != 144 or @offsetOf(Uniforms, "warp") != 112 or @offsetOf(Uniforms, "src_uv_origin") != 128 or @offsetOf(Uniforms, "inv_offset") != 24 or @offsetOf(Uniforms, "inv") != 32 or @offsetOf(Uniforms, "params") != 48 or @offsetOf(Uniforms, "clip_rect") != 64 or @offsetOf(Uniforms, "clip_shape_rect") != 96) @compileError("Blend uniform ABI mismatch");
+    if (@sizeOf(Uniforms) != 176 or @offsetOf(Uniforms, "warp") != 144 or @offsetOf(Uniforms, "src_uv_origin") != 160 or @offsetOf(Uniforms, "inv_offset") != 24 or @offsetOf(Uniforms, "inv") != 32 or @offsetOf(Uniforms, "params") != 48 or @offsetOf(Uniforms, "corner_radii") != 64 or @offsetOf(Uniforms, "clip_rect") != 80 or @offsetOf(Uniforms, "clip_shape_rect") != 112 or @offsetOf(Uniforms, "clip_shape_radii") != 128) @compileError("Blend uniform ABI mismatch");
+}
+/// Corner radius of the quadrant `(x, y)` (relative to the rect centre) lies in: TL, TR, BR, BL.
+fn cornerRadius(x: f64, y: f64, radii: [4]f32) f64 {
+    return if (x < 0) (if (y < 0) radii[0] else radii[3]) else (if (y < 0) radii[1] else radii[2]);
 }
 /// Clip coverage at a target pixel centre (rect x shape), as the shader's zb_clip_coverage.
 fn clipCoverage(px: f64, py: f64, u: Uniforms) f64 {
@@ -32,7 +36,7 @@ fn clipCoverage(px: f64, py: f64, u: Uniforms) f64 {
         const y = py - (u.clip_shape_rect[1] + hy);
         var d: f64 = 0;
         if (kind == 1) {
-            const rr = @min(u.clip_shape[1], @min(hx, hy));
+            const rr = @min(cornerRadius(x, y, u.clip_shape_radii), @min(hx, hy));
             const qx = @abs(x) - hx + rr;
             const qy = @abs(y) - hy + rr;
             d = @sqrt(@max(qx, 0) * @max(qx, 0) + @max(qy, 0) * @max(qy, 0)) + @min(@max(qx, qy), 0) - rr;
@@ -107,8 +111,8 @@ fn verify(output: []const u8, src: []const u8, dst: []const u8, uniforms: Unifor
             @memcpy(&expected, dst[offset..][0..4]);
         } else {
             var mask: f64 = 1;
-            if (uniforms.params[2] > 0.5) {
-                const radius = uniforms.params[2];
+            const radius = cornerRadius(local[0] - uniforms.rect_size[0] * 0.5, local[1] - uniforms.rect_size[1] * 0.5, uniforms.corner_radii);
+            if (radius > 0.5) {
                 const qx = @abs(local[0] - uniforms.rect_size[0] * 0.5) - uniforms.rect_size[0] * 0.5 + radius;
                 const qy = @abs(local[1] - uniforms.rect_size[1] * 0.5) - uniforms.rect_size[1] * 0.5 + radius;
                 const distance = @sqrt(@max(qx, 0) * @max(qx, 0) + @max(qy, 0) * @max(qy, 0)) + @min(@max(qx, qy), 0) - radius;
@@ -131,7 +135,7 @@ fn verify(output: []const u8, src: []const u8, dst: []const u8, uniforms: Unifor
             }
         }
         for (0..4) |ch| if (@abs(@as(i32, output[offset + ch]) - @as(i32, expected[ch])) > 2) {
-            std.debug.print("composite mismatch srgb={} mode={d} opacity={d} radius={d} x={d} y={d} ch={d} actual={d} expected={d}\n", .{ srgb, mode, uniforms.params[0], uniforms.params[2], x, y, ch, output[offset + ch], expected[ch] });
+            std.debug.print("composite mismatch srgb={} mode={d} opacity={d} radii={any} x={d} y={d} ch={d} actual={d} expected={d}\n", .{ srgb, mode, uniforms.params[0], uniforms.corner_radii, x, y, ch, output[offset + ch], expected[ch] });
             return error.IncorrectCompositePixel;
         };
     };
@@ -178,18 +182,26 @@ pub fn run() !void {
         defer target.destroy();
         var view = target.binding().createView();
         defer view.destroy();
-        for (0..12) |mode| for ([_]f32{ 0, 0.35, 1 }) |opacity| for ([_]f32{ 0, 1.5 }) |radius| for ([_]f32{ 0, 0.6 }) |angle| for (0..4) |clip| {
+        for (0..12) |mode| for ([_]f32{ 0, 0.35, 1 }) |opacity| for ([_][4]f32{ .{ 0, 0, 0, 0 }, .{ 1.5, 1.5, 1.5, 1.5 }, .{ 1.5, 0, 1.75, 0 } }) |radii| for ([_]f32{ 0, 0.6 }) |angle| for (0..5) |clip| {
             var encoder = try c.CommandEncoder.init(&queue);
             defer encoder.deinit();
             var pass = try encoder.beginRenderPass(.{ .color_attachments = &.{.{ .view = view, .load_op = .clear, .store_op = .store }} });
             pass.setPipeline(&pipeline);
-            const params = [4]f32{ opacity, @floatFromInt(mode), radius, 0 };
+            const params = [4]f32{ opacity, @floatFromInt(mode), 0, 0 };
             var uniforms = if (angle == 0) Uniforms{ .params = params } else rotatedUniforms(angle, params);
+            uniforms.corner_radii = radii;
             // Composite-time clips in target pixels: a rect clip, or a rounded-rect / ellipse shape clip.
             if (clip == 1) uniforms.clip_rect = .{ 2, 0.5, 4.5, 2.5 };
             if (clip == 2) {
-                uniforms.clip_shape = .{ 1, 1.25, 0, 0 };
+                uniforms.clip_shape = .{ 1, 0, 0, 0 };
                 uniforms.clip_shape_rect = .{ 1.5, 0.25, 5, 3.5 };
+                uniforms.clip_shape_radii = @splat(1.25);
+            }
+            if (clip == 4) {
+                // Per-corner shape clip (attached group item: square inner corners).
+                uniforms.clip_shape = .{ 1, 0, 0, 0 };
+                uniforms.clip_shape_rect = .{ 1.5, 0.25, 5, 3.5 };
+                uniforms.clip_shape_radii = .{ 1.5, 0, 1.25, 0 };
             }
             if (clip == 3) {
                 uniforms.clip_shape = .{ 2, 0, 0, 0 };
@@ -210,5 +222,5 @@ pub fn run() !void {
         };
     }
     for (0..32) |i| std.mem.swap(u8, &output[i * 4], &output[i * 4 + 2]);
-    std.debug.print("RENDERER_COMPOSITE_RGBA8_HEX={s}\nPASS: production HLSL composite, 12 blend modes, 3 opacities, rounded/unrounded, axis-aligned/rotated 0.6 rad, unclipped/rect clip/rounded and ellipse shape clips, linear/sRGB, 1152 draws/36864 CPU-reference pixels (byte tolerance2), premultiplied partial/zero alpha, padded source UV and outside-rect passthrough\n", .{std.fmt.bytesToHex(output, .lower)});
+    std.debug.print("RENDERER_COMPOSITE_RGBA8_HEX={s}\nPASS: production HLSL composite, 12 blend modes, 3 opacities, unrounded/uniform/per-corner rounded masks, axis-aligned/rotated 0.6 rad, unclipped/rect clip/uniform and per-corner rounded and ellipse shape clips, linear/sRGB, 2160 draws/69120 CPU-reference pixels (byte tolerance2), premultiplied partial/zero alpha, padded source UV and outside-rect passthrough\n", .{std.fmt.bytesToHex(output, .lower)});
 }

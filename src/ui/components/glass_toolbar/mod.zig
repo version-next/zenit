@@ -410,6 +410,9 @@ pub const GlassToolbarBuilder = struct {
         };
 
         root.meta.per_frame.hooks.before_render.main = toolbarBeforeRender;
+        // refresh() writes plates / icons / separators through setBackground / setTint +
+        // markRenderDirty only: descendants stay cacheable (audited in Debug).
+        root.frame_state.state_bits.flags.before_render_hook_descendants_cache_safe = true;
         root.behavior.events.event_context = @ptrCast(rt);
         rt.refresh();
         return .{ .root = root, .runtime = rt };
@@ -452,7 +455,7 @@ fn mountItem(scope: *Scope, cx: *Cx, rt: *GlassToolbarRuntime, cap: glass_box.Gl
     const ext = try plate.style.ensureExtFallible(a);
     ext.inset = .{ .left = .{ .px = (width - plate_width) / 2 }, .top = .{ .px = (bar_height - plate_height) / 2 } };
     ext.corner_radius = core.CornerRadius.uniform(plate_height / 2);
-    plate.style.border = .{ .width = 0, .color = Color.rgba(0, 0, 0, 0), .radius = plate_height / 2 };
+    plate.style.border = .{ .overlay = true, .width = 0, .color = Color.rgba(0, 0, 0, 0), .radius = plate_height / 2 };
     const icon_node = try core.adoptChild(cx, a, node, try core.iconTint(cx, icon, light_palette.ink.withAlpha(light_palette.icon_active), .{
         .width = .{ .px = icon_size },
         .height = .{ .px = icon_size },

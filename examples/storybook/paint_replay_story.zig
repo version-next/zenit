@@ -21,12 +21,12 @@ const titles = [_][]const u8{ "alpha", "beta", "gamma", "delta", "epsilon", "zet
 const initial = [_]Row{ .{ .id = 1, .title = "alpha" }, .{ .id = 2, .title = "beta" } };
 
 const S = struct {
-    const root = ui.css(.{ .width = .fill, .height = .fit, .direction = .column, .gap = 14 });
+    const root = ui.css(.{ .width = .fill, .align_self = .stretch, .height = .fit, .direction = .column, .gap = 14 });
     const label = ui.css(.{ .font_size = 13, .color = .fg_secondary });
     const rows = ui.css(.{ .width = .fill, .height = .fit, .direction = .column, .gap = 4 });
     const row = ui.css(.{ .width = 320, .height = 28, .padding = .{ .x = 10 }, .align_items = .center, .corner_radius = 6, .background = .bg_secondary, ._hover = .{ .background = .bg_hover } });
     const row_text = ui.css(.{ .font_size = 13, .color = .fg_primary });
-    const toolbar = ui.css(.{ .height = .fit, .direction = .row, .gap = 10, .align_items = .center });
+    const toolbar = ui.css(.{ .no_cross_stretch = true, .height = .fit, .direction = .row, .gap = 10, .align_items = .center });
 
     /// Opaque: progress track + fill (children covered = fill disappears)
     const track = ui.css(.{ .width = 320, .height = 8, .corner_radius = 4, .background = ui.Color.hex(0x1e2230), .overflow_hidden = true });
@@ -36,7 +36,7 @@ const S = struct {
     const card_swatch = ui.css(.{ .width = 24, .height = 24, .corner_radius = 4, .background = ui.Color.hex(0xe8a33d) });
     const card_text = ui.css(.{ .font_size = 13, .color = ui.Color.hex(0xf2f2f2) });
     /// Translucent: capsule background + dot (children darkened by overlay)
-    const pill = ui.css(.{ .width = .fit, .height = 22, .padding = .{ .x = 8 }, .gap = 6, .direction = .row, .align_items = .center, .corner_radius = .full, .background = ui.Color.rgba(76, 140, 255, 110), .overflow_hidden = true });
+    const pill = ui.css(.{ .no_cross_stretch = true, .width = .fit, .height = 22, .padding = .{ .x = 8 }, .gap = 6, .direction = .row, .align_items = .center, .corner_radius = .full, .background = ui.Color.rgba(76, 140, 255, 110), .overflow_hidden = true });
     const pill_dot = ui.css(.{ .width = 10, .height = 10, .corner_radius = 5, .background = ui.Color.hex(0xff5d6c) });
     const pill_text = ui.css(.{ .font_size = 12, .color = .fg_primary });
 };

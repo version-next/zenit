@@ -1,6 +1,8 @@
 // Hidden AppKit windows only. No ordering, native input or fullscreen Spaces.
 #define ZENIT_TEST_RENDER_COPY_FIXTURE
 #define ZENIT_MENU_ACTIONS_NO_MAIN
+// This test checks real texture copies with its own fixture below.
+#define ZENIT_TEST_RENDER_COPY_FIXTURE
 #import "menu_actions_test.m"
 #import <objc/runtime.h>
 

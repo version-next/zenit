@@ -1,0 +1,44 @@
+//! Controls story styles: pencil "zenit UI native.pen" artboard LKxqO (01 · Controls / states).
+//! Root gap 32; sections gap 16, padding-top 24, 1px top rule; matrix label 72 / cell 108.
+const ui = @import("ui");
+
+style root { width: 960; direction: column; gap: space800; }
+style header { width: fill; direction: column; gap: space200; }
+style eyebrow { font-size: xs; font-weight: 600; color: accent; }
+style title { font-size: 28; font-weight: 600; line-height: 1.25; color: fg-primary; }
+style lede { font-size: md; line-height: 1.5; color: fg-secondary; }
+
+style section { width: fill; direction: column; gap: space400; padding: space600 0 0 0; border-overlay: true; border-top-width: 1; border-color: border; }
+style section_title { font-size: xl; font-weight: 600; line-height: 1.25; color: fg-primary; }
+style section_desc { font-size: sm; line-height: 1.4; color: fg-secondary; }
+
+style row { width: fill; direction: row; align-items: center; gap: space400; }
+style selection_row { width: fill; direction: row; align-items: center; gap: space800; }
+style focus_row { width: fill; direction: row; align-items: center; gap: space600; }
+
+style variant_name { width: 72; font-size: sm; line-height: 1.4; color: fg-secondary; }
+style column_spacer { width: 72; height: 1; }
+style column_head { width: 108; font-size: xs; font-weight: 500; color: fg-tertiary; }
+
+/// Matrix specimen: fixed cell width, label centered (cells pass a fit-width content slot).
+style cell { width: 108; justify: center; }
+/// A field specimen is as wide as an input, its text starts at the left.
+style field_cell { width: 200; }
+
+/// Specimen label: the shell's text tier (SizeRecipe content: md, 1.2); color and weight come
+/// from the shell's tone (inherited).
+style label { font-size: md; line-height: 1.2; }
+style placeholder { font-size: md; line-height: 1.2; color: fg-secondary; }
+
+/// Icon-slot glyphs (SizeRecipe icon: md), tinted like the tone's text.
+style glyph { width: md; height: md; icon-color: fg-primary; }
+style glyph_on_primary { width: md; height: md; icon-color: button-primary-fg; }
+style glyph_muted { width: md; height: md; icon-color: fg-tertiary; }
+
+/// useFocusRing's ring (focus-ring color, focus width, focus offset) on a box hugging the
+/// control's shape: several specimens at once, which real focus cannot show.
+style focus_ring {
+  corner-radius: control;
+  no-cross-stretch: true;
+  outline: {ui.Outline{ .color = t.tokens.color.focus_ring, .width = t.tokens.border_width.focus, .offset = t.tokens.size.focus_offset }};
+}

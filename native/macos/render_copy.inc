@@ -74,6 +74,7 @@ int metal_command_buffer_copy_texture_region_render(void *buffer, void *source,
             (dx==0 && dy==0 && width==dst.width && height==dst.height ? MTLLoadActionDontCare : MTLLoadActionLoad);
         pass.colorAttachments[0].clearColor=MTLClearColorMake(0,0,0,0);
         pass.colorAttachments[0].storeAction=MTLStoreActionStore;
+        zenit_pass_timer_attach(command,pass);
         id<MTLRenderCommandEncoder> encoder=[command renderCommandEncoderWithDescriptor:pass];
         if (!encoder) return 0;
         metal_command_buffer_note_engine(buffer,0);

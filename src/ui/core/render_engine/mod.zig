@@ -1,7 +1,10 @@
 const std = @import("std");
+const animation_checks = @import("animation_checks.zig");
 
 const types = @import("../types.zig");
 const node_mod = @import("../node.zig");
+const node_render_cache_mod = @import("../node_render_cache.zig");
+const retained_memo = @import("retained_memo.zig");
 const text_layout = @import("../text_layout.zig");
 const property_tree_mod = @import("../property_tree.zig");
 const layer_tree_mod = @import("../layer_tree.zig");
@@ -38,6 +41,7 @@ const INVALID_ID = property_tree_mod.INVALID_ID;
 var disable_spanned_text_retained_cache: ?bool = null;
 
 const ChildOrderRestore = struct {
+    owner: if (@import("../node_tree.zig").host_enabled) *Node else void,
     destination: []*Node,
     original: []*Node,
 };
@@ -45,7 +49,10 @@ const ChildOrderRestore = struct {
 /// Stable-sort sibling paint order for the duration of a render pass. The
 /// logical Node tree is restored before renderNode returns, so layout and
 /// caller-owned child order remain unchanged while every paint/cache path sees
-/// the same ordering.
+/// the same ordering. This private paint projection deliberately cannot use
+/// node_tree.replaceChildOrder: it must not change logical/World order, dirty the
+/// tree or publish host placements. No tree mutation or host flush is permitted
+/// until restoreChildOrders; assert that storage/parent ownership survived.
 fn sortSubtreeChildrenByZ(
     cx: *RenderContext,
     node: *Node,
@@ -64,6 +71,7 @@ fn sortSubtreeChildrenByZ(
     if (needs_sort) {
         const original = try cx.frame_allocator.dupe(*Node, children);
         try restores.append(cx.frame_allocator, .{
+            .owner = if (comptime @import("../node_tree.zig").host_enabled) node else {},
             .destination = children,
             .original = original,
         });
@@ -85,6 +93,11 @@ fn restoreChildOrders(restores: *const std.ArrayList(ChildOrderRestore)) void {
     while (index > 0) {
         index -= 1;
         const restore = restores.items[index];
+        if (comptime @import("../node_tree.zig").host_enabled) {
+            std.debug.assert(restore.owner.children.items.ptr == restore.destination.ptr);
+            std.debug.assert(restore.owner.children.items.len == restore.original.len);
+            for (restore.destination) |child| std.debug.assert(child.parent == restore.owner);
+        }
         @memcpy(restore.destination, restore.original);
     }
 }
@@ -250,7 +263,7 @@ fn shouldCacheOverflowSubtree(node: *Node) bool {
 
 fn disableSpannedTextRetainedEnabled() bool {
     if (disable_spanned_text_retained_cache) |v| return v;
-    const raw = std.c.getenv("ZENIT_DISABLE_SPANNED_TEXT_RETAINED");
+    const raw = @import("zenit_environment").getNative("ZENIT_DISABLE_SPANNED_TEXT_RETAINED");
     if (raw == null) {
         disable_spanned_text_retained_cache = false;
         return false;
@@ -291,6 +304,10 @@ pub const DrawContext = struct {
     local_w: f32,
     local_h: f32,
     clip: ?ComputedRect,
+    /// Nearest text color up the ancestors (CSS currentColor) of the drawing node, null when none
+    /// declares one: a drawing inside a control follows the control's foreground through its
+    /// states (repainted when it changes, see Node.markInheritedTextDirty).
+    current_color: ?types.Color = null,
 };
 
 /// Pre-render pass: tickBeforeRender common entry (forwards to tick submodule)
@@ -355,6 +372,25 @@ fn updateNodeSubtreeDisplayPayloadRanges(
         runtime.subtree_text_blob_start = @intCast(blob_start);
         runtime.subtree_text_blob_count = @intCast(cx.text_blob_store.blobs.items.len - blob_start);
     }
+}
+
+/// Subtree range of a node the paint pass visited (entered at `display_start`). A node the prebuild
+/// pass already put in the display list prefix (fallback path, or a prebuilt subtree whose fresh
+/// copy was truncated) carries that range: when the paint pass appended nothing for it, the prefix
+/// range is the subtree and is kept, otherwise the subtree is split between the prefix and the
+/// tail and the range below covers only the tail (subtree_display_split).
+fn finishNodeSubtreeDisplayPayloadRanges(
+    cx: *RenderContext,
+    node_id: u32,
+    display_start: usize,
+    blob_start: usize,
+) void {
+    const runtime = cx.scene_runtime.nodes.getPtr(node_id) orelse return;
+    if (runtime.subtree_display_item_count > 0 and runtime.subtree_display_item_start < display_start) {
+        if (cx.display_list.items.items.len == display_start) return;
+        runtime.subtree_display_split = true;
+    }
+    updateNodeSubtreeDisplayPayloadRanges(cx, node_id, display_start, blob_start);
 }
 
 // -- Display list decision --
@@ -468,7 +504,7 @@ fn tryReplaySubtreePayloadFromPlan(
     parent_effect_id: u32,
 ) !bool {
     if (!exec_plan.should_try_display_payload_subtree_replay) return false;
-    if (@import("zenit_environment").has("ZENIT_DISABLE_SUBTREE_PAYLOAD_REPLAY")) return false; // Escape hatch: cut when investigating clipping / artifacts
+    if (cx.subtree_payload_replay_disabled) return false; // Escape hatch ZENIT_DISABLE_SUBTREE_PAYLOAD_REPLAY: cut when investigating clipping / artifacts
     if (try appendNodeDisplayPayloadToRenderListForReplay(
         cx,
         node,
@@ -487,13 +523,24 @@ fn tryReplaySubtreePayloadFromPlan(
     return false;
 }
 
-fn subtreeHasOutOfBandPasses(node: *Node) bool {
+/// Whether a descendant paints outside the regular band (sticky, positive z). Answered from
+/// this frame's index (indexRenderCacheBoundaries) when there is one: the prepass checks ask it
+/// at every level of a subtree, which made the recursive walk quadratic in depth.
+fn subtreeHasOutOfBandPasses(cx: *const RenderContext, node: *Node) bool {
+    if (cx.out_of_band_subtrees) |set| return set.contains(node.id);
+    return subtreeHasOutOfBandPassesWalk(node);
+}
+
+fn subtreeHasOutOfBandPassesWalk(node: *Node) bool {
     for (node.children.items) |child| {
-        if (child.style.position == .sticky) return true;
-        if (child.style.z_index() > 0) return true;
-        if (subtreeHasOutOfBandPasses(child)) return true;
+        if (childIsOutOfBand(child)) return true;
+        if (subtreeHasOutOfBandPassesWalk(child)) return true;
     }
     return false;
+}
+
+fn childIsOutOfBand(child: *Node) bool {
+    return child.style.position == .sticky or child.style.z_index() > 0;
 }
 
 inline fn effectiveBackdropBlurRadius(node: *Node) f32 {
@@ -520,11 +567,11 @@ fn shouldUseDisplayListForSimpleSubtree(
     const uses_relative_effect_space = active_parent_effect_id != INVALID_ID or allow_safe_self_effect;
     if (node.children.items.len == 0) return false;
     if (node.frame_state.state_bits.flags.has_custom_draw_subtree) return false;
-    if (hasBeforeRenderHookSubtree(node)) return false;
+    if (hasUntrustedBeforeRenderHookSubtree(node)) return false;
     if (node.tag == .scroll or node.tag == .input) return false;
     // Phase G experiment: removed `hasScrollAncestor` restriction here too.
     // See comment in `canRepresentOwnContentInDisplayList`.
-    if (subtreeHasOutOfBandPasses(node)) return false;
+    if (subtreeHasOutOfBandPasses(cx, node)) return false;
     if (exec_plan.should_try_promoted_replay or exec_plan.should_try_legacy_overflow_replay) return false;
     if (exec_plan.should_write_promoted_cache or exec_plan.should_write_legacy_overflow_cache) return false;
     if (exec_state.use_opacity_layer and !allow_safe_self_effect) return false;
@@ -560,6 +607,9 @@ fn subtreeCanUseDisplayListPrepass(
     if (!shouldUseDisplayListForSimpleSubtree(cx, node, exec_state, exec_plan, active_parent_effect_id)) return false;
 
     for (node.children.items) |child| {
+        // A paint-skipped child (hidden / transparent) draws nothing and the prebuild loop skips it
+        // too; making it visible marks the subtree (setOpacity / visibility are dirty-marking).
+        if (child.isPaintSkipped()) continue;
         if (!shouldRenderChildInPass(child, exec_state.use_opacity_layer, .regular)) return false;
         const child_exec_state = buildNodeExecutionState(
             cx,
@@ -598,11 +648,12 @@ fn subtreeCanUseDisplayListPrepassWithSelfScale(
     if (exec_plan.should_try_legacy_overflow_replay) return false;
     if (exec_plan.should_write_legacy_overflow_cache) return false;
     if (node.frame_state.state_bits.flags.has_custom_draw_subtree) return false;
-    if (subtreeHasOutOfBandPasses(node)) return false;
+    if (subtreeHasOutOfBandPasses(cx, node)) return false;
     if (exec_state.retained_ids.effect_id == INVALID_ID) return false;
     if (exec_state.retained_ids.effect_id == active_parent_effect_id) return false;
 
     for (node.children.items) |child| {
+        if (child.isPaintSkipped()) continue;
         if (!shouldRenderChildInPass(child, exec_state.use_opacity_layer, .regular)) return false;
         const child_exec_state = buildNodeExecutionState(
             cx,
@@ -642,7 +693,7 @@ fn subtreeCanUseDisplayListPrepassWithSelfBlur(
     // backplate paints over it and obscures the text. The leaf's own content is subtree payload,
     // and .self_blur world coordinate semantics hold for a leaf equally.
     if (node.frame_state.state_bits.flags.has_custom_draw_subtree) return false;
-    if (subtreeHasOutOfBandPasses(node)) return false;
+    if (subtreeHasOutOfBandPasses(cx, node)) return false;
     if (exec_state.retained_ids.effect_id == INVALID_ID) return false;
     if (exec_state.retained_ids.effect_id == active_parent_effect_id) return false;
 
@@ -651,6 +702,7 @@ fn subtreeCanUseDisplayListPrepassWithSelfBlur(
     if (exec_plan.should_write_legacy_overflow_cache) return false;
 
     for (node.children.items) |child| {
+        if (child.isPaintSkipped()) continue;
         if (!shouldRenderChildInPass(child, exec_state.use_opacity_layer, .regular)) return false;
         const child_exec_state = buildNodeExecutionState(
             cx,
@@ -718,6 +770,11 @@ fn setNodeDisplayPayloadOwnPrebuilt(
 fn markNodeSubtreeRenderedClean(node: *Node) void {
     markNodeRenderedClean(node);
     for (node.children.items) |child| {
+        // A paint-skipped child was not recorded with the subtree (the prebuild skips it).
+        if (child.isPaintSkipped()) {
+            clearSkippedInvisibleSubtreeDirty(child);
+            continue;
+        }
         markNodeSubtreeRenderedClean(child);
     }
 }
@@ -734,8 +791,9 @@ fn markNodeSubtreeRenderedClean(node: *Node) void {
 // (splice); only dirty subtrees and the root path are re-recorded. Invalidation follows the
 // promoted cache:
 //   - Cache header transform/effect/clip ids are the frame-internal seq of the write frame;
-//     root id triplet unshifted => traversal prefix unchanged => internal seq unchanged,
-//     safe to splice; else MISS.
+//     appendCachedCommands rewrites every item to this frame's ids by node_id, so shifted ids
+//     are harmless. The stamp instead compares the root's owned scopes (ownerSignature): a root
+//     that gained / lost its own effect or clip -> MISS.
 //   - Any dirty bit on node or subtree (render/layout/composite x self/subtree) -> MISS.
 //   - hooks / custom_draw / overlay / animation / disable_render_cache -> excluded.
 // Coordinates: cached items are local space + transform_id header and read the current frame's
@@ -745,6 +803,25 @@ fn markNodeSubtreeRenderedClean(node: *Node) void {
 /// memory amplification (root subtree uncached, leaf/small branches cached -> splice
 /// granularity naturally lands at sibling level).
 const subtree_payload_cache_max_items: usize = 256;
+
+/// ZENIT_DISABLE_HOOK_SELF_SCOPE, refreshed at every renderNode (see hookScopeIsSelfOnly).
+var hook_self_scope_disabled: bool = false;
+var retained_memo_disabled_cache: ?bool = null;
+/// ZENIT_DISABLE_RETAINED_MEMO=1 (read once) or a test override turns the retained subtree memo off.
+pub var retained_memo_test_override: ?bool = null;
+fn retained_memo_disabled() bool {
+    if (retained_memo_test_override) |on| return !on;
+    return retained_memo_disabled_cache orelse blk: {
+        const v = @import("zenit_environment").flag("ZENIT_DISABLE_RETAINED_MEMO");
+        retained_memo_disabled_cache = v;
+        break :blk v;
+    };
+}
+/// ZENIT_DEBUG_PREPASS, refreshed at every renderNode (the check sits on a per-node path).
+var debug_prepass: bool = false;
+/// ZENIT_TRACE_NODE=<node id> (read once per renderNode): log every subtree payload cache write
+/// and splice whose commands contain that node. Debugging aid for stale-replay hunts.
+pub var trace_node: u32 = 0;
 
 /// before_render hook declared "self-only impact" (same-named NodeFlags bit).
 ///
@@ -762,11 +839,10 @@ const subtree_payload_cache_max_items: usize = 256;
 /// Escape hatch ZENIT_DISABLE_HOOK_SELF_SCOPE=1 disables the downgrade entirely.
 fn hookScopeIsSelfOnly(node: *Node, exec_state: *const NodeExecutionState, parent_effect_id: u32) bool {
     if (!node.beforeRenderHooksSelfOnly()) return false;
-    // Escape hatch is not cached, consistent with ZENIT_DISABLE_SUBTREE_PAYLOAD_REPLAY /
-    // ZENIT_DISABLE_SUBTREE_SPLICE: a process-level one-shot cache bakes the value, so the same
-    // test binary can't reach the other branch and behavior contradicts the "current env".
-    // This check runs at most once per node per frame; getenv overhead is not worth that risk.
-    if (@import("zenit_environment").has("ZENIT_DISABLE_HOOK_SELF_SCOPE")) return false;
+    // Escape hatch read once per renderNode (not a process-level one-shot cache, which would bake
+    // the value so a test binary could not reach the other branch), like
+    // ZENIT_DISABLE_SUBTREE_SPLICE / ZENIT_DISABLE_SUBTREE_PAYLOAD_REPLAY.
+    if (hook_self_scope_disabled) return false;
     // Exception one: float relocation hook changes transform each frame, guarantee
     // void.
     if (exec_state.retained_runtime.is_overlay_candidate) return false;
@@ -790,27 +866,89 @@ fn hookScopeIsSelfOnly(node: *Node, exec_state: *const NodeExecutionState, paren
     return true;
 }
 
+/// A before_render hook that prebuild must not see past: its content is left for the paint pass
+/// and its whole subtree is treated as hook-owned. An undeclared hook may write its descendants
+/// without marking them dirty (ScrollArea's scrollbar hook writes the thumb with
+/// setBackgroundRaw every frame), so nothing below it may be recorded ahead of the hook's
+/// node or reused across frames. Custom-draw hooks (Spinner/Progress) only advance their own
+/// animation parameters and stay prebuildable; self-only hooks are bounded by the audit in
+/// tick.zig (see hookScopeIsSelfOnly).
+fn beforeRenderHookTaintsSubtree(node: *Node, exec_state: *const NodeExecutionState, parent_effect_id: u32) bool {
+    if (!beforeRenderHookBreaksPrefix(node, exec_state, parent_effect_id)) return false;
+    // Declared contract (audited): the hook leaves its node and subtree cache-safe.
+    return !(node.beforeRenderHooksCacheTrusted() and
+        !exec_state.retained_runtime.is_overlay_candidate);
+}
+
+/// The prebuild pass stops at this node (content left for the paint pass). Unchanged by the
+/// descendants_cache_safe declaration: ordering stays conservative, only reuse is unlocked.
+fn beforeRenderHookBreaksPrefix(node: *Node, exec_state: *const NodeExecutionState, parent_effect_id: u32) bool {
+    if (!node.hasBeforeRenderHooks()) return false;
+    if (!exec_state.retained_runtime.is_overlay_candidate and
+        exec_state.retained_runtime.content_flags.has_custom_draw) return false;
+    return !hookScopeIsSelfOnly(node, exec_state, parent_effect_id);
+}
+
+/// Promoted and legacy overflow caches bake each text_run's raster policy and each icon's snap
+/// (both follow `subtree_force_linear_text`). That state is inherited and flips without marking
+/// anything dirty: an ancestor starts or stops a transform animation (or its linger frames run
+/// out), e.g. a tooltip / popover scaling in. A cache recorded under the other state is dropped
+/// before the plan can replay or splice any part of it (descendant-scoped rebuilds reuse old
+/// self and child segments too). The subtree / own payload caches stamp the same state.
+fn dropCachesWithStaleTextRasterState(cx: *RenderContext, node: *Node, force_linear_text: bool) void {
+    // Reference frames must leave every cache exactly as the incremental frame left it.
+    if (cx.subtree_payload_reference_mode) return;
+    const caches = &node.meta.per_frame.caches.commands;
+    if (caches.promoted) |cache| if (cache.cached_force_linear_text != force_linear_text) {
+        node_render_cache_mod.invalidatePromotedRenderCache(node);
+        cx.perf.raster_state_cache_drop_count += 1;
+    };
+    if (caches.own) |cache| if (cache.cached_force_linear_text != force_linear_text) {
+        node_render_cache_mod.invalidateRenderCache(node);
+        cx.perf.raster_state_cache_drop_count += 1;
+    };
+}
+
+fn markPrebuildVisited(cx: *RenderContext, node_id: u32) void {
+    if (cx.scene_runtime.nodes.getPtr(node_id)) |rt| rt.prebuild_visited = true;
+}
+
+const BoundaryIndexResult = struct { boundary: bool, out_of_band: bool };
+
+/// One walk, three frame indexes: subtrees holding or under a cache boundary (`blocked`), nodes
+/// whose own content is blocked, and nodes with an out-of-band descendant (`out_of_band`, see
+/// subtreeHasOutOfBandPasses).
 fn indexRenderCacheBoundaries(
     allocator: Allocator,
     node: *Node,
     ancestor_has_boundary: bool,
     blocked: *id_hash.U32HashMapUnmanaged(void),
-) !bool {
+    own_blocked: ?*id_hash.U32HashMapUnmanaged(void),
+    out_of_band: ?*id_hash.U32HashMapUnmanaged(void),
+) !BoundaryIndexResult {
     const self_is_boundary = node.frame_state.state_bits.flags.disable_render_cache;
     var subtree_has_boundary = self_is_boundary;
+    var subtree_out_of_band = false;
     for (node.children.items) |child| {
-        if (try indexRenderCacheBoundaries(
+        const r = try indexRenderCacheBoundaries(
             allocator,
             child,
             ancestor_has_boundary or self_is_boundary,
             blocked,
-        )) subtree_has_boundary = true;
+            own_blocked,
+            out_of_band,
+        );
+        if (r.boundary) subtree_has_boundary = true;
+        if (r.out_of_band or childIsOutOfBand(child)) subtree_out_of_band = true;
     }
     if (ancestor_has_boundary or subtree_has_boundary) try blocked.put(allocator, node.id, {});
-    return subtree_has_boundary;
+    // Own content only depends on the node itself: a boundary below it does not matter.
+    if (own_blocked) |ob| if (ancestor_has_boundary or self_is_boundary) try ob.put(allocator, node.id, {});
+    if (out_of_band) |set| if (subtree_out_of_band) try set.put(allocator, node.id, {});
+    return .{ .boundary = subtree_has_boundary, .out_of_band = subtree_out_of_band };
 }
 
-fn nodeEligibleForSubtreePayloadCache(cx: *const RenderContext, node: *Node, runtime: scene_runtime_mod.SceneNodeRuntime) bool {
+fn nodeEligibleForSubtreePayloadCache(cx: *const RenderContext, node: *Node, runtime: *const scene_runtime_mod.SceneNodeRuntime) bool {
     // Reject cheap local conditions before consulting the frame boundary
     // index. The index is built once in O(N), avoiding a repeated ancestor +
     // subtree walk for every cache candidate in a deep tree.
@@ -818,7 +956,8 @@ fn nodeEligibleForSubtreePayloadCache(cx: *const RenderContext, node: *Node, run
     if (flags.disable_render_cache) return false;
     if (flags.has_custom_draw_subtree) return false;
     if (flags.manual_transform_animation_active or flags.manual_opacity_animation_active) return false;
-    if (node.hasBeforeRenderHooks()) return false;
+    if (!node.beforeRenderHooksCacheTrusted()) return false;
+    if (flags.has_untrusted_before_render_subtree) return false;
     if (node.tag == .scroll or node.tag == .input) return false;
     if (runtime.is_overlay_candidate) return false;
     if (runtime.has_active_composite_animation or
@@ -845,13 +984,28 @@ fn nodeCleanForSubtreePayloadSplice(node: *Node) bool {
         !dirty.pipeline.composite and !dirty.pipeline.subtree_composite;
 }
 
+/// Which property-tree scopes `node_id` itself owns this frame: bit 0 owns an effect, bits 1..7
+/// its kind, bit 8 owns a clip. Stable across frames as long as the node's own scopes are; frame
+/// sequence ids are not (see CachedRenderSlice.cached_owner_signature).
+fn ownerSignature(cx: *const RenderContext, node_id: u32, runtime: anytype) u32 {
+    var sig: u32 = 0;
+    if (runtime.effect_id != INVALID_ID and runtime.effect_id < cx.property_tree.effects.items.len) {
+        const effect = cx.property_tree.effects.items[runtime.effect_id];
+        if (effect.node_id == node_id) sig |= 1 | (@as(u32, @backingInt(effect.kind)) << 1);
+    }
+    if (runtime.clip_id != INVALID_ID and runtime.clip_id < cx.property_tree.clips.items.len) {
+        if (cx.property_tree.clips.items[runtime.clip_id].node_id == node_id) sig |= 1 << 8;
+    }
+    return sig;
+}
+
 fn subtreePayloadStampValid(
-    runtime: scene_runtime_mod.SceneNodeRuntime,
-    cache: node_mod.CachedRenderSlice,
+    cx: *const RenderContext,
+    node_id: u32,
+    runtime: *const scene_runtime_mod.SceneNodeRuntime,
+    cache: *const node_mod.CachedRenderSlice,
 ) bool {
-    if (cache.cached_transform_id != runtime.transform_id) return false;
-    if (cache.cached_effect_id != runtime.effect_id) return false;
-    if (cache.cached_clip_id != runtime.clip_id) return false;
+    if (cache.cached_owner_signature != ownerSignature(cx, node_id, runtime)) return false;
     if (cache.content_version != runtime.content_version) return false;
     if (@abs(cache.world_bounds.w - runtime.world_bounds.w) > 0.01) return false;
     if (@abs(cache.world_bounds.h - runtime.world_bounds.h) > 0.01) return false;
@@ -862,15 +1016,20 @@ fn subtreePayloadStampValid(
 /// directly append cached copy to display_list current position (matches fresh prebuild
 /// landing, paint-order invariant maintained), backfill runtime ranges + prebuilt flag,
 /// paint pass takes existing subtree-replay shortcut.
-fn trySpliceSubtreePayloadCache(cx: *RenderContext, node: *Node) !bool {
-    if (@import("zenit_environment").has("ZENIT_DISABLE_SUBTREE_SPLICE")) return false; // Escape hatch: cut when investigating clipping / artifacts
-    const cache = node.meta.per_frame.caches.commands.subtree_payload orelse return false;
+fn trySpliceSubtreePayloadCache(cx: *RenderContext, node: *Node, inherited_force_linear_text: bool) !bool {
+    if (cx.subtree_splice_disabled) return false; // Escape hatch ZENIT_DISABLE_SUBTREE_SPLICE: cut when investigating clipping / artifacts
+    if (cx.subtree_payload_reference_mode) return false;
+    if (node.meta.per_frame.caches.commands.subtree_payload == null) return false;
+    const cache = &node.meta.per_frame.caches.commands.subtree_payload.?;
     if (!nodeCleanForSubtreePayloadSplice(node)) return false;
-    const runtime = cx.scene_runtime.get(node.id) orelse return false;
+    const runtime = cx.scene_runtime.getPtr(node.id) orelse return false;
     // Stamp checks are O(1). Do them before the boundary tree walk and evict
     // caches that can no longer be reused, otherwise a deep tree can rescan the
     // same stale subtrees every frame.
-    if (!subtreePayloadStampValid(runtime, cache)) {
+    // Same derivation as buildNodeExecutionState.subtree_force_linear_text; the auto term
+    // (active transform animation) is excluded by eligibility.
+    const force_linear_text = inherited_force_linear_text or node.frame_state.state_bits.flags.text_stabilize_subtree;
+    if (!subtreePayloadStampValid(cx, node.id, runtime, cache) or cache.cached_force_linear_text != force_linear_text) {
         dropSubtreePayloadCache(node);
         return false;
     }
@@ -879,6 +1038,10 @@ fn trySpliceSubtreePayloadCache(cx: *RenderContext, node: *Node) !bool {
         return false;
     }
 
+    if (trace_node != 0) for (cache.commands) |*c| if (c.header().node_id == trace_node) {
+        std.debug.print("[trace] epoch={d} splice root={d} contains {d}\n", .{ cx.scene_runtime.frame_epoch, node.id, trace_node });
+        break;
+    };
     const start = cx.display_list.items.items.len;
     try appendCachedCommands(cx, cache.commands);
     // Use actual length delta after append: appendCachedCommands silently skips cache items
@@ -901,6 +1064,7 @@ fn trySpliceSubtreePayloadCache(cx: *RenderContext, node: *Node) !bool {
         rt.display_payload_subtree_prebuilt = true;
         rt.display_payload_subtree_strategy = .simple;
         rt.display_payload_subtree_prebuilt_epoch = cx.scene_runtime.frame_epoch;
+        rt.prebuild_visited = true;
     }
     cx.perf.subtree_payload_splice_count += 1;
     return true;
@@ -909,7 +1073,9 @@ fn trySpliceSubtreePayloadCache(cx: *RenderContext, node: *Node) !bool {
 /// After fresh prebuild, write cross-frame cache: copy section just written to
 /// display_list by this subtree, materialize text blob reference then deep-copy persist.
 /// Called only within .simple strategy subtrees.
-fn maybeWriteSubtreePayloadCache(cx: *RenderContext, node: *Node, subtree_display_start: usize) void {
+fn maybeWriteSubtreePayloadCache(cx: *RenderContext, node: *Node, subtree_display_start: usize, force_linear_text: bool) void {
+    // Reference frames must leave the cache exactly as the incremental frame wrote it.
+    if (cx.subtree_payload_reference_mode) return;
     const end = cx.display_list.items.items.len;
     if (end <= subtree_display_start) {
         dropSubtreePayloadCache(node);
@@ -924,7 +1090,7 @@ fn maybeWriteSubtreePayloadCache(cx: *RenderContext, node: *Node, subtree_displa
         dropSubtreePayloadCache(node);
         return;
     };
-    if (!nodeEligibleForSubtreePayloadCache(cx, node, runtime)) {
+    if (!nodeEligibleForSubtreePayloadCache(cx, node, &runtime)) {
         dropSubtreePayloadCache(node);
         return;
     }
@@ -960,8 +1126,14 @@ fn maybeWriteSubtreePayloadCache(cx: *RenderContext, node: *Node, subtree_displa
     // versions, splice side compares against runtime.content_version).
     if (node.meta.per_frame.caches.commands.subtree_payload) |*cache| {
         cache.content_version = runtime.content_version;
+        cache.cached_force_linear_text = force_linear_text;
+        cache.cached_owner_signature = ownerSignature(cx, node.id, runtime);
     }
     cx.perf.subtree_payload_cache_write_count += 1;
+    if (trace_node != 0) if (node.meta.per_frame.caches.commands.subtree_payload) |c| for (c.commands) |*it| if (it.header().node_id == trace_node) {
+        std.debug.print("[trace] epoch={d} cache-write root={d} contains {d}\n", .{ cx.scene_runtime.frame_epoch, node.id, trace_node });
+        break;
+    };
 }
 
 fn prebuildSimpleDisplayPayloadSubtree(
@@ -972,6 +1144,7 @@ fn prebuildSimpleDisplayPayloadSubtree(
 ) anyerror!void {
     const subtree_display_start = cx.display_list.items.items.len;
     const subtree_blob_start = cx.text_blob_store.blobs.items.len;
+    markPrebuildVisited(cx, node.id);
 
     // R3c: appendNodeOwnContent still writes cx.lowering_buffer (effect_bridge path) but
     // entire cx.lowering_buffer tail derived clear+rewrite this frame, no need prebuild
@@ -988,7 +1161,7 @@ fn prebuildSimpleDisplayPayloadSubtree(
         if (!shouldRenderChildInPass(child, exec_state.use_opacity_layer, .regular)) continue;
         // Downstream regression: clean sibling subtree cross-frame payload hit -> splice
         // directly, avoid re-record.
-        if (allow_subtree_payload_cache and try trySpliceSubtreePayloadCache(cx, child)) continue;
+        if (allow_subtree_payload_cache and try trySpliceSubtreePayloadCache(cx, child, exec_state.subtree_force_linear_text)) continue;
         // prebuild phase doesn't pass parent_clip to children, avoid viewport culling
         // causing cached display payload missing culled child content. display payload reused
         // cross-frame, but clip area changes with scrolling.
@@ -1007,7 +1180,7 @@ fn prebuildSimpleDisplayPayloadSubtree(
 
     updateNodeSubtreeDisplayPayloadRanges(cx, node.id, subtree_display_start, subtree_blob_start);
     if (allow_subtree_payload_cache) {
-        maybeWriteSubtreePayloadCache(cx, node, subtree_display_start);
+        maybeWriteSubtreePayloadCache(cx, node, subtree_display_start, exec_state.subtree_force_linear_text);
     }
 }
 
@@ -1024,6 +1197,7 @@ fn prebuildDisplayPayloadSubtrees(
     // "paint-later" items before "paint-earlier" fresh items (fresh only appends to tail).
     // scene_runtime cleared per-frame, default is not-prebuilt, return immediately.
     if (cx.display_payload_prefix_broken) return;
+    markPrebuildVisited(cx, node.id);
     const crosses_cache_boundary = if (cx.render_cache_boundary_blocked) |blocked|
         blocked.contains(node.id)
     else
@@ -1045,7 +1219,7 @@ fn prebuildDisplayPayloadSubtrees(
     // Downstream regression: clean subtree cross-frame payload hit -> entire subtree
     // avoids re-record (includes both own/subtree prebuild passes, subtree_prebuilt=true
     // shortcuts both own and paint passes).
-    if (try trySpliceSubtreePayloadCache(cx, node)) return;
+    if (try trySpliceSubtreePayloadCache(cx, node, inherited_force_linear_text)) return;
     setNodeDisplayPayloadSubtreePrebuilt(cx, node.id, false, .none);
     const exec_state = buildNodeExecutionState(
         cx,
@@ -1066,11 +1240,7 @@ fn prebuildDisplayPayloadSubtrees(
     // payload must prebuild normally, else promoted-surface cache assembly
     // (node_cache_finalize.assembleCacheCommands) gets no regular_children and the settle frame
     // keeps only the dialog itself (white box), losing title/x/body.
-    if (node.hasBeforeRenderHooks() and
-        (exec_state.retained_runtime.is_overlay_candidate or
-            !exec_state.retained_runtime.content_flags.has_custom_draw) and
-        !hookScopeIsSelfOnly(node, &exec_state, parent_effect_id))
-    {
+    if (beforeRenderHookBreaksPrefix(node, &exec_state, parent_effect_id)) {
         // Content left for the paint pass -> prefix stops here (invariant: see prefix_broken
         // declaration). Not limited to overlay candidates: any before_render hook (drag spring
         // writes
@@ -1125,9 +1295,17 @@ fn prebuildDisplayPayloadSubtrees(
     // display_list order match paint pass walk (own -> children). Else
     // prebuildOwnDisplayPayloads pass defers root own to after all children subtree write,
     // causes PERMUTATION visual chaos (parent covers children).
+    //
+    // What this node leaves in the prefix (own content, children, clip pair) is its subtree
+    // range: the paint pass visits the node without appending these items again, and an
+    // ancestor assembling a cross-frame cache takes the node's items from this range
+    // (finishNodeSubtreeDisplayPayloadRanges).
+    const subtree_display_start = cx.display_list.items.items.len;
+    const subtree_blob_start = cx.text_blob_store.blobs.items.len;
+    defer updateNodeSubtreeDisplayPayloadRanges(cx, node.id, subtree_display_start, subtree_blob_start);
     setNodeDisplayPayloadOwnPrebuilt(cx, node.id, false);
     const own_prebuilt = try prebuildOwnDisplayPayloadForNode(cx, node, &exec_state, parent_effect_id);
-    if (@import("zenit_environment").has("ZENIT_DEBUG_PREPASS")) {
+    if (debug_prepass) {
         std.debug.print("[prepass] node={d} fallback own_prebuilt={} has_own={} children={d}\n", .{ node.id, own_prebuilt, nodeHasOwnPaintContent(node, &exec_state), node.children.items.len });
     }
 
@@ -1283,13 +1461,6 @@ fn prebuildDisplayPayloads(
     inherited_force_linear_text: bool,
     parent_effect_id: u32,
 ) !void {
-    var boundary_blocked = id_hash.U32HashMapUnmanaged(void){};
-    defer boundary_blocked.deinit(cx.frame_allocator);
-    _ = try indexRenderCacheBoundaries(cx.frame_allocator, node, false, &boundary_blocked);
-    const previous_boundary_index = cx.render_cache_boundary_blocked;
-    cx.render_cache_boundary_blocked = &boundary_blocked;
-    defer cx.render_cache_boundary_blocked = previous_boundary_index;
-
     try prebuildDisplayPayloadSubtrees(
         cx,
         node,
@@ -1306,6 +1477,90 @@ fn prebuildDisplayPayloads(
         inherited_force_linear_text,
         parent_effect_id,
     );
+}
+
+/// Tests: force the paint-cursor resume on/off regardless of ZENIT_DISABLE_PAINT_RESUME.
+pub var paint_resume_test_override: ?bool = null;
+
+/// Paint-cursor prebuild resume.
+///
+/// The prebuild pass stops at the first node whose content must stay with the paint pass
+/// (`display_payload_prefix_broken`); before this, every node painted after it lost the
+/// cross-frame subtree payload cache (neither splice nor write), so one ScrollArea early in
+/// paint order re-recorded the whole window each frame.
+///
+/// Once the prefix is broken, the paint pass appends every remaining item to the display list
+/// tail in paint order, so the tail *is* the paint position of the node being visited. A simple
+/// subtree that the prebuild pass never reached can therefore be prebuilt right there, with the
+/// exact routine and inputs the prebuild pass would have used (same parent transform / clip /
+/// effect scope; descendants unclipped), and is then consumed by the ordinary subtree replay
+/// shortcut. That restores both splice of clean cached subtrees and cache writes for the rest.
+///
+/// Guards:
+/// - `prebuild_visited`: the prebuild pass (or an earlier resume) already handled this node, so
+///   any prebuilt content of it is already in the list (no double emission).
+/// - `paint_resume_suppress_depth`: inside an undeclared hook's subtree (hook-owned, may be
+///   written without dirty marking), or inside a subtree prebuilt this frame whose fresh paint
+///   output is truncated afterwards.
+/// - Only the `.simple` strategy is resumed (the only cacheable one); self_scale / self_blur /
+///   self_safe_effect subtrees and fallback (partially prebuildable) nodes keep the plain paint
+///   path, and their children are offered the resume in turn.
+const ResumeOutcome = enum { none, spliced, prebuilt };
+
+fn tryResumePrebuildAtPaintCursor(
+    cx: *RenderContext,
+    node: *Node,
+    parent_transform: Transform2D,
+    parent_clip: ?ComputedRect,
+    inherited_force_linear_text: bool,
+    parent_effect_id: u32,
+) !ResumeOutcome {
+    if (!cx.display_payload_prefix_broken) return .none;
+    if (!cx.paint_resume_enabled or cx.subtree_payload_reference_mode) return .none;
+    if (cx.paint_resume_suppress_depth != 0) return .none;
+    {
+        const rt = cx.scene_runtime.nodes.getPtr(node.id) orelse return .none;
+        if (rt.prebuild_visited) return .none;
+        rt.prebuild_visited = true;
+    }
+    const crosses_cache_boundary = if (cx.render_cache_boundary_blocked) |blocked|
+        blocked.contains(node.id)
+    else
+        true;
+    if (crosses_cache_boundary) dropSubtreePayloadCache(node);
+    if (try trySpliceSubtreePayloadCache(cx, node, inherited_force_linear_text)) {
+        cx.perf.subtree_payload_paint_resume_count += 1;
+        return .spliced;
+    }
+    if (!node.beforeRenderHooksCacheTrusted()) return .none;
+    // O(1) copies of the first rejects of shouldUseDisplayListForSimpleSubtree. Without them a
+    // node whose subtree holds a hook / custom draw re-runs the recursive prepass check, and so
+    // does each child the paint pass then visits: quadratic in depth on the common failure.
+    if (node.children.items.len == 0) return .none;
+    const flags = node.frame_state.state_bits.flags;
+    if (flags.has_custom_draw_subtree or hasUntrustedBeforeRenderHookSubtree(node)) return .none;
+    if (node.tag == .scroll or node.tag == .input) return .none;
+    const exec_state = buildNodeExecutionState(
+        cx,
+        node,
+        parent_transform,
+        parent_clip,
+        inherited_force_linear_text,
+    ) orelse return .none;
+    // Same precedence as prebuildDisplayPayloadSubtrees: a subtree the prebuild pass would
+    // record with a self-effect strategy is left to the paint pass rather than recorded as
+    // `.simple` with different semantics.
+    if (subtreeCanUseDisplayListPrepassWithSelfScale(cx, node, &exec_state, parent_effect_id)) return .none;
+    if (subtreeCanUseDisplayListPrepassWithSelfBlur(cx, node, &exec_state, parent_effect_id)) return .none;
+    if (!subtreeCanUseDisplayListPrepass(cx, node, &exec_state, parent_effect_id)) return .none;
+    if (shouldPreferDisplayListPrepassChildren(cx, node, &exec_state)) return .none;
+    if (canUseSafeSelfEffectDisplayPayload(cx, node, &exec_state, parent_effect_id)) return .none;
+
+    try prebuildSimpleDisplayPayloadSubtree(cx, node, &exec_state, true);
+    setNodeDisplayPayloadSubtreePrebuilt(cx, node.id, true, .simple);
+    cx.perf.display_list_subtree_prebuild_count += 1;
+    cx.perf.subtree_payload_paint_resume_count += 1;
+    return .prebuilt;
 }
 
 // -- Node render state computation --
@@ -1348,10 +1603,10 @@ fn computeNodeRenderState(
     };
 
     const blur_radius = effectiveBackdropBlurRadius(node);
-    const pad_left = node.style.padding.left * scale_x_abs;
-    const pad_right = node.style.padding.right * scale_x_abs;
-    const pad_top = node.style.padding.top * scale_y_abs;
-    const pad_bottom = node.style.padding.bottom * scale_y_abs;
+    const pad_left = node.style.contentInsets().left * scale_x_abs;
+    const pad_right = node.style.contentInsets().right * scale_x_abs;
+    const pad_top = node.style.contentInsets().top * scale_y_abs;
+    const pad_bottom = node.style.contentInsets().bottom * scale_y_abs;
     const node_opacity = std.math.clamp(node.getOpacity(), 0.0, 1.0);
     const has_rotation = @abs(node.style.rotate()) > 0.0001;
     const has_scale = @abs(node.style.scale_x() - 1.0) > 0.0001 or @abs(node.style.scale_y() - 1.0) > 0.0001;
@@ -1404,7 +1659,7 @@ fn computeNodeRenderState(
     const radii_raw = node.style.effectiveRadii();
     const radii = [4]f32{ radii_raw[0] * scale_min, radii_raw[1] * scale_min, radii_raw[2] * scale_min, radii_raw[3] * scale_min };
     const radius = @max(@max(radii[0], radii[1]), @max(radii[2], radii[3]));
-    const use_rounded_clip = shouldUseRoundedClipBridge(node, clip_spec.shape_kind, clip_spec.radius, use_opacity_layer, blur_radius > 0);
+    const use_rounded_clip = shouldUseRoundedClipBridge(node, clip_spec.shape_kind, clip_spec.radii, use_opacity_layer, blur_radius > 0);
 
     return .{
         .world_transform = world_transform,
@@ -1427,7 +1682,6 @@ fn computeNodeRenderState(
         .radius = radius,
         .clip_shape_kind = clip_spec.shape_kind,
         .clip_radii = clip_spec.radii,
-        .clip_radius = clip_spec.radius,
         .clip_polygon = clip_spec.polygon,
         .clip_bounds_fallback = clip_spec.bounds_fallback,
         .use_blur = blur_radius >= 0.5,
@@ -1499,10 +1753,10 @@ fn computeNodeContentRenderState(
     };
 
     const blur_radius = effectiveBackdropBlurRadius(node);
-    const pad_left = node.style.padding.left * scale_x_abs;
-    const pad_right = node.style.padding.right * scale_x_abs;
-    const pad_top = node.style.padding.top * scale_y_abs;
-    const pad_bottom = node.style.padding.bottom * scale_y_abs;
+    const pad_left = node.style.contentInsets().left * scale_x_abs;
+    const pad_right = node.style.contentInsets().right * scale_x_abs;
+    const pad_top = node.style.contentInsets().top * scale_y_abs;
+    const pad_bottom = node.style.contentInsets().bottom * scale_y_abs;
     const node_opacity = std.math.clamp(node.getOpacity(), 0.0, 1.0);
     const prepromote_composite = node.style.z_index() > 0 and
         (node.style.will_change_transform() or node.style.will_change_opacity());
@@ -1550,7 +1804,7 @@ fn computeNodeContentRenderState(
     const radii_raw = node.style.effectiveRadii();
     const radii = [4]f32{ radii_raw[0] * scale_min, radii_raw[1] * scale_min, radii_raw[2] * scale_min, radii_raw[3] * scale_min };
     const radius = @max(@max(radii[0], radii[1]), @max(radii[2], radii[3]));
-    const use_rounded_clip = shouldUseRoundedClipBridge(node, clip_spec.shape_kind, clip_spec.radius, use_opacity_layer, blur_radius > 0);
+    const use_rounded_clip = shouldUseRoundedClipBridge(node, clip_spec.shape_kind, clip_spec.radii, use_opacity_layer, blur_radius > 0);
 
     return .{
         .content_transform = content_transform,
@@ -1573,7 +1827,6 @@ fn computeNodeContentRenderState(
         .radius = radius,
         .clip_shape_kind = clip_spec.shape_kind,
         .clip_radii = clip_spec.radii,
-        .clip_radius = clip_spec.radius,
         .clip_polygon = clip_spec.polygon,
         .clip_bounds_fallback = clip_spec.bounds_fallback,
         .use_blur = blur_radius >= 0.5,
@@ -1581,9 +1834,10 @@ fn computeNodeContentRenderState(
     };
 }
 
-fn shouldUseRoundedClipBridge(node: *Node, clip_shape_kind: display_list_mod.ClipShapeKind, radius: f32, use_opacity_layer: bool, use_blur: bool) bool {
+fn shouldUseRoundedClipBridge(node: *Node, clip_shape_kind: display_list_mod.ClipShapeKind, radii: [4]f32, use_opacity_layer: bool, use_blur: bool) bool {
     if (clip_shape_kind != .rounded_rect) return false;
-    if (radius <= 0.5) return false;
+    // Any rounded corner needs the mask (attached group items round only their outer corners).
+    if (@max(@max(radii[0], radii[1]), @max(radii[2], radii[3])) <= 0.5) return false;
     if (node.frame_state.state_bits.flags.manual_opacity_animation_active or node.frame_state.state_bits.flags.manual_transform_animation_active) return false;
     if (use_blur) return true;
     // rounded_clip effect (and the Stage 3 fold into the opacity layer rounded mask) is
@@ -1617,17 +1871,46 @@ fn buildRetainedSubtree(
     parent_clip_id: u32,
     parent_effect_id: u32,
     surface_inverse: Transform2D,
-) void {
+) retained_memo.BuildSummary {
     if (!node.frame_state.state_bits.dirty.core.render and !node.frame_state.state_bits.dirty.core.subtree_render and !node.frame_state.state_bits.dirty.core.layout and !node.frame_state.state_bits.dirty.core.subtree_layout) {
-        if (cx.scene_runtime.nodes.contains(node.id)) return;
+        if (cx.scene_runtime.nodes.contains(node.id)) return .{};
     }
-    const render_state = computeNodeRenderState(cx, node, parent_transform, parent_clip) orelse return;
+    const memo_inputs: retained_memo.Inputs = .{
+        .parent_transform = parent_transform,
+        .parent_clip = parent_clip,
+        .parent_transform_id = parent_transform_id,
+        .parent_clip_id = parent_clip_id,
+        .parent_effect_id = parent_effect_id,
+        .surface_inverse = surface_inverse,
+    };
+    const memo_on = cx.retained_memo_enabled and !cx.subtree_payload_reference_mode;
+    if (memo_on and cx.retained_hook_owned_depth == 0 and node.meta.per_frame.caches.commands.retained_memo != null) {
+        if (retained_memo.tryReplay(cx, node, memo_inputs)) |_| {
+            const memo = retained_memo.memoOf(node).?;
+            // A replayed subtree is clean and complete: an enclosing memo may include it.
+            return .{ .memoizable = true, .has_capture_owner = memo.has_capture_owner, .has_culled = memo.has_culled, .replayed = true };
+        }
+    }
+    // An undeclared hook may write its descendants raw (hook-owned subtree, like the paint pass):
+    // nothing below it is memoizable on its own either.
+    const hook_owned_here = node.hasBeforeRenderHooks() and !node.beforeRenderHooksCacheTrusted();
+    if (hook_owned_here) cx.retained_hook_owned_depth += 1;
+    defer if (hook_owned_here) {
+        cx.retained_hook_owned_depth -= 1;
+    };
+    var summary: retained_memo.BuildSummary = .{
+        .memoizable = memo_on and cx.retained_hook_owned_depth == 0 and
+            retained_memo.subtreeClean(node) and !retained_memo.nodeVolatile(node),
+    };
+    const render_state = computeNodeRenderState(cx, node, parent_transform, parent_clip) orelse
+        return .{ .memoizable = summary.memoizable, .has_culled = true };
     // Retained/property-tree recursion must follow the same content-space transform
     // chain as runtime rendering. For opacity/composited groups, descendants render
     // into the group's unscaled/unrotated surface space; recursing with world_transform
     // here makes retained metadata disagree with the render path and causes promoted
     // surfaces to mix "panel frame" animation with "content relayout" jumps.
-    const content_state = computeNodeContentRenderState(cx, node, parent_transform, parent_clip) orelse return;
+    const content_state = computeNodeContentRenderState(cx, node, parent_transform, parent_clip) orelse
+        return .{ .memoizable = false };
 
     // Surface owner's content transform: whether to fold self.world.invert() depends on whether
     // surface composite **re-applies** the owner's world transform (must align with
@@ -1662,6 +1945,7 @@ fn buildRetainedSubtree(
     //    scope; content must stay in the world frame (self_blur replay, same contract), so it
     //    doesn't enter this branch.
     const opens_capture_surface = render_state.use_opacity_layer or render_state.use_rounded_clip;
+    if (opens_capture_surface) summary.has_capture_owner = true;
     const self_surface_inverse: Transform2D = if (opens_capture_surface)
         render_state.world_transform.invert()
     else
@@ -1688,16 +1972,34 @@ fn buildRetainedSubtree(
         render_state,
         self_surface_inverse,
     );
+    rememberContentState(cx, node, parent_transform, parent_clip, &content_state);
     const child_parent_transform = content_state.content_transform;
     const effective_clip = content_state.effective_clip;
 
     const child_surface_inverse = surface_child_inverse;
 
+    // Memoizable children are recorded here when this node is not (the frontier of clean
+    // subtrees); otherwise this node's own record covers them.
+    var child_marks: std.ArrayList(ChildMemoMark) = .empty;
     for (childPasses(render_state.use_opacity_layer)) |pass| {
         for (node.children.items) |child| {
             if (!shouldRenderChildInPass(child, render_state.use_opacity_layer, pass)) continue;
-
-            buildRetainedSubtree(
+            const mark: ChildMemoMark = .{
+                .child = child,
+                .t0 = cx.property_tree.transforms.items.len,
+                .c0 = cx.property_tree.clips.items.len,
+                .e0 = cx.property_tree.effects.items.len,
+                .o0 = cx.retained_nodes.items.len,
+                .inputs = .{
+                    .parent_transform = child_parent_transform,
+                    .parent_clip = effective_clip,
+                    .parent_transform_id = retained_ids.transform_id,
+                    .parent_clip_id = retained_ids.clip_id,
+                    .parent_effect_id = retained_ids.effect_id,
+                    .surface_inverse = child_surface_inverse,
+                },
+            };
+            const child_summary = buildRetainedSubtree(
                 cx,
                 child,
                 child_parent_transform,
@@ -1707,14 +2009,96 @@ fn buildRetainedSubtree(
                 retained_ids.effect_id,
                 child_surface_inverse,
             );
+            if (!child_summary.memoizable) summary.memoizable = false;
+            if (child_summary.has_capture_owner) summary.has_capture_owner = true;
+            if (child_summary.has_culled) summary.has_culled = true;
+            if (memo_on and child_summary.memoizable and !child_summary.replayed and cx.retained_nodes.items.len > mark.o0) {
+                var m = mark;
+                m.summary = child_summary;
+                m.range = .{
+                    .t1 = cx.property_tree.transforms.items.len,
+                    .c1 = cx.property_tree.clips.items.len,
+                    .e1 = cx.property_tree.effects.items.len,
+                    .o1 = cx.retained_nodes.items.len,
+                };
+                child_marks.append(cx.frame_allocator, m) catch {};
+            }
         }
     }
+    if (memo_on and !summary.memoizable) {
+        for (child_marks.items) |m| {
+            retained_memo.record(cx, m.child, m.inputs, .{ .t0 = m.t0, .c0 = m.c0, .e0 = m.e0, .o0 = m.o0, .t1 = m.range.t1, .c1 = m.range.c1, .e1 = m.range.e1, .o1 = m.range.o1 }, m.summary);
+        }
+    }
+    return summary;
+}
+
+const ChildMemoMark = struct {
+    child: *Node,
+    t0: usize,
+    c0: usize,
+    e0: usize,
+    o0: usize,
+    inputs: retained_memo.Inputs,
+    summary: retained_memo.BuildSummary = .{},
+    range: struct { t1: usize = 0, c1: usize = 0, e1: usize = 0, o1: usize = 0 } = .{},
+};
+
+/// The root of the frame records its own memo when it is memoizable (nothing above it would).
+fn recordRootRetainedMemo(cx: *RenderContext, node: *Node, summary: retained_memo.BuildSummary) void {
+    if (!summary.memoizable or !cx.retained_memo_enabled or cx.subtree_payload_reference_mode) return;
+    if (summary.replayed) return; // already current
+    retained_memo.record(cx, node, .{
+        .parent_transform = Transform2D.identity(),
+        .parent_clip = null,
+        .parent_transform_id = 0,
+        .parent_clip_id = INVALID_ID,
+        .parent_effect_id = INVALID_ID,
+        .surface_inverse = Transform2D.identity(),
+    }, .{
+        .t0 = 1,
+        .c0 = 0,
+        .e0 = 0,
+        .o0 = 0,
+        .t1 = cx.property_tree.transforms.items.len,
+        .c1 = cx.property_tree.clips.items.len,
+        .e1 = cx.property_tree.effects.items.len,
+        .o1 = cx.retained_nodes.items.len,
+    }, summary);
+}
+
+fn rememberContentState(cx: *RenderContext, node: *Node, parent_transform: Transform2D, parent_clip: ?ComputedRect, state: *const NodeContentRenderState) void {
+    const rt = cx.scene_runtime.getPtr(node.id) orelse return;
+    const idx = rt.retained_index;
+    if (idx >= cx.retained_nodes.items.len) return;
+    const states = &cx.content_states;
+    if (states.items.len <= idx) {
+        states.appendNTimes(cx.frame_allocator, .{}, idx + 1 - states.items.len) catch return;
+    }
+    states.items[idx] = .{ .valid = true, .parent_transform = parent_transform, .parent_clip = parent_clip, .state = state.* };
+}
+
+/// The content state buildRetainedSubtree computed for these inputs this frame (pure function of
+/// node state and inputs), or a fresh one.
+fn contentStateFor(cx: *RenderContext, node: *Node, retained_index: u32, parent_transform: Transform2D, parent_clip: ?ComputedRect) ?NodeContentRenderState {
+    if (retained_index < cx.content_states.items.len) {
+        const e = &cx.content_states.items[retained_index];
+        if (e.valid and std.meta.eql(e.parent_transform, parent_transform) and std.meta.eql(e.parent_clip, parent_clip)) {
+            cx.perf.content_state_reuses += 1;
+            return e.state;
+        }
+    }
+    return computeNodeContentRenderState(cx, node, parent_transform, parent_clip);
 }
 
 fn syncPromotedLayerIds(cx: *RenderContext) void {
-    var it = cx.scene_runtime.nodes.iterator();
-    while (it.next()) |entry| {
-        const root_layer_state = cx.layer_tree.planQueryRootNode(entry.key_ptr.*);
+    // Only plan-layer roots differ from the defaults every record starts with (no promoted
+    // layer, all frame flags clear): visit those instead of every scene record.
+    var roots = cx.layer_tree.frame_root_chains.keyIterator();
+    while (roots.next()) |root_id| {
+        const entry_value = cx.scene_runtime.nodes.getPtr(root_id.*) orelse continue;
+        const entry = .{ .value_ptr = entry_value };
+        const root_layer_state = cx.layer_tree.planQueryRootNode(root_id.*);
         entry.value_ptr.promoted_layer_id = root_layer_state.promoted_layer_id;
         entry.value_ptr.promoted_surface_flags.surface_valid = root_layer_state.frame_flags.surface_valid;
         entry.value_ptr.promoted_surface_flags.reused_this_frame = root_layer_state.frame_flags.reused_this_frame;
@@ -1725,21 +2109,27 @@ fn syncPromotedLayerIds(cx: *RenderContext) void {
     }
 }
 
+/// has_promoted_descendant_subtree: true exactly on the ancestors of promoted layer roots
+/// (records start false). Walks up from the promoted roots instead of over the whole tree.
 fn syncPromotedDescendantState(cx: *RenderContext, node: *Node) bool {
-    const self_has_promoted_layer = cx.layer_tree.planQueryRootNode(node.id).promoted_layer_id != INVALID_ID;
-    var descendant_has_promoted = false;
-
-    for (node.children.items) |child| {
-        if (syncPromotedDescendantState(cx, child)) {
-            descendant_has_promoted = true;
+    _ = node;
+    var any = false;
+    var roots = cx.layer_tree.frame_root_chains.keyIterator();
+    while (roots.next()) |root_id| {
+        const rt = cx.scene_runtime.getPtr(root_id.*) orelse continue;
+        if (rt.promoted_layer_id == INVALID_ID) continue;
+        if (rt.retained_index >= cx.retained_nodes.items.len) continue;
+        const n = cx.retained_nodes.items[rt.retained_index];
+        std.debug.assert(n.id == root_id.*);
+        any = true;
+        var cur = n.parent;
+        while (cur) |p| : (cur = p.parent) {
+            const prt = cx.scene_runtime.nodes.getPtr(p.id) orelse continue;
+            if (prt.has_promoted_descendant_subtree) break;
+            prt.has_promoted_descendant_subtree = true;
         }
     }
-
-    if (cx.scene_runtime.nodes.getPtr(node.id)) |runtime| {
-        runtime.has_promoted_descendant_subtree = descendant_has_promoted;
-    }
-
-    return self_has_promoted_layer or descendant_has_promoted;
+    return any;
 }
 
 fn buildNodeExecutionState(
@@ -1755,7 +2145,7 @@ fn buildNodeExecutionState(
         .clip_id = retained_runtime.clip_id,
         .effect_id = retained_runtime.effect_id,
     };
-    const content_state = computeNodeContentRenderState(cx, node, parent_transform, parent_clip) orelse return null;
+    const content_state = contentStateFor(cx, node, retained_runtime.retained_index, parent_transform, parent_clip) orelse return null;
     const world_transform = if (retained_ids.transform_id < cx.property_tree.transforms.items.len)
         cx.property_tree.transforms.items[retained_ids.transform_id].world
     else
@@ -1771,7 +2161,23 @@ fn buildNodeExecutionState(
     );
     const promoted_layer_id = plan_state.promoted_layer_id;
     const is_promoted_layer = promoted_layer_id != scene_runtime_mod.INVALID_ID;
-    const auto_stabilize_text = retained_runtime.has_active_transform_animation and retained_runtime.content_flags.has_text;
+    // Text under a transform animation leaves the static raster (per-glyph device-pixel snap)
+    // because the animation moves it across the pixel grid. A node that captures its content
+    // into a surface is the exception for its own scale/rotate and anchored (overlay) motion:
+    // the composite applies those, the texture-local frame is anchored at the rest pose
+    // (opacity_layer.alignTranslationSurface), so the content stays on one grid for the whole
+    // animation and keeps the exact raster it has at rest. Switching it to the animated raster
+    // made every glyph jump on its own the frame the animation ended.
+    // Nor does the composite linger after an animation ends: the surface is gone (scale and
+    // opacity are back to 1) and the content is at rest, so the animated raster there swapped
+    // every glyph's raster for the last frames and back (layout stays put; see
+    // FontSelector.resolveFonts, but snap vs. linear placement still shows).
+    const opens_capture_surface = content_state.use_opacity_layer or content_state.use_rounded_clip;
+    const own_motion_moves_content = if (opens_capture_surface)
+        animation_checks.hasUnanchoredTransformAnimation(node)
+    else
+        animation_checks.hasMovingTransformAnimation(node);
+    const auto_stabilize_text = own_motion_moves_content and retained_runtime.content_flags.has_text;
 
     return .{
         .retained_runtime = retained_runtime,
@@ -1802,7 +2208,6 @@ fn buildNodeExecutionState(
         .radius = content_state.radius,
         .clip_shape_kind = content_state.clip_shape_kind,
         .clip_radii = content_state.clip_radii,
-        .clip_radius = content_state.clip_radius,
         .clip_polygon = content_state.clip_polygon,
         .clip_bounds_fallback = content_state.clip_bounds_fallback,
         .use_rounded_clip = content_state.use_rounded_clip,
@@ -1814,18 +2219,16 @@ fn buildNodeExecutionState(
     };
 }
 
-fn hasBeforeRenderHookSubtree(node: *Node) bool {
-    // O(1): NodeFlags.has_before_render_subtree is set by addBeforeRender, propagates up
-    // ancestors, and appendChild merges it into the parent chain. Conservative: never cleared, so
-    // it stays true after a hook is deleted; overcounting only makes this function reject the
-    // cache more often, which is the safe direction.
-    return node.frame_state.state_bits.flags.has_before_render_subtree;
+/// Some hook in the subtree may write paint state without marking it (see
+/// Node.beforeRenderHooksCacheTrusted). Cache-trusted hooks behave like event handlers: every
+/// change they make reaches the dirty bits, so they do not block cross-frame caching.
+fn hasUntrustedBeforeRenderHookSubtree(node: *Node) bool {
+    return node.frame_state.state_bits.flags.has_untrusted_before_render_subtree;
 }
 
-fn hasBeforeRenderHookDescendants(node: *Node) bool {
-    // Scan only direct children (read each O(1) flag), no recursive descent.
+fn hasUntrustedBeforeRenderHookDescendants(node: *Node) bool {
     for (node.children.items) |child| {
-        if (child.frame_state.state_bits.flags.has_before_render_subtree) return true;
+        if (child.frame_state.state_bits.flags.has_untrusted_before_render_subtree) return true;
     }
     return false;
 }
@@ -1838,8 +2241,9 @@ fn buildNodeExecutionPlan(
     exec_state: *const NodeExecutionState,
     active_parent_effect_id: u32,
 ) NodeExecutionPlan {
-    const has_self_before_render_hooks = node.hasBeforeRenderHooks();
-    const has_descendant_before_render_hooks = hasBeforeRenderHookDescendants(node);
+    // Only hooks that may write without dirty marking make content frame-variant for caching.
+    const has_self_before_render_hooks = !node.beforeRenderHooksCacheTrusted();
+    const has_descendant_before_render_hooks = hasUntrustedBeforeRenderHookDescendants(node);
     const has_manual_overlay_animation = node.frame_state.state_bits.flags.manual_transform_animation_active or node.frame_state.state_bits.flags.manual_opacity_animation_active;
     // Overlay roots such as PopoverContent legitimately use a root-level before_render
     // hook to update anchored placement each frame. That hook mutates transform/geometry,
@@ -1923,11 +2327,16 @@ fn buildNodeExecutionPlan(
             own_payload_replay_safe_in_current_scope and
             canRepresentOwnContentInDisplayList(cx, node, exec_state, active_parent_effect_id),
         .use_legacy_overflow_cache = use_legacy_overflow_cache,
+        // Reference frames (incremental == full check) replay no cross-frame cache of any kind:
+        // the incremental pass has already cleared this frame's dirty bits, so without this the
+        // reference would take promoted / legacy-overflow hits the incremental pass did not.
+        // The plan (strategies, cache writes) stays identical so both passes record the same way.
         .should_try_promoted_replay = !disable_spanned_text_retained and
+            !cx.subtree_payload_reference_mode and
             promoted_cache_safe and
             exec_state.promoted_surface_valid and
             node.meta.per_frame.caches.commands.promoted != null,
-        .should_try_legacy_overflow_replay = !disable_spanned_text_retained and use_legacy_overflow_cache and !node.frame_state.state_bits.dirty.core.subtree_render,
+        .should_try_legacy_overflow_replay = !disable_spanned_text_retained and !cx.subtree_payload_reference_mode and use_legacy_overflow_cache and !node.frame_state.state_bits.dirty.core.subtree_render,
         .should_write_promoted_cache = !disable_spanned_text_retained and can_write_promoted_cache,
         .should_write_legacy_overflow_cache = !disable_spanned_text_retained and can_write_legacy_overflow_cache,
         .needs_rect_clip_fallback = exec_state.plan_state.needs_rect_clip_fallback,
@@ -1981,6 +2390,10 @@ fn renderChildWithParentClip(
 }
 
 fn clearSkippedInvisibleSubtreeDirty(node: *Node) void {
+    // Cleaned without being rendered (invisible): drop cross-frame copies recorded before the
+    // change, or they are spliced as clean once the subtree shows again (a popover reopening
+    // showed a button's mid-transition color).
+    node_render_cache_mod.dropCachesForUnrenderedClean(node);
     node.frame_state.state_bits.dirty.core.render = false;
     node.frame_state.state_bits.dirty.core.subtree_render = false;
     node.frame_state.state_bits.dirty.pipeline.composite = false;
@@ -2066,17 +2479,23 @@ fn appendCachedCommands(cx: *RenderContext, commands: []const DisplayItem) !void
     //     transform. Not traversed = invisible/removed, so discarding is always safe.
     //   - control token (transform_id == INVALID, begin/end layer etc.) passes through unchanged,
     //     so content entry add/remove doesn't affect pairing.
-    for (commands) |command| {
+    // By pointer: items are large unions and scene records a few hundred bytes; spliced
+    // commands make up most of a cached frame's display list.
+    for (commands) |*command| {
         const h = command.header();
         if (h.transform_id == INVALID_ID) {
-            try cx.display_list.append(command);
+            _ = try cx.display_list.appendPtr(command);
             continue;
         }
-        const fresh = cx.scene_runtime.get(h.node_id) orelse {
+        const fresh = cx.scene_runtime.getPtr(h.node_id) orelse {
             cx.perf.subtree_payload_absent_node_drop_count += 1;
             continue;
         };
-        var item = command;
+        // DisplayList.append freezes pointer-backed payloads (notably path
+        // geometry). A replayed cache may be replaced later in this render,
+        // so borrowing its geometry here leaves lowering with a dangling ptr.
+        // The header is rewritten on the stored copy (one copy per item).
+        const item = try cx.display_list.appendPtr(command);
         if (fresh.transform_id != h.transform_id or
             fresh.clip_id != h.clip_id or
             fresh.effect_id != h.effect_id)
@@ -2089,10 +2508,6 @@ fn appendCachedCommands(cx: *RenderContext, commands: []const DisplayItem) !void
             hp.clip_id = fresh.clip_id;
             hp.effect_id = fresh.effect_id;
         }
-        // DisplayList.append freezes pointer-backed payloads (notably path
-        // geometry). A replayed cache may be replaced later in this render,
-        // so borrowing its geometry here leaves lowering with a dangling ptr.
-        try cx.display_list.append(item);
     }
 }
 
@@ -2429,7 +2844,7 @@ fn emitScrollClipBegin(cx: *RenderContext, node: *Node, exec_state: *const NodeE
         // clip and paint share a header, so they relocate together on cache replay.
         try cx.display_list.append(token);
         const transform = cx.property_tree.transforms.items[exec_state.retained_ids.transform_id].content;
-        try display_list_lowering_mod.appendLoweredBoth(cx, display_list_lowering_mod.lowerNodeClip(token, transform));
+        try display_list_lowering_mod.appendLoweredBoth(cx, try display_list_lowering_mod.lowerNodeClip(cx.frame_allocator, token, transform));
     }
     return on;
 }
@@ -2439,8 +2854,32 @@ fn emitScrollClipEnd(cx: *RenderContext, exec_state: *const NodeExecutionState, 
     const token: DisplayItem = .{ .pop_clip = .{
         .header = scrollClipTokenHeaderBorrowed(exec_state),
     } };
-    try cx.display_list.append(token); // Symmetric with push, see emitScrollClipBegin note
+    // Symmetric with push, see emitScrollClipBegin note.
+    if (!elideEmptyScrollClipScope(cx, exec_state)) try cx.display_list.append(token);
+    // The paint-pass lowered streams keep their pair: descendants replayed from prebuilt ranges
+    // are lowered between the two tokens without appending to display_list.
     try display_list_lowering_mod.appendLoweredBoth(cx, token);
+}
+
+/// Closing a scroll clip scope that holds nothing: drop its push token from display_list instead
+/// of appending the pop. An empty clip scope draws nothing, but the paint pass re-opens the scope
+/// of a fallback-prebuilt overflow container whose own content and children already sit in the
+/// prebuild prefix (inside the prebuild's own pair), which left a second, empty pair at the
+/// display list tail; whether that happened depended on which caches the frame hit (a legacy
+/// overflow cache hit keeps the container out of the prefix), so the cached and the uncached
+/// paths produced different streams for the same frame. Elision makes the stream canonical.
+/// Our push is the tail exactly when nothing was appended since: anything a descendant or the
+/// node itself emits after the push lands behind it.
+fn elideEmptyScrollClipScope(cx: *RenderContext, exec_state: *const NodeExecutionState) bool {
+    const items = cx.display_list.items.items;
+    if (items.len == 0) return false;
+    const last = items[items.len - 1];
+    if (last != .push_clip) return false;
+    const header = scrollClipTokenHeaderBorrowed(exec_state);
+    if (last.push_clip.header.node_id != header.node_id or !last.push_clip.node_local) return false;
+    cx.display_list.items.shrinkRetainingCapacity(items.len - 1);
+    cx.perf.empty_clip_scope_elided_count += 1;
+    return true;
 }
 
 fn scrollClipWanted(node: *Node, exec_state: *const NodeExecutionState) bool {
@@ -2475,7 +2914,32 @@ fn scrollClipWanted(node: *Node, exec_state: *const NodeExecutionState) bool {
     if (!exec_state.needs_clip or !(exec_state.clip_rect.w > 0 and exec_state.clip_rect.h > 0)) return false;
     if (exec_state.use_rounded_clip or effectiveBackdropBlurRadius(node) > 0) return false;
     if (exec_state.use_opacity_layer and !clip_mod.ownerPaintsOutsideChildClip(node)) return false;
-    return !@import("zenit_environment").has("ZENIT_DISABLE_SCROLL_CLIP");
+    return !@import("zenit_environment").flag("ZENIT_DISABLE_SCROLL_CLIP");
+}
+
+test "out-of-band index matches the subtree walk at every node" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var prng = std.Random.DefaultPrng.init(0x00b);
+    const random = prng.random();
+    for (0..40) |round| {
+        var nodes: [24]*Node = undefined;
+        for (&nodes, 0..) |*slot, i| {
+            const n = try Node.create(allocator, @intCast(round * 100 + i + 1), .box, .{});
+            switch (random.uintLessThan(u8, 8)) {
+                0 => n.style.position = .sticky,
+                1 => (try n.style.ensureExtFallible(allocator)).z_index = 2,
+                else => {},
+            }
+            if (i > 0) try nodes[random.uintLessThan(usize, i)].appendChild(allocator, n);
+            slot.* = n;
+        }
+        var blocked = id_hash.U32HashMapUnmanaged(void){};
+        var out_of_band = id_hash.U32HashMapUnmanaged(void){};
+        _ = try indexRenderCacheBoundaries(allocator, nodes[0], false, &blocked, null, &out_of_band);
+        for (nodes) |n| try std.testing.expectEqual(subtreeHasOutOfBandPassesWalk(n), out_of_band.contains(n.id));
+    }
 }
 
 test "scroll clip rejects absent, empty, and NaN bounds" {
@@ -2528,7 +2992,7 @@ pub fn scrollClipPushTokenBorrowed(exec_state: *const NodeExecutionState) Displa
         .y = local.y,
         .w = local.w,
         .h = local.h,
-        .radius = if (exec_state.scale_min > 0) exec_state.clip_radius / exec_state.scale_min else 0,
+        .radii = if (exec_state.scale_min > 0) style_render.scaleLocalRadii(exec_state.clip_radii, 1 / exec_state.scale_min) else .{ 0, 0, 0, 0 },
         .shape_kind = exec_state.clip_shape_kind,
         .polygon = exec_state.clip_polygon,
     } };
@@ -2546,6 +3010,7 @@ fn prebuildScrollClipBegin(cx: *RenderContext, node: *Node, exec_state: *const N
 
 fn prebuildScrollClipEnd(cx: *RenderContext, exec_state: *const NodeExecutionState, on: bool) !void {
     if (!on) return;
+    if (elideEmptyScrollClipScope(cx, exec_state)) return;
     try cx.display_list.append(.{ .pop_clip = .{
         .header = scrollClipTokenHeaderBorrowed(exec_state),
     } });
@@ -2574,6 +3039,7 @@ fn appendNodeBodyContent(
             .local_w = local_rect.w,
             .local_h = local_rect.h,
             .clip = exec_state.effective_clip,
+            .current_color = node.resolveTextColor(),
         };
         try draw.callback(draw_ctx, draw.context);
         return;
@@ -2591,6 +3057,13 @@ fn appendNodeOwnContent(
     node: *Node,
     exec_state: *const NodeExecutionState,
 ) !void {
+    const own_cache_ok = ownPayloadCacheEligible(cx, node, exec_state);
+    if (own_cache_ok) {
+        if (try tryReplayOwnPayloadCache(cx, node, exec_state)) return;
+    } else if (!cx.subtree_payload_reference_mode and node.meta.per_frame.caches.commands.own_payload != null) {
+        // (A reference frame must leave every cache exactly as the incremental frame left it.)
+        node_render_cache_mod.invalidateOwnPayloadCache(node);
+    }
     cx.perf.own_content_emit_count += 1;
     const display_start = cx.display_list.items.items.len;
     const blob_start = cx.text_blob_store.blobs.items.len;
@@ -2622,6 +3095,136 @@ fn appendNodeOwnContent(
         } });
     }
     updateNodeDisplayPayloadRanges(cx, node.id, display_start, blob_start);
+    if (own_cache_ok) maybeWriteOwnPayloadCache(cx, node, exec_state, display_start);
+}
+
+// -- Cross-frame own-content cache --
+//
+// The subtree payload cache only helps clean subtrees; a node on a dirty path (its subtree is
+// being re-recorded because some descendant changed) and a leaf directly under such a node
+// re-record their own content every frame although it did not change. The own-content cache
+// keeps a materialized copy of exactly the items appendNodeOwnContent emitted for the node and
+// replays it while the node itself is clean. Contract (same as the subtree payload cache):
+// items are node-local with a header that appendCachedCommands rewrites to this frame's ids, so
+// ancestor movement / scroll needs no invalidation.
+//
+// Reuse requires: node clean in render / layout / composite (descendant bits do not matter), the
+// stamp (owned effect/clip scopes, content + composite version, size, linear-text state, content
+// scale)
+// matching, and eligibility: not hook-owned (no undeclared hook on the node or above it),
+// no custom draw, no disable_render_cache on it or an ancestor, no active animation. Promoted
+// owners and overlays qualify: their own items are the same node-local stream either way, placed
+// where the fresh record would have gone, and their surfaces / positions come from this frame's
+// property and layer trees. A cache is only written when a clean node is re-recorded (it was needed
+// at least twice), so nodes that stay inside spliced subtrees cost no memory.
+
+/// Own items are small; a node with more (custom content) is not worth duplicating.
+const own_payload_cache_max_items: usize = 64;
+
+fn nodeCleanForOwnPayloadReuse(node: *Node) bool {
+    const dirty = node.frame_state.state_bits.dirty;
+    return !(dirty.core.render or dirty.core.layout or dirty.pipeline.composite);
+}
+
+fn ownPayloadCacheEligible(cx: *const RenderContext, node: *Node, exec_state: *const NodeExecutionState) bool {
+    if (!cx.own_payload_cache_enabled or cx.subtree_payload_reference_mode) return false;
+    if (cx.hook_owned_depth != 0) return false;
+    const flags = node.frame_state.state_bits.flags;
+    if (flags.disable_render_cache) return false;
+    if (flags.manual_transform_animation_active or flags.manual_opacity_animation_active) return false;
+    if (node.meta.per_frame.custom_hooks.draw != null) return false;
+    const runtime = exec_state.retained_runtime;
+    // A hook may rewrite its own node without marking it; only a node whose hook declared the
+    // cache-safe contract (which covers the node itself) may reuse its own content. Overlay roots
+    // with a hook relocate / animate themselves every frame: never.
+    if (node.hasBeforeRenderHooks() and
+        (!node.beforeRenderHooksCacheTrusted() or runtime.is_overlay_candidate)) return false;
+    if (runtime.has_active_composite_animation or
+        runtime.has_active_transform_animation or
+        runtime.has_active_opacity_animation) return false;
+    const own_blocked = cx.render_cache_own_blocked orelse return false;
+    if (own_blocked.contains(node.id)) return false;
+    return true;
+}
+
+fn ownPayloadStampValid(cx: *const RenderContext, node_id: u32, cache: node_mod.CachedRenderSlice, exec_state: *const NodeExecutionState) bool {
+    const runtime = exec_state.retained_runtime;
+    if (cache.cached_owner_signature != ownerSignature(cx, node_id, runtime)) return false;
+    if (cache.content_version != runtime.content_version) return false;
+    if (cache.composite_version != runtime.composite_version) return false;
+    if (cache.cached_force_linear_text != exec_state.subtree_force_linear_text) return false;
+    if (@abs(cache.world_bounds.w - runtime.world_bounds.w) > 0.01) return false;
+    if (@abs(cache.world_bounds.h - runtime.world_bounds.h) > 0.01) return false;
+    if (!hasSameLinearTransform(cache.world_transform, exec_state.content_transform)) return false;
+    return true;
+}
+
+fn tryReplayOwnPayloadCache(cx: *RenderContext, node: *Node, exec_state: *const NodeExecutionState) !bool {
+    const cache = node.meta.per_frame.caches.commands.own_payload orelse return false;
+    if (!nodeCleanForOwnPayloadReuse(node)) return false;
+    if (!ownPayloadStampValid(cx, node.id, cache, exec_state)) {
+        node_render_cache_mod.invalidateOwnPayloadCache(node);
+        return false;
+    }
+    const start = cx.display_list.items.items.len;
+    try appendCachedCommands(cx, cache.commands);
+    if (cx.scene_runtime.nodes.getPtr(node.id)) |rt| {
+        rt.display_item_start = @intCast(start);
+        rt.display_item_count = @intCast(cx.display_list.items.items.len - start);
+        // Cached text is materialized (content inline, no blob reference).
+        rt.text_blob_start = 0;
+        rt.text_blob_count = 0;
+    }
+    cx.perf.own_payload_cache_hit_count += 1;
+    return true;
+}
+
+fn maybeWriteOwnPayloadCache(cx: *RenderContext, node: *Node, exec_state: *const NodeExecutionState, display_start: usize) void {
+    if (cx.subtree_payload_reference_mode) return;
+    // Only a node re-recorded while unchanged is worth a copy; a dirty one would be stale by
+    // the next change anyway.
+    if (!nodeCleanForOwnPayloadReuse(node)) {
+        if (node.meta.per_frame.caches.commands.own_payload != null) node_render_cache_mod.invalidateOwnPayloadCache(node);
+        return;
+    }
+    const end = cx.display_list.items.items.len;
+    const count = end - display_start;
+    if (count > own_payload_cache_max_items) {
+        node_render_cache_mod.invalidateOwnPayloadCache(node);
+        return;
+    }
+    const buf = cx.frame_allocator.alloc(DisplayItem, count) catch return;
+    @memcpy(buf, cx.display_list.items.items[display_start..end]);
+    for (buf) |*item| {
+        switch (item.*) {
+            .text_run => |*t| {
+                if (t.blob_id != INVALID_ID) {
+                    t.content = display_list_mod.resolveTextRunContent(cx.text_blob_store, t.*);
+                    t.blob_id = INVALID_ID;
+                    t.blob_byte_start = 0;
+                    t.blob_byte_end = 0;
+                }
+            },
+            else => {},
+        }
+    }
+    const runtime = exec_state.retained_runtime;
+    const cache = node_render_cache_mod.cacheOwnPayloadCommands(
+        node,
+        cx.allocator,
+        buf,
+        runtime.transform_id,
+        runtime.effect_id,
+        runtime.clip_id,
+        runtime.world_bounds,
+    ) orelse return;
+    // Stamp versions from the runtime record the reuse side compares against.
+    cache.content_version = runtime.content_version;
+    cache.composite_version = runtime.composite_version;
+    cache.cached_force_linear_text = exec_state.subtree_force_linear_text;
+    cache.cached_owner_signature = ownerSignature(cx, node.id, runtime);
+    cache.world_transform = exec_state.content_transform;
+    cx.perf.own_payload_cache_write_count += 1;
 }
 
 fn appendNodeDescendantContent(
@@ -2668,6 +3271,7 @@ fn appendNodeDescendantContent(
             .local_w = draw_local_rect.w,
             .local_h = draw_local_rect.h,
             .clip = exec_state.effective_clip,
+            .current_color = node.resolveTextColor(),
         };
         if (node.children.items.len > 0) {
             try draw.callback(draw_ctx, draw.context);
@@ -2835,7 +3439,7 @@ fn appendNodeOverflowFade(
     const solid = fade.color orelse node.getBackground();
     var transparent = solid;
     transparent.a = 0;
-    const pad = node.style.padding;
+    const pad = node.style.contentInsets();
     const border_widths = node.style.border.resolvedWidths();
     const bw_top = border_widths[types.Border.SIDE_TOP];
     const bw_right = border_widths[types.Border.SIDE_RIGHT];
@@ -3100,13 +3704,46 @@ fn markNodeRenderedClean(node: *Node) void {
 
 // -- Public entry points --
 
+/// Stage timestamps for the rn_* perf fields: calling-thread CPU time (preemption excluded).
+fn stageNowNs() u64 {
+    const io = current_frame_io orelse return 0;
+    return @intCast(@max(@import("zenit_time").threadCpuTimestamp(io), 0));
+}
+
 pub fn renderNode(cx: *RenderContext, node: *Node) anyerror!void {
-    // (phase_*_us PerfCounters fields deleted, all 6 items 0 read, pure dead telemetry)
+    var stage_t = stageNowNs();
+    const stage_lap = struct {
+        fn lap(t: *u64) u64 {
+            const now = stageNowNs();
+            const d = (now -| t.*) / 1000;
+            t.* = now;
+            return d;
+        }
+    }.lap;
+    const trace_instr = @import("zenit_environment").flag("ZENIT_PERF_TRACE");
+    var stage_i: u64 = if (trace_instr) @import("zenit_time").threadInstructions() else 0;
+    const instr_lap = struct {
+        fn lap(on: bool, i: *u64) u64 {
+            if (!on) return 0;
+            const now = @import("zenit_time").threadInstructions();
+            const d = (now -| i.*) / 1000;
+            i.* = now;
+            return d;
+        }
+    }.lap;
     beginRetainedFrame(cx);
     var child_order_restores: std.ArrayList(ChildOrderRestore) = .empty;
     defer restoreChildOrders(&child_order_restores);
     try sortSubtreeChildrenByZ(cx, node, &child_order_restores);
-    buildRetainedSubtree(cx, node, Transform2D.identity(), null, 0, INVALID_ID, INVALID_ID, Transform2D.identity());
+    cx.retained_nodes.clearRetainingCapacity();
+    cx.content_states.clearRetainingCapacity();
+    cx.retained_hook_owned_depth = 0;
+    cx.retained_memo_enabled = !retained_memo_disabled();
+    const root_summary = buildRetainedSubtree(cx, node, Transform2D.identity(), null, 0, INVALID_ID, INVALID_ID, Transform2D.identity());
+    recordRootRetainedMemo(cx, node, root_summary);
+    cx.perf.rn_retained_nodes = @intCast(cx.scene_runtime.nodes.count());
+    cx.perf.rn_retained_us = stage_lap(&stage_t);
+    cx.perf.rni_retained_k = instr_lap(trace_instr, &stage_i);
     cx.layer_tree.planBuildFromPropertyTree(
         cx.property_tree.effects.items,
         cx.property_tree.clips.items,
@@ -3120,8 +3757,54 @@ pub fn renderNode(cx: *RenderContext, node: *Node) anyerror!void {
         syncPromotedLayerIds(cx);
         _ = syncPromotedDescendantState(cx, node);
     }
+    cx.perf.rn_layer_plan_us = stage_lap(&stage_t);
+    cx.perf.rni_layer_plan_k = instr_lap(trace_instr, &stage_i);
+    // The cache-boundary index serves both the prebuild pass and the paint-cursor resumes in
+    // the paint pass (tryResumePrebuildAtPaintCursor), so it lives for the whole frame.
+    var boundary_blocked = id_hash.U32HashMapUnmanaged(void){};
+    defer boundary_blocked.deinit(cx.frame_allocator);
+    var own_blocked = id_hash.U32HashMapUnmanaged(void){};
+    defer own_blocked.deinit(cx.frame_allocator);
+    var out_of_band = id_hash.U32HashMapUnmanaged(void){};
+    defer out_of_band.deinit(cx.frame_allocator);
+    _ = try indexRenderCacheBoundaries(cx.frame_allocator, node, false, &boundary_blocked, &own_blocked, &out_of_band);
+    const previous_boundary_index = cx.render_cache_boundary_blocked;
+    const previous_own_index = cx.render_cache_own_blocked;
+    const previous_out_of_band = cx.out_of_band_subtrees;
+    cx.render_cache_boundary_blocked = &boundary_blocked;
+    cx.render_cache_own_blocked = &own_blocked;
+    cx.out_of_band_subtrees = &out_of_band;
+    defer {
+        cx.render_cache_boundary_blocked = previous_boundary_index;
+        cx.render_cache_own_blocked = previous_own_index;
+        cx.out_of_band_subtrees = previous_out_of_band;
+    }
+    cx.paint_resume_suppress_depth = 0;
+    cx.hook_owned_depth = 0;
+    cx.paint_resume_enabled = paint_resume_test_override orelse !@import("zenit_environment").flag("ZENIT_DISABLE_PAINT_RESUME");
+    cx.own_payload_cache_enabled = !@import("zenit_environment").flag("ZENIT_DISABLE_OWN_PAYLOAD_CACHE");
+    cx.subtree_splice_disabled = @import("zenit_environment").flag("ZENIT_DISABLE_SUBTREE_SPLICE");
+    cx.subtree_payload_replay_disabled = @import("zenit_environment").flag("ZENIT_DISABLE_SUBTREE_PAYLOAD_REPLAY");
+    hook_self_scope_disabled = @import("zenit_environment").flag("ZENIT_DISABLE_HOOK_SELF_SCOPE");
+    debug_prepass = @import("zenit_environment").flag("ZENIT_DEBUG_PREPASS");
+    trace_node = if (!@import("zenit_environment").flag("ZENIT_TRACE_NODE")) 0 else blk: {
+        var b: [128]u8 = undefined;
+        var fba = std.heap.FixedBufferAllocator.init(&b);
+        const v = @import("zenit_environment").getOwned(fba.allocator(), "ZENIT_TRACE_NODE") catch break :blk 0;
+        break :blk std.fmt.parseInt(u32, v, 10) catch 0;
+    };
+
+    cx.perf.rn_boundary_index_us = stage_lap(&stage_t);
+    cx.perf.rni_boundary_k = instr_lap(trace_instr, &stage_i);
     try prebuildDisplayPayloads(cx, node, Transform2D.identity(), null, false, INVALID_ID);
+    cx.perf.rn_prebuild_us = stage_lap(&stage_t);
+    cx.perf.rni_prebuild_k = instr_lap(trace_instr, &stage_i);
     const r = renderNodeTransform(cx, node, Transform2D.identity(), null, false, 0, INVALID_ID, INVALID_ID);
+    cx.perf.rn_paint_us = stage_lap(&stage_t);
+    cx.perf.rni_paint_k = instr_lap(trace_instr, &stage_i);
+    // The paint pass cleaned this frame's dirty bits: mutations since the tick are invisible to
+    // the next tick's quiet-subtree skip.
+    if (!cx.subtree_payload_reference_mode) tick_mod.noteRenderCleanedAfterTick();
 
     // Stage B-1: shadow GpuDraw encode (debug-only). Doesn't alter main path, only
     // verify display_list -> GpuDraw lowering doesn't lose info in real scenarios.
@@ -3220,25 +3903,71 @@ fn renderNodeTransform(
     parent_effect_id: u32,
 ) anyerror!void {
     // on_before_render already unified in tickBeforeRender.
+    // Runs before the ranges below are sampled and before the runtime record is copied into
+    // exec_state: a resumed subtree is complete in the list and replays like a prefix one.
+    cx.perf.rn_paint_nodes += 1;
+    const resumed = try tryResumePrebuildAtPaintCursor(cx, node, parent_transform, parent_clip, inherited_force_linear_text, parent_effect_id);
+    // A subtree spliced from its cross-frame cache is complete in the display list and clean
+    // throughout (the splice requires it): when this pass does not lower (Cx.render lowers the
+    // whole list afterwards) the ordinary subtree replay below would only rebuild its execution
+    // state and plan, then walk the subtree clearing bits that are already clear.
+    if (resumed == .spliced and !cx.paint_pass_lowering) {
+        cx.perf.display_list_subtree_replay_count += 1;
+        cx.perf.rn_paint_subtree_replays += 1;
+        cx.perf.rn_paint_splice_fast += 1;
+        return;
+    }
     const subtree_display_start = cx.display_list.items.items.len;
     const subtree_blob_start = cx.text_blob_store.blobs.items.len;
-    const exec_state = buildNodeExecutionState(cx, node, parent_transform, parent_clip, inherited_force_linear_text) orelse return;
+    const exec_state = buildNodeExecutionState(cx, node, parent_transform, parent_clip, inherited_force_linear_text) orelse {
+        cx.perf.rn_paint_culled += 1;
+        return;
+    };
+    dropCachesWithStaleTextRasterState(cx, node, exec_state.subtree_force_linear_text);
     const exec_plan = buildNodeExecutionPlan(cx, node, &exec_state, parent_effect_id);
     debugOverlayPlan(cx, node, exec_state, exec_plan, "render");
+
+    // Descendants may not resume a prebuild when this subtree is hook-owned, or when it was
+    // already prebuilt this frame and is being re-rendered (that fresh output is truncated).
+    const hook_owned = beforeRenderHookTaintsSubtree(node, &exec_state, parent_effect_id);
+    const suppress_resume = hook_owned or
+        (exec_state.retained_runtime.display_payload_subtree_prebuilt and
+            exec_state.retained_runtime.display_payload_subtree_prebuilt_epoch == cx.scene_runtime.frame_epoch);
+    if (suppress_resume) cx.paint_resume_suppress_depth += 1;
+    if (hook_owned) cx.hook_owned_depth += 1;
+    defer {
+        if (suppress_resume) cx.paint_resume_suppress_depth -= 1;
+        if (hook_owned) cx.hook_owned_depth -= 1;
+    }
 
     if (exec_plan.has_descendant_scoped_promoted_rebuild_candidate) {
         markPromotedDescendantScopedRebuildCandidate(cx, node.id, exec_state.promoted_layer_id);
     }
 
     if (try tryReplayNodeFromPlan(cx, node, &exec_state, exec_plan, parent_effect_id)) {
-        updateNodeSubtreeDisplayPayloadRanges(cx, node.id, subtree_display_start, subtree_blob_start);
+        cx.perf.rn_paint_cache_replays += 1;
+        finishNodeSubtreeDisplayPayloadRanges(cx, node.id, subtree_display_start, subtree_blob_start);
         return;
     }
 
     if (try tryReplaySubtreePayloadFromPlan(cx, node, &exec_state, exec_plan, parent_effect_id)) {
+        cx.perf.rn_paint_subtree_replays += 1;
         return;
     }
+    cx.perf.rn_paint_rebuilds += 1;
 
+    // The paint pass re-records this subtree. Its cross-frame payload cache is only written by
+    // the prebuild routines (prebuild pass / paint-cursor resume); unless one of them recorded
+    // it this frame, the cache is older than what is drawn now and must not be spliced on a
+    // later clean frame (a subtree changed while the resume refused it, e.g. a descendant
+    // carrying a hover hook for the duration of a transition, kept a cache from mid-transition).
+    if (!cx.subtree_payload_reference_mode and node.meta.per_frame.caches.commands.subtree_payload != null and
+        !(exec_state.retained_runtime.display_payload_subtree_prebuilt and
+            exec_state.retained_runtime.display_payload_subtree_prebuilt_epoch == cx.scene_runtime.frame_epoch))
+    {
+        dropSubtreePayloadCache(node);
+        cx.perf.subtree_payload_rerecord_drop_count += 1;
+    }
     try renderNodeWithRebuildStrategy(cx, node, &exec_state, exec_plan, parent_effect_id);
     // If the paint pass entry already contains this node's subtree prebuild contribution (after
     // subtree_display_start, before paint pass entry), paint pass fresh emit would append the same
@@ -3267,7 +3996,7 @@ fn renderNodeTransform(
             // while truncating wrongly renders wrong.
         }
     }
-    updateNodeSubtreeDisplayPayloadRanges(cx, node.id, subtree_display_start, subtree_blob_start);
+    finishNodeSubtreeDisplayPayloadRanges(cx, node.id, subtree_display_start, subtree_blob_start);
 
     markNodeRenderedClean(node);
 }

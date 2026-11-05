@@ -9,12 +9,15 @@ const Padding = core.Padding;
 // Migrated from mountFileUpload / addFile / setDropHover inline styles and color decisions;
 // numeric values preserved as-is (zenit-styling-revamp).
 
-pub fn wrapperStyle(w: f32) core.BoxStyle {
+pub fn wrapperStyle(w: f32, t: *const theme.ThemeTokens) core.BoxStyle {
     return .{
         .width = .{ .px = w },
         .height = .{ .fit = .{} },
         .direction = .column,
-        .gap = 8,
+        .gap = t.tokens.space.space200,
+        .padding = Padding.all(t.tokens.space.space300),
+        .background = t.tokens.color.bg_primary,
+        .border = .{ .overlay = true, .width = 1, .color = t.tokens.color.border, .radius = t.tokens.radius.panel },
     };
 }
 
@@ -22,13 +25,13 @@ pub fn dropZoneStyle(t: *const theme.ThemeTokens) core.BoxStyle {
     const colors = dropZoneColors(false, t);
     return .{
         .width = .{ .grow = .{} },
-        .height = .{ .px = 72 },
-        .direction = .column,
-        .justify = .center,
+        .height = .{ .px = t.tokens.size.row },
+        .direction = .row,
+        .justify = .space_between,
         .align_items = .center,
         .gap = 6,
         .background = colors.bg,
-        .border = .{ .width = 1, .color = colors.border, .radius = 8 },
+        .border = .{ .overlay = true, .width = 0, .color = colors.border, .radius = t.tokens.radius.control },
     };
 }
 
@@ -37,11 +40,11 @@ pub fn dropZoneColors(hover_active: bool, t: *const theme.ThemeTokens) struct { 
     return if (hover_active)
         .{ .bg = t.tokens.color.bg_hover, .border = t.tokens.color.accent }
     else
-        .{ .bg = t.tokens.color.bg_secondary, .border = t.tokens.color.border };
+        .{ .bg = t.tokens.color.transparent, .border = t.tokens.color.border };
 }
 
 pub fn hintTextStyle(t: *const theme.ThemeTokens) core.TextStyle {
-    return .{ .color = t.tokens.color.fg_secondary, .font_size = 13 };
+    return .{ .color = t.tokens.color.fg_primary, .font_size = t.tokens.font_size.md };
 }
 
 pub fn listStyle(_: *const theme.ThemeTokens) core.BoxStyle {
@@ -61,13 +64,13 @@ pub fn fileRowStyle(t: *const theme.ThemeTokens) core.BoxStyle {
         .align_items = .center,
         .gap = 8,
         .padding = Padding.symmetric(0, 8),
-        .background = t.tokens.color.bg_secondary,
-        .border = .{ .radius = 4 },
+        .background = t.tokens.color.surface_inset,
+        .border = .{ .overlay = true, .width = 1, .color = t.tokens.color.border, .radius = t.tokens.radius.control },
     };
 }
 
 pub fn fileNameTextStyle(t: *const theme.ThemeTokens) core.TextStyle {
-    return .{ .color = t.tokens.color.fg_primary, .font_size = 13 };
+    return .{ .color = t.tokens.color.fg_primary, .font_size = t.tokens.font_size.md };
 }
 
 pub fn removeBtnStyle(_: *const theme.ThemeTokens) core.BoxStyle {
@@ -79,6 +82,6 @@ pub fn removeBtnStyle(_: *const theme.ThemeTokens) core.BoxStyle {
     };
 }
 
-pub fn removeGlyphTextStyle(t: *const theme.ThemeTokens) core.TextStyle {
-    return .{ .color = t.tokens.color.fg_secondary, .font_size = 12 };
-}
+const css = @import("../../css.zig").css;
+pub const fileIconStyle = css(.{ .width = 16, .height = 16 });
+pub const removeIconStyle = css(.{ .width = 12, .height = 12 });

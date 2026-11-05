@@ -14,3 +14,6 @@ style panel($width: ?f32, $background: ?ui.Color, $tone: Tone = .calm, $pad: boo
 
 /// Multi-layer shadow + token fallback (switches theme)
 style framed($fill: ?ui.Color) { shadow: md, 0 2 4 accent; background: $fill ?? bg-secondary; }
+
+/// Plain style whose {zig} reads the theme: resolves per theme like a parameterized style
+style themed_ring { outline: {ui.Outline{ .color = t.tokens.color.accent, .width = 2, .offset = 1 }}; }

@@ -34,6 +34,57 @@ function changedPixels(a: ReturnType<typeof decodePng>, b: ReturnType<typeof dec
   return count;
 }
 
+function inputShell(node: any): any {
+  if (node?.tag === "input") return node;
+  for (const child of node?.children ?? []) {
+    const found = inputShell(child);
+    if (found) return found;
+  }
+  return null;
+}
+
+function assertTextClipped(empty: ReturnType<typeof decodePng>, painted: ReturnType<typeof decodePng>, rect: any) {
+  assert(empty.width === painted.width && empty.height === painted.height && empty.channels === painted.channels,
+    "clipping capture geometry changed");
+  const scale = painted.width / LOGICAL_WIDTH;
+  let changed = 0;
+  // Exclude the border/focus-ring fringe; every pixel beyond it must stay clear
+  // while long text, selection and the viewport change inside the field.
+  for (let y = Math.ceil(rect.y * scale); y < Math.floor((rect.y + rect.h) * scale); y++) {
+    for (let x = Math.ceil((rect.x + rect.w + 4) * scale); x < painted.width; x++) {
+      const i = (y * painted.width + x) * painted.channels;
+      if (empty.pixels[i] !== painted.pixels[i] || empty.pixels[i + 1] !== painted.pixels[i + 1] ||
+          empty.pixels[i + 2] !== painted.pixels[i + 2]) changed++;
+    }
+  }
+  assert(changed === 0, `Input text or selection escaped its shell: ${changed} outside pixels changed`);
+}
+
+function textLine(node: any): any {
+  if (typeof node?.text === "string" && node.text.length > 0) return node;
+  for (const child of node?.children ?? []) {
+    const found = textLine(child);
+    if (found) return found;
+  }
+  return null;
+}
+
+function assertOverflowLeavesPaddingClear(empty: ReturnType<typeof decodePng>, painted: ReturnType<typeof decodePng>, shell: any, line: any, edge: "left" | "right") {
+  assert(line && line.rect.y >= shell.rect.y && line.rect.y + line.rect.h <= shell.rect.y + shell.rect.h + 1, "Input text line must be inside the field, not its external label");
+  const scale = painted.width / LOGICAL_WIDTH;
+  // The lowercase fixture has a blank cap-height margin at the top of its line
+  // box. A fade must hide content into the field color, never paint a dark slab
+  // across this empty margin. Stay inside the border, away from the caret.
+  const y = Math.ceil(line.rect.y * scale);
+  let maxDelta = 0;
+  for (let inset = 2; inset <= 10; inset++) {
+    const x = Math.floor((edge === "left" ? shell.rect.x + inset : shell.rect.x + shell.rect.w - inset) * scale);
+    const i = (y * painted.width + x) * painted.channels;
+    for (let c = 0; c < 3; c++) maxDelta = Math.max(maxDelta, Math.abs(empty.pixels[i + c] - painted.pixels[i + c]));
+  }
+  assert(maxDelta <= 1, `Input ${edge} overflow darkened blank line padding: max channel delta=${maxDelta}`);
+}
+
 function displayed(node: any): string {
   function firstText(current: any): string | null {
     if (typeof current?.text === "string") return current.text;
@@ -69,25 +120,33 @@ test("Input caret scrolls, selection paints, Home and End restore viewport", asy
   await clickTestId("input.name");
   await key("a", { ctrl: true });
   await key("backspace");
+  const shell = inputShell((await query("input.name"))[0]);
+  assert(shell, "Input shell missing");
+  const emptyPng = await capture("windows-input-empty-clip-reference");
   await imeCommit("abcdefghijklmnopqrstuvwxyz".repeat(4));
   const end = await inputState("input.name");
   assert(end.buffer_len === 104 && end.cursor_pos === 104, "long input cursor mismatch");
   assert(end.scroll_x > 100, `caret did not scroll: ${end.scroll_x}`);
   const endPng = await capture("windows-input-end");
+  assertTextClipped(emptyPng, endPng, shell.rect);
+  assertOverflowLeavesPaddingClear(emptyPng, endPng, shell, textLine(inputShell((await query("input.name"))[0])), "left");
   await key("a", { ctrl: true });
   const selected = await inputState("input.name");
   assert(selected.anchor === 0 && selected.cursor_pos === 104, "Ctrl+A selection mismatch");
   const selectedPng = await capture("windows-input-selected");
+  assertTextClipped(emptyPng, selectedPng, shell.rect);
   assert(changedPixels(endPng, selectedPng) > px(1000), "selection not visibly painted");
   await key("home");
   const home = await inputState("input.name");
   assert(home.cursor_pos === 0 && home.scroll_x === 0, `Home did not reset viewport: ${JSON.stringify(home)}`);
   const homePng = await capture("windows-input-home");
+  assertTextClipped(emptyPng, homePng, shell.rect);
+  assertOverflowLeavesPaddingClear(emptyPng, homePng, shell, textLine(inputShell((await query("input.name"))[0])), "right");
   assert(changedPixels(endPng, homePng) > px(1000), "Home did not visibly change viewport");
   await key("end");
   const restored = await inputState("input.name");
   assert(restored.cursor_pos === 104 && Math.abs(restored.scroll_x - end.scroll_x) < 1, `End did not restore viewport: initial=${JSON.stringify(end)} restored=${JSON.stringify(restored)}`);
-  await capture("windows-input-end-restored");
+  assertTextClipped(emptyPng, await capture("windows-input-end-restored"), shell.rect);
 });
 
 test("Textarea UTF-8 display, caret and selection stay current after edits", async () => {
@@ -158,12 +217,16 @@ test("Input pointer drag selects and deletes the exact range in both directions"
   for (const reverse of [false, true]) {
     await key("a", { ctrl: true });
     await imeCommit(value);
+    await key("end");
+    const end = (await inputState("input.name")).cursor_rect;
     await key("home");
-    const rect = (await query("input.name"))[0].rect;
+    const home = (await inputState("input.name")).cursor_rect;
+    assert(home && end && home.w > 0 && end.w > 0 && end.x > home.x, "text endpoints missing");
     // Separate the gestures from the preceding focus click / drag so this
     // exercises drag selection rather than double-click word selection.
     await sleep(500);
-    const left = rect.x + 35, right = rect.x + 180, y = rect.y + rect.h / 2;
+    const advance = end.x - home.x;
+    const left = home.x + advance * 0.15, right = home.x + advance * 0.75, y = home.y + home.h / 2;
     const from = reverse ? right : left, to = reverse ? left : right;
     assert((await mouseDown(from, y)).ok, "drag press failed");
     try {

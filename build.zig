@@ -9,6 +9,23 @@ const linux_native_revision_flag = blk: {
         @embedFile("native/linux/vulkan_device.h") ++ @embedFile("native/linux/png.inc") ++
         @embedFile("native/linux/text_layout.h") ++ @embedFile("native/linux/opengl_device.h") ++ @embedFile("native/linux/opengl_resources.inc") ++ @embedFile("native/linux/opengl_pipeline.inc"))});
 };
+
+/// Give the executable's Zig code Apple's synchronous unwind tables (Apple
+/// clang's default, `-funwind-tables=1`) unless the module already chose.
+///
+/// Zig defaults to asynchronous tables. LLVM cannot express their epilogue CFI
+/// as compact unwind, so every Zig function lands in `__unwind_info` as DWARF
+/// mode. Debug builds capture a stack trace on every DebugAllocator alloc and
+/// free, and std's unwinder then interprets DWARF CFI for each frame: a
+/// Storybook switch from Controls to Button made ~10k allocator calls and spent
+/// 97% of its time there. Synchronous tables yield compact FRAME entries, which
+/// are exact at call sites (allocator traces, panics). Imported modules that
+/// leave the setting unset inherit it from the root module.
+fn useDarwinUnwindTables(exe: *std.Build.Step.Compile) void {
+    if (!exe.rootModuleTarget().os.tag.isDarwin()) return;
+    if (exe.root_module.unwind_tables == null) exe.root_module.unwind_tables = .sync;
+}
+
 // Hash local native include contents explicitly. Enumerate macOS includes and
 // shared headers in native/, so newly added bridge includes cannot silently
 // reuse an old native object. Stable path order avoids filesystem-order churn.
@@ -46,7 +63,53 @@ fn macosNativeFlags(owner: *std.Build, source: *std.Build) []const []const u8 {
         digest.update(bytes);
         digest.update("\x00");
     }
-    return owner.allocator.dupe([]const u8, &.{ "-fobjc-arc", owner.fmt("-DZENIT_MACOS_RENDER_REV=0x{x}ULL", .{digest.final()}) }) catch @panic("macOS native flags");
+    return owner.allocator.dupe([]const u8, &.{
+        "-fobjc-arc",
+        owner.fmt("-DZENIT_MACOS_RENDER_REV=0x{x}ULL", .{digest.final()}),
+        // An API newer than the target's deployment version must sit behind
+        // @available: unguarded it is a hard error, not a launch-time crash on
+        // the oldest supported macOS (see `macosMinVersion`).
+        "-Werror=unguarded-availability",
+        "-Werror=unguarded-availability-new",
+    }) catch @panic("macOS native flags");
+}
+
+/// The oldest macOS the native bridges support, per architecture (Apple
+/// silicon starts at 11). Consumers may pin a higher `os_version_min`, not a
+/// lower one; `check-macos-availability` compiles every bridge at exactly this
+/// version, because a native build targets the host's macOS and so cannot
+/// catch an unguarded newer API.
+pub fn macosMinVersion(arch: std.Target.Cpu.Arch) std.SemanticVersion {
+    return if (arch == .aarch64) .{ .major = 11, .minor = 0, .patch = 0 } else .{ .major = 10, .minor = 15, .patch = 0 };
+}
+
+const macos_bridge_sources = [_][]const u8{
+    "native/macos/window_bridge.m",
+    "native/macos/screen_recording_bridge.m",
+    "native/macos/metal_bridge.m",
+    "native/macos/coretext_bridge.m",
+    "native/macos/image_bridge.m",
+};
+
+/// Compile every macOS bridge at `macosMinVersion` for both architectures with
+/// the consumer flags, so an API used without @available fails the build here
+/// rather than on the oldest supported macOS. Objects only: nothing links.
+fn addMacosAvailabilityCheck(b: *std.Build) *std.Build.Step {
+    const step = b.step("check-macos-availability", "Compile the macOS bridges at the oldest supported macOS; fail on an API used without @available");
+    if (b.graph.host.result.os.tag != .macos) return step;
+    const empty_root = b.addWriteFiles().add("macos_availability.zig", "");
+    for ([_]std.Target.Cpu.Arch{ .x86_64, .aarch64 }) |arch| {
+        const target = b.resolveTargetQuery(.{ .cpu_arch = arch, .os_tag = .macos, .os_version_min = .{ .semver = macosMinVersion(arch) } });
+        const module = b.createModule(.{ .root_source_file = empty_root, .target = target, .optimize = .Debug, .link_libc = true });
+        // A pinned minimum is a cross target: Zig adds no SDK search paths of its own.
+        const sdk = std.zig.system.darwin.getSdk(b.allocator, b.graph.io, &target.result) orelse @panic("check-macos-availability needs the macOS SDK (xcrun)");
+        module.addSystemFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "System/Library/Frameworks" }) });
+        module.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "usr/include" }) });
+        for (macos_bridge_sources) |src| module.addCSourceFile(.{ .file = b.path(src), .flags = macosNativeFlags(b, b) });
+        const objects = b.addLibrary(.{ .name = b.fmt("macos-availability-{t}", .{arch}), .linkage = .static, .root_module = module });
+        step.dependOn(&objects.step);
+    }
+    return step;
 }
 const macos_bundle = @import("src/system_sdk/bundle/macos_app.zig");
 
@@ -173,7 +236,9 @@ pub fn wireIconProvider(
 
 /// Wire zenit into a consumer executable in one call: adds the `ui` and
 /// `zenit_app` module imports, compiles the target's native bridges out of the
-/// zenit package, and links the required native libraries.
+/// zenit package, and links the required native libraries. On macOS it also
+/// selects synchronous unwind tables when the root module has no explicit
+/// choice (see `useDarwinUnwindTables`).
 pub fn attach(zenit_dep: *std.Build.Dependency, exe: *std.Build.Step.Compile) void {
     attachWithOptions(zenit_dep, exe, .{});
 }
@@ -246,14 +311,13 @@ pub fn addNativeLibs(zenit_dep: *std.Build.Dependency, exe: *std.Build.Step.Comp
         return;
     }
     if (exe.rootModuleTarget().os.tag != .macos) return;
-    const bridges = [_][]const u8{
-        "native/macos/window_bridge.m",
-        "native/macos/screen_recording_bridge.m",
-        "native/macos/metal_bridge.m",
-        "native/macos/coretext_bridge.m",
-        "native/macos/image_bridge.m",
-    };
-    for (bridges) |src| exe.root_module.addCSourceFile(.{
+    const target = exe.rootModuleTarget();
+    const supported = macosMinVersion(target.cpu.arch);
+    if (target.os.version_range.semver.min.order(supported) == .lt) {
+        std.debug.panic("zenit supports macOS {f} and later on {t}; the target's minimum is {f}", .{ supported, target.cpu.arch, target.os.version_range.semver.min });
+    }
+    useDarwinUnwindTables(exe);
+    for (macos_bridge_sources) |src| exe.root_module.addCSourceFile(.{
         .file = zenit_dep.path(src),
         .flags = macosNativeFlags(exe.step.owner, zenit_dep.builder),
     });
@@ -263,7 +327,10 @@ pub fn addNativeLibs(zenit_dep: *std.Build.Dependency, exe: *std.Build.Step.Comp
         "CoreGraphics", "CoreFoundation",         "ImageIO",    "AVFoundation",
         "CoreMedia",
     };
-    for (frameworks) |fw| exe.root_module.linkFramework(fw, .{});
+    // UniformTypeIdentifiers arrived in macOS 11: below that it is linked weak
+    // so the app still loads (its only use is behind @available).
+    const uti_weak = target.os.version_range.semver.min.order(.{ .major = 11, .minor = 0, .patch = 0 }) == .lt;
+    for (frameworks) |fw| exe.root_module.linkFramework(fw, .{ .weak = uti_weak and std.mem.eql(u8, fw, "UniformTypeIdentifiers") });
     exe.root_module.link_libc = true;
 }
 
@@ -507,6 +574,16 @@ pub fn build(b: *std.Build) void {
     const yix_exe = b.addExecutable(.{ .name = "yix", .root_module = b.createModule(.{ .root_source_file = b.path("tools/yix.zig"), .target = b.graph.host }) });
     yix_exe.root_module.addImport("yix_compiler", yix_compiler_module);
     b.installArtifact(yix_exe);
+    // The launcher supervises rebuilds itself; no app or nested build runs until
+    // this host mapper has finished compiling. Python is the only runtime dependency.
+    const preview = b.addSystemCommand(&.{if (b.graph.host.result.os.tag == .windows) "python" else "python3"});
+    preview.addFileArg(b.path("tools/preview.py"));
+    preview.addArgs(&.{ "--zig", b.graph.zig_exe, "--mapper" });
+    preview.addArtifactArg(yix_exe);
+    preview.setCwd(b.path("."));
+    preview.addPassthruArgs();
+    preview.has_side_effects = true;
+    b.step("preview", "Watch, rebuild and restart a native example with preserved state").dependOn(&preview.step);
     const yix_run = b.addRunArtifact(yix_exe);
     yix_run.addPassthruArgs();
     const yix_step = b.step("yix", "Compile one .yix / .yss file: zig build yix -- INPUT OUTPUT.zig");
@@ -555,8 +632,21 @@ pub fn build(b: *std.Build) void {
         },
     } };
 
+    const story_selection = b.option([]const u8, "stories", "Compile only these Storybook keys (comma-separated, e.g. button,card); default: all");
+    const storybook_options = b.addOptions();
+    storybook_options.addOption(?[]const u8, "stories", story_selection);
+
+    const story_filter_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("examples/storybook/story_filter.zig"),
+        .target = target,
+        .optimize = optimize,
+    }) });
+    const test_story_filter = b.step("test-storybook-filter", "Verify Storybook preview key selection and validation");
+    test_story_filter.dependOn(&b.addRunArtifact(story_filter_tests).step);
+
     // E2E test harness flags
     const test_mode = b.option(bool, "test-mode", "Enable e2e test harness (file RPC server)") orelse false;
+    const dev_preview = b.option(bool, "dev-preview", "Enable independent live preview control and snapshots") orelse false;
     const e2e_port = b.option(u16, "e2e-port", "E2E server port (used in default RPC dir name)") orelse 19816;
 
     // GPU backend choice (C1). `metal` production; `null` no-device deterministic reference
@@ -574,6 +664,8 @@ pub fn build(b: *std.Build) void {
 
     const build_opts = b.addOptions();
     build_opts.addOption(bool, "test_mode", test_mode);
+    build_opts.addOption(bool, "dev_preview", dev_preview);
+    build_opts.addOption(bool, "lp3b_template", b.option(bool, "lp3b-template", "Measure the comptime template release candidate") orelse false);
     build_opts.addOption(bool, "engine_diagnostics", b.option(bool, "engine-diagnostics", "Enable opt-in per-frame GPU engine diagnostics in development builds") orelse test_mode or optimize == .debug);
     build_opts.addOption(u16, "e2e_port", e2e_port);
     build_opts.addOption([]const u8, "gpu_backend", gpu_backend);
@@ -699,6 +791,14 @@ pub fn build(b: *std.Build) void {
     windows_drop_contract.root_module.link_libcpp = true;
     b.step("windows-arm64-drop-contract", "Cross-compile native OLE and accessibility snapshot robustness checks")
         .dependOn(&b.addInstallArtifact(windows_drop_contract, .{}).step);
+    // Native Win32 hover reference for the acceptance batch (tools/windows_hover_probe.c): drives
+    // the test machine's cursor and wheel, never run on a machine someone is using.
+    const windows_hover_probe = b.addExecutable(.{ .name = "zenit-windows-hover-probe", .root_module = b.createModule(.{ .root_source_file = b.path("tools/windows_hover_probe.zig"), .target = windows_arm64, .optimize = optimize }) });
+    windows_hover_probe.root_module.addCSourceFile(.{ .file = b.path("tools/windows_hover_probe.c"), .flags = &.{"-std=c11"} });
+    for ([_][]const u8{ "user32", "gdi32", "comctl32", "uxtheme" }) |library| windows_hover_probe.root_module.linkSystemLibrary(library, .{});
+    windows_hover_probe.root_module.link_libc = true;
+    b.step("windows-hover-probe", "Cross-compile the native Win32 hover reference probe (acceptance batch)")
+        .dependOn(&b.addInstallArtifact(windows_hover_probe, .{}).step);
 
     const d12_options = b.addOptions();
     d12_options.addOption([]const u8, "gpu_backend", "d3d12");
@@ -740,7 +840,7 @@ pub fn build(b: *std.Build) void {
     d12_contract.root_module.addCSourceFile(.{ .file = b.path("native/windows/dwrite_bridge.cpp"), .flags = &.{ "-std=c++17", "-fno-exceptions", "-fno-rtti" } });
     d12_contract.root_module.linkSystemLibrary("dwrite", .{});
     d12_contract.root_module.linkSystemLibrary("d2d1", .{});
-    for ([_][]const u8{ "native/windows/d3d12_resources.cpp", "native/windows/d3d12_shader.cpp", "native/windows/d3d12_pipeline.cpp", "native/windows/d3d12_png.cpp", "native/windows/d3d12_resources_tests.cpp", "native/windows/d3d12_views_tests.cpp" }) |source|
+    for ([_][]const u8{ "native/windows/d3d12_resources.cpp", "native/windows/d3d12_shader.cpp", "native/windows/d3d12_pipeline.cpp", "native/windows/d3d12_png.cpp", "native/windows/d3d12_resources_tests.cpp", "native/windows/d3d12_views_tests.cpp", "native/windows/compositor_sprites.cpp" }) |source|
         d12_contract.root_module.addCSourceFile(.{ .file = b.path(source), .flags = &.{ "-std=c++17", "-fno-exceptions", "-fno-rtti", "-DZENIT_D12_TEST=1" } });
     for ([_][]const u8{ "d3d12", "dcomp", "dwmapi", "gdi32", "dxgi", "dxguid", "uuid", "d3dcompiler_47", "user32", "ole32", "windowscodecs" }) |library| d12_contract.root_module.linkSystemLibrary(library, .{});
     d12_contract.root_module.link_libc = true;
@@ -1061,6 +1161,7 @@ pub fn build(b: *std.Build) void {
     // legacy AppRenderer exports still compile against the Null GPU.
     const windows_app_opts = b.addOptions();
     windows_app_opts.addOption(bool, "test_mode", test_mode);
+    windows_app_opts.addOption(bool, "dev_preview", dev_preview);
     windows_app_opts.addOption(u16, "e2e_port", e2e_port);
     windows_app_opts.addOption([]const u8, "gpu_backend", if (std.mem.eql(u8, gpu_backend, "d3d12") or std.mem.eql(u8, gpu_backend, "d3d11")) gpu_backend else "null");
     const windows_app_opts_module = windows_app_opts.createModule();
@@ -1096,14 +1197,14 @@ pub fn build(b: *std.Build) void {
     else
         &.{ "-std=c++17", "-fno-exceptions", "-fno-rtti", "-O2", "-fno-sanitize=undefined" };
     if (std.mem.eql(u8, gpu_backend, "d3d12")) {
-        for ([_][]const u8{ "native/windows/d3d12_resources.cpp", "native/windows/d3d12_shader.cpp", "native/windows/d3d12_pipeline.cpp", "native/windows/d3d12_png.cpp" }) |source|
+        for ([_][]const u8{ "native/windows/d3d12_resources.cpp", "native/windows/d3d12_shader.cpp", "native/windows/d3d12_pipeline.cpp", "native/windows/d3d12_png.cpp", "native/windows/compositor_sprites.cpp" }) |source|
             windows_app.addCSourceFile(.{ .file = b.path(source), .flags = gpu_cpp_flags });
         for ([_][]const u8{ "d3d12", "dcomp", "dwmapi", "gdi32", "dxgi", "d3dcompiler_47", "windowscodecs" }) |lib| windows_app.linkSystemLibrary(lib, .{});
     }
 
     windows_ui_smoke_root.addImport("zenit_app", windows_app);
     if (std.mem.eql(u8, gpu_backend, "d3d11")) {
-        for ([_][]const u8{ "native/windows/d3d11_backend.cpp", "native/windows/d3d12_png.cpp" }) |source|
+        for ([_][]const u8{ "native/windows/d3d11_backend.cpp", "native/windows/d3d12_png.cpp", "native/windows/compositor_sprites.cpp" }) |source|
             windows_app.addCSourceFile(.{ .file = b.path(source), .flags = gpu_cpp_flags });
         for ([_][]const u8{ "d3d11", "dcomp", "dxgi", "d3dcompiler_47", "windowscodecs" }) |lib| windows_app.linkSystemLibrary(lib, .{});
     }
@@ -1145,6 +1246,8 @@ pub fn build(b: *std.Build) void {
     for ([_][]const u8{ "user32", "dwmapi", "gdi32", "imm32", "d3d11", "d2d1", "dxgi", "dwrite", "dxguid", "ole32", "shell32", "uuid", "windowscodecs", "uiautomationcore", "oleaut32" }) |lib| windows_input_example.root_module.linkSystemLibrary(lib, .{});
     windows_input_example.root_module.link_libc = true;
     windows_input_example.root_module.link_libcpp = true;
+    if (target.result.os.tag == .windows)
+        b.step("text-input-exe", "Build bare native Windows text input for preview").dependOn(installWindowsExecutable(b, windows_input_example));
     b.step("windows-arm64-text-input", "Cross-compile the Zenit text_input example as a Win32 ARM64 app")
         .dependOn(installWindowsExecutable(b, windows_input_example));
 
@@ -1172,6 +1275,7 @@ pub fn build(b: *std.Build) void {
         .dependOn(installWindowsExecutable(b, windows_render_gallery));
 
     const windows_storybook_root = b.createModule(.{ .root_source_file = b.path("examples/storybook/main.zig"), .target = windows_arm64, .optimize = optimize });
+    windows_storybook_root.addOptions("storybook_options", storybook_options);
     windows_storybook_root.addImport("ui", windows_ui);
     windows_storybook_root.addImport("zenit_app", windows_app);
     const windows_storybook = b.addExecutable(.{ .name = "zenit-windows-storybook", .root_module = windows_storybook_root });
@@ -1194,6 +1298,8 @@ pub fn build(b: *std.Build) void {
     for ([_][]const u8{ "user32", "dwmapi", "gdi32", "imm32", "d3d11", "d2d1", "dxgi", "dwrite", "dxguid", "ole32", "shell32", "uuid", "windowscodecs", "uiautomationcore", "oleaut32" }) |lib| windows_storybook.root_module.linkSystemLibrary(lib, .{});
     windows_storybook.root_module.link_libc = true;
     windows_storybook.root_module.link_libcpp = true;
+    if (target.result.os.tag == .windows)
+        b.step("storybook-exe", "Build bare native Windows Storybook for preview").dependOn(installWindowsExecutable(b, windows_storybook));
     b.step("windows-arm64-storybook", "Cross-compile the shared Storybook and DevTools on Windows ARM64")
         .dependOn(installWindowsExecutable(b, windows_storybook));
 
@@ -1216,6 +1322,8 @@ pub fn build(b: *std.Build) void {
     for ([_][]const u8{ "user32", "dwmapi", "gdi32", "imm32", "d3d11", "d2d1", "dxgi", "dwrite", "dxguid", "ole32", "shell32", "uuid", "windowscodecs", "uiautomationcore", "oleaut32" }) |lib| windows_chrome.root_module.linkSystemLibrary(lib, .{});
     windows_chrome.root_module.link_libc = true;
     windows_chrome.root_module.link_libcpp = true;
+    if (target.result.os.tag == .windows)
+        b.step("window-chrome-exe", "Build bare native Windows chrome for preview").dependOn(installWindowsExecutable(b, windows_chrome));
     b.step("windows-window-chrome", "Cross-compile the shared Storybook and DevTools on Windows ARM64")
         .dependOn(&b.addInstallArtifact(windows_chrome, .{}).step);
     const windows_window_root = b.createModule(.{ .root_source_file = b.path("examples/adaptive_window/main.zig"), .target = windows_arm64, .optimize = optimize });
@@ -1237,6 +1345,8 @@ pub fn build(b: *std.Build) void {
     for ([_][]const u8{ "user32", "dwmapi", "gdi32", "imm32", "d3d11", "d2d1", "dxgi", "dwrite", "dxguid", "ole32", "shell32", "uuid", "windowscodecs", "uiautomationcore", "oleaut32" }) |lib| windows_window.root_module.linkSystemLibrary(lib, .{});
     windows_window.root_module.link_libc = true;
     windows_window.root_module.link_libcpp = true;
+    if (target.result.os.tag == .windows)
+        b.step("adaptive-window-exe", "Build bare native Windows adaptive window for preview").dependOn(installWindowsExecutable(b, windows_window));
     b.step("windows-adaptive-window", "Build the platform-adaptive window example")
         .dependOn(&b.addInstallArtifact(windows_window, .{}).step);
 
@@ -1437,6 +1547,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const runtime_yss = b.createModule(.{ .root_source_file = b.path("src/yix/style_compiler.zig"), .target = target, .optimize = optimize });
+    const runtime_token_model = b.createModule(.{ .root_source_file = b.path("src/tokens/model.zig"), .target = target, .optimize = optimize });
+    runtime_token_model.addImport("zenit_style_values", style_values_module);
+    const runtime_tokens = b.createModule(.{ .root_source_file = b.path("src/tokens/resolve.zig"), .target = target, .optimize = optimize });
+    runtime_tokens.addImport("token_model", runtime_token_model);
     // Token tools run on the host, even when their generated provider targets
     // a different architecture. Keep a separate canonical host module graph.
     const token_values_host = b.createModule(.{ .root_source_file = b.path("src/tokens/style_values.zig"), .target = b.graph.host });
@@ -1469,10 +1584,22 @@ pub fn build(b: *std.Build) void {
     const windows_style_values = b.createModule(.{ .root_source_file = b.path("src/tokens/style_values.zig"), .target = windows_arm64, .optimize = optimize });
     const windows_default_theme = b.createModule(.{ .root_source_file = default_theme_src, .target = windows_arm64, .optimize = optimize });
     windows_default_theme.addImport("zenit_style_values", windows_style_values);
+    const windows_runtime_yss = b.createModule(.{ .root_source_file = b.path("src/yix/style_compiler.zig"), .target = windows_arm64, .optimize = optimize });
+    const windows_runtime_token_model = b.createModule(.{ .root_source_file = b.path("src/tokens/model.zig"), .target = windows_arm64, .optimize = optimize });
+    windows_runtime_token_model.addImport("zenit_style_values", windows_style_values);
+    const windows_runtime_tokens = b.createModule(.{ .root_source_file = b.path("src/tokens/resolve.zig"), .target = windows_arm64, .optimize = optimize });
+    windows_runtime_tokens.addImport("token_model", windows_runtime_token_model);
     for ([_]*std.Build.Module{ windows_ui, d12_ui }) |module| {
+        module.addImport("build_options", windows_app_opts_module);
+        if (dev_preview) {
+            module.addImport("zenit_yss_compiler", windows_runtime_yss);
+            module.addImport("zenit_token_resolver", windows_runtime_tokens);
+            module.addImport("zenit_token_model", windows_runtime_token_model);
+        }
         module.addImport("zenit_style_values", windows_style_values);
         module.addImport("zenit_theme_provider", windows_default_theme);
     }
+    if (target.result.os.tag == .windows) addWasmGate(b, windows_ui);
     const example_theme_run = b.addRunArtifact(token_exe);
     example_theme_run.addArgs(&.{"generate"});
     example_theme_run.addFileArg(b.path("examples/theme.json"));
@@ -1563,6 +1690,7 @@ pub fn build(b: *std.Build) void {
     // Deterministic protocol regressions use a ZLS stub, so no installed ZLS is required.
     const yix_lsp_versions = b.addSystemCommand(&.{ "python3", "tests/yix/lsp/review_versions.py" });
     yix_lsp_versions.addArtifactArg(yix_lsp_exe);
+    yix_lsp_versions.addArtifactArg(yix_exe);
     yix_lsp_versions.setCwd(b.path("."));
     yix_lsp_versions.has_side_effects = true;
     test_yix_step.dependOn(&yix_lsp_versions.step);
@@ -1651,6 +1779,12 @@ pub fn build(b: *std.Build) void {
         });
         ui_module.addImport("zenit_style_values", style_values_module);
         ui_module.addImport("zenit_theme_provider", default_theme);
+        ui_module.addImport("build_options", build_options_module);
+        if (dev_preview) {
+            ui_module.addImport("zenit_yss_compiler", runtime_yss);
+            ui_module.addImport("zenit_token_resolver", runtime_tokens);
+            ui_module.addImport("zenit_token_model", runtime_token_model);
+        }
         ui_module.addImport("system_sdk", system_sdk_module);
         ui_module.addImport("icon_ir", icon_ir_module);
         ui_module.addImport("zenit_icons", icons_module);
@@ -1668,6 +1802,10 @@ pub fn build(b: *std.Build) void {
         // Custom bitmap cursors: ui/core.zig rasterizes SVG to RGBA via
         // svg.rasterize, passes to system_sdk.
         ui_module.addImport("svg", svg_raster_module);
+
+        addWasmGate(b, ui_module);
+
+        @import("tools/layout_css_conformance/build.zig").add(b, ui_module, twins.path("src/ui/core.zig"), addCoreTextBridge);
 
         // .yss schema (properties / enum values / default theme tokens) generated
         // from ui style type reflection and committed. Shared with .yss compiler
@@ -1691,6 +1829,111 @@ pub fn build(b: *std.Build) void {
 
         const example_ui = cloneModule(b, ui_module);
         wireThemeProvider(example_ui, example_theme);
+        // LP2 has a separate dev graph so ordinary release tests still prove erasure.
+        const lp2_options = b.addOptions();
+        lp2_options.addOption(bool, "dev_preview", true);
+        lp2_options.addOption(bool, "lp2_gate", true);
+        lp2_options.addOption(bool, "test_mode", false);
+        lp2_options.addOption(bool, "engine_diagnostics", false);
+        lp2_options.addOption(u16, "e2e_port", e2e_port);
+        lp2_options.addOption([]const u8, "gpu_backend", gpu_backend);
+        const lp2_ui = cloneModule(b, example_ui);
+        lp2_ui.addImport("build_options", lp2_options.createModule());
+        lp2_ui.addImport("zenit_yss_compiler", runtime_yss);
+        lp2_ui.addImport("zenit_token_resolver", runtime_tokens);
+        lp2_ui.addImport("zenit_token_model", runtime_token_model);
+        const lp2_sources = [_][]const u8{
+            "examples/console_probe/styles.yss",
+            "examples/devtools_probe/styles.yss",
+            "examples/hello_button/styles.yss",
+            "examples/multi_window/styles.yss",
+            "examples/storybook/controls/styles.yss",
+            "examples/storybook/corner_clip/styles.yss",
+            "examples/text_input/styles.yss",
+            "examples/virtual_list_perf/styles.yss",
+            "examples/yix_counter/styles.yss",
+            "src/ui/components/alert/styles.yss",
+            "src/ui/components/badge/styles.yss",
+            "src/ui/components/breadcrumb/styles.yss",
+            "src/ui/components/button/styles.yss",
+            "src/ui/components/card/styles.yss",
+            "src/ui/components/checkbox/styles.yss",
+            "src/ui/components/chip/styles.yss",
+            "src/ui/components/control_shell/styles.yss",
+            "src/ui/components/divider/styles.yss",
+            "src/ui/components/menu/styles.yss",
+            "src/ui/components/modal/styles.yss",
+            "src/ui/components/progress/styles.yss",
+            "src/ui/components/skeleton/styles.yss",
+            "src/ui/components/spinner/styles.yss",
+            "src/ui/components/stack/styles.yss",
+            "src/ui/components/steps/styles.yss",
+            "src/ui/components/tag/styles.yss",
+            "src/ui/components/timeline/styles.yss",
+            "tests/yix/doc_chip.yss",
+            "tests/yix/params.yss",
+            "tests/yix/review_style.yss",
+            "tests/yix/states.yss",
+            "tests/yix/tokens_probe.yss",
+        };
+        // Repository fixtures belong to the test adapter, never UI's import surface.
+        const lp2_fixtures = b.createModule(.{ .root_source_file = b.path("tools/style_reload_fixtures.zig"), .target = target, .optimize = optimize });
+        lp2_ui.addImport("lp2_fixtures", lp2_fixtures);
+        for (lp2_sources, 0..) |path, i| {
+            if (std.mem.startsWith(u8, path, "src/ui/")) continue;
+            const parent = std.fs.path.dirname(path).?;
+            const twin = b.fmt("{s}/_{s}.zig", .{ parent, std.fs.path.basename(path) });
+            const fixture = b.createModule(.{ .root_source_file = twins.path(twin), .target = target, .optimize = optimize });
+            fixture.addImport("ui", lp2_ui);
+            lp2_fixtures.addImport(b.fmt("lp2_fixture_{d}", .{i}), fixture);
+            const source_options = b.addOptions();
+            const bytes = b.root.root_dir.handle.readFileAlloc(b.graph.io, b.pathJoin(&.{ b.root.sub_path, path }), b.allocator, .limited(8 * 1024 * 1024)) catch @panic("read LP2 fixture");
+            source_options.addOption([]const u8, "bytes", bytes);
+            lp2_fixtures.addImport(b.fmt("lp2_source_{d}", .{i}), source_options.createModule());
+        }
+        const lp2_theme_source = b.addOptions();
+        lp2_theme_source.addOption([]const u8, "bytes", b.root.root_dir.handle.readFileAlloc(b.graph.io, b.pathJoin(&.{ b.root.sub_path, "examples/theme.json" }), b.allocator, .limited(8 * 1024 * 1024)) catch @panic("read theme fixture"));
+        lp2_fixtures.addImport("lp2_theme_source", lp2_theme_source.createModule());
+        const lp2_tests = b.addTest(.{ .name = "style-reload-gate", .root_module = lp2_ui, .filters = &.{"LP2"} });
+        addCoreTextBridge(b, lp2_tests);
+        const lp2_step = b.step("test-style-reload", "L1 IR differential, rollback, lifecycle and mutation regressions");
+        const lp2_controller = b.addSystemCommand(&.{ "python3", "scripts/run_style_reload_gate.py" });
+        lp2_controller.setCwd(b.path("."));
+        lp2_controller.addArtifactArg(lp2_tests);
+        lp2_step.dependOn(&lp2_controller.step);
+        const lp2_manifest = b.addSystemCommand(&.{ "python3", "scripts/gen_style_reload_manifest.py", "--check" });
+        lp2_manifest.setCwd(b.path("."));
+        lp2_manifest.has_side_effects = true;
+        lp2_step.dependOn(&lp2_manifest.step);
+        const lp4_options = b.addOptions();
+        lp4_options.addOption(bool, "dev_preview", true);
+        lp4_options.addOption(bool, "lp4_gate", true);
+        lp4_options.addOption(bool, "test_mode", false);
+        lp4_options.addOption(bool, "engine_diagnostics", false);
+        const lp4_ui = cloneModule(b, example_ui);
+        lp4_ui.addImport("zenit_yss_compiler", runtime_yss);
+        lp4_ui.addImport("zenit_token_resolver", runtime_tokens);
+        lp4_ui.addImport("zenit_token_model", runtime_token_model);
+        lp4_ui.addImport("build_options", lp4_options.createModule());
+        const lp4_fixture = b.createModule(.{ .root_source_file = twins.path("examples/template_probe/fixture.zig"), .target = target, .optimize = optimize });
+        lp4_fixture.addImport("ui", lp4_ui);
+        lp4_ui.addImport("lp4_fixture", lp4_fixture);
+        const lp4_tests = b.addTest(.{ .name = "template-reload-gate", .root_module = lp4_ui, .filters = &.{"LP4"} });
+        addCoreTextBridge(b, lp4_tests);
+        const lp4_controller = b.addSystemCommand(&.{ "python3", "scripts/run_template_reload_gate.py" });
+        lp4_controller.setCwd(b.path("."));
+        lp4_controller.addArtifactArg(lp4_tests);
+        lp4_controller.has_side_effects = true;
+        const lp4_step = b.step("test-template-reload", "Gate conservative template classification, atomic rollback and setup retention");
+        lp4_step.dependOn(&lp4_controller.step);
+        const lp4_contract = b.addSystemCommand(&.{ "python3", "scripts/test_template_reload_gate.py" });
+        lp4_contract.setCwd(b.path("."));
+        lp4_contract.has_side_effects = true;
+        lp4_step.dependOn(&lp4_contract.step);
+        const lp4_launcher = b.addSystemCommand(&.{ "python3", "scripts/test_template_reload_launcher.py" });
+        lp4_launcher.setCwd(b.path("."));
+        lp4_launcher.has_side_effects = true;
+        lp4_step.dependOn(&lp4_launcher.step);
         const yix_counter_module = b.createModule(.{ .root_source_file = twins.path("examples/yix_counter/_counter.yix.zig"), .target = target, .optimize = optimize });
         yix_counter_module.addImport("ui", example_ui);
         const yix_runtime_tests = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = twins.path("tests/yix/runtime_tests.zig"), .target = target, .optimize = optimize }) });
@@ -1701,6 +1944,111 @@ pub fn build(b: *std.Build) void {
         addCoreTextBridge(b, yix_runtime_tests);
         const run_yix_runtime_tests = b.addRunArtifact(yix_runtime_tests);
         test_yix_step.dependOn(&run_yix_runtime_tests.step);
+        // This is the initial ownership gate, not the LP3 equivalence gate.
+        // Require completed named cases in addition to the test process status.
+        const component_view_controller = b.addSystemCommand(&.{ "python3", "scripts/run_component_view_gate.py" });
+        component_view_controller.setCwd(b.path("."));
+        component_view_controller.has_side_effects = true;
+        component_view_controller.addArtifactArg(yix_runtime_tests);
+        const component_view_contract = b.addSystemCommand(&.{ "python3", "scripts/test_component_view_gate.py" });
+        component_view_contract.setCwd(b.path("."));
+        component_view_contract.has_side_effects = true;
+        const component_view_step = b.step("test-component-view", "Gate Yix setup/view ownership, rollback and required regression coverage");
+        component_view_step.dependOn(&component_view_controller.step);
+        component_view_step.dependOn(&component_view_contract.step);
+        const root_host_audit = b.addSystemCommand(&.{ "python3", "scripts/gen_template_manifest.py", "--check-hosts" });
+        root_host_audit.setCwd(b.path("."));
+        root_host_audit.has_side_effects = true;
+        component_view_step.dependOn(&root_host_audit.step);
+
+        const lp3_controller = b.addSystemCommand(&.{ "python3", "scripts/run_template_equivalence_gate.py" });
+        lp3_controller.setCwd(b.path("."));
+        lp3_controller.has_side_effects = true;
+        const lp3_generation_controller = b.addSystemCommand(&.{ "python3", "scripts/run_template_equivalence_gate.py" });
+        lp3_generation_controller.setCwd(b.path("."));
+        lp3_generation_controller.has_side_effects = true;
+        lp3_generation_controller.step.dependOn(&gen_yix_run.step);
+        var previous_lp3_compile: ?*std.Build.Step = null;
+        for ([_]bool{ false, true }) |lp3_preview| {
+            const lp3_options = b.addOptions();
+            lp3_options.addOption(bool, "dev_preview", lp3_preview);
+            lp3_options.addOption(bool, "lp3_gate", true);
+            lp3_options.addOption(bool, "test_mode", false);
+            lp3_options.addOption(bool, "engine_diagnostics", false);
+            lp3_options.addOption(u16, "e2e_port", e2e_port);
+            lp3_options.addOption([]const u8, "gpu_backend", gpu_backend);
+            const lp3_ui = cloneModule(b, example_ui);
+            lp3_ui.addImport("build_options", lp3_options.createModule());
+            if (lp3_preview) {
+                lp3_ui.addImport("zenit_yss_compiler", runtime_yss);
+                lp3_ui.addImport("zenit_token_resolver", runtime_tokens);
+                lp3_ui.addImport("zenit_token_model", runtime_token_model);
+            }
+            const lp3_fixtures = b.createModule(.{ .root_source_file = b.path("tools/template_equivalence_sources.zig"), .target = target, .optimize = optimize });
+            lp3_ui.addImport("lp3_fixtures", lp3_fixtures);
+            const lp3_sources = @import("tools/template_equivalence_sources.zig").sources;
+            for (lp3_sources, 0..) |source, index| {
+                // This LSP fixture deliberately uses a relative ui import outside a
+                // build graph. Rewire only that import for the shared test module;
+                // do not instantiate a second copy of the retained UI runtime.
+                const fixture_source = if (std.mem.eql(u8, source, "tests/yix/lsp/_fixture.yix.zig")) blk: {
+                    // Read after generation, not while configuring the build:
+                    // gen-yix and this gate may run in the same invocation.
+                    const adapter_script =
+                        \\import pathlib, sys
+                        \\data = pathlib.Path(sys.argv[1]).read_bytes()
+                        \\old = b'@import("../../../src/ui/ui.zig")'
+                        \\assert data.count(old) == 1, 'unexpected LSP fixture import'
+                        \\pathlib.Path(sys.argv[2]).write_bytes(data.replace(old, b'@import("ui")'))
+                    ;
+                    const adapter = b.addSystemCommand(&.{ "python3", "-c", adapter_script });
+                    const translated = translateYix(b, yix_exe, b.path("tests/yix/lsp/fixture.yix"), "fixture.zig");
+                    adapter.addFileArg(translated);
+                    break :blk adapter.addOutputFileArg("lp3_lsp_fixture.zig");
+                } else twins.path(source);
+                const fixture = b.createModule(.{ .root_source_file = fixture_source, .target = target, .optimize = optimize });
+                fixture.addImport("ui", lp3_ui);
+                lp3_fixtures.addImport(b.fmt("lp3_fixture_{d}", .{index}), fixture);
+            }
+            const lp3_tests = b.addTest(.{ .name = if (lp3_preview) "template-equivalence-preview" else "template-equivalence-release", .root_module = lp3_ui, .filters = &.{"LP3 template"} });
+            addCoreTextBridge(b, lp3_tests);
+            if (previous_lp3_compile) |previous| lp3_tests.step.dependOn(previous);
+            previous_lp3_compile = &lp3_tests.step;
+            lp3_controller.addArtifactArg(lp3_tests);
+            lp3_generation_controller.addArtifactArg(lp3_tests);
+        }
+        const lp3_contract = b.addSystemCommand(&.{ "python3", "scripts/test_template_equivalence_gate.py" });
+        lp3_contract.setCwd(b.path("."));
+        lp3_contract.has_side_effects = true;
+        const template_equivalence_step = b.step("test-template-equivalence", "Compare all Yix fixtures using nine semantic projections, layers and lifecycle");
+        template_equivalence_step.dependOn(&lp3_controller.step);
+        template_equivalence_step.dependOn(&lp3_contract.step);
+        template_equivalence_step.dependOn(&check_yix_run.step);
+        // Explicitly destructive regeneration acceptance is separate from the
+        // ordinary read-only check. Its adapter consumes a declared generated
+        // output, never a sibling path opened by the cache before generation.
+        const generation_check = b.addRunArtifact(yix_exe);
+        generation_check.setCwd(b.path("."));
+        generation_check.addArg("check");
+        generation_check.addArgs(&yix_source_roots);
+        generation_check.has_side_effects = true;
+        generation_check.step.dependOn(&gen_yix_run.step);
+        const generation_step = b.step("test-template-generation", "Regenerate a missing twin and verify isolated cached fixtures");
+        generation_step.dependOn(&lp3_generation_controller.step);
+        generation_step.dependOn(&generation_check.step);
+        generation_step.dependOn(&lp3_contract.step);
+
+        // Executable/object compilation has builtin.is_test=false. Test builds
+        // alone cannot prove the reconstruction API is erased from normal use.
+        if (!dev_preview) {
+            const release_rebuild = b.addObject(.{
+                .name = "component-view-release-error",
+                .root_module = b.createModule(.{ .root_source_file = b.path("tests/css_errors/component_view_rebuild_release.zig"), .target = target, .optimize = optimize }),
+            });
+            release_rebuild.root_module.addImport("ui", ui_module);
+            release_rebuild.expect_errors = .{ .contains = "component view rebuilding is available only in tests or dev preview" };
+            component_view_step.dependOn(&release_rebuild.step);
+        }
 
         const css_errors_step = b.step("test-css-errors", "Check object recipe compile-time diagnostics");
         const css_error_cases = .{
@@ -1800,9 +2148,26 @@ pub fn build(b: *std.Build) void {
         });
         render_tests.root_module.linkFramework("Metal", .{});
         render_tests.root_module.linkFramework("QuartzCore", .{});
+        render_tests.root_module.linkFramework("IOSurface", .{});
         const run_render_tests = b.addRunArtifact(render_tests);
         const render_test_step = b.step("test-render", "Run render module tests");
         render_test_step.dependOn(&run_render_tests.step);
+
+        // Debug allocation poisoning can hide stale true flags on the partial
+        // allocation failure path. Run the device-free planner regressions in
+        // the production optimization mode as part of every render gate.
+        const frame_damage_fast_tests = b.addTest(.{
+            .name = "frame-damage-fast",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/render/frame_damage.zig"),
+                .target = b.graph.host,
+                .optimize = .fast,
+            }),
+        });
+        const run_frame_damage_fast_tests = b.addRunArtifact(frame_damage_fast_tests);
+        const frame_damage_fast_step = b.step("test-frame-damage-fast", "Run device-free frame damage regressions in production mode");
+        frame_damage_fast_step.dependOn(&run_frame_damage_fast_tests.step);
+        render_test_step.dependOn(frame_damage_fast_step);
 
         const lcd_validation = b.addExecutable(.{
             .name = "zenit-text-dual-source-validation",
@@ -1831,7 +2196,10 @@ pub fn build(b: *std.Build) void {
             .flags = macosNativeFlags(b, b),
         });
         metal_preflight.root_module.linkFramework("Metal", .{});
+        // metal_bridge.m tags CPU patch surfaces with the layer's color space.
+        metal_preflight.root_module.linkFramework("CoreGraphics", .{});
         metal_preflight.root_module.linkFramework("QuartzCore", .{});
+        metal_preflight.root_module.linkFramework("IOSurface", .{});
         metal_preflight.root_module.linkFramework("Foundation", .{});
         metal_preflight.root_module.linkFramework("CoreFoundation", .{});
         const run_metal_preflight = b.addRunArtifact(metal_preflight);
@@ -1844,6 +2212,10 @@ pub fn build(b: *std.Build) void {
         metal_integration_module.addImport("gpu", gpu_module);
         metal_integration_module.addImport("text", text_module);
         metal_integration_module.addImport("trace", trace_module);
+        // text_ink_tests drive the encoder's own text arm (command_encoder.zig).
+        metal_integration_module.addImport("icon_ir", icon_ir_module);
+        metal_integration_module.addImport("svg_safety", svg_safety_module);
+        metal_integration_module.addImport("svg", svg_raster_module);
         const metal_integration_tests = b.addTest(.{
             .name = "metal-integration-tests",
             .root_module = metal_integration_module,
@@ -1860,6 +2232,7 @@ pub fn build(b: *std.Build) void {
         metal_integration_tests.root_module.linkFramework("Cocoa", .{});
         metal_integration_tests.root_module.linkFramework("Metal", .{});
         metal_integration_tests.root_module.linkFramework("QuartzCore", .{});
+        metal_integration_tests.root_module.linkFramework("IOSurface", .{});
         const run_metal_integration_tests = b.addRunArtifact(metal_integration_tests);
         if (b.option([]const u8, "glass-evidence-dir", "Export offscreen glass material QA images during test-metal")) |dir| {
             run_metal_integration_tests.setEnvironmentVariable("ZENIT_GLASS_EVIDENCE_DIR", dir);
@@ -1871,12 +2244,35 @@ pub fn build(b: *std.Build) void {
         const metal_integration_step = b.step("test-metal", "Run tests that require a live Metal device");
         metal_integration_step.dependOn(&run_metal_integration_tests.step);
 
+        const lc3_story_module = b.createModule(.{
+            .root_source_file = b.path("examples/storybook/lc3_layout_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        lc3_story_module.addImport("ui", ui_module);
+        const lc3_story_tests = b.addTest(.{ .root_module = lc3_story_module, .filters = &.{"LC3 story"} });
+        addCoreTextBridge(b, lc3_story_tests);
+        const run_lc3_story_tests = b.addRunArtifact(lc3_story_tests);
+        if (b.option(bool, "lc3-inventory", "Emit fresh Storybook layout and text-paint evidence") orelse false) {
+            // A tracked build option selects evidence mode. Reading an inherited
+            // env var alone can reuse a cached build configuration/test result.
+            run_lc3_story_tests.setEnvironmentVariable("ZENIT_LC3_INVENTORY", "1");
+            run_lc3_story_tests.has_side_effects = true;
+        }
+        b.step("test-lc3-stories", "Exercise LC3 Storybook layout regressions without a window").dependOn(&run_lc3_story_tests.step);
+
         // UI tests (with system_sdk + text_core + trace + icon_ir)
         const ui_test_module = b.createModule(.{
             .root_source_file = twins.path("src/ui/ui.zig"),
             .target = target,
             .optimize = optimize,
         });
+        ui_test_module.addImport("build_options", build_options_module);
+        if (dev_preview) {
+            ui_test_module.addImport("zenit_yss_compiler", runtime_yss);
+            ui_test_module.addImport("zenit_token_resolver", runtime_tokens);
+            ui_test_module.addImport("zenit_token_model", runtime_token_model);
+        }
         ui_test_module.addImport("system_sdk", system_sdk_module);
         ui_test_module.addImport("icon_ir", icon_ir_module);
         ui_test_module.addImport("zenit_icons", icons_module);
@@ -1899,6 +2295,7 @@ pub fn build(b: *std.Build) void {
         // v0.5 §5: cx.shapeText calls TextShaper -> CoreText bridge; test
         // target links.
         addCoreTextBridge(b, ui_tests);
+        useDarwinUnwindTables(ui_tests);
         const run_ui_tests = b.addRunArtifact(ui_tests);
         const ui_test_step = b.step("test-ui", "Run UI system tests");
         ui_test_step.dependOn(&run_ui_tests.step);
@@ -1912,6 +2309,12 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
+        ui_core_tests_root.addImport("build_options", build_options_module);
+        if (dev_preview) {
+            ui_core_tests_root.addImport("zenit_yss_compiler", runtime_yss);
+            ui_core_tests_root.addImport("zenit_token_resolver", runtime_tokens);
+            ui_core_tests_root.addImport("zenit_token_model", runtime_token_model);
+        }
         ui_core_tests_root.addImport("system_sdk", system_sdk_module);
         ui_core_tests_root.addImport("icon_ir", icon_ir_module);
         ui_core_tests_root.addImport("zenit_icons", icons_module);
@@ -1957,6 +2360,12 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
+        allocation_ui_module.addImport("build_options", build_options_module);
+        if (dev_preview) {
+            allocation_ui_module.addImport("zenit_yss_compiler", runtime_yss);
+            allocation_ui_module.addImport("zenit_token_resolver", runtime_tokens);
+            allocation_ui_module.addImport("zenit_token_model", runtime_token_model);
+        }
         allocation_ui_module.addImport("system_sdk", system_sdk_module);
         allocation_ui_module.addImport("icon_ir", icon_ir_module);
         allocation_ui_module.addImport("zenit_icons", icons_module);
@@ -1982,6 +2391,12 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
+        allocation_core_module.addImport("build_options", build_options_module);
+        if (dev_preview) {
+            allocation_core_module.addImport("zenit_yss_compiler", runtime_yss);
+            allocation_core_module.addImport("zenit_token_resolver", runtime_tokens);
+            allocation_core_module.addImport("zenit_token_model", runtime_token_model);
+        }
         allocation_core_module.addImport("system_sdk", system_sdk_module);
         allocation_core_module.addImport("icon_ir", icon_ir_module);
         allocation_core_module.addImport("zenit_icons", icons_module);
@@ -2128,6 +2543,12 @@ pub fn build(b: *std.Build) void {
         const svg_test_step = b.step("test-svg", "Run SVG parser/rasterizer tests");
         svg_test_step.dependOn(&run_svg_tests.step);
 
+        const dev_tests_module = b.createModule(.{ .root_source_file = b.path("src/zenit_app/dev_control/tests.zig"), .target = target, .optimize = optimize, .link_libc = true });
+        dev_tests_module.addImport("build_options", build_options_module);
+        const dev_tests = b.addRunArtifact(b.addTest(.{ .root_module = dev_tests_module }));
+        const dev_test_step = b.step("test-dev-control", "Run preview snapshot, session and deadline tests");
+        dev_test_step.dependOn(&dev_tests.step);
+
         const harness_tests = b.addTest(.{ .root_module = harness_test_module });
         // command_executor.zig tests pull CoreText extern symbols via
         // ui -> text; missing link causes undefined symbols. Were orphan tests.
@@ -2135,6 +2556,14 @@ pub fn build(b: *std.Build) void {
         const run_harness_tests = b.addRunArtifact(harness_tests);
         const harness_test_step = b.step("test-harness", "Run test_harness (file-RPC) tests");
         harness_test_step.dependOn(&run_harness_tests.step);
+        const usage_contract = b.addSystemCommand(&.{ "python3", "scripts/test_measure_usage.py" });
+        harness_test_step.dependOn(&usage_contract.step);
+        const compositor_scroll_contract = b.addSystemCommand(&.{ "python3", "scripts/test_compositor_scroll.py" });
+        harness_test_step.dependOn(&compositor_scroll_contract.step);
+        const checkbox_pixels_contract = b.addSystemCommand(&.{ "bun", "test", "e2e/checkbox-pixels.test.ts" });
+        harness_test_step.dependOn(&checkbox_pixels_contract.step);
+        const notification_pixels_contract = b.addSystemCommand(&.{ "python3", "tools/windows_shared_notification_frame_audit_test.py" });
+        harness_test_step.dependOn(&notification_pixels_contract.step);
 
         // Two tests found by orphan scan: bundle Info.plist rendering
         // (build-time code used only by build.zig), zenit_app module root
@@ -2148,16 +2577,30 @@ pub fn build(b: *std.Build) void {
         app_test_step.dependOn(&app_tests.step);
 
         const test_headless_step = b.step("test-headless", "Run deterministic tests (no live Metal device required)");
+        test_headless_step.dependOn(addMacosAvailabilityCheck(b));
+        const support_step = b.step("test-support", "Run portable environment, clock, reflection, SVG safety and corner-radius tests");
+        // Named-module references, even inside a root test, do not collect the
+        // referenced module's tests. Each support file must be an actual test root.
+        for ([_][]const u8{ "src/environment.zig", "src/time.zig", "src/reflection.zig", "src/svg_safety.zig", "src/corner_radii.zig" }) |path| {
+            const support_root = b.createModule(.{ .root_source_file = b.path(path), .target = target, .optimize = optimize, .link_libc = true });
+            const run_support = b.addRunArtifact(b.addTest(.{ .root_module = support_root }));
+            support_step.dependOn(&run_support.step);
+        }
+        test_headless_step.dependOn(support_step);
         const pe_tests = b.addTest(.{ .root_module = b.createModule(.{
             .root_source_file = b.path("tools/windows_large_address_test.zig"),
             .target = b.graph.host,
             .optimize = .Debug,
         }) });
         test_headless_step.dependOn(&b.addRunArtifact(pe_tests).step);
+        test_headless_step.dependOn(&run_lc3_story_tests.step);
+        test_headless_step.dependOn(dev_test_step);
         test_headless_step.dependOn(app_test_step);
         test_headless_step.dependOn(window_lifecycle_test_step);
         test_headless_step.dependOn(test_tokens);
         test_headless_step.dependOn(&run_harness_tests.step);
+        test_headless_step.dependOn(&usage_contract.step);
+        test_headless_step.dependOn(&compositor_scroll_contract.step);
         test_headless_step.dependOn(&run_timing_ring_tests.step);
         test_headless_step.dependOn(&run_window_lifecycle_tests.step);
         test_headless_step.dependOn(&run_text_hook_owner_tests.step);
@@ -2170,6 +2613,7 @@ pub fn build(b: *std.Build) void {
         test_headless_step.dependOn(&run_ui_tests.step);
         test_headless_step.dependOn(&run_gpu_tests.step);
         test_headless_step.dependOn(&run_render_tests.step);
+        test_headless_step.dependOn(frame_damage_fast_step);
         test_headless_step.dependOn(&run_ui_core_tests.step);
         test_headless_step.dependOn(&run_i18n_tests.step);
         test_headless_step.dependOn(&run_svg_tests.step);
@@ -2181,7 +2625,9 @@ pub fn build(b: *std.Build) void {
         test_headless_step.dependOn(&run_yix_compiler_tests.step);
         test_headless_step.dependOn(&check_yix_run.step);
         test_headless_step.dependOn(&check_yss_schema_run.step);
-        test_headless_step.dependOn(&run_yix_runtime_tests.step);
+        test_headless_step.dependOn(component_view_step);
+        test_headless_step.dependOn(template_equivalence_step);
+        test_headless_step.dependOn(lp4_step);
         test_headless_step.dependOn(css_errors_step);
 
         const test_step = b.step("test", "Alias for deterministic test-headless suite");
@@ -2206,6 +2652,9 @@ pub fn build(b: *std.Build) void {
             "scripts/test_native_memory.sh",
             "scripts/test_native_text_events.sh",
             "scripts/test_native_input_pump.sh",
+            "scripts/test_native_pointer_presence.sh",
+            "scripts/test_native_window_focus.sh",
+            "scripts/test_native_resize_phase.sh",
         };
         for (native_test_scripts) |script| {
             const run_native = b.addSystemCommand(&.{ "bash", script });
@@ -2220,6 +2669,8 @@ pub fn build(b: *std.Build) void {
                     .dependOn(&run_native.step);
             }
         }
+
+        test_headless_step.dependOn(test_story_filter);
 
         const test_all_step = b.step("test-all", "Run deterministic, live-device Metal and native bridge tests");
         const windows_batch_contract = b.addSystemCommand(&.{ "python3", "tools/windows_batch_test.py" });
@@ -2269,6 +2720,7 @@ pub fn build(b: *std.Build) void {
             step_desc: []const u8,
         };
         const examples = [_]ExampleSpec{
+            .{ .name = "template_probe", .display_name = "LP4 Template Probe", .step_name = "template-probe", .step_desc = "Build the native LP4 two-window acceptance fixture" },
             .{ .name = "adaptive_window", .display_name = "Adaptive Window", .step_name = "adaptive-window", .step_desc = "Build the platform-adaptive window example: custom/native chrome, shared Header, fullscreen Header host, one real window per desktop preset" },
             .{ .name = "window_chrome", .display_name = "Window Chrome", .step_name = "window-chrome", .step_desc = "Build the cross-platform custom Header example" },
             .{
@@ -2276,6 +2728,18 @@ pub fn build(b: *std.Build) void {
                 .display_name = "Hello Button",
                 .step_name = "hello-button",
                 .step_desc = "Build hello_button example",
+            },
+            .{
+                .name = "glass_showcase",
+                .display_name = "Glass Showcase",
+                .step_name = "glass-showcase",
+                .step_desc = "Build the Liquid Glass showcase recorded for the website (1920 x 1080)",
+            },
+            .{
+                .name = "component_gallery",
+                .display_name = "Component Gallery",
+                .step_name = "component-gallery",
+                .step_desc = "Build the component gallery recorded for the website's component wall",
             },
             .{
                 .name = "counter_reactive",
@@ -2352,6 +2816,8 @@ pub fn build(b: *std.Build) void {
             });
             example_mod.addImport("ui", example_ui);
             example_mod.addImport("zenit_app", example_app);
+            if (std.mem.eql(u8, spec.name, "storybook"))
+                example_mod.addOptions("storybook_options", storybook_options);
 
             const example_exe = b.addExecutable(.{
                 .name = spec.name,
@@ -2359,6 +2825,11 @@ pub fn build(b: *std.Build) void {
             });
             addMacOSNativeLibs(b, example_exe);
 
+            // Compile and install the bare executable to zig-out/bin: no bundle, quarantine
+            // clearing or codesign. The preview launcher and dev_control smoke start it from
+            // there; run-<example> below executes the same artifact.
+            const exe_step = b.step(b.fmt("{s}-exe", .{spec.step_name}), "Compile and install executable without bundling/signing");
+            exe_step.dependOn(&b.addInstallArtifact(example_exe, .{}).step);
             const build_step = b.step(spec.step_name, spec.step_desc);
             if (target.result.os.tag == .macos) {
                 const example_bundle = macos_bundle.bundleApp(b, .{
@@ -2380,6 +2851,16 @@ pub fn build(b: *std.Build) void {
             const example_run_desc = b.fmt("Run {s} example", .{spec.name});
             const example_run_step = b.step(example_run_step_name, example_run_desc);
             example_run_step.dependOn(&run.step);
+            if (std.mem.eql(u8, spec.name, "storybook") and target.result.os.tag == .macos) {
+                // Foreground native acceptance of compositor sprites: drawable
+                // readback (the e2e suite) cannot see native sprite layers.
+                // Run with -Dtest-mode=true (the check drives the RPC harness).
+                const sprites_check = b.addSystemCommand(&.{ "python3", "scripts/check_compositor_sprites.py" });
+                sprites_check.addArtifactArg(example_exe);
+                sprites_check.has_side_effects = true;
+                const sprites_step = b.step("check-compositor-sprites", "Foreground: composited sprites match GPU paint and render no frames (-Dtest-mode=true)");
+                if (test_mode) sprites_step.dependOn(&sprites_check.step) else sprites_step.dependOn(&b.addFail("check-compositor-sprites needs -Dtest-mode=true").step);
+            }
         }
 
         // Bench (Phase 0) - perf baseline recording
@@ -2395,6 +2876,12 @@ pub fn build(b: *std.Build) void {
             .optimize = .fast,
         });
         // Cx re-export via facade needs sub-imports (same structure as ui_module)
+        zenit_facade_bench_module.addImport("build_options", build_options_module);
+        if (dev_preview) {
+            zenit_facade_bench_module.addImport("zenit_yss_compiler", runtime_yss);
+            zenit_facade_bench_module.addImport("zenit_token_resolver", runtime_tokens);
+            zenit_facade_bench_module.addImport("zenit_token_model", runtime_token_model);
+        }
         zenit_facade_bench_module.addImport("system_sdk", system_sdk_module);
         zenit_facade_bench_module.addImport("icon_ir", icon_ir_module);
         zenit_facade_bench_module.addImport("zenit_icons", icons_module);
@@ -2475,6 +2962,7 @@ fn addLinuxNativeLibs(b: *std.Build, exe: *std.Build.Step.Compile) void {
 }
 
 fn addMacOSNativeLibs(b: *std.Build, exe: *std.Build.Step.Compile) void {
+    useDarwinUnwindTables(exe);
     if (exe.rootModuleTarget().os.tag == .linux) {
         addLinuxNativeLibs(b, exe);
         return;
@@ -2632,8 +3120,46 @@ fn addYixInputs(b: *std.Build, run: *std.Build.Step.Run, root: []const u8) void 
 
 pub fn translateYix(b: *std.Build, compiler: *std.Build.Step.Compile, source: std.Build.LazyPath, output_name: []const u8) std.Build.LazyPath {
     const run = b.addRunArtifact(compiler);
+    run.setCwd(b.path("."));
     run.addFileArg(source);
     return run.addOutputFileArg(output_name);
+}
+
+// UI options stay local to their graph. The shared native implementation has a
+// distinct source root, so LP2/release configurations can coexist without giving
+// the same Zig file to multiple modules in one compilation.
+fn createUiEnvironment(b: *std.Build, source: *std.Build.Module, native: *std.Build.Module) *std.Build.Module {
+    const environment = b.createModule(.{
+        .root_source_file = b.path("src/ui_environment.zig"),
+        .target = source.resolved_target,
+        .optimize = source.optimize,
+    });
+    environment.addImport("zenit_native_environment", native);
+    environment.addImport("build_options", source.import_table.get("build_options").?);
+    for ([_][]const u8{ "zenit_yss_compiler", "zenit_token_resolver", "zenit_token_model", "lp2_fixtures", "lp3_fixtures", "lp4_fixture" }) |name| {
+        if (source.import_table.get(name)) |dependency| environment.addImport(name, dependency);
+    }
+    return environment;
+}
+
+fn isUiModule(mod: *std.Build.Module) bool {
+    const root = mod.root_source_file orelse return false;
+    return switch (root) {
+        .src_path => |sp| std.mem.startsWith(u8, sp.sub_path, "src/ui/") or std.mem.startsWith(u8, sp.sub_path, "src\\ui\\"),
+        else => false,
+    };
+}
+
+fn isSelfContainedSupportModule(mod: *std.Build.Module) bool {
+    const root = mod.root_source_file orelse return false;
+    const source = switch (root) {
+        .src_path => |sp| sp.sub_path,
+        else => return false,
+    };
+    for ([_][]const u8{ "src/environment.zig", "src/time.zig", "src/reflection.zig", "src/svg_safety.zig", "src/corner_radii.zig" }) |path| {
+        if (buildPathEqual(source, path)) return true;
+    }
+    return false;
 }
 
 fn wireReflection(b: *std.Build) void {
@@ -2643,33 +3169,54 @@ fn wireReflection(b: *std.Build) void {
     var headers: std.StringHashMap(*std.Build.Module) = .init(b.allocator);
     defer headers.deinit();
     const clock = b.createModule(.{ .root_source_file = b.path("src/time.zig") });
+    const corner_radii = b.createModule(.{ .root_source_file = b.path("src/corner_radii.zig") });
     const environment = b.createModule(.{ .root_source_file = b.path("src/environment.zig"), .link_libc = true });
-    for (b.modules.values()) |mod| wireReflectionModule(b, mod, reflection, clock, environment, &headers, &seen);
+    var environments: std.AutoHashMap(*std.Build.Module, *std.Build.Module) = .init(b.allocator);
+    defer environments.deinit();
+    for (b.modules.values()) |mod| wireReflectionModule(b, mod, reflection, clock, environment, corner_radii, &environments, &headers, &seen);
     var steps: std.AutoHashMap(*std.Build.Step, void) = .init(b.allocator);
     defer steps.deinit();
-    for (b.top_level_steps.values()) |top| wireReflectionStep(b, &top.step, reflection, clock, environment, &headers, &seen, &steps);
+    for (b.top_level_steps.values()) |top| wireReflectionStep(b, &top.step, reflection, clock, environment, corner_radii, &environments, &headers, &seen, &steps);
 }
 
-fn wireReflectionModule(b: *std.Build, root: *std.Build.Module, reflection: *std.Build.Module, clock: *std.Build.Module, environment: *std.Build.Module, headers: *std.StringHashMap(*std.Build.Module), seen: *std.AutoHashMap(*std.Build.Module, void)) void {
+fn wireReflectionModule(b: *std.Build, root: *std.Build.Module, reflection: *std.Build.Module, clock: *std.Build.Module, environment: *std.Build.Module, corner_radii: *std.Build.Module, environments: *std.AutoHashMap(*std.Build.Module, *std.Build.Module), headers: *std.StringHashMap(*std.Build.Module), seen: *std.AutoHashMap(*std.Build.Module, void)) void {
     const graph = root.getGraph();
     for (graph.modules) |mod| {
         const entry = seen.getOrPut(mod) catch @panic("OOM");
         if (entry.found_existing) continue;
-        if (mod.owner == b and mod != reflection) {
+        // Freestanding graphs supply their own target-specific support modules;
+        // attaching the shared native environment would pull libc back in.
+        if (mod.resolved_target) |t| {
+            if (t.result.os.tag == .freestanding) continue;
+        }
+        // These roots import only std/builtin. Injecting the shared environment
+        // into an environment unit-test root gives one file to two modules.
+        if (mod.owner == b and mod != reflection and !isSelfContainedSupportModule(mod)) {
             mod.addImport("zenit_reflection", reflection);
             if (mod != clock) mod.addImport("zenit_time", clock);
-            if (mod != environment) mod.addImport("zenit_environment", environment);
+            if (mod != corner_radii) mod.addImport("zenit_corner_radii", corner_radii);
+            if (mod != environment) {
+                var selected = environment;
+                if (isUiModule(mod)) {
+                    if (mod.import_table.get("build_options")) |options| {
+                        const entry_ = environments.getOrPut(options) catch @panic("OOM");
+                        if (!entry_.found_existing) entry_.value_ptr.* = createUiEnvironment(b, mod, environment);
+                        selected = entry_.value_ptr.*;
+                    }
+                }
+                mod.addImport("zenit_environment", selected);
+            }
             wireCHeaders(b, mod, headers);
         }
         mod.cached_graph = .{ .modules = &.{}, .names = &.{} };
     }
 }
 
-fn wireReflectionStep(b: *std.Build, step: *std.Build.Step, reflection: *std.Build.Module, clock: *std.Build.Module, environment: *std.Build.Module, headers: *std.StringHashMap(*std.Build.Module), seen: *std.AutoHashMap(*std.Build.Module, void), steps: *std.AutoHashMap(*std.Build.Step, void)) void {
+fn wireReflectionStep(b: *std.Build, step: *std.Build.Step, reflection: *std.Build.Module, clock: *std.Build.Module, environment: *std.Build.Module, corner_radii: *std.Build.Module, environments: *std.AutoHashMap(*std.Build.Module, *std.Build.Module), headers: *std.StringHashMap(*std.Build.Module), seen: *std.AutoHashMap(*std.Build.Module, void), steps: *std.AutoHashMap(*std.Build.Step, void)) void {
     const entry = steps.getOrPut(step) catch @panic("OOM");
     if (entry.found_existing) return;
-    for (step.dependencies.items) |dep| wireReflectionStep(b, dep, reflection, clock, environment, headers, seen, steps);
-    if (step.cast(std.Build.Step.Compile)) |compile| wireReflectionModule(b, compile.root_module, reflection, clock, environment, headers, seen);
+    for (step.dependencies.items) |dep| wireReflectionStep(b, dep, reflection, clock, environment, corner_radii, environments, headers, seen, steps);
+    if (step.cast(std.Build.Step.Compile)) |compile| wireReflectionModule(b, compile.root_module, reflection, clock, environment, corner_radii, environments, headers, seen);
 }
 
 fn windowsStackReserve(existing: ?u64) u64 {
@@ -2730,7 +3277,7 @@ fn wireCHeaders(b: *std.Build, mod: *std.Build.Module, cache: *std.StringHashMap
         cache.put(key, c_module) catch @panic("OOM");
         mod.addImport("calendar_time", c_module);
     }
-    if (buildPathEqual(source, "src/text/text.zig") and target.result.os.tag != .macos and target.result.os.tag != .windows) {
+    if (buildPathEqual(source, "src/text/text.zig") and target.result.os.tag != .macos and target.result.os.tag != .windows and target.result.os.tag != .freestanding) {
         const key = b.fmt("freetype-{s}", .{triple});
         if (cache.get(key)) |cached| {
             mod.addImport("text_freetype_c", cached);
@@ -2746,5 +3293,80 @@ fn wireCHeaders(b: *std.Build, mod: *std.Build.Module, cache: *std.StringHashMap
         const c_module = translated.createModule();
         cache.put(key, c_module) catch @panic("OOM");
         mod.addImport("text_freetype_c", c_module);
+    }
+}
+
+// Clone only Zig sources/imports: the freestanding closure must not inherit
+// native C sources, frameworks, libc or include/link configuration.
+fn wasmModule(b: *std.Build, source: *std.Build.Module, target: std.Build.ResolvedTarget, seen: *std.AutoHashMap(*std.Build.Module, *std.Build.Module)) *std.Build.Module {
+    if (seen.get(source)) |module| return module;
+    const module = b.createModule(.{ .root_source_file = source.root_source_file, .target = target, .optimize = .ReleaseSmall });
+    seen.put(source, module) catch @panic("OOM");
+    var it = source.import_table.iterator();
+    while (it.next()) |entry| module.addImport(entry.key_ptr.*, wasmModule(b, entry.value_ptr.*, target, seen));
+    return module;
+}
+
+fn addWasmGate(b: *std.Build, ui: *std.Build.Module) void {
+    const target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .freestanding,
+        .cpu_model = .{ .explicit = &std.Target.wasm.cpu.generic },
+        .cpu_features_add = std.Target.wasm.featureSet(&.{ .simd128, .reference_types }),
+    });
+    var seen: std.AutoHashMap(*std.Build.Module, *std.Build.Module) = .init(b.allocator);
+    defer seen.deinit();
+    const root = wasmModule(b, ui, target, &seen);
+    root.root_source_file = b.path("src/ui/wasm_smoke.zig");
+    const native_environment = b.createModule(.{ .root_source_file = b.path("src/environment.zig"), .target = target, .optimize = .ReleaseSmall });
+    const environment = createUiEnvironment(b, root, native_environment);
+    const clock = b.createModule(.{ .root_source_file = b.path("src/time.zig"), .target = target, .optimize = .ReleaseSmall });
+    const corner_radii = b.createModule(.{ .root_source_file = b.path("src/corner_radii.zig"), .target = target, .optimize = .ReleaseSmall });
+    const reflection = b.createModule(.{ .root_source_file = b.path("src/reflection.zig"), .target = target, .optimize = .ReleaseSmall });
+    var modules = seen.valueIterator();
+    while (modules.next()) |module| {
+        module.*.addImport("zenit_environment", environment);
+        module.*.addImport("zenit_time", clock);
+        module.*.addImport("zenit_corner_radii", corner_radii);
+        module.*.addImport("zenit_reflection", reflection);
+    }
+    const wasm = b.addExecutable(.{ .name = "zenit-smoke", .root_module = root });
+    wasm.entry = .disabled;
+    wasm.rdynamic = true;
+    wasm.stack_size = 2 * 1024 * 1024;
+    const install = b.addInstallArtifact(wasm, .{});
+
+    const native = cloneModule(b, ui);
+    native.root_source_file = b.path("src/ui/wasm_smoke.zig");
+    const oracle_root = b.createModule(.{ .root_source_file = b.path("tools/wasm_native_oracle.zig"), .target = b.graph.host, .optimize = .debug });
+    oracle_root.addImport("smoke", native);
+    const oracle = b.addExecutable(.{ .name = "wasm-native-oracle", .root_module = oracle_root });
+    addWasmOracleBridge(b, oracle);
+    const run_oracle = b.addRunArtifact(oracle);
+    const expected = run_oracle.captureStdOut(.{});
+    const tests = b.addTest(.{ .root_module = cloneModule(b, native), .filters = &.{"wasm smoke native"} });
+    addWasmOracleBridge(b, tests);
+    const run_tests = b.addRunArtifact(tests);
+    const run = b.addSystemCommand(&.{ "node", "scripts/check_wasm.mjs" });
+    run.addFileArg(wasm.getEmittedBin());
+    run.addFileArg(expected);
+    // Native allocation leaks/test failures must fail before smoke execution.
+    run.step.dependOn(&run_tests.step);
+    run.step.dependOn(&install.step);
+    run.step.dependOn(&b.addInstallFile(expected, "share/zenit/wasm-native-oracle.json").step);
+    const gate = b.step("check-wasm", "Link and execute wasm32-freestanding reactive/layout smoke against native Zig results");
+    gate.dependOn(&run.step);
+    const controller_tests = b.addSystemCommand(&.{ "node", "scripts/check_wasm.test.mjs" });
+    gate.dependOn(&controller_tests.step);
+}
+
+fn addWasmOracleBridge(b: *std.Build, exe: *std.Build.Step.Compile) void {
+    if (exe.rootModuleTarget().os.tag == .windows) {
+        exe.root_module.addCSourceFile(.{ .file = b.path("native/windows/dwrite_bridge.cpp"), .flags = &.{ "-std=c++17", "-fno-exceptions", "-fno-rtti" } });
+        for ([_][]const u8{ "dwrite", "d2d1", "ole32", "windowscodecs", "dxguid", "user32" }) |library| exe.root_module.linkSystemLibrary(library, .{});
+        exe.root_module.link_libc = true;
+        exe.root_module.link_libcpp = true;
+    } else {
+        addCoreTextBridge(b, exe);
     }
 }

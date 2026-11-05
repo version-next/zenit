@@ -46,7 +46,9 @@ fi
 # own layering.
 # Zig 0.17 compatibility helpers are framework-owned: field reflection, caller-I/O
 # clocks, native environment access, and the native calendar-time C header.
-ALLOWED_UI_IMPORTS_REGEX='^@import\("(std|builtin|root|ui_core|system_sdk|icon_ir|zenit_icons|zenit_system_icons|text_core|text|trace|i18n|svg|svg_safety|zenit_style_values|zenit_theme_provider|zenit_reflection|zenit_time|zenit_environment|calendar_time)"\)$'
+# `zenit_corner_radii` (src/corner_radii.zig, std-only): the corner-radius normalisation the
+# renderer and hit testing share, so a shape hits exactly where it is drawn.
+ALLOWED_UI_IMPORTS_REGEX='^@import\("(std|builtin|root|ui_core|system_sdk|icon_ir|zenit_icons|zenit_system_icons|text_core|text|trace|i18n|svg|svg_safety|zenit_style_values|zenit_theme_provider|zenit_reflection|zenit_time|zenit_corner_radii|zenit_environment|calendar_time)"\)$'
 
 # Forbidden modules — must NEVER appear in `zig build hello-button --verbose -M*`.
 # Categories of out-of-scope code (see docs/UI_OSS_BOUNDARY.md):

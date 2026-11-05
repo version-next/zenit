@@ -47,6 +47,10 @@ pub const SheetProps = struct {
     /// only suggestions).
     open: Model(bool) = .{ .local = false },
     animation_ms: f32 = 250,
+    /// Play the enter transition when `open` is already true as the sheet mounts. Default false:
+    /// one mounted open (a page restored with its panel up) is the open result, not an opening, so
+    /// it appears at once. Set true when the caller mounts it in response to the opening itself.
+    animate_initial_open: bool = false,
     /// Called after user-initiated toggle (Esc / click mask) settles.
     on_open_change: ?Handler(bool) = null,
 };
@@ -174,12 +178,12 @@ pub const SheetBuilder = struct {
         var panel: *Node = undefined;
         var content: *Node = undefined;
         try view.mount(my_scope, cx, barrier, view.capture(&panel, view.col(.{
-            .style = .{
+            .style = .{ styles.sheetPanelEdge(t, p.side), core.BoxStyle{
                 .width = panel_w,
                 .height = panel_h,
                 .background = styles.sheetPanelBackground(p.background, t),
-                .shadows = core.ShadowList.of(&.{ styles.sheetKeyShadow(t), styles.sheet_ambient_shadow }),
-            },
+                .shadows = core.ShadowList.of(&.{styles.sheetKeyShadow(t)}),
+            } },
             // a11y attached to visible panel (overlay-configured a11y lands on ol.content
             // unused by this component).
             .a11y = .{ .role = .dialog, .modal = true },
@@ -192,6 +196,7 @@ pub const SheetBuilder = struct {
         // Bind real content_node from OverlayStack layer to panel, keeping hierarchy
         // and animation target aligned.
         cx.overlay_stack.bindContentNode(allocator, ol.handle, panel);
+        if (rt.open.read.peek() and !p.animate_initial_open) cx.overlay_stack.skipInitialEnter(ol.handle);
 
         // open Effect
         {
@@ -346,7 +351,7 @@ test "Sheet: visible signal control" {
     vis.set(false);
     try std.testing.expectEqual(core.Sizing{ .grow = .{} }, result.overlay.style.width);
     var exiting_found = false;
-    for (ctx.overlay_stack.layers) |slot| {
+    for (ctx.overlay_stack.layers.items) |slot| {
         if (slot) |layer| {
             try std.testing.expectEqual(overlay_stack.LayerState.exiting, layer.state);
             exiting_found = true;
@@ -364,6 +369,28 @@ test "Sheet: visible signal control" {
     }
 
     try std.testing.expectEqual(core.Sizing{ .px = 0 }, result.overlay.style.width);
+}
+
+fn sheetFirstFrameOffset(animate_initial_open: bool) !f32 {
+    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer ctx.deinit();
+    ctx.setViewport(800, 600);
+    const root = try box(ctx, .{ .width = .{ .px = 800 }, .height = .{ .px = 600 } }, .{});
+    ctx.root = root;
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const result = try Sheet(.{ .side = .right, .open = true, .animate_initial_open = animate_initial_open }).mount(scope, ctx);
+    if (!result.portaled) try root.appendChild(std.testing.allocator, result.overlay);
+    render_engine.current_frame_time_ms += 16.0;
+    render_engine.current_frame_dt_ms = 16.0;
+    ctx.layout();
+    _ = ctx.render();
+    return result.panel.style.translate_x;
+}
+
+test "Sheet: mounted open shows at once; animate_initial_open slides it in" {
+    try std.testing.expectEqual(@as(f32, 0), try sheetFirstFrameOffset(false));
+    try std.testing.expect(try sheetFirstFrameOffset(true) > 1);
 }
 
 test "Sheet: 打开状态下卸载会弹出自己的 focus scope" {
@@ -439,7 +466,7 @@ test "Sheet: exiting keeps overlay visible until commit" {
     try std.testing.expectEqual(core.Sizing{ .grow = .{} }, result.overlay.style.height);
 
     var exiting_found = false;
-    for (ctx.overlay_stack.layers) |slot| {
+    for (ctx.overlay_stack.layers.items) |slot| {
         if (slot) |layer| {
             if (layer.state == .exiting) {
                 exiting_found = true;

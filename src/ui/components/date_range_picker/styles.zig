@@ -18,27 +18,12 @@ const SimpleDate = @import("../calendar/mod.zig").SimpleDate;
 // Day cell state color matrix lives in computeDayCellVisual (pure function, styling layer).
 
 pub const nav_icon_size: f32 = 16;
-pub const panel_radius: f32 = 14;
-pub const day_cell_size: f32 = 32;
+pub const panel_radius: f32 = 8;
+pub const day_cell_size: f32 = 36;
 pub const day_font_size: f32 = 13;
 
-pub fn triggerBorderColor(open: bool, has_value: bool, t: *const theme.ThemeTokens) Color {
-    return if (open) t.tokens.color.border_focus else if (has_value) t.tokens.color.border_strong else t.tokens.color.border;
-}
-
-pub fn leadingIconTint(has_value: bool, t: *const theme.ThemeTokens) Color {
-    return if (has_value) t.tokens.color.fg_secondary else t.tokens.color.fg_tertiary;
-}
-
-pub fn chevronTint(open: bool, t: *const theme.ThemeTokens) Color {
-    return if (open) t.tokens.color.accent else t.tokens.color.fg_tertiary;
-}
-
-pub fn valueTextColor(has_value: bool, t: *const theme.ThemeTokens) Color {
-    return if (has_value) t.tokens.color.fg_primary else t.tokens.color.fg_tertiary;
-}
-
-pub fn dashColor(has_any_value: bool, t: *const theme.ThemeTokens) Color {
+pub fn dashColor(has_any_value: bool, disabled: bool, t: *const theme.ThemeTokens) Color {
+    if (disabled) return t.tokens.color.fg_disabled;
     return if (has_any_value) t.tokens.color.fg_secondary else t.tokens.color.fg_tertiary;
 }
 
@@ -50,28 +35,20 @@ pub fn panelStyle(t: *const theme.ThemeTokens) core.BoxStyle {
     return .{
         .width = .{ .fit = .{} },
         .height = .{ .fit = .{} },
-        .direction = .row,
+        .direction = .column,
         .background = t.tokens.color.bg_primary,
-        .border = .{ .width = 1, .color = t.tokens.color.border, .radius = panel_radius },
-        .shadow = Shadow{ .color = Color.rgba(0, 0, 0, 18), .blur = 24, .offset_x = 0, .offset_y = 8 },
-    };
-}
-
-pub fn panelDividerStyle(t: *const theme.ThemeTokens) core.BoxStyle {
-    return .{
-        .width = .{ .px = 1 },
-        .height = .{ .grow = .{} },
-        .background = t.tokens.color.border,
+        .border = .{ .overlay = true, .width = 1, .color = t.tokens.color.border, .radius = panel_radius },
+        .shadow = t.tokens.shadow.md,
     };
 }
 
 pub fn monthSectionStyle(_: *const theme.ThemeTokens) core.BoxStyle {
     return .{
-        .width = .{ .px = 300 },
+        .width = .{ .px = 276 },
         .height = .{ .fit = .{} },
         .direction = .column,
-        .gap = 16,
-        .padding = Padding.all(20),
+        .gap = 4,
+        .padding = Padding.all(12),
     };
 }
 
@@ -86,12 +63,12 @@ pub fn monthHeaderStyle(_: *const theme.ThemeTokens) core.BoxStyle {
 }
 
 pub fn monthTitleTextStyle(t: *const theme.ThemeTokens) core.TextStyle {
-    return .{ .color = t.tokens.color.fg_primary, .font_size = 14, .font_weight = 600 };
+    return .{ .color = t.tokens.color.fg_primary, .font_size = t.tokens.font_size.md, .font_weight = 600 };
 }
 
 pub fn weekdayCellStyle(_: *const theme.ThemeTokens) core.BoxStyle {
     return .{
-        .width = .{ .px = 34 },
+        .width = .{ .px = 36 },
         .height = .{ .px = 28 },
         .justify = .center,
         .align_items = .center,
@@ -99,7 +76,7 @@ pub fn weekdayCellStyle(_: *const theme.ThemeTokens) core.BoxStyle {
 }
 
 pub fn weekdayTextStyle(t: *const theme.ThemeTokens) core.TextStyle {
-    return .{ .color = t.tokens.color.fg_tertiary, .font_size = 11, .font_weight = 600 };
+    return .{ .color = t.tokens.color.fg_tertiary, .font_size = t.tokens.font_size.xs, .font_weight = 600 };
 }
 
 pub fn monthGridStyle(_: *const theme.ThemeTokens) core.BoxStyle {
@@ -135,26 +112,23 @@ pub fn dayCellBoxStyle(visual: DayCellVisual) core.BoxStyle {
         .justify = .center,
         .align_items = .center,
         .background = visual.bg_color,
-        .border = .{ .width = visual.border_width, .color = visual.border_color, .radius = visual.corner_radius.resolve() },
+        .border = .{ .overlay = true, .width = visual.border_width, .color = visual.border_color, .radius = visual.corner_radius.resolve() },
     };
 }
 
-pub fn iconBtnStyle(t: *const theme.ThemeTokens) core.BoxStyle {
-    return .{
-        .width = .{ .px = 32 },
-        .height = .{ .px = 32 },
-        .direction = .row,
-        .justify = .center,
-        .align_items = .center,
-        .background = t.tokens.color.bg_hover,
-        .border = .{ .width = 0, .color = t.tokens.color.border, .radius = 8 },
-    };
-}
-
-/// Month nav button hover animation color source (useAnimatedBackground)
-pub fn iconBtnAnimColors(t: *const theme.ThemeTokens) struct { normal: Color, hover: Color } {
-    return .{ .normal = t.tokens.color.bg_hover, .hover = t.tokens.color.bg_active };
-}
+/// Month nav button: transparent at rest, bg_hover under the pointer (eased like every control).
+pub const navButton = @import("../../css.zig").css(.{
+    .width = 32,
+    .height = 32,
+    .direction = .row,
+    .justify = .center,
+    .align_items = .center,
+    .background = .transparent,
+    .corner_radius = .control,
+    .cursor = .pointer,
+    .transition = @import("../../recipe.zig").transition("background 150ms ease-out"),
+    ._hover = .{ .background = .bg_hover },
+});
 
 pub const DayCellVisual = struct {
     bg_color: Color,
@@ -171,37 +145,62 @@ pub fn computeDayCellVisual(state: *const DateRangePickerState, date: SimpleDate
     const resolved_end = mod.effectiveRangeEnd(state.start_date, state.end_date, state.preview_end_date);
     const is_start = if (state.start_date) |d| d.eql(date) else false;
     const is_end = if (resolved_end) |d| d.eql(date) else false;
+    const preview = is_end and state.end_date == null and state.preview_end_date != null;
     const is_today = if (state.today_date) |d| d.eql(date) else false;
     const in_range = mod.isDateInRange(date, state.start_date, resolved_end);
 
     return .{
-        .bg_color = if (is_start or is_end)
+        .bg_color = if (is_start or (is_end and !preview))
             t.tokens.color.accent
         else if (in_range)
-            t.tokens.color.accent_subtle
+            t.tokens.color.selection_bg
         else
             Color.TRANSPARENT,
-        .text_color = if (is_start or is_end)
+        .text_color = if (is_start or (is_end and !preview))
             t.tokens.color.fg_inverse
         else if (in_range)
-            t.tokens.color.accent
+            t.tokens.color.selection_fg
         else if (in_current_month)
             t.tokens.color.fg_primary
         else
             t.tokens.color.fg_tertiary,
-        .border_width = if (is_today and !(is_start or is_end)) 1 else 0,
-        .border_color = t.tokens.color.accent,
-        .corner_radius = if (is_start and is_end)
-            core.CornerRadius.uniform(10)
+        .border_width = if (preview or (is_today and !(is_start or is_end or in_range))) 1 else 0,
+        .border_color = if (preview) t.tokens.color.accent else t.tokens.color.border_strong,
+        .corner_radius = if (preview or (is_start and mod.dayOfWeek(date.year, date.month, date.day) == 6) or (is_end and mod.dayOfWeek(date.year, date.month, date.day) == 0))
+            core.CornerRadius.uniform(t.tokens.radius.md)
+        else if (is_start and is_end)
+            core.CornerRadius.uniform(t.tokens.radius.md)
         else if (is_start)
-            core.CornerRadius{ .each = .{ 10, 0, 0, 10 } }
+            core.CornerRadius{ .each = .{ t.tokens.radius.md, 0, 0, t.tokens.radius.md } }
         else if (is_end)
-            core.CornerRadius{ .each = .{ 0, 10, 10, 0 } }
+            core.CornerRadius{ .each = .{ 0, t.tokens.radius.md, t.tokens.radius.md, 0 } }
         else if (in_range)
             core.CornerRadius.uniform(0)
         else
-            core.CornerRadius.uniform(10),
-        .font_weight = if (is_start or is_end or is_today) 600 else 400,
+            core.CornerRadius.uniform(t.tokens.radius.md),
+        .font_weight = if (is_start or (is_end and !preview) or is_today) 600 else 400,
         .hover_enabled = !(is_start or is_end or in_range),
     };
+}
+
+// RxE0k / Q9ZBB: 552px month strip and 52px confirmation footer.
+pub fn monthsStyle(_: *const theme.ThemeTokens) core.BoxStyle {
+    return .{ .width = .{ .fit = .{} }, .height = .{ .fit = .{} }, .direction = .row };
+}
+pub fn footerStyle(t: *const theme.ThemeTokens) core.BoxStyle {
+    return .{ .border_overlay = true, .width = .{ .grow = .{} }, .height = .{ .px = 52 }, .direction = .row, .align_items = .center, .gap = 8, .padding = Padding.symmetric(12, 16), .border_top_width = 1, .border_color = t.tokens.color.border };
+}
+pub fn footerTextStyle(t: *const theme.ThemeTokens) core.TextStyle {
+    return .{ .font_size = t.tokens.font_size.md, .color = t.tokens.color.fg_primary };
+}
+pub fn footerButtonStyle(_: *const theme.ThemeTokens) core.BoxStyle {
+    return .{ .height = .{ .px = 28 }, .padding = Padding.symmetric(0, 12) };
+}
+
+pub fn footerSummaryStyle(_: *const theme.ThemeTokens) core.BoxStyle {
+    return .{ .width = .{ .grow = .{ .min = 0 } }, .overflow_hidden = true };
+}
+
+pub fn triggerForeground(has_value: bool, disabled: bool, t: *const theme.ThemeTokens) Color {
+    return if (disabled) t.tokens.color.fg_disabled else if (has_value) t.tokens.color.fg_primary else t.tokens.color.fg_tertiary;
 }

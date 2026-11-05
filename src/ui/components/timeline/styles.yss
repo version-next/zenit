@@ -3,17 +3,17 @@
 //! View in timeline.yix; TimelineStatus is public API defined in mod.zig.
 const ui = @import("../../ui.zig");
 
-pub const dot_size: f32 = 12;
+pub const dot_size: f32 = 10;
 
 /// One row: indicator column (dot + connector), content column (title / description / time)
 recipe Row slots(dot, line, title) {
   base {
-    dot { width: 12; height: 12; corner-radius: 6; }
-    line { width: 2; height: grow; }
+    dot { width: 10; height: 10; corner-radius: full; }
+    line { width: 1; height: grow; }
     title { font-size: md; }
   }
   variant status = pending {
-    completed { dot { background: success; } line { background: success; } title { color: fg-primary; font-weight: 400; } }
+    completed { dot { background: success; } line { background: border; } title { color: fg-primary; font-weight: 400; } }
     active    { dot { background: accent; }  line { background: border; }  title { color: fg-primary; font-weight: 600; } }
     pending   { dot { background: border; }  line { background: border; }  title { color: fg-secondary; font-weight: 400; } }
   }
@@ -25,7 +25,7 @@ style indicator { width: 24; height: grow; direction: column; align-items: cente
 
 /// Content column; last row has no bottom padding
 recipe Content {
-  base { width: fill; height: fit; direction: column; gap: 2; padding: 0 0 16 0; }
+  base { width: fill; height: fit; no-cross-stretch: true; direction: column; gap: 2; padding: 0 0 16 0; }
   flag last { padding: 0; }
 }
 

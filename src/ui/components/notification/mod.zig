@@ -1264,6 +1264,9 @@ pub const Notifier = struct {
     }
 
     fn pointerInWindow(self: *const Notifier) ?struct { x: f32, y: f32 } {
+        // A pointer that left the window or sits under another window keeps its last position;
+        // that position must not keep the stack hovered (paused and expanded).
+        if (!self.cx.pointerLive()) return null;
         const x = self.cx.mouse_x;
         const y = self.cx.mouse_y;
         const vp = self.container.rectFromWorldOrFallback();
@@ -1428,7 +1431,7 @@ pub const Notifier = struct {
             };
             const x_pos = base_x + align_dx + dx;
             const y_pos = y + dy;
-            applyCard(card, pal, .{
+            applyCard(card, &pal, .{
                 .x = x_pos,
                 .y = y_pos,
                 .scale_x = o.scale * scale,
@@ -1471,7 +1474,7 @@ pub const Notifier = struct {
             const want: f32 = if (self.hovered and card.spec.kind != .hint and !card.leaving and card.rect_visible and card.content.root.getOpacity() > 0.5) 1 else 0;
             const step = if (self.reducedMotion()) 1 else dt / @as(f32, @floatCast(Spec.close_fade_ms));
             card.close_alpha = if (want > card.close_alpha) @min(want, card.close_alpha + step) else @max(want, card.close_alpha - step);
-            applyClose(card, pal, card == ptr_card);
+            applyClose(card, &pal, card == ptr_card);
         }
 
         self.applyPill(now, dt, shown, base_x, W, stack_min_y, stack_max_y);
@@ -1894,6 +1897,10 @@ const TestRig = struct {
         const scope = try Scope.init(testing.allocator, null, ctx.owner);
         // Init on 'previous frame': real app's first real frame always after init clock.
         ctx.frame_time_ms = -16;
+        // Tests place the pointer by writing mouse_x/mouse_y: start from a live pointer over the
+        // content, as after a platform pointer move.
+        ctx.cursor_state.pointer_valid = true;
+        ctx.hover_sync.pointer_over_content = true;
         const n = try Notifier.init(scope, ctx, .{ .position = position });
         if (!n.portaled) try root.appendChild(testing.allocator, n.container);
         return .{ .ctx = ctx, .scope = scope, .root = root, .n = n };
@@ -2037,6 +2044,28 @@ test "Notifier: hovering pauses life and expands; leaving resumes from the froze
     rig.step(9200);
     try testing.expect(!rig.n.paused);
     try testing.expectApproxEqAbs(frozen, c.life.remaining(9200), 1e-6);
+}
+
+test "Notifier: a pointer that leaves the window (or is covered) stops hovering at its last position" {
+    var rig = try TestRig.init(.bottom_center);
+    defer rig.deinit();
+    const id = try rig.n.show(.{ .tone = .success, .title = "Saved", .duration_ms = 3000 });
+    rig.step(0);
+    rig.step(1000);
+    const c = rig.card(id);
+    rig.ctx.mouse_x = c.rect_x + 20;
+    rig.ctx.mouse_y = c.rect_y + 20;
+    rig.step(1100);
+    try testing.expect(rig.n.hovered and rig.n.paused);
+    // Platform pointer_left (or a window covering the pointer): the position is unchanged but
+    // no longer describes the pointer, so the stack resumes like a native mouseExited.
+    rig.ctx.handlePointerLeave();
+    rig.step(1200);
+    try testing.expect(!rig.n.hovered and !rig.n.paused);
+    // The next pointer event at the same point hovers again.
+    rig.ctx.handleMouseMove(c.rect_x + 20, c.rect_y + 20);
+    rig.step(1300);
+    try testing.expect(rig.n.hovered and rig.n.paused);
 }
 
 test "Notifier: expiry, screen limit of 6 and upsert-by-id" {
@@ -2404,6 +2433,9 @@ test "Notifier: reply sends in place as a quote and replyFailed restores the tex
     const c = rig.card(id);
     const node = c.positioner;
     try testing.expect(c.sticky);
+    const send = c.content.send_button.?;
+    const label_node = findReviewSendText(send).?;
+    try testing.expectEqual(rig.ctx.tokens.tokens.color.button_primary_fg, paintedTextColor(label_node));
     const state = c.content.reply_state.?;
     _ = state.setText("  Looks good  ");
     Notifier.onButton(c, card_mod.send_index);
@@ -2696,4 +2728,67 @@ test "Notifier: reduced motion preserves lifetime and immediately reclaims dismi
     rig.n.dismiss(id);
     rig.step(1101);
     try testing.expect(rig.n.cardForId(id) == null);
+}
+
+fn findReviewSendText(node: *Node) ?*Node {
+    if (node.getText()) |txt| {
+        if (std.mem.eql(u8, txt.content, "Send")) return node;
+    }
+    for (node.children.items) |child| {
+        if (findReviewSendText(child)) |found| return found;
+    }
+    return null;
+}
+
+/// Text color as painted: the Send label inherits the button's foreground (ControlShell tone).
+fn paintedTextColor(n: *Node) Color {
+    return @import("../../core/render_engine/text_render.zig").resolveNodeLogicalTextProps(n).?.color;
+}
+
+test "Notifier: the reply field keeps its frame through focus, hover and theme changes (acceptance)" {
+    // The reply field is an embedded Input whose shell carries declarative style layers (size
+    // recipe, field tone, the Input frame overlay). Its height, border width and padding must
+    // survive every recompute of those layers, not only the first mount.
+    var rig = try TestRig.init(.bottom_center);
+    defer rig.deinit();
+    const id = try rig.n.show(.{ .title = "Reply", .body = "Message", .reply = true });
+    rig.step(0);
+    rig.step(700);
+    const field = rig.card(id).content.reply_input.?;
+    const expectFrame = struct {
+        fn check(n: *Node) !void {
+            try testing.expectEqual(core.Sizing{ .px = M.reply_height - 2 }, n.style.height);
+            try testing.expectEqual(@as(f32, 0), n.style.border.width);
+            try testing.expectEqual(@as(f32, 0), n.style.padding.top);
+            try testing.expectEqual(@as(f32, 0), n.style.padding.left);
+            try testing.expectEqual(@as(f32, 0), n.style.padding.right);
+            try testing.expectEqual(@as(f32, 0), n.style.padding.bottom);
+        }
+    }.check;
+    try expectFrame(field);
+    rig.ctx.setFocus(field);
+    rig.step(720);
+    try expectFrame(field);
+    if (field.behavior.events.on_hover) |h| h.invoke();
+    rig.step(740);
+    try expectFrame(field);
+    if (field.behavior.events.on_leave) |h| h.invoke();
+    rig.ctx.clearFocus();
+    for ([_]*const core.ThemeTokens{ &core.theme.dark, &core.theme.high_contrast, &core.theme.light }) |t| {
+        rig.ctx.setTheme(t);
+        rig.step(760);
+        try expectFrame(field);
+    }
+}
+
+test "review regression 2: reply Send uses primary foreground in all themes" {
+    for ([_]*const core.ThemeTokens{ &core.theme.light, &core.theme.dark, &core.theme.high_contrast }) |t| {
+        var rig = try TestRig.init(.bottom_center);
+        defer rig.deinit();
+        rig.ctx.setTheme(t);
+        const id = try rig.n.show(.{ .title = "Reply", .body = "Message", .reply = true });
+        rig.step(0);
+        const send = rig.card(id).content.send_button.?;
+        try testing.expectEqual(t.tokens.color.button_primary_fg, paintedTextColor(findReviewSendText(send).?));
+    }
 }

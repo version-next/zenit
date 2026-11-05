@@ -26,7 +26,7 @@ var bracket_debug_node_cache: ?u32 = null;
 
 fn bracketDebugNodeFilter() ?u32 {
     if (bracket_debug_node_cache) |v| return if (v == std.math.maxInt(u32)) null else v;
-    const raw = std.c.getenv("ZENIT_TEXT_BRACKET_NODE") orelse {
+    const raw = @import("zenit_environment").getNative("ZENIT_TEXT_BRACKET_NODE") orelse {
         bracket_debug_node_cache = std.math.maxInt(u32);
         return null;
     };
@@ -207,6 +207,14 @@ pub const HitIndex = struct {
     proxy_len: u16 = 0,
     epoch: u32 = 0,
     clip_chain_id: ?u32 = null,
+    /// Hit space this node's world matrix, proxies and clip entry are stored in (0 = world; see
+    /// hit_runtime.HitLayer).
+    layer: u32 = 0,
+    /// For a hit-layer node: the layer it opened at the last build.
+    own_layer: u32 = 0,
+    /// Paint-order numbering scope `PaintInfo` is expressed in (hit_runtime.HitBlock; 0 = the
+    /// root block). A direct child of a hit-layer node roots its own block.
+    block: u32 = 0,
 };
 
 /// animation linger frame count, keep promote state few frames to avoid animation end layer shrink
@@ -293,6 +301,10 @@ pub const PointerDownFocus = enum {
 /// Node interaction metadata (v0.5: focus + semantics 5 fields collapsed -> 1 NodeInteraction).
 pub const NodeInteraction = struct {
     window_region: @import("system_sdk").window_chrome.Region = .inherit,
+    /// Hit-test this subtree in the node's own local space (hit_runtime.HitLayer): changes of this
+    /// node's transform (a scroll container's content offset) cost no hit-index rebuild. Pair
+    /// every such change with `markHitLayerMotionDirty`/`markHitLayerMotionPropDirty`.
+    hit_layer: bool = false,
     /// Focus management
     focusable: bool = false,
     tab_index: ?i32 = null,
@@ -329,6 +341,10 @@ pub const NodeInteraction = struct {
 pub const NodeDelegate = struct {
     interaction: ?*Node = null,
     inspect: ?*Node = null,
+    /// Descendant that draws this node's control frame (Input's field inside its label/helper
+    /// column). Attachments that shape the frame (Group corner radii, shared-edge colors) go
+    /// there; layout attachments (overlap margin) stay on this node.
+    frame: ?*Node = null,
 };
 
 /// Node lifecycle hooks (v0.5: on_mount + on_cleanup 2 fields collapsed -> 1).
@@ -382,6 +398,14 @@ pub const RenderCache = struct {
     /// downstream regression: non-promoted clean subtree cross-frame display payload cache.
     /// prebuild pass splice clean subtree stamp hits directly, skip full tree paint re-record.
     subtree_payload: ?CachedRenderSlice = null,
+    /// Cross-frame copy of this node's **own** content items (background / border / outline /
+    /// text / media), reused while the node itself is clean even when its subtree is being
+    /// re-recorded (dirty-path ancestors, leaves next to them). See render_engine
+    /// tryReplayOwnContentCache.
+    own_payload: ?CachedRenderSlice = null,
+    /// render_engine/retained_memo.zig Memo: last property-tree / scene-runtime output of this
+    /// node's subtree (type-erased to keep node.zig free of render-engine types).
+    retained_memo: ?*anyopaque = null,
 };
 
 /// before_render hooks (main + child list). on_before_render + before_render_hook_count +
@@ -392,6 +416,9 @@ pub const BeforeRenderHooks = struct {
     hooks: [8]?*const fn (*Node) void = @as([8]?*const fn (*Node) void, @splat(null)),
     /// Bit i set: hooks[i] was registered with `.self` scope (see BeforeRenderScope).
     self_only_mask: u8 = 0,
+    /// Bit i set: hooks[i] was registered with `.self` or `.dirty_marking` scope: it writes only
+    /// through dirty-marking entries (Node.beforeRenderHooksCacheTrusted).
+    trusted_mask: u8 = 0,
 };
 
 /// What a before_render hook may change. `.self`: only this node's own style /
@@ -401,7 +428,13 @@ pub const BeforeRenderHooks = struct {
 /// prefix intact, so everything painted after it can still be prebuilt and
 /// reused across frames. `.subtree` (default): anything; the render pass stops
 /// prebuilding at this node. Debug/ReleaseSafe builds audit `.self` claims.
-pub const BeforeRenderScope = enum { subtree, self };
+///
+/// `.dirty_marking`: the hook may change this node, its transform included, but only through
+/// dirty-marking entries (markRenderDirty after a raw write, setters, markCompositePropDirty), and
+/// writes no other node. It still stops prebuilding at this node like `.subtree`, but caches of the
+/// node and of subtrees containing it stay valid: they see every change through dirty bits, as
+/// they see event-handler writes (custom-draw / loop animation ticks).
+pub const BeforeRenderScope = enum { subtree, self, dirty_marking };
 
 /// Scope state associated with node: scope ptr + binding back-pointer. scope +
 /// scope_binding_node_slot 2 fields collapsed -> 1. Scope is component root node reactive range;
@@ -516,6 +549,9 @@ pub const NodeDirty = struct {
 /// setTheme replay hook: boxStyled/textStyled etc named style functions mount here, setTheme re-run
 /// style functions with new tokens.
 pub const ThemeHook = *const fn (*Node, *const types.ThemeTokens, std.mem.Allocator) void;
+/// The box declaration an `on_theme` hook writes, resolved for some tokens: lets a style host
+/// that stacks on the node keep it as its own layer (see `StyleHostRef.retheme`).
+pub const ThemeDecl = *const fn (*const types.ThemeTokens) types.BoxStyle;
 
 /// view-layer runtime style theme replay: scope-owned style state inline here, hang on node,
 /// setTheme call. Separate from component own on_theme, both non-overlapping (component root often
@@ -537,6 +573,67 @@ pub const StyleHostRef = struct {
     write_inline: *const fn (*anyopaque, *const types.BoxStyle) bool,
     /// strip component inline layer fields (non-null fields in params), fallback to below
     unset_inline: *const fn (*anyopaque, *const types.BoxStyle) void,
+    /// Fallible inline write, first half: make every allocation the write needs without changing
+    /// anything visible. false = host applying (caller writes directly). At most one staged write
+    /// per host; it must be committed or aborted before the host's layers change again.
+    stage_inline: *const fn (*anyopaque, *const types.BoxStyle) error{OutOfMemory}!bool,
+    /// apply the staged write (cannot fail)
+    commit_inline: *const fn (*anyopaque) void,
+    /// theme switch: re-resolve the layer holding the node's `theme_decl`; false = the host has
+    /// none (the node's `on_theme` hook replays as usual)
+    retheme: *const fn (*anyopaque, *const types.ThemeTokens) bool,
+    /// drop the staged write; the node and host are as before staging
+    abort_inline: *const fn (*anyopaque) void,
+};
+
+/// Component inline style written to a node that has no view style host but replays a declared
+/// style on theme switch (`on_theme`). The replay rewrites the whole declaration, then reapplies
+/// this, so inline writes stay above the element style as a style host would cascade them.
+pub const ThemeInlineStyle = struct {
+    allocator: Allocator,
+    style: types.BoxStyle = .{},
+
+    pub fn destroy(self: *ThemeInlineStyle) void {
+        self.allocator.destroy(self);
+    }
+};
+
+/// A component-inline style write whose allocations already succeeded (`Node.stageStyleInline`):
+/// `commit` applies it and cannot fail, `abort` leaves the node exactly as before. Lets a mount
+/// write several nodes all-or-nothing: stage every write, then commit them together.
+pub const StagedStyleInline = struct {
+    node: *Node,
+    allocator: Allocator,
+    partial: types.BoxStyle,
+    via_host: bool,
+    /// direct path: staging created the node's ext block (abort frees it again)
+    created_ext: bool,
+    /// direct path: staging created the node's theme inline record (abort frees it again)
+    created_theme_inline: bool = false,
+
+    pub fn commit(self: StagedStyleInline) void {
+        if (self.via_host) {
+            const h = self.node.meta.per_frame.hooks.style_host.?;
+            return h.commit_inline(h.ptr);
+        }
+        if (self.node.meta.per_frame.hooks.theme_inline) |rec| rec.style = rec.style.merge(self.partial);
+        self.node.applyStyleInlineDirect(self.allocator, self.partial);
+    }
+
+    pub fn abort(self: StagedStyleInline) void {
+        if (self.via_host) {
+            const h = self.node.meta.per_frame.hooks.style_host.?;
+            return h.abort_inline(h.ptr);
+        }
+        if (self.created_ext) {
+            self.allocator.destroy(self.node.style.ext.?);
+            self.node.style.ext = null;
+        }
+        if (self.created_theme_inline) {
+            self.node.meta.per_frame.hooks.theme_inline.?.destroy();
+            self.node.meta.per_frame.hooks.theme_inline = null;
+        }
+    }
 };
 
 /// Node hook collection (before_render hooks + hook-owned state slots). before_render + hook_slots
@@ -546,12 +643,17 @@ pub const NodeHooks = struct {
     before_render: BeforeRenderHooks = .{},
     /// setTheme-only theme replay hook (boxStyled/textStyled etc named style function mount)
     on_theme: ?ThemeHook = null,
+    /// What `on_theme` declares (box styles only), for a style host stacking on this node
+    theme_decl: ?ThemeDecl = null,
     /// view-layer runtime style (currently static, change only with theme) theme replay list head,
     /// see ViewThemeReplay
     view_theme: ?*ViewThemeReplay = null,
     /// view-layer style layer host (all node runtime box style is its layer), destroy on node free
     style_host: ?StyleHostRef = null,
-    /// useFocusRing/useAnimatedBackground/useHoverHighlight/component anim_state 4 ?*anyopaque slot
+    /// Inline writes a hostless `on_theme` node must keep across theme replays, destroy on node
+    /// free
+    theme_inline: ?*ThemeInlineStyle = null,
+    /// useFocusRing/useHoverHighlight/component anim_state ?*anyopaque slots
     slots: HookSlots = .{},
 };
 
@@ -580,6 +682,9 @@ pub const NodeBehavior = struct {
 /// != 0xFFFFFFFF node rect in World.LayoutTable, element_id == 0xFFFFFFFF (standalone Node.create
 /// node) rect in g_standalone_rects (out-of-line hashmap, key by node ptr).
 pub const NodeFrameState = struct {
+    /// Raw child-slice end of the first flex line, collected before flexing.
+    /// Unwrapped/unlaid-out containers default to the whole child list.
+    first_flex_line_end: usize = std.math.maxInt(usize),
     state_bits: NodeStateBits = .{},
     frame_local: NodeFrameLocal = .{},
 };
@@ -596,10 +701,17 @@ pub const NodeMetadata = struct {
 /// commands) here, save 1 more field slot (-> Node 23 fields). Both lazily allocated, vast majority
 /// nodes null/null.
 pub const NodeRuntime = struct {
+    /// Conservative subtree summary, set on cleanup, refreshed during layout and consumed by mount publication.
+    /// Kept true across deferred/OOM passes and interrupted callbacks.
+    layout_mount_pending: bool = true,
     /// sticky position x/y
     sticky: StickyOffset = .{},
     /// animation linger frame count (composite/opacity/transform)
     linger: AnimationLinger = .{},
+    /// tickBeforeRender subtree summary: equal to tick.g_tick_quiet_epoch while the last full tick
+    /// of this subtree found no tick work in it (no hooks, no active transitions / animations /
+    /// linger, no sticky). Together with clean dirty bits it lets the tick skip the subtree.
+    tick_quiet_epoch: u32 = 0,
     /// declarative Transition runtime state (former NodeAnimRuntime.transitions)
     transitions: ?*types.TransitionSlots = null,
     /// imperative node animation (allocated by animateNode; former NodeAnimRuntime.commands)
@@ -610,13 +722,14 @@ pub const NodeRuntime = struct {
 /// struct). 4 ?*anyopaque fields collapsed -> 1.
 pub const HookSlots = struct {
     hover_listeners: ?*anyopaque = null,
+    /// Candidate-owned invalidation links, not active hover subscriptions.
+    /// No storage in ordinary/release nodes.
+    preview_hover_pending: if (@import("zenit_environment").dev_preview) ?*anyopaque else void = if (@import("zenit_environment").dev_preview) null else {},
     /// useFocusRing
     focus_ring_anim: ?*anyopaque = null,
     /// Distinguishes useFocusRing from legacy custom use of the opaque slot.
     /// Function pointer identity cannot identify hooks across hot dylibs.
     focus_ring_owned: bool = false,
-    /// useAnimatedBackground
-    animated_bg_state: ?*anyopaque = null,
     /// useHoverHighlight
     hover_highlight_state: ?*anyopaque = null,
     /// component custom anim_state (for on_before_render use)
@@ -648,6 +761,17 @@ pub const NodeFlags = packed struct(u16) {
     is_mounted: bool = false,
     inspectable: bool = true,
     inspect_pick_disabled: bool = false,
+    /// Declares that this node's before_render hook leaves the node and its descendants
+    /// **cache-safe**: every write it makes to this node or below either goes through a dirty-marking entry (content_version
+    /// bumps), only moves a node (transform/translate: cached items are node-local and lowering
+    /// reads this frame's property tree), or lands on a node flagged `disable_render_cache`
+    /// (never part of any cross-frame cache). Unlike `before_render_hook_affects_self_only` it
+    /// keeps the conservative paint-prefix break at this node; it only lets the paint pass reuse
+    /// cross-frame caches for the node and inside its subtree (render_engine
+    /// beforeRenderHookTaintsSubtree / ownPayloadCacheEligible).
+    /// Without it, an undeclared hook's subtree is hook-owned: re-recorded every frame.
+    /// Debug/ReleaseSafe audit: runBeforeRenderHook (tick.zig) checks the subtree.
+    before_render_hook_descendants_cache_safe: bool = false,
     /// Declares the impact scope of a before_render hook (default false = conservative, affects the
     /// whole subtree).
     ///
@@ -666,7 +790,10 @@ pub const NodeFlags = packed struct(u16) {
     /// A wrong guarantee shows as ghosting/double composite, not a crash; validate with per-frame
     /// pixel-by-pixel acceptance. Escape valve: ZENIT_DISABLE_HOOK_SELF_SCOPE.
     before_render_hook_affects_self_only: bool = false,
-    _reserved: u2 = 0,
+    /// Some node in this subtree (or this node) has a before_render hook that is not
+    /// cache-trusted (Node.beforeRenderHooksCacheTrusted). Set when such a hook is registered or
+    /// first runs (tick self-heal), merged into the parent chain on attach, never cleared.
+    has_untrusted_before_render_subtree: bool = false,
 };
 
 /// core dirty bits (v0.5: layout/subtree_layout/render/subtree_render 4 bool collapsed -> 1 packed
@@ -717,6 +844,7 @@ pub const Node = struct {
     pub const CustomClipGeometryProviderFn = *const fn (node: *const Node, allocator: Allocator, context: ?*anyopaque) anyerror!PathGeometry;
 
     id: u32,
+    host_id: if (node_tree.host_enabled) node_tree.HostId else void = if (node_tree.host_enabled) 0 else {},
     tag: ElementTag,
     style: Style,
 
@@ -883,21 +1011,55 @@ pub const Node = struct {
     }
 
     pub fn setImage(self: *Node, img: ?ImageProps) void {
+        if (std.meta.eql(self.getImage(), img)) return;
         pca.writeImage(self.world_ref, self.element_id_raw, @intFromPtr(self), img);
+        // Texture/tint changes invalidate retained draw commands, even when
+        // layout and every other node remain unchanged.
+        self.markRenderDirty();
     }
 
     /// change icon tint, don't care storage form: iconTint on icon_id resource go icon table, no
     /// pre-baked rep fallback image (svgTint), caller when judge one type other silently unchanged
-    /// (Rate hover unchanged here). Both absent return false.
+    /// (Rate hover unchanged here). Returns false when both are absent or the tint is unchanged.
     pub fn setTint(self: *Node, tint: Color) bool {
+        return self.writeTint(tint, false);
+    }
+
+    /// Tint with the nearest ancestor text color (CSS currentColor, resolved at paint; see
+    /// IconProps.tint_current_color). `fallback` paints when no ancestor declares a text color.
+    pub fn setTintCurrentColor(self: *Node, fallback: Color) bool {
+        return self.writeTint(fallback, true);
+    }
+
+    /// Write a whole tint mode (fixed color or currentColor with its fallback).
+    pub fn setTintMode(self: *Node, mode: types.TintMode) bool {
+        return self.writeTint(mode.color, mode.current_color);
+    }
+
+    /// The icon / image tint mode now on the node (null when it holds neither).
+    pub fn tintMode(self: *const Node) ?types.TintMode {
+        if (self.getIcon()) |ic| return .{ .color = ic.tint, .current_color = ic.tint_current_color };
+        if (self.getImage()) |img| return .{ .color = img.tint, .current_color = img.tint_current_color };
+        return null;
+    }
+
+    /// Returns whether the tint changed. Rewriting the same tint is a no-op: per-frame callers
+    /// (toolbar / bar refresh) would otherwise mark the icon render-dirty every frame and defeat
+    /// every cross-frame cache on its path.
+    fn writeTint(self: *Node, tint: Color, current_color: bool) bool {
         if (self.getIcon()) |old| {
+            if (std.meta.eql(old.tint, tint) and old.tint_current_color == current_color) return false;
             var ic = old;
             ic.tint = tint;
+            ic.tint_current_color = current_color;
             self.setIcon(ic);
         } else if (self.getImage()) |old| {
+            if (std.meta.eql(old.tint, tint) and old.tint_current_color == current_color) return false;
             var img = old;
             img.tint = tint;
+            img.tint_current_color = current_color;
             self.setImage(img);
+            return true; // setImage already invalidated the retained paint.
         } else return false;
         self.markRenderDirty();
         return true;
@@ -988,6 +1150,18 @@ pub const Node = struct {
         node_interaction.setInteractionDelegate(self, delegate);
     }
 
+    /// See NodeDelegate.frame: `delegate` must be a descendant (freed with this node).
+    pub fn setFrameDelegate(self: *Node, delegate: ?*Node) void {
+        self.meta.ownership.delegate.frame = delegate;
+    }
+
+    /// The node that draws this node's control frame (itself unless delegated).
+    pub fn frameNode(self: *Node) *Node {
+        var n = self;
+        while (n.meta.ownership.delegate.frame) |next| n = next;
+        return n;
+    }
+
     pub fn setInspectPickDisabled(self: *Node, disabled: bool) void {
         node_interaction.setInspectPickDisabled(self, disabled);
     }
@@ -1005,6 +1179,9 @@ pub const Node = struct {
         // Component-layer lots `before_render.main =` direct assign not through function, those by
         // tick.zig tickBeforeRender every run fold self-heal (see its note).
         node_interaction.markSubtreeBeforeRenderHook(self);
+        node_interaction.invalidateTickQuietChain(self);
+        if (scope == .subtree and !self.frame_state.state_bits.flags.before_render_hook_descendants_cache_safe)
+            node_interaction.markSubtreeUntrustedBeforeRenderHook(self);
         const hooks = &self.meta.per_frame.hooks.before_render;
         if (hooks.main == hook) return;
         for (hooks.hooks[0..hooks.count], 0..) |existing, i| {
@@ -1012,13 +1189,16 @@ pub const Node = struct {
             // Registered again: conflicting declarations resolve to the
             // conservative one, so a later .subtree demotes an earlier .self
             // (a later .self never widens an earlier .subtree).
-            if (scope == .subtree) hooks.self_only_mask &= ~(@as(u8, 1) << @intCast(i));
+            const bit_i = @as(u8, 1) << @intCast(i);
+            if (scope != .self) hooks.self_only_mask &= ~bit_i;
+            if (scope == .subtree) hooks.trusted_mask &= ~bit_i;
             return;
         }
         if (hooks.count < hooks.hooks.len) {
             const bit = @as(u8, 1) << @intCast(hooks.count);
             hooks.hooks[hooks.count] = hook;
             if (scope == .self) hooks.self_only_mask |= bit else hooks.self_only_mask &= ~bit;
+            if (scope != .subtree) hooks.trusted_mask |= bit else hooks.trusted_mask &= ~bit;
             hooks.count += 1;
         }
     }
@@ -1034,12 +1214,15 @@ pub const Node = struct {
                     hooks.hooks[j] = hooks.hooks[j + 1];
                 }
                 // Shift the scope bits above i down by one, like the entries.
-                const below = hooks.self_only_mask & ((@as(u8, 1) << @intCast(i)) - 1);
-                const above = (hooks.self_only_mask >> 1) & ~((@as(u8, 1) << @intCast(i)) - 1);
-                hooks.self_only_mask = below | above;
+                inline for (.{ &hooks.self_only_mask, &hooks.trusted_mask }) |mask| {
+                    const below = mask.* & ((@as(u8, 1) << @intCast(i)) - 1);
+                    const above = (mask.* >> 1) & ~((@as(u8, 1) << @intCast(i)) - 1);
+                    mask.* = below | above;
+                }
                 hooks.count -= 1;
                 hooks.hooks[hooks.count] = null;
                 hooks.self_only_mask &= ~(@as(u8, 1) << @intCast(hooks.count));
+                hooks.trusted_mask &= ~(@as(u8, 1) << @intCast(hooks.count));
                 return;
             }
         }
@@ -1056,6 +1239,29 @@ pub const Node = struct {
         if (hooks.count == 0) return false;
         const all = (@as(u16, 1) << @intCast(hooks.count)) - 1;
         return (@as(u16, hooks.self_only_mask) & all) == all;
+    }
+
+    /// Every before_render hook on this node writes only through dirty-marking entries, so a
+    /// cross-frame cache of this node or of a subtree containing it sees every change through
+    /// dirty bits and content / composite versions, like any event-driven write:
+    /// - all hooks registered with `.self` / `.dirty_marking` scope (Debug/ReleaseSafe audit
+    ///   includes the node itself), or
+    /// - the owner declared `before_render_hook_descendants_cache_safe` (audited over the subtree).
+    /// The node-wide `before_render_hook_affects_self_only` flag is not enough: its hooks may
+    /// refill their own geometry raw. No hooks: trivially true.
+    pub fn beforeRenderHooksCacheTrusted(self: *const Node) bool {
+        if (!self.hasBeforeRenderHooks()) return true;
+        if (self.frame_state.state_bits.flags.before_render_hook_descendants_cache_safe) return true;
+        return self.beforeRenderHooksScopedTrusted();
+    }
+
+    /// No `main` hook and every registered hook used `.self` or `.dirty_marking` scope.
+    pub fn beforeRenderHooksScopedTrusted(self: *const Node) bool {
+        const hooks = self.meta.per_frame.hooks.before_render;
+        if (hooks.main != null) return false;
+        if (hooks.count == 0) return false;
+        const all = (@as(u16, 1) << @intCast(hooks.count)) - 1;
+        return (@as(u16, hooks.trusted_mask) & all) == all;
     }
 
     pub fn hasBeforeRenderHooks(self: *const Node) bool {
@@ -1160,6 +1366,11 @@ pub const Node = struct {
     }
 
     /// bubble mark has_before_render_subtree (addBeforeRender/child add call)
+    /// See node_interaction.invalidateTickQuietChain.
+    pub fn invalidateTickQuietChain(self: *Node) void {
+        node_interaction.invalidateTickQuietChain(self);
+    }
+
     pub fn markSubtreeBeforeRenderHook(self: *Node) void {
         node_interaction.markSubtreeBeforeRenderHook(self);
     }
@@ -1183,6 +1394,13 @@ pub const Node = struct {
 
     pub fn resolveInheritedTextStyle(self: *const Node) InheritedTextStyle {
         return node_inherit.resolveInheritedTextStyle(self);
+    }
+
+    /// Text properties as laid out and painted (inheritance resolved, see
+    /// node_inherit.resolveTextProps). Layout and paint must both read this, never getText()'s
+    /// raw size / weight / color.
+    pub fn resolveTextProps(self: *const Node) ?TextProps {
+        return node_inherit.resolveTextProps(self);
     }
 
     pub fn resolveTextColor(self: *const Node) ?types.Color {
@@ -1219,6 +1437,7 @@ pub const Node = struct {
     /// runtime null -> debug assert + error log (prior silent skip let downstream 10 z_index all
     /// mute no signal, downstream regression).
     pub fn setStyle(self: *Node, maybe_allocator: anytype, comptime field: types.StyleField, value: types.StyleFieldType(field)) void {
+        node_tree.hostDirty(self);
         const AllocArg = @TypeOf(maybe_allocator);
         if (comptime AllocArg != std.mem.Allocator and AllocArg != ?std.mem.Allocator and AllocArg != @TypeOf(null)) {
             @compileError("setStyle 的 allocator 参数必须是 Allocator / ?Allocator / null，收到 " ++ @typeName(AllocArg));
@@ -1267,6 +1486,8 @@ pub const Node = struct {
             .render => self.markRenderDirtyTracked(.style_change, "setStyle"),
             .none => {},
         }
+        if (comptime field == .text_color) self.markInheritedTextDirty(.{ .color = true });
+        if (comptime field == .text_font_size or field == .text_font_weight) self.markInheritedTextDirty(.{ .metrics = true });
     }
 
     /// set full value margin, clear any auto margin mark.
@@ -1321,6 +1542,7 @@ pub const Node = struct {
                     slot.start_time_ms = render_engine.current_frame_time_ms;
                     slot.active = true;
                     slots.any_active = true;
+                    node_interaction.invalidateTickQuietChain(self);
                     self.markRenderDirtyTracked(.border_change, "setBorderColor");
                 }
                 return;
@@ -1341,6 +1563,7 @@ pub const Node = struct {
                     slot.start_time_ms = render_engine.current_frame_time_ms;
                     slot.active = true;
                     slots.any_active = true;
+                    node_interaction.invalidateTickQuietChain(self);
                     self.markRenderDirtyTracked(.border_change, "setBorderWidth");
                 }
                 return;
@@ -1372,13 +1595,19 @@ pub const Node = struct {
 
     // ==================== declarative Transition API ====================
 
-    /// configure property transition (need allocator allocate TransitionSlots)
-    fn setTransition(self: *Node, allocator: Allocator, prop: types.TransitionProp, spec: types.TransitionSpec) void {
-        if (self.frame_state.frame_local.runtime.transitions == null) {
-            self.frame_state.frame_local.runtime.transitions = allocator.create(types.TransitionSlots) catch return;
-            self.frame_state.frame_local.runtime.transitions.?.* = .{};
-        }
-        if (self.frame_state.frame_local.runtime.transitions.?.getOrCreate(prop)) |slot| {
+    /// The node's transition slots, allocated on first use (the only allocation configuring a
+    /// transition makes).
+    fn ensureTransitionSlots(self: *Node, allocator: Allocator) error{OutOfMemory}!*types.TransitionSlots {
+        if (self.frame_state.frame_local.runtime.transitions) |slots| return slots;
+        const slots = try allocator.create(types.TransitionSlots);
+        slots.* = .{};
+        self.frame_state.frame_local.runtime.transitions = slots;
+        return slots;
+    }
+
+    /// configure property transition (slots already allocated: cannot fail)
+    fn setTransition(slots: *types.TransitionSlots, prop: types.TransitionProp, spec: types.TransitionSpec) void {
+        if (slots.getOrCreate(prop)) |slot| {
             slot.spec = spec;
         }
     }
@@ -1398,6 +1627,7 @@ pub const Node = struct {
                     slot.start_time_ms = render_engine.current_frame_time_ms;
                     slot.active = true;
                     slots.any_active = true;
+                    node_interaction.invalidateTickQuietChain(self);
                     self.markRenderDirtyTracked(.background_change, "setBackground");
                 }
                 return;
@@ -1419,6 +1649,7 @@ pub const Node = struct {
                     slot.start_time_ms = render_engine.current_frame_time_ms;
                     slot.active = true;
                     slots.any_active = true;
+                    node_interaction.invalidateTickQuietChain(self);
                     // opacity is composite property: authority composition (four write path
                     // bottleneck last place).
                     self.markCompositePropDirty();
@@ -1435,15 +1666,109 @@ pub const Node = struct {
     /// layer (overlay own style, lose caller stack, undo cascade back); no host return false,
     /// caller direct write.
     pub fn routeInlineStyle(self: *Node, partial: types.BoxStyle) bool {
-        const h = self.meta.per_frame.hooks.style_host orelse return false;
+        const h = self.meta.per_frame.hooks.style_host orelse {
+            self.recordThemeInline(partial);
+            return false;
+        };
         return h.write_inline(h.ptr, &partial);
+    }
+
+    /// Hostless node whose declared style replays on theme switch: remember the inline write so
+    /// the replay keeps it (best effort, like the write itself; see `ThemeInlineStyle`).
+    fn recordThemeInline(self: *Node, partial: types.BoxStyle) void {
+        if (self.meta.per_frame.hooks.on_theme == null) return;
+        const rec = self.meta.per_frame.hooks.theme_inline orelse blk: {
+            const allocator = (self.world_ref orelse return).allocator;
+            const created = allocator.create(ThemeInlineStyle) catch {
+                std.log.warn("ui: inline style kept only until the next theme switch (out of memory)", .{});
+                return;
+            };
+            created.* = .{ .allocator = allocator };
+            self.meta.per_frame.hooks.theme_inline = created;
+            break :blk created;
+        };
+        rec.style = rec.style.merge(partial);
+    }
+
+    /// Theme replay of this node's `on_theme` declaration: through its style host when the host
+    /// holds it as a layer (inline and caller layers stay above it), else the hook rewrites the
+    /// declaration and the remembered inline writes go back over it.
+    pub fn replayThemeDeclaration(self: *Node, t: *const types.ThemeTokens, allocator: std.mem.Allocator) void {
+        const hook = self.meta.per_frame.hooks.on_theme orelse return;
+        if (self.meta.per_frame.hooks.style_host) |h| if (h.retheme(h.ptr, t)) return;
+        hook(self, t, allocator);
+        self.reapplyThemeInline(allocator);
+    }
+
+    /// Theme replay: put the remembered inline writes back over the declaration `on_theme` just
+    /// rewrote (raw writes: the values were already showing, nothing transitions).
+    pub fn reapplyThemeInline(self: *Node, allocator: std.mem.Allocator) void {
+        const rec = self.meta.per_frame.hooks.theme_inline orelse return;
+        const partial = rec.style;
+        if (partial.needsExt()) _ = self.style.ensureExtFallible(allocator) catch {
+            std.log.warn("ui: inline style lost on theme switch (out of memory)", .{});
+            return;
+        };
+        var rest = partial;
+        rest.background = null;
+        rest.opacity = null;
+        rest.applyTo(&self.style, allocator);
+        if (partial.background) |c| self.setBackgroundRaw(c);
+        if (partial.opacity) |o| self.setOpacityRaw(o);
+        self.markLayoutDirty();
+        self.markInheritedTextDirty(.of(partial));
     }
 
     /// imperative set style fields group (component inline style). With view style host go
     /// component inline layer; else direct write to node
     /// (background/opacity/border_color/translate_x via interpolate setter).
+    ///
+    /// Best effort: an allocation failure drops the write (whole: never part of it; a layered
+    /// node's host retries a failed recalculation on its next write). For effects / callbacks
+    /// that cannot report errors; mount paths use `setStyleInlineFallible`.
     pub fn setStyleInline(self: *Node, allocator: std.mem.Allocator, partial: types.BoxStyle) void {
         if (self.routeInlineStyle(partial)) return;
+        // the ext block is the direct write's only allocation: without it the whole write is
+        // dropped, never just its ext fields
+        if (partial.needsExt()) _ = self.style.ensureExtFallible(allocator) catch {
+            std.log.warn("ui: inline style write dropped (out of memory)", .{});
+            return;
+        };
+        self.applyStyleInlineDirect(allocator, partial);
+    }
+
+    /// `setStyleInline` that reports allocation failure: the write lands completely or the node
+    /// is left unchanged (mount paths).
+    pub fn setStyleInlineFallible(self: *Node, allocator: std.mem.Allocator, partial: types.BoxStyle) error{OutOfMemory}!void {
+        (try self.stageStyleInline(allocator, partial)).commit();
+    }
+
+    /// First half of a fallible inline write: every allocation happens here, nothing visible
+    /// changes until `commit` (see `StagedStyleInline`).
+    pub fn stageStyleInline(self: *Node, allocator: std.mem.Allocator, partial: types.BoxStyle) error{OutOfMemory}!StagedStyleInline {
+        if (self.meta.per_frame.hooks.style_host) |h| {
+            if (try h.stage_inline(h.ptr, &partial)) return .{ .node = self, .allocator = allocator, .partial = partial, .via_host = true, .created_ext = false };
+        }
+        // Direct write: the ext block (and a themed node's inline record) are the only
+        // allocations applyTo / the setters make.
+        const had_ext = self.style.ext != null;
+        if (partial.needsExt()) _ = try self.style.ensureExtFallible(allocator);
+        errdefer if (!had_ext) if (self.style.ext) |ext| {
+            allocator.destroy(ext);
+            self.style.ext = null;
+        };
+        var created_theme_inline = false;
+        if (self.meta.per_frame.hooks.on_theme != null and self.meta.per_frame.hooks.theme_inline == null) {
+            const rec = try allocator.create(ThemeInlineStyle);
+            rec.* = .{ .allocator = allocator };
+            self.meta.per_frame.hooks.theme_inline = rec;
+            created_theme_inline = true;
+        }
+        return .{ .node = self, .allocator = allocator, .partial = partial, .via_host = false, .created_ext = !had_ext and self.style.ext != null, .created_theme_inline = created_theme_inline };
+    }
+
+    fn applyStyleInlineDirect(self: *Node, allocator: std.mem.Allocator, partial: types.BoxStyle) void {
+        node_tree.hostDirty(self);
         var rest = partial;
         rest.background = null;
         rest.opacity = null;
@@ -1455,24 +1780,34 @@ pub const Node = struct {
         if (partial.border_color) |c| self.setBorderColor(c);
         if (partial.translate_x) |x| self.setTranslateX(x);
         self.markLayoutDirty();
+        self.markInheritedTextDirty(.of(partial));
     }
 
     /// strip prior setStyleInline/interpolate setter write component inline style (`fields`
     /// non-null fields; value self ignore), let properties cascade back (own element
     /// style/default). No view style host nothing to do.
     pub fn unsetStyleInline(self: *Node, fields: types.BoxStyle) void {
-        const h = self.meta.per_frame.hooks.style_host orelse return;
+        const h = self.meta.per_frame.hooks.style_host orelse {
+            // Hostless: nothing cascades back now, but the next theme replay stops keeping them.
+            const rec = self.meta.per_frame.hooks.theme_inline orelse return;
+            inline for (@import("zenit_reflection").fields(types.BoxStyle)) |f| {
+                if (@field(fields, f.name) != null) @field(rec.style, f.name) = null;
+            }
+            return;
+        };
         h.unset_inline(h.ptr, &fields);
     }
 
     /// side-effect-free background write entry. SoA only write path. Don't trigger
     /// transition/dirty/dedup. Route detail see pca.writeBackground.
     pub fn setBackgroundRaw(self: *Node, color: types.Color) void {
+        node_tree.hostDirty(self);
         pca.writeBackground(self.world_ref, self.element_id_raw, @intFromPtr(self), color);
     }
 
     /// side-effect-free opacity write entry. Semantics like setBackgroundRaw.
     pub fn setOpacityRaw(self: *Node, value: f32) void {
+        node_tree.hostDirty(self);
         pca.writeOpacity(self.world_ref, self.element_id_raw, @intFromPtr(self), value);
     }
 
@@ -1525,6 +1860,7 @@ pub const Node = struct {
                     slot.start_time_ms = render_engine.current_frame_time_ms;
                     slot.active = true;
                     slots.any_active = true;
+                    node_interaction.invalidateTickQuietChain(self);
                     self.markRenderDirty();
                 }
                 return;
@@ -1547,6 +1883,7 @@ pub const Node = struct {
                     slot.start_time_ms = render_engine.current_frame_time_ms;
                     slot.active = true;
                     slots.any_active = true;
+                    node_interaction.invalidateTickQuietChain(self);
                     // translate is composite-type property: unified authority invalidation
                     // composition (interaction + composite + cache invalid), match transition
                     // tick/animator/hooks.
@@ -1555,6 +1892,11 @@ pub const Node = struct {
                 return;
             }
         }
+        // Re-writing the current offset changes nothing: per-frame writers
+        // (Slider's before-render thumb sync) would otherwise dirty the hit
+        // scene every frame, and a live stationary pointer then re-resolves
+        // hover against the new scene epoch and requests the next frame.
+        if (self.style.translate_x == value) return;
         self.style.translate_x = value;
         self.markCompositePropDirty();
     }
@@ -1569,6 +1911,7 @@ pub const Node = struct {
                     slot.start_time_ms = render_engine.current_frame_time_ms;
                     slot.active = true;
                     slots.any_active = true;
+                    node_interaction.invalidateTickQuietChain(self);
                     self.markInteractionDirty();
                     self.markCompositeDirty();
                 }
@@ -1646,6 +1989,7 @@ pub const Node = struct {
                     slot.start_time_ms = render_engine.current_frame_time_ms;
                     slot.active = true;
                     slots.any_active = true;
+                    node_interaction.invalidateTickQuietChain(self);
                     self.markLayoutDirty();
                 }
                 return;
@@ -1663,27 +2007,32 @@ pub const Node = struct {
         allocator: Allocator,
         props: []const types.TransitionProp,
         spec: types.TransitionSpec,
-    ) void {
-        for (props) |prop| {
-            self.setTransition(allocator, prop, spec);
-        }
+    ) error{OutOfMemory}!void {
+        if (props.len == 0) return;
+        const slots = try self.ensureTransitionSlots(allocator);
+        for (props) |prop| setTransition(slots, prop, spec);
     }
 
     /// Apply a CSS style's comptime transition parse result.
     ///
     /// usage:
     /// ```zig
-    /// node.applyTransition(allocator, comptime recipe.transition("background 200ms ease-out,
+    /// try node.applyTransition(allocator, comptime recipe.transition("background 200ms ease-out,
     /// opacity 150ms"));
     /// ```
-    pub fn applyTransition(self: *Node, allocator: Allocator, entries: []const recipe_mod.TransitionEntry) void {
-        for (entries) |entry| {
-            self.setTransition(allocator, entry.prop, entry.spec);
-        }
+    ///
+    /// All or nothing: the slot block (allocated on the first transition) is the only allocation;
+    /// when it fails the node is unchanged and `error.OutOfMemory` is returned, never a node that
+    /// silently snaps where its style declares a transition.
+    pub fn applyTransition(self: *Node, allocator: Allocator, entries: []const recipe_mod.TransitionEntry) error{OutOfMemory}!void {
+        if (entries.len == 0) return;
+        const slots = try self.ensureTransitionSlots(allocator);
+        for (entries) |entry| setTransition(slots, entry.prop, entry.spec);
     }
 
     pub fn requestCompositeAnimationLinger(self: *Node, affects_opacity: bool, affects_transform: bool) void {
         if (!affects_opacity and !affects_transform) return;
+        node_interaction.invalidateTickQuietChain(self);
         self.frame_state.frame_local.runtime.linger.composite = @max(self.frame_state.frame_local.runtime.linger.composite, @as(u8, 2));
         if (affects_opacity) {
             self.frame_state.frame_local.runtime.linger.opacity = @max(self.frame_state.frame_local.runtime.linger.opacity, @as(u8, 2));
@@ -1759,11 +2108,29 @@ pub const Node = struct {
     pub fn markCompositeAnimFrameDirty(self: *Node) void {
         node_dirty.markCompositeAnimFrameDirty(self);
     }
+    /// Own-transform (scroll offset) change: hit-layer aware variants of markInteractionDirty /
+    /// markCompositeAnimFrameDirty / markCompositePropDirty (see node_dirty.markHitLayerMotion).
+    pub fn markHitLayerMotion(self: *Node) void {
+        node_dirty.markHitLayerMotion(self);
+    }
+    pub fn markHitLayerMotionAnimFrameDirty(self: *Node) void {
+        node_dirty.markHitLayerMotionAnimFrameDirty(self);
+    }
+    pub fn markHitLayerMotionPropDirty(self: *Node) void {
+        node_dirty.markHitLayerMotionPropDirty(self);
+    }
     fn isOutOfBandRenderUnit(self: *const Node) bool {
         return node_dirty.isOutOfBandRenderUnit(self);
     }
     pub fn markRenderDirty(self: *Node) void {
         node_dirty.markRenderDirty(self);
+    }
+    pub const InheritedTextChange = node_dirty.InheritedTextChange;
+
+    /// Inheritable text properties changed: re-measure / repaint the texts and descendants that
+    /// resolve them (see node_dirty.markInheritedTextDirty).
+    pub fn markInheritedTextDirty(self: *Node, change: InheritedTextChange) void {
+        node_dirty.markInheritedTextDirty(self, change);
     }
     fn markRenderDirtyTracked(self: *Node, reason: debug_trace.RenderReason, comptime source: []const u8) void {
         node_dirty.markRenderDirtyTracked(self, reason, source);
@@ -1848,8 +2215,11 @@ pub const Node = struct {
     ) void {
         node_render_cache.cacheSubtreePayloadCommands(self, allocator, commands, self_content_command_count, transform_id, effect_id, clip_id, world_bounds);
     }
+    /// Releases both cross-frame payload caches (subtree and own content).
     pub fn invalidateSubtreePayloadCache(self: *Node) void {
+        @import("render_engine/retained_memo.zig").dropMemo(self);
         node_render_cache.invalidateSubtreePayloadCache(self);
+        node_render_cache.invalidateOwnPayloadCache(self);
     }
     pub fn getOrComputeTextHashes(self: *Node, t: *const TextProps) TextHashSnapshot {
         return node_render_cache.getOrComputeTextHashes(self, t);

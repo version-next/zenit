@@ -2,25 +2,31 @@
 //! focus trap / animation in mod.zig.
 const ui = @import("../../ui.zig");
 
-/// Dialog panel: fixed width, grows with content up to max-height; default background bg-secondary.
-/// Double-layer shadow: main theme shadow + large-extent ambient light soft shadow (simulates
-/// extreme modal elevation, MD3 style).
+/// Dialog panel: design radius.dialog, 1px border and shadow.lg.
 style dialog($width: f32, $max_height: f32, $background: ?ui.Color = null) {
   width: $width;
   height: {.{ .fit = .{ .max = $max_height } }};
-  background: $background ?? bg-secondary;
+  background: $background ?? bg-primary;
   direction: column;
-  corner-radius: 8;
-  shadow: lg, 0 32 80 #00000019;
+  corner-radius: dialog;
+  border-overlay: true; border: 1 border;
+  shadow: lg;
 }
 
 /// Title bar: title + close button space-between
-style header { direction: row; justify: space-between; align-items: center; gap: 12; padding: 12 16; width: grow; border: 0 separator; }
-style title { color: fg-primary; font-size: 14; font-weight: 600; wrap: word; }
-/// Close button: 24x24
-style close_button { width: 24; height: 24; background: transparent; justify: center; align-items: center; corner-radius: 4; }
-/// Text X fallback when no icon asset (24x24, same geometry as close button, no corner radius)
-style close_glyph_box { width: 24; height: 24; background: transparent; justify: center; align-items: center; }
+style header { direction: row; justify: space-between; align-items: center; gap: space300; padding: 16 12 0 20; width: grow; background: transparent; border-overlay: true; border-bottom-width: 1; border-color: border; }
+pub fn title(t: *const ui.ThemeTokens) ui.TextStyle {
+    return .{ .color = t.tokens.color.fg_primary, .font_size = t.tokens.font_size.xl, .font_weight = 600, .line_height = 1.25, .wrap = .word_break };
+}
+/// Close button: 28x28
+style close_button { width: 28; height: 28; background: transparent; justify: center; align-items: center; corner-radius: control; :hover { background: bg-hover; } }
+/// Text X fallback when no icon asset (28x28, same geometry as close button, no corner radius)
+style close_glyph_box { width: 28; height: 28; background: transparent; justify: center; align-items: center; }
 style close_glyph { color: fg-secondary; font-size: 14; }
-style body { direction: column; width: grow; height: grow; padding: 16; }
-style close_icon { width: 14; height: 14; icon-color: fg-secondary; }
+style body { direction: column; width: grow; height: grow; padding: 8 20 20 20; gap: space400; }
+style close_icon { width: 18; height: 18; icon-color: fg-secondary; }
+
+
+pub fn headerCorners(t: *const ui.ThemeTokens) ui.BoxStyle {
+    return .{ .corner_radii = .{ .each = .{ t.tokens.radius.dialog, t.tokens.radius.dialog, 0, 0 } } };
+}

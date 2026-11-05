@@ -31,10 +31,11 @@ pub fn Card(
     const clickable = onClick != null;
     const is_interactive = computed(interactive or clickable);
     const lights_up = computed(hoverable or interactive or clickable);
+    const has_header = computed(title.len != 0 or subtitle.len != 0);
     const semantics = computed(semanticsOf(interactive or clickable, title, selected));
     return (
         <box
-            style={.{ S.Card.of(.{ .kind = variant, .selected = selected, .hoverable = lights_up }), S.size.of(.{ .width = width, .height = height }) }}
+            style={.{ S.Card.of(.{ .kind = variant, .selected = selected, .hoverable = lights_up }), ui.view.styleBy(variant, S.elevation), S.size.of(.{ .width = width, .height = height }) }}
             focusable={is_interactive}
             a11y={semantics}
             onClick={onClick}
@@ -45,7 +46,7 @@ pub fn Card(
                     {if (subtitle.len != 0) <text style={S.subtitle} box={S.subtitle_row}>{subtitle}</text>}
                 </box>
             }
-            <box style={S.Body.of(.{ .padded = padded })}>{children}</box>
+            <box style={S.Body.of(.{ .padded = padded, .headed = has_header })}>{children}</box>
         </box>
     );
 }

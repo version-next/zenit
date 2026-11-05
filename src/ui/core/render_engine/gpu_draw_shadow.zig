@@ -262,7 +262,7 @@ pub fn lowerDisplayItem(item: DisplayItem) PaintItem {
         // B-7-C: 8 control kinds, kind = .control + control_kind distinguishes token
         .push_clip => |pc| {
             out.geom = .{ .x = pc.x, .y = pc.y, .w = pc.w, .h = pc.h };
-            out.radii = .{ .tl = pc.radius, .tr = pc.radius, .br = pc.radius, .bl = pc.radius };
+            out.radii = .{ .tl = pc.radii[0], .tr = pc.radii[1], .br = pc.radii[2], .bl = pc.radii[3] };
             out.control_kind = .push_clip;
             out.clip_shape_kind = @backingInt(pc.shape_kind);
             // polygon shape field via cx.lowerForEncoderPaintTable allocs
@@ -276,7 +276,7 @@ pub fn lowerDisplayItem(item: DisplayItem) PaintItem {
         },
         .begin_opacity_layer => |bo| {
             out.geom = .{ .x = bo.x, .y = bo.y, .w = bo.w, .h = bo.h };
-            out.radii = .{ .tl = bo.corner_radius, .tr = bo.corner_radius, .br = bo.corner_radius, .bl = bo.corner_radius };
+            out.radii = .{ .tl = bo.corner_radii[0], .tr = bo.corner_radii[1], .br = bo.corner_radii[2], .bl = bo.corner_radii[3] };
             out.opacity = bo.opacity;
             out.rotate = bo.rotate;
             out.draw_x = bo.draw_x;
@@ -284,6 +284,7 @@ pub fn lowerDisplayItem(item: DisplayItem) PaintItem {
             out.draw_w = bo.draw_w;
             out.draw_h = bo.draw_h;
             out.use_draw_transform = bo.use_draw_transform;
+            out.surface_rest_origin = bo.surface_rest_origin;
             out.draw_transform = .{
                 bo.draw_transform.a,  bo.draw_transform.b,
                 bo.draw_transform.c,  bo.draw_transform.d,
@@ -301,16 +302,14 @@ pub fn lowerDisplayItem(item: DisplayItem) PaintItem {
         .begin_blur_layer => |bb| {
             out.glass_owner_id = bb.owner_node;
             out.geom = .{ .x = bb.x, .y = bb.y, .w = bb.w, .h = bb.h };
-            out.radii = if (bb.corner_radii[0] >= 0)
-                .{ .tl = bb.corner_radii[0], .tr = bb.corner_radii[1], .br = bb.corner_radii[2], .bl = bb.corner_radii[3] }
-            else
-                .{ .tl = bb.corner_radius, .tr = bb.corner_radius, .br = bb.corner_radius, .bl = bb.corner_radius };
+            out.radii = .{ .tl = bb.corner_radii[0], .tr = bb.corner_radii[1], .br = bb.corner_radii[2], .bl = bb.corner_radii[3] };
             out.rotate = bb.rotate;
             out.draw_x = bb.draw_x;
             out.draw_y = bb.draw_y;
             out.draw_w = bb.draw_w;
             out.draw_h = bb.draw_h;
             out.use_draw_transform = bb.use_draw_transform;
+            out.surface_rest_origin = bb.surface_rest_origin;
             out.draw_transform = .{
                 bb.draw_transform.a,  bb.draw_transform.b,
                 bb.draw_transform.c,  bb.draw_transform.d,
@@ -327,13 +326,14 @@ pub fn lowerDisplayItem(item: DisplayItem) PaintItem {
         },
         .begin_rounded_clip => |br| {
             out.geom = .{ .x = br.x, .y = br.y, .w = br.w, .h = br.h };
-            out.radii = .{ .tl = br.radius, .tr = br.radius, .br = br.radius, .bl = br.radius };
+            out.radii = .{ .tl = br.radii[0], .tr = br.radii[1], .br = br.radii[2], .bl = br.radii[3] };
             out.rotate = br.rotate;
             out.draw_x = br.draw_x;
             out.draw_y = br.draw_y;
             out.draw_w = br.draw_w;
             out.draw_h = br.draw_h;
             out.use_draw_transform = br.use_draw_transform;
+            out.surface_rest_origin = br.surface_rest_origin;
             out.draw_transform = .{
                 br.draw_transform.a,  br.draw_transform.b,
                 br.draw_transform.c,  br.draw_transform.d,
@@ -742,7 +742,7 @@ test "lowerDisplayItem: push_clip rect → control kind + clip_shape_kind=0" {
         .y = 20,
         .w = 100,
         .h = 50,
-        .radius = 8,
+        .radii = .{ 8, 8, 8, 8 },
         .shape_kind = .rect,
     } };
     const lowered = lowerDisplayItem(item);
@@ -756,6 +756,24 @@ test "lowerDisplayItem: push_clip rect → control kind + clip_shape_kind=0" {
     try testing.expect(lowered.clip_polygon_ptr == null);
 }
 
+test "lowerDisplayItem: push_clip rounded_rect keeps each corner radius (TL, TR, BR, BL)" {
+    const item: DisplayItem = .{ .push_clip = .{
+        .header = dummyHeader(),
+        .x = 0,
+        .y = 0,
+        .w = 120,
+        .h = 32,
+        .radii = .{ 8, 0, 3, 5 },
+        .shape_kind = .rounded_rect,
+    } };
+    const lowered = lowerDisplayItem(item);
+    try testing.expectEqual(@as(u8, 1), lowered.clip_shape_kind);
+    try testing.expectEqual(@as(f32, 8), lowered.radii.tl);
+    try testing.expectEqual(@as(f32, 0), lowered.radii.tr);
+    try testing.expectEqual(@as(f32, 3), lowered.radii.br);
+    try testing.expectEqual(@as(f32, 5), lowered.radii.bl);
+}
+
 test "lowerDisplayItem: push_clip polygon → control_kind/clip_shape_kind 标识" {
     var item: DisplayItem = .{ .push_clip = .{
         .header = dummyHeader(),
@@ -765,10 +783,12 @@ test "lowerDisplayItem: push_clip polygon → control_kind/clip_shape_kind 标�
         .h = 50,
         .shape_kind = .polygon,
     } };
-    item.push_clip.polygon.point_count = 3;
-    item.push_clip.polygon.points[0] = .{ 0, 0 };
-    item.push_clip.polygon.points[1] = .{ 50, 0 };
-    item.push_clip.polygon.points[2] = .{ 25, 50 };
+    var polygon: display_list_mod.ClipPolygon = .{};
+    polygon.point_count = 3;
+    polygon.points[0] = .{ 0, 0 };
+    polygon.points[1] = .{ 50, 0 };
+    polygon.points[2] = .{ 25, 50 };
+    item.push_clip.polygon = &polygon;
     const lowered = lowerDisplayItem(item);
     try testing.expectEqual(paint_table_mod.ControlKind.push_clip, lowered.control_kind);
     try testing.expectEqual(@as(u8, 3), lowered.clip_shape_kind);
@@ -806,9 +826,15 @@ test "lowerDisplayItem: begin_opacity_layer 字段无损 (geom + opacity + draw_
         .draw_transform = types_mod.Transform2D{ .a = 1.5, .b = 0, .c = 0, .d = 1.5, .tx = 5, .ty = 6 },
         .blend_mode = .multiply,
         .warp = .{ 6, 2, 4, 14 },
+        .corner_radii = .{ 0, 12, 12, 0 },
     } };
     const lowered = lowerDisplayItem(item);
     try testing.expectEqual(paint_table_mod.ControlKind.begin_opacity_layer, lowered.control_kind);
+    // Folded rounded clip mask keeps per-corner radii (attached group item: square left side).
+    try testing.expectEqual(@as(f32, 0), lowered.radii.tl);
+    try testing.expectEqual(@as(f32, 12), lowered.radii.tr);
+    try testing.expectEqual(@as(f32, 12), lowered.radii.br);
+    try testing.expectEqual(@as(f32, 0), lowered.radii.bl);
     try testing.expectEqual([4]f32{ 6, 2, 4, 14 }, lowered.warp);
     try testing.expectApproxEqAbs(@as(f32, 0.5), lowered.opacity, 0.001);
     try testing.expectApproxEqAbs(@as(f32, 1.5), lowered.draw_transform[0], 0.001);
@@ -825,7 +851,7 @@ test "lowerDisplayItem: begin_blur_layer extra_ptr 透传 source variant" {
         .y = 0,
         .w = 200,
         .h = 100,
-        .corner_radius = 12,
+        .corner_radii = .{ 12, 12, 12, 12 },
     } };
     const lowered = lowerDisplayItem(item);
     try testing.expectEqual(paint_table_mod.ControlKind.begin_blur_layer, lowered.control_kind);
@@ -840,12 +866,30 @@ test "lowerDisplayItem: begin_blur_layer 四角半径逐角透传（同心圆角
         .y = 0,
         .w = 60,
         .h = 60,
-        .corner_radius = 12,
         .corner_radii = .{ 12, 0, 0, 0 },
     } };
     const lowered = lowerDisplayItem(item);
     try testing.expectApproxEqAbs(@as(f32, 12), lowered.radii.tl, 0.001);
     try testing.expectApproxEqAbs(@as(f32, 0), lowered.radii.bl, 0.001);
+}
+
+test "lowerDisplayItem: begin_blur_layer never substitutes a uniform radius for odd corners" {
+    // A negative / NaN first corner used to read as the old "uniform" sentinel and turn the glass
+    // into an all-round shape while the owner's clip and hit shape kept the four corners. The
+    // lowering passes the corners through untouched; the encoder normalises them.
+    const item: DisplayItem = .{ .begin_blur_layer = .{
+        .header = dummyHeader(),
+        .x = 0,
+        .y = 0,
+        .w = 100,
+        .h = 40,
+        .corner_radii = .{ -4, 20, 0, 0 },
+    } };
+    const lowered = lowerDisplayItem(item);
+    try testing.expectEqual(@as(f32, -4), lowered.radii.tl);
+    try testing.expectEqual(@as(f32, 20), lowered.radii.tr);
+    try testing.expectEqual(@as(f32, 0), lowered.radii.br);
+    try testing.expectEqual(@as(f32, 0), lowered.radii.bl);
 }
 
 test "lowerDisplayItem: begin_rounded_clip 字段无损 (geom + radius + draw fields)" {
@@ -856,7 +900,7 @@ test "lowerDisplayItem: begin_rounded_clip 字段无损 (geom + radius + draw fi
         .y = 6,
         .w = 80,
         .h = 60,
-        .radius = 10,
+        .radii = .{ 10, 0, 0, 10 },
         .rotate = 0,
         .draw_x = 1,
         .draw_y = 2,
@@ -868,6 +912,9 @@ test "lowerDisplayItem: begin_rounded_clip 字段无损 (geom + radius + draw fi
     const lowered = lowerDisplayItem(item);
     try testing.expectEqual(paint_table_mod.ControlKind.begin_rounded_clip, lowered.control_kind);
     try testing.expectApproxEqAbs(@as(f32, 10), lowered.radii.tl, 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 0), lowered.radii.tr, 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 0), lowered.radii.br, 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 10), lowered.radii.bl, 0.001);
     try testing.expectApproxEqAbs(@as(f32, 1), lowered.draw_x, 0.001);
     try testing.expectEqual(false, lowered.use_draw_transform);
 }

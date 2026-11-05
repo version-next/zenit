@@ -25,7 +25,7 @@ test "text publication: NumberStepper resizes after digit count change" {
     const scope = try ui.Scope.init(cx.allocator, null, cx.owner);
     defer scope.dispose();
     const stepper = try @import("../components/number_stepper/mod.zig").NumberStepper(.{ .value = 9 }).mount(scope, cx);
-    const value_node: *ui.Node = @as(*@import("../components/number_stepper/mod.zig").NumberStepperRuntime, @ptrCast(@alignCast(stepper.wrapper.behavior.events.key_context.?))).value_node;
+    const value_node: *ui.Node = stepper.field.text_display_node.?;
     try root.appendChild(cx.allocator, stepper.wrapper);
     cx.layout();
     _ = cx.render();

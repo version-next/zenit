@@ -13,8 +13,6 @@ const useHover = hooks.useHover;
 const useHoverHighlight = hooks.useHoverHighlight;
 const onMount = hooks.onMount;
 const onCleanup = hooks.onCleanup;
-const useAnimatedBackground = hooks.useAnimatedBackground;
-const AnimBgState = hooks.AnimBgState;
 const invalidateSubtreeHookState = hooks.invalidateSubtreeHookState;
 const ToggleState = hooks.ToggleState;
 const useFocusRing = hooks.useFocusRing;
@@ -306,213 +304,6 @@ test "onCleanup: recursive for nested children" {
     try std.testing.expectEqual(@as(u32, 1), child_clean_count);
 }
 
-test "useAnimatedBackground: creates state and hover signal" {
-    const box = core.box;
-    const t = &core.theme.dark;
-    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
-    defer ctx.deinit();
-
-    const root = try box(ctx, .{ .width = .{ .px = 200 }, .height = .{ .px = 100 } }, .{});
-    ctx.root = root;
-
-    const node = try box(ctx, .{ .width = .{ .px = 100 }, .height = .{ .px = 50 }, .background = t.tokens.color.accent }, .{});
-    try root.appendChild(std.testing.allocator, node);
-
-    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
-    defer scope.dispose();
-
-    const is_hovered = try useAnimatedBackground(scope, ctx, node, .{
-        .normal = t.tokens.color.accent,
-        .hover = t.tokens.color.accent_hover,
-    });
-
-    // initial state
-    try std.testing.expect(!is_hovered.get());
-    try std.testing.expect(node.meta.per_frame.hooks.before_render.main != null or node.meta.per_frame.hooks.before_render.count > 0);
-
-    // hover -> set Signal
-    node.behavior.events.on_hover.?.invoke();
-    try std.testing.expect(is_hovered.get());
-}
-
-test "useAnimatedBackground: normal override survives recipe color refresh" {
-    const box = core.box;
-    const t = &core.theme.dark;
-    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
-    defer ctx.deinit();
-
-    const node = try box(ctx, .{ .width = .{ .px = 100 }, .height = .{ .px = 50 } }, .{});
-    ctx.root = node;
-    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
-    defer scope.dispose();
-    _ = try useAnimatedBackground(scope, ctx, node, .{
-        .normal = t.tokens.color.accent,
-        .hover = t.tokens.color.accent_hover,
-    });
-
-    const state: *AnimBgState = @ptrCast(@alignCast(node.meta.per_frame.hooks.slots.animated_bg_state.?));
-    const override = Color.hex(0x123456);
-    const refreshed_recipe = Color.hex(0x654321);
-    state.setNormalOverride(override);
-    state.setColors(refreshed_recipe, t.tokens.color.bg_hover);
-    try std.testing.expect(Color.eql(state.normal_bg, override));
-    try std.testing.expect(Color.eql(state.recipe_normal_bg, refreshed_recipe));
-
-    state.setNormalOverride(null);
-    try std.testing.expect(Color.eql(state.normal_bg, refreshed_recipe));
-}
-
-test "useAnimatedBackground: uses dedicated node slot" {
-    const box = core.box;
-    const render_engine = @import("core/render_engine/mod.zig");
-    const t = &core.theme.dark;
-    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
-    defer ctx.deinit();
-
-    const root = try box(ctx, .{ .width = .{ .px = 200 }, .height = .{ .px = 100 } }, .{});
-    ctx.root = root;
-
-    const node = try box(ctx, .{ .width = .{ .px = 100 }, .height = .{ .px = 50 }, .background = t.tokens.color.accent }, .{});
-    try root.appendChild(std.testing.allocator, node);
-
-    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
-    defer scope.dispose();
-
-    _ = try useAnimatedBackground(scope, ctx, node, .{
-        .normal = t.tokens.color.accent,
-        .hover = t.tokens.color.accent_hover,
-    });
-
-    var dummy: u8 = 0;
-    node.meta.per_frame.hooks.slots.anim_state = @ptrCast(&dummy);
-    node.behavior.events.on_hover.?.invoke();
-
-    var now_ms: f64 = 0;
-    for (0..30) |_| {
-        now_ms += 16.0;
-        render_engine.current_frame_time_ms = now_ms;
-        render_engine.current_frame_dt_ms = 16.0;
-        for (node.meta.per_frame.hooks.before_render.hooks[0..node.meta.per_frame.hooks.before_render.count]) |cb_opt| {
-            if (cb_opt) |cb| cb(node);
-        }
-    }
-
-    try std.testing.expect(node.meta.per_frame.hooks.slots.anim_state == @as(?*anyopaque, @ptrCast(&dummy)));
-    try std.testing.expect(node.meta.per_frame.hooks.slots.animated_bg_state != null);
-}
-
-test "useAnimatedBackground: scope dispose removes hook state" {
-    const box = core.box;
-    const t = &core.theme.dark;
-    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
-    defer ctx.deinit();
-
-    const root = try box(ctx, .{ .width = .{ .px = 200 }, .height = .{ .px = 100 } }, .{});
-    ctx.root = root;
-
-    const node = try box(ctx, .{ .width = .{ .px = 100 }, .height = .{ .px = 50 }, .background = t.tokens.color.accent }, .{});
-    try root.appendChild(std.testing.allocator, node);
-
-    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
-    _ = try useAnimatedBackground(scope, ctx, node, .{
-        .normal = t.tokens.color.accent,
-        .hover = t.tokens.color.accent_hover,
-    });
-
-    try std.testing.expect(node.meta.per_frame.hooks.slots.animated_bg_state != null);
-    try std.testing.expect(node.meta.per_frame.hooks.before_render.count > 0);
-
-    scope.dispose();
-
-    try std.testing.expect(node.meta.per_frame.hooks.slots.animated_bg_state == null);
-    try std.testing.expectEqual(@as(u8, 0), node.meta.per_frame.hooks.before_render.count);
-}
-
-test "useAnimatedBackground: beforeRender clears stale hover state from detached interaction" {
-    const box = core.box;
-    const render_engine = @import("core/render_engine/mod.zig");
-    const t = &core.theme.dark;
-    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
-    defer ctx.deinit();
-
-    const root = try box(ctx, .{ .width = .{ .px = 200 }, .height = .{ .px = 100 } }, .{});
-    ctx.root = root;
-
-    const node = try box(ctx, .{ .width = .{ .px = 100 }, .height = .{ .px = 50 }, .background = t.tokens.color.accent }, .{});
-    try root.appendChild(std.testing.allocator, node);
-
-    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
-    defer scope.dispose();
-
-    const is_hovered = try useAnimatedBackground(scope, ctx, node, .{
-        .normal = t.tokens.color.accent,
-        .hover = t.tokens.color.accent_hover,
-    });
-
-    node.behavior.events.on_hover.?.invoke();
-    ctx.hovered_node = null;
-
-    var now_ms: f64 = 0;
-    for (0..30) |_| {
-        now_ms += 16.0;
-        render_engine.current_frame_time_ms = now_ms;
-        for (node.meta.per_frame.hooks.before_render.hooks[0..node.meta.per_frame.hooks.before_render.count]) |cb_opt| {
-            if (cb_opt) |cb| cb(node);
-        }
-    }
-
-    try std.testing.expect(!is_hovered.get());
-    try std.testing.expect(Color.eql(node.getBackground(), t.tokens.color.accent));
-}
-
-test "useAnimatedBackground: beforeRender reacts to pressed state release without hover signal change" {
-    const box = core.box;
-    const render_engine = @import("core/render_engine/mod.zig");
-    const t = &core.theme.dark;
-    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
-    defer ctx.deinit();
-
-    const root = try box(ctx, .{ .width = .{ .px = 200 }, .height = .{ .px = 100 } }, .{});
-    ctx.root = root;
-
-    const node = try box(ctx, .{ .width = .{ .px = 100 }, .height = .{ .px = 50 }, .background = t.tokens.color.accent }, .{});
-    try root.appendChild(std.testing.allocator, node);
-
-    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
-    defer scope.dispose();
-
-    _ = try useAnimatedBackground(scope, ctx, node, .{
-        .normal = t.tokens.color.accent,
-        .hover = t.tokens.color.accent_hover,
-        .pressed = t.tokens.color.bg_active,
-    });
-
-    node.behavior.events.on_hover.?.invoke();
-    ctx.hovered_node = node;
-    ctx.pressed_node = node;
-
-    var now_ms: f64 = 0;
-    for (0..30) |_| {
-        now_ms += 16.0;
-        render_engine.current_frame_time_ms = now_ms;
-        for (node.meta.per_frame.hooks.before_render.hooks[0..node.meta.per_frame.hooks.before_render.count]) |cb_opt| {
-            if (cb_opt) |cb| cb(node);
-        }
-    }
-    try std.testing.expect(Color.eql(node.getBackground(), t.tokens.color.bg_active));
-
-    ctx.pressed_node = null;
-    for (0..30) |_| {
-        now_ms += 16.0;
-        render_engine.current_frame_time_ms = now_ms;
-        for (node.meta.per_frame.hooks.before_render.hooks[0..node.meta.per_frame.hooks.before_render.count]) |cb_opt| {
-            if (cb_opt) |cb| cb(node);
-        }
-    }
-
-    try std.testing.expect(Color.eql(node.getBackground(), t.tokens.color.accent_hover));
-}
-
 test "invalidateSubtreeHookState detaches hook back-pointers before scope dispose" {
     const box = core.box;
     const t = &core.theme.dark;
@@ -528,24 +319,16 @@ test "invalidateSubtreeHookState detaches hook back-pointers before scope dispos
     node.setFocusable(true);
     try root.appendChild(std.testing.allocator, node);
 
-    _ = try useAnimatedBackground(scope, ctx, node, .{
-        .normal = t.tokens.color.accent,
-        .hover = t.tokens.color.accent_hover,
-    });
     try useFocusRing(scope, ctx, node, .{});
 
-    const anim_state: *AnimBgState = @ptrCast(@alignCast(node.meta.per_frame.hooks.slots.animated_bg_state.?));
     const ring_state: *FocusRingAnimState = @ptrCast(@alignCast(node.meta.per_frame.hooks.slots.focus_ring_anim.?));
-    try std.testing.expect(anim_state.node == node);
     try std.testing.expect(ring_state.node == node);
 
     invalidateSubtreeHookState(node);
 
-    try std.testing.expect(anim_state.node == null);
     try std.testing.expect(ring_state.node == null);
 
     scope.dispose();
-    try std.testing.expect(node.meta.per_frame.hooks.slots.animated_bg_state == null);
     try std.testing.expect(node.meta.per_frame.hooks.slots.focus_ring_anim == null);
 }
 
@@ -586,6 +369,79 @@ test "invalidateSubtreeHookState unhooks focus-ring handlers so blur after scope
     ctx.freeNode(node);
 }
 
+test "focus hook in a scope disposed before the node unhooks itself; hooks above it keep chaining" {
+    const box = core.box;
+    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer ctx.deinit();
+    const root = try box(ctx, .{ .width = .{ .px = 200 }, .height = .{ .px = 100 } }, .{});
+    ctx.root = root;
+    const node = try box(ctx, .{ .width = .{ .px = 100 }, .height = .{ .px = 50 } }, .{});
+    node.setFocusable(true);
+    try root.appendChild(std.testing.allocator, node);
+
+    const Base = struct {
+        focus: usize = 0,
+        blur: usize = 0,
+        fn onFocus(c: *anyopaque) void {
+            @as(*@This(), @ptrCast(@alignCast(c))).focus += 1;
+        }
+        fn onBlur(c: *anyopaque) void {
+            @as(*@This(), @ptrCast(@alignCast(c))).blur += 1;
+        }
+    };
+    var base: Base = .{};
+    node.behavior.events.on_focus = Cx.simpleHandler(Base.onFocus, @ptrCast(&base));
+    node.behavior.events.on_blur = Cx.simpleHandler(Base.onBlur, @ptrCast(&base));
+
+    // outer outlives inner; inner's hooks sit between the base handlers and outer's hook.
+    const outer = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer outer.dispose();
+    const inner = try Scope.init(std.testing.allocator, outer, ctx.owner);
+    try useFocusRing(inner, ctx, node, .{});
+    _ = try hooks.useFocusState(inner, ctx, node);
+    const outer_state = try hooks.useFocusState(outer, ctx, node);
+
+    inner.dispose();
+    // Freed contexts are no longer reachable: focus / blur run outer's hook, then the base.
+    ctx.setFocus(node);
+    try std.testing.expect(outer_state.focused.peek());
+    try std.testing.expectEqual(@as(usize, 1), base.focus);
+    ctx.clearFocus();
+    try std.testing.expect(!outer_state.focused.peek());
+    try std.testing.expectEqual(@as(usize, 1), base.blur);
+    try std.testing.expect(node.behavior.events.on_focus.?.context != @as(*anyopaque, @ptrCast(&base)));
+
+    // Teardown in the order a bound component uses: the node's hooks come off, then the scope.
+    invalidateSubtreeHookState(node);
+    try std.testing.expect(node.behavior.events.on_focus.?.context == @as(*anyopaque, @ptrCast(&base)));
+    try std.testing.expect(node.behavior.events.on_blur.?.context == @as(*anyopaque, @ptrCast(&base)));
+}
+
+test "focus ring in a child scope of the node's bound scope: disposing the bound scope is safe" {
+    const box = core.box;
+    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer ctx.deinit();
+    const root = try box(ctx, .{ .width = .{ .px = 200 }, .height = .{ .px = 100 } }, .{});
+    ctx.root = root;
+    const node = try box(ctx, .{ .width = .{ .px = 100 }, .height = .{ .px = 50 } }, .{});
+    node.setFocusable(true);
+    try root.appendChild(std.testing.allocator, node);
+
+    // A component scope bound to its root, with the ring hook installed by an element scope
+    // beneath it (the shape a Yix component with focusRing mounts). Children dispose first.
+    const component = try Scope.init(std.testing.allocator, null, ctx.owner);
+    try core.bindScopeToNode(component, node);
+    const element = try Scope.init(std.testing.allocator, component, ctx.owner);
+    try useFocusRing(element, ctx, node, .{});
+    try std.testing.expect(node.behavior.events.on_focus != null);
+
+    component.dispose();
+    try std.testing.expect(node.behavior.events.on_focus == null);
+    try std.testing.expect(node.behavior.events.on_blur == null);
+    ctx.setFocus(node);
+    ctx.clearFocus();
+}
+
 test "freeNode detaches hook back-pointers for nodes owned by external scope" {
     const box = core.box;
     const t = &core.theme.dark;
@@ -605,12 +461,9 @@ test "freeNode detaches hook back-pointers for nodes owned by external scope" {
     var scope_disposed = false;
     defer if (!scope_disposed) scope.dispose();
 
-    _ = try useAnimatedBackground(scope, ctx, node, .{
-        .normal = t.tokens.color.accent,
-        .hover = t.tokens.color.accent_hover,
-    });
+    try useFocusRing(scope, ctx, node, .{});
 
-    const anim_state: *AnimBgState = @ptrCast(@alignCast(node.meta.per_frame.hooks.slots.animated_bg_state.?));
+    const anim_state: *FocusRingAnimState = @ptrCast(@alignCast(node.meta.per_frame.hooks.slots.focus_ring_anim.?));
     try std.testing.expect(anim_state.node == node);
 
     ctx.detachChild(parent, node);
@@ -694,7 +547,8 @@ test "useFocusRing: tab focus shows outline with animation, blur fades out" {
     }
     try std.testing.expect(node.style.outline() != null);
     // outline color alpha should be close to focus_ring original alpha
-    try std.testing.expectEqual(@as(f32, 1.5), node.style.outline().?.width);
+    // LKxqO / Foundations: 2px focus ring with 2px offset.
+    try std.testing.expectEqual(@as(f32, 2), node.style.outline().?.width);
     try std.testing.expectEqual(@as(f32, 2), node.style.outline().?.offset);
     // color should be close to focus_ring (alpha may be identical due to opacity=1.0)
     try std.testing.expect(Color.eql(node.style.outline().?.color, t.tokens.color.focus_ring));

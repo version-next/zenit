@@ -30,6 +30,7 @@
 #import <Metal/Metal.h>
 #import <objc/runtime.h>
 #import <QuartzCore/CAMetalLayer.h>
+#import <QuartzCore/CATransaction.h>
 #include <stdatomic.h>
 #include <errno.h>
 #import <Foundation/Foundation.h>
@@ -37,6 +38,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
+#import <IOSurface/IOSurface.h>
 #include "pooled_present.inc"
 
 // Opt-in, command-buffer-local engine accounting. Native header encoders use
@@ -60,6 +63,114 @@ void metal_command_buffer_engine_counts(void *buffer, uint32_t *counts) {
     else memset(counts, 0, 3 * sizeof(uint32_t));
 }
 
+// Opt-in per-pass GPU timing (ZENIT_GPU_PASS_TIMING=1): every render pass of a
+// command buffer samples GPU timestamps at its vertex start and fragment end;
+// on completion the durations are summed per caller-set tag and published for
+// the perf trace. Diagnostic only: off, it touches nothing.
+#define ZENIT_PASS_TIMER_MAX 512
+#define ZENIT_PASS_TIMER_TAGS 32
+static _Atomic(unsigned int) zenitPassTimerTag = 0;
+static char zenitPassTimerKey;
+static pthread_mutex_t zenitPassTimerLock = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t zenitPassTimerNs[ZENIT_PASS_TIMER_TAGS];
+static uint32_t zenitPassTimerCount[ZENIT_PASS_TIMER_TAGS];
+static uint64_t zenitPassTimerSeq = 0;
+static MTLTimestamp zenitPassTimerCpu0 = 0, zenitPassTimerGpu0 = 0;
+@interface ZenitPassTimer : NSObject
+@property(nonatomic,strong) id<MTLCounterSampleBuffer> samples;
+@property(nonatomic,strong) NSMutableData *tags;
+@property(nonatomic) uint32_t count;
+@end
+@implementation ZenitPassTimer
+@end
+_Bool metal_pass_timer_enabled(void) {
+    static _Atomic(int) cached = -1;
+    int enabled = atomic_load_explicit(&cached, memory_order_acquire);
+    if (enabled >= 0) return enabled != 0;
+    const char *value = getenv("ZENIT_GPU_PASS_TIMING");
+    enabled = value && strcmp(value, "1") == 0;
+    atomic_store_explicit(&cached, enabled, memory_order_release);
+    return enabled != 0;
+}
+void metal_pass_timer_set_tag(unsigned int tag) {
+    atomic_store_explicit(&zenitPassTimerTag, tag < ZENIT_PASS_TIMER_TAGS ? tag : 0, memory_order_relaxed);
+}
+/// Last completed command buffer: GPU ns and pass count per tag. Returns its sequence number.
+uint64_t metal_pass_timer_read(uint64_t *ns, uint32_t *counts) {
+    pthread_mutex_lock(&zenitPassTimerLock);
+    memcpy(ns, zenitPassTimerNs, sizeof zenitPassTimerNs);
+    memcpy(counts, zenitPassTimerCount, sizeof zenitPassTimerCount);
+    uint64_t seq = zenitPassTimerSeq;
+    pthread_mutex_unlock(&zenitPassTimerLock);
+    return seq;
+}
+static void zenit_pass_timer_attach(id<MTLCommandBuffer> command, MTLRenderPassDescriptor *pass) {
+    // Counter sampling at stage boundaries arrived in macOS 11.
+    if (@available(macOS 11.0, *)) {
+        if (!metal_pass_timer_enabled() || !command || !pass) return;
+        ZenitPassTimer *timer = objc_getAssociatedObject(command, &zenitPassTimerKey);
+        if (!timer) {
+            id<MTLDevice> device = command.device;
+            if (![device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary]) return;
+            id<MTLCounterSet> timestamps = nil;
+            for (id<MTLCounterSet> set in device.counterSets)
+                if ([set.name isEqualToString:MTLCommonCounterSetTimestamp]) timestamps = set;
+            if (!timestamps) return;
+            MTLCounterSampleBufferDescriptor *descriptor = [MTLCounterSampleBufferDescriptor new];
+            descriptor.counterSet = timestamps;
+            descriptor.sampleCount = 2 * ZENIT_PASS_TIMER_MAX;
+            descriptor.storageMode = MTLStorageModeShared;
+            NSError *error = nil;
+            id<MTLCounterSampleBuffer> samples = [device newCounterSampleBufferWithDescriptor:descriptor error:&error];
+            if (!samples) return;
+            if (zenitPassTimerCpu0 == 0) [device sampleTimestamps:&zenitPassTimerCpu0 gpuTimestamp:&zenitPassTimerGpu0];
+            timer = [ZenitPassTimer new];
+            timer.samples = samples;
+            timer.tags = [NSMutableData dataWithLength:ZENIT_PASS_TIMER_MAX * sizeof(uint32_t)];
+            objc_setAssociatedObject(command, &zenitPassTimerKey, timer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [command addCompletedHandler:^(id<MTLCommandBuffer> done) {
+                MTLTimestamp cpu1 = 0, gpu1 = 0;
+                [done.device sampleTimestamps:&cpu1 gpuTimestamp:&gpu1];
+                const double ratio = gpu1 > zenitPassTimerGpu0 ? (double)(cpu1 - zenitPassTimerCpu0) / (double)(gpu1 - zenitPassTimerGpu0) : 1.0;
+                const uint32_t n = timer.count;
+                if (n == 0) return;
+                NSData *data = [timer.samples resolveCounterRange:NSMakeRange(0, 2 * n)];
+                if (!data) return;
+                const MTLCounterResultTimestamp *ts = data.bytes;
+                const uint32_t *tags = timer.tags.bytes;
+                uint64_t ns[ZENIT_PASS_TIMER_TAGS] = {0};
+                uint32_t counts[ZENIT_PASS_TIMER_TAGS] = {0};
+                // Exclusive time: from the later of this pass's fragment start and
+                // the previous pass's fragment end, to its own fragment end. Vertex
+                // work of later passes runs far ahead, so vertex starts mean nothing.
+                uint64_t prev_end = 0;
+                for (uint32_t i = 0; i < n; i++) {
+                    const uint64_t a = ts[2 * i].timestamp, b = ts[2 * i + 1].timestamp;
+                    if (a == MTLCounterErrorValue || b == MTLCounterErrorValue || b < a) continue;
+                    const uint64_t from = a > prev_end ? a : prev_end;
+                    if (b > from) ns[tags[i]] += (uint64_t)((double)(b - from) * ratio);
+                    if (b > prev_end) prev_end = b;
+                    counts[tags[i]]++;
+                }
+                pthread_mutex_lock(&zenitPassTimerLock);
+                memcpy(zenitPassTimerNs, ns, sizeof ns);
+                memcpy(zenitPassTimerCount, counts, sizeof counts);
+                zenitPassTimerSeq++;
+                pthread_mutex_unlock(&zenitPassTimerLock);
+            }];
+        }
+        if (timer.count >= ZENIT_PASS_TIMER_MAX) return;
+        const uint32_t index = timer.count++;
+        ((uint32_t *)timer.tags.mutableBytes)[index] = atomic_load_explicit(&zenitPassTimerTag, memory_order_relaxed);
+        MTLRenderPassSampleBufferAttachmentDescriptor *attachment = pass.sampleBufferAttachments[0];
+        attachment.sampleBuffer = timer.samples;
+        attachment.startOfVertexSampleIndex = MTLCounterDontSample;
+        attachment.endOfVertexSampleIndex = MTLCounterDontSample;
+        attachment.startOfFragmentSampleIndex = 2 * index;
+        attachment.endOfFragmentSampleIndex = 2 * index + 1;
+    }
+}
+
 #include "render_copy.inc"
 
 // Opt-in timing evidence only. Keep the normal submission/presentation path
@@ -78,41 +189,51 @@ _Bool metal_glass_clock_trace_enabled(void) {
 
 double metal_glass_clock_trace_host_time(void) { return CACurrentMediaTime(); }
 
+/// A CPU damage patch was handed to Core Animation (it shows at the next
+/// commit/vsync); pacing analysis counts it as a presented frame.
+void metal_glass_clock_trace_patch(unsigned w, unsigned h) {
+    if (!metal_glass_clock_trace_enabled()) return;
+    fprintf(stderr, "[glass-clock] {\"kind\":\"patch\",\"host_time\":%.9f,\"w\":%u,\"h\":%u}\n", CACurrentMediaTime(), w, h);
+}
+
 void metal_glass_clock_trace_line(const char *line, size_t length) {
     if (!metal_glass_clock_trace_enabled()) return;
     // One stdio call shares stderr's lock with the asynchronous Metal records.
     fprintf(stderr, "[glass-clock] %.*s\n", (int)length, line);
 }
 
-void metal_glass_clock_trace_frame(void *buffer, void *drawable, uint64_t frame,
+void metal_glass_clock_trace_frame(void *buffer, void *drawable, uint64_t frame, uint64_t windowID,
                                   double sampleHostTime, double sampleFrameTimeMs,
                                   double sampleFrameDtMs) {
     if (!metal_glass_clock_trace_enabled()) return;
-    id<MTLCommandBuffer> cmd = (__bridge id<MTLCommandBuffer>)buffer;
-    id<CAMetalDrawable> image = (__bridge id<CAMetalDrawable>)drawable;
-    const uintptr_t identity = (uintptr_t)buffer;
-    const unsigned long long drawableID = image.drawableID;
-    fprintf(stderr, "[glass-clock] {\"kind\":\"submit-ready\",\"frame\":%llu,"
-            "\"command_buffer\":\"%p\",\"drawable_id\":%llu,\"host_time\":%.9f,"
-            "\"sample_host_time\":%.9f,\"sample_frame_time_ms\":%.6f,\"sample_frame_dt_ms\":%.6f}\n",
-            (unsigned long long)frame, buffer, drawableID, CACurrentMediaTime(),
-            sampleHostTime, sampleFrameTimeMs, sampleFrameDtMs);
-    // Capture scalar identities, not the objects whose handlers own these
-    // blocks. The callback arguments stay alive for the duration of each call.
-    [cmd addCompletedHandler:^(id<MTLCommandBuffer> completed) {
-        fprintf(stderr, "[glass-clock] {\"kind\":\"gpu-complete\",\"frame\":%llu,"
+    // Drawable identities and presented handlers arrived in macOS 10.15.4.
+    if (@available(macOS 10.15.4, *)) {
+        id<MTLCommandBuffer> cmd = (__bridge id<MTLCommandBuffer>)buffer;
+        id<CAMetalDrawable> image = (__bridge id<CAMetalDrawable>)drawable;
+        const uintptr_t identity = (uintptr_t)buffer;
+        const unsigned long long drawableID = image.drawableID;
+        fprintf(stderr, "[glass-clock] {\"kind\":\"submit-ready\",\"frame\":%llu,\"window\":%llu,"
                 "\"command_buffer\":\"%p\",\"drawable_id\":%llu,\"host_time\":%.9f,"
-                "\"gpu_start_time\":%.9f,\"gpu_end_time\":%.9f,\"status\":%ld}\n",
-                (unsigned long long)frame, (void *)identity, drawableID, CACurrentMediaTime(),
-                completed.GPUStartTime, completed.GPUEndTime, (long)completed.status);
-    }];
-    [image addPresentedHandler:^(id<MTLDrawable> presented) {
-        fprintf(stderr, "[glass-clock] {\"kind\":\"presented\",\"frame\":%llu,"
-                "\"command_buffer\":\"%p\",\"drawable_id\":%llu,\"host_time\":%.9f,"
-                "\"presented_time\":%.9f}\n",
-                (unsigned long long)frame, (void *)identity, drawableID, CACurrentMediaTime(),
-                presented.presentedTime);
-    }];
+                "\"sample_host_time\":%.9f,\"sample_frame_time_ms\":%.6f,\"sample_frame_dt_ms\":%.6f}\n",
+                (unsigned long long)frame, (unsigned long long)windowID, buffer, drawableID, CACurrentMediaTime(),
+                sampleHostTime, sampleFrameTimeMs, sampleFrameDtMs);
+        // Capture scalar identities, not the objects whose handlers own these
+        // blocks. The callback arguments stay alive for the duration of each call.
+        [cmd addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+            fprintf(stderr, "[glass-clock] {\"kind\":\"gpu-complete\",\"frame\":%llu,\"window\":%llu,"
+                    "\"command_buffer\":\"%p\",\"drawable_id\":%llu,\"host_time\":%.9f,"
+                    "\"gpu_start_time\":%.9f,\"gpu_end_time\":%.9f,\"status\":%ld}\n",
+                    (unsigned long long)frame, (unsigned long long)windowID, (void *)identity, drawableID, CACurrentMediaTime(),
+                    completed.GPUStartTime, completed.GPUEndTime, (long)completed.status);
+        }];
+        [image addPresentedHandler:^(id<MTLDrawable> presented) {
+            fprintf(stderr, "[glass-clock] {\"kind\":\"presented\",\"frame\":%llu,\"window\":%llu,"
+                    "\"command_buffer\":\"%p\",\"drawable_id\":%llu,\"host_time\":%.9f,"
+                    "\"presented_time\":%.9f}\n",
+                    (unsigned long long)frame, (unsigned long long)windowID, (void *)identity, drawableID, CACurrentMediaTime(),
+                    presented.presentedTime);
+        }];
+    }
 }
 
 // ============================================================================
@@ -185,6 +306,74 @@ void* metal_device_new_command_queue(void* device) {
 /// @param length buffer size (bytes)
 /// @param options MTLResourceOptions
 /// @return MTLBuffer (needs release)
+// ============================================================================
+// GPU resource inventory (ZENIT_GPU_INVENTORY=1)
+// ============================================================================
+// Every buffer/texture created through the Device is remembered weakly with
+// the Zig call site that created it; released objects leave the table on
+// their own. `metal_inventory_dump` groups live resources by label and call
+// site with their driver-reported allocatedSize, so memory questions are
+// answered from the live set instead of guesses.
+
+#import <dlfcn.h>
+static NSMapTable *g_inventory; // weak resource -> NSValue(call site)
+
+int metal_inventory_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) enabled = getenv("ZENIT_GPU_INVENTORY") != NULL;
+    return enabled;
+}
+
+void metal_inventory_note(void* resource, void* site) {
+    if (!resource || !metal_inventory_enabled()) return;
+    if (!g_inventory) g_inventory = [NSMapTable weakToStrongObjectsMapTable];
+    [g_inventory setObject:[NSValue valueWithPointer:site] forKey:(__bridge id)resource];
+}
+
+void metal_inventory_dump(void* device, const char* tag) {
+    if (!metal_inventory_enabled() || !g_inventory) return;
+    @autoreleasepool {
+        NSMutableDictionary<NSString*, NSMutableArray<NSNumber*>*> *groups = [NSMutableDictionary dictionary];
+        uint64_t total = 0, volatile_bytes = 0;
+        for (id resource in g_inventory) {
+            id<MTLResource> r = resource;
+            NSUInteger bytes = r.allocatedSize;
+            MTLPurgeableState state = [r setPurgeableState:MTLPurgeableStateKeepCurrent];
+            BOOL is_volatile = state == MTLPurgeableStateVolatile || state == MTLPurgeableStateEmpty;
+            if (is_volatile) volatile_bytes += bytes; else total += bytes;
+            const void *site = [[g_inventory objectForKey:resource] pointerValue];
+            Dl_info info; NSString *where = @"?";
+            if (site && dladdr(site, &info) && info.dli_sname) where = [NSString stringWithUTF8String:info.dli_sname];
+            NSString *shape = [resource conformsToProtocol:@protocol(MTLTexture)]
+                ? [NSString stringWithFormat:@"tex %lux%lu", (unsigned long)((id<MTLTexture>)r).width, (unsigned long)((id<MTLTexture>)r).height]
+                : @"buf";
+            NSString *key = [NSString stringWithFormat:@"%@%@ | %@ | %@", is_volatile ? @"(volatile) " : @"", r.label ?: @"-", shape, where];
+            NSMutableArray<NSNumber*> *g = groups[key];
+            if (!g) { g = [NSMutableArray arrayWithObjects:@0, @0, nil]; groups[key] = g; }
+            g[0] = @(g[0].unsignedLongLongValue + 1); g[1] = @(g[1].unsignedLongLongValue + bytes);
+        }
+        uint64_t device_total = ((__bridge id<MTLDevice>)device).currentAllocatedSize;
+        fprintf(stderr, "[gpu-inventory] %s: tracked nonvolatile %.2f MiB, volatile %.2f MiB, device currentAllocatedSize %.2f MiB\n",
+                tag, total / 1048576.0, volatile_bytes / 1048576.0, device_total / 1048576.0);
+        NSArray *keys = [groups keysSortedByValueUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b) {
+            return [b[1] compare:a[1]];
+        }];
+        for (NSString *key in keys) {
+            NSArray<NSNumber*> *g = groups[key];
+            fprintf(stderr, "[gpu-inventory]   %8.2f MiB  x%-3llu %s\n", [g[1] unsignedLongLongValue] / 1048576.0, [g[0] unsignedLongLongValue], key.UTF8String);
+        }
+    }
+}
+
+/// Mark a buffer/texture volatile (1) or non-volatile (0). Volatile storage
+/// leaves the process footprint and may be discarded under memory pressure.
+/// Returns 1 when making it non-volatile found the contents discarded.
+int metal_resource_set_volatile(void* resource, int make_volatile) {
+    id<MTLResource> r = (__bridge id<MTLResource>)resource;
+    MTLPurgeableState previous = [r setPurgeableState:make_volatile ? MTLPurgeableStateVolatile : MTLPurgeableStateNonVolatile];
+    return !make_volatile && previous == MTLPurgeableStateEmpty;
+}
+
 void* metal_device_new_buffer(void* device, size_t length, unsigned int options) {
     id<MTLDevice> dev = (__bridge id<MTLDevice>)device;
     id<MTLBuffer> buffer = [dev newBufferWithLength:length
@@ -276,6 +465,15 @@ void metal_texture_descriptor_set_texture_type(void* desc, unsigned long type) {
 void metal_texture_descriptor_set_usage(void* desc, unsigned long usage) {
     MTLTextureDescriptor* d = (__bridge MTLTextureDescriptor*)desc;
     d.usage = (MTLTextureUsage)usage;
+}
+
+void metal_texture_descriptor_set_cpu_cache_write_combined(void* desc) {
+    MTLTextureDescriptor* d = (__bridge MTLTextureDescriptor*)desc;
+    d.cpuCacheMode = MTLCPUCacheModeWriteCombined;
+}
+
+unsigned long metal_resource_cpu_cache_mode(void* resource) {
+    return (unsigned long)((__bridge id<MTLResource>)resource).cpuCacheMode;
 }
 
 void metal_texture_descriptor_set_storage_mode(void* desc, unsigned long mode) {
@@ -493,6 +691,14 @@ void metal_texture_replace_region_level(void* texture, unsigned int x, unsigned 
 
 /// Read BGRA8 pixels from texture (mip0).
 /// Returns 1 on success, 0 on failure.
+unsigned long metal_texture_pixel_format(void* texture) {
+    return (unsigned long)((__bridge id<MTLTexture>)texture).pixelFormat;
+}
+
+unsigned long metal_texture_usage(void* texture) {
+    return (unsigned long)((__bridge id<MTLTexture>)texture).usage;
+}
+
 int metal_texture_read_bgra8(
     void* texture,
     uint8_t* out_bytes,
@@ -691,6 +897,24 @@ void objc_autoreleasepool_pop(void* pool) {
 // CAMetalLayer Management
 // ============================================================================
 
+/// Release the layer's idle drawable pool. CAMetalLayer keeps every drawable
+/// it ever allocated (up to maximumDrawableCount) for its lifetime; a size
+/// change drops the pool while the presented contents stay on screen. Setting
+/// a different size and restoring it in the same turn keeps one drawable (the
+/// on-screen one) and frees the rest; the next nextDrawable reallocates.
+void metal_layer_purge_drawables(void* layer) {
+    CAMetalLayer* l = (__bridge CAMetalLayer*)layer;
+    CGSize size = l.drawableSize;
+    if (getenv("ZENIT_DEBUG_DRAWABLES")) fprintf(stderr, "[drawable] t=%.3f layer=%p purge\n", CACurrentMediaTime(), layer);
+    if (size.width <= 1 || size.height <= 1) return;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    l.drawableSize = CGSizeMake(1, 1);
+    l.drawableSize = size;
+    [CATransaction commit];
+    [CATransaction flush];
+}
+
 void metal_layer_set_device(void* layer, void* device) {
     CAMetalLayer* l = (__bridge CAMetalLayer*)layer;
     id<MTLDevice> d = (__bridge id<MTLDevice>)device;
@@ -814,11 +1038,22 @@ static void zenitDebugDrawableDelay(void) {
     if (value > 0) usleep((useconds_t)value * 1000);
 }
 
+/// ZENIT_DEBUG_DRAWABLES=1: log the IOSurface behind every acquired drawable,
+/// so the layer pool's real size and turnover can be read from the log.
+static void zenitDebugDrawableLog(id<CAMetalDrawable> drawable) {
+    static int enabled = -1;
+    if (enabled < 0) enabled = getenv("ZENIT_DEBUG_DRAWABLES") != NULL;
+    if (!enabled || !drawable) return;
+    fprintf(stderr, "[drawable] t=%.3f layer=%p surface=%p max=%lu\n", CACurrentMediaTime(), (__bridge void *)drawable.layer,
+            (void *)drawable.texture.iosurface, (unsigned long)drawable.layer.maximumDrawableCount);
+}
+
 void* metal_layer_next_drawable(void* layer) {
     CAMetalLayer* l = (__bridge CAMetalLayer*)layer;
     if (!zenitAXFrameServiceEnabled() || ![NSThread isMainThread] || !zenitAXServerModeExists()) {
         zenitDebugDrawableDelay();
         id<CAMetalDrawable> drawable = [l nextDrawable];
+        zenitDebugDrawableLog(drawable);
         return (__bridge_retained void*)drawable;
     }
 
@@ -869,6 +1104,7 @@ void* metal_layer_next_drawable(void* layer) {
     } @finally {
         atomic_fetch_sub(&g_zenit_ax_service_depth, 1);
     }
+    zenitDebugDrawableLog(drawable);
     return (__bridge_retained void*)drawable;
 }
 
@@ -1052,9 +1288,26 @@ void metal_stencil_attachment_set_clear_stencil(void* attachment, unsigned int s
 void* metal_command_buffer_create_render_encoder(void* buffer, void* desc) {
     id<MTLCommandBuffer> buf = (__bridge id<MTLCommandBuffer>)buffer;
     MTLRenderPassDescriptor* d = (__bridge MTLRenderPassDescriptor*)desc;
+    zenit_pass_timer_attach(buf, d);
     id<MTLRenderCommandEncoder> encoder = [buf renderCommandEncoderWithDescriptor:d];
     if (encoder) metal_command_buffer_note_engine(buffer, 0);
     return (__bridge_retained void*)encoder;
+}
+
+/// Render encoder without attachments over a width x height raster: its
+/// fragment functions write textures directly. [owned] +1.
+void* metal_command_buffer_create_attachmentless_render_encoder(void* buffer, unsigned int width, unsigned int height) {
+    @autoreleasepool {
+        id<MTLCommandBuffer> buf = (__bridge id<MTLCommandBuffer>)buffer;
+        MTLRenderPassDescriptor* d = [MTLRenderPassDescriptor renderPassDescriptor];
+        d.renderTargetWidth = width;
+        d.renderTargetHeight = height;
+        d.defaultRasterSampleCount = 1;
+        zenit_pass_timer_attach(buf, d);
+        id<MTLRenderCommandEncoder> encoder = [buf renderCommandEncoderWithDescriptor:d];
+        if (encoder) metal_command_buffer_note_engine(buffer, 0);
+        return (__bridge_retained void*)encoder;
+    }
 }
 
 void metal_render_encoder_end_encoding(void* encoder) {
@@ -1681,3 +1934,6 @@ void* metal_drawable_get_texture(void* drawable_ptr) {
 _Bool metal_device_supports_framebuffer_fetch(void *device) {
     return [(__bridge id<MTLDevice>)device supportsFamily:MTLGPUFamilyApple1];
 }
+
+// CPU damage patches (src/render/cpu_flat.zig).
+#include "cpu_flat.inc"

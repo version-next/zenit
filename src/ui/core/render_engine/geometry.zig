@@ -227,7 +227,7 @@ pub fn computeStickyOffset(node: *Node, offset_x: f32, offset_y: f32, clip: ?Com
             .self_translate = .{ .x = node.style.translate_x, .y = node.style.translate_y },
             .parent_origin = .{ .x = offset_x, .y = offset_y },
             .parent_rect = if (parent) |p| p.rectFromWorldOrFallback() else null,
-            .parent_padding = if (parent) |p| p.style.padding else Padding.ZERO,
+            .parent_padding = if (parent) |p| p.style.contentInsets() else Padding.ZERO,
             .insets = node.style.sticky_insets(),
             .clip = c,
         });
@@ -254,4 +254,24 @@ pub fn computeStickyOffset(node: *Node, offset_x: f32, offset_y: f32, clip: ?Com
             p = parent.parent;
         }
     }
+}
+
+test "LC3C sticky clamp includes non overlay border and padding" {
+    const a = std.testing.allocator;
+    const parent = try Node.create(a, 1, .box, .{ .border = .{ .width = 5 }, .padding = .all(10) });
+    defer parent.destroy(a);
+    const child = try Node.create(a, 2, .box, .{ .position = .sticky });
+    try parent.appendChild(a, child);
+    const ext = try child.style.ensureExtFallible(a);
+    ext.sticky_insets = .{ .top = 0 };
+    parent.setLayoutRect(.{ .x = 0, .y = 0, .w = 100, .h = 100 });
+    child.setLayoutRect(.{ .x = 15, .y = 15, .w = 20, .h = 20 });
+    computeStickyOffset(child, 0, -70, ComputedRect.init(0, 0, 100, 100));
+    try std.testing.expectEqual(@as(f32, 50), child.frame_state.frame_local.runtime.sticky.y);
+    try std.testing.expect(child.frame_state.frame_local.runtime.sticky.state.constrained);
+    parent.style.border.overlay = true;
+    computeStickyOffset(child, 0, -70, ComputedRect.init(0, 0, 100, 100));
+    try std.testing.expectEqual(@as(f32, 55), child.frame_state.frame_local.runtime.sticky.y);
+    computeStickyOffset(child, 0, 0, ComputedRect.init(0, 0, 100, 100));
+    try std.testing.expectEqual(@as(f32, 0), child.frame_state.frame_local.runtime.sticky.y);
 }

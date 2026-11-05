@@ -192,7 +192,7 @@ var dirty_hook_debug_cache: ?bool = null;
 
 fn dirtyHookDebugEnabled() bool {
     return dirty_hook_debug_cache orelse blk: {
-        const enabled = @import("zenit_environment").has("ZENIT_RENDER_DIRTY_DEBUG");
+        const enabled = @import("zenit_environment").flag("ZENIT_RENDER_DIRTY_DEBUG");
         dirty_hook_debug_cache = enabled;
         break :blk enabled;
     };
@@ -221,6 +221,7 @@ const SelfScopeAuditEntry = struct {
     node: *Node,
     paint_hash: u64,
     content_version: u32,
+    composite_version: u32,
 };
 
 /// Audit sample limit. Exceed -> skip audit (better skip than fail
@@ -260,7 +261,7 @@ var self_scope_audit_every_frame_cache: ?bool = null;
 /// (default sample every 64 frames).
 fn selfScopeAuditEveryFrameEnabled() bool {
     return self_scope_audit_every_frame_cache orelse blk: {
-        const v = @import("zenit_environment").has("ZENIT_SELF_SCOPE_AUDIT_EVERY_FRAME");
+        const v = @import("zenit_environment").flag("ZENIT_SELF_SCOPE_AUDIT_EVERY_FRAME");
         self_scope_audit_every_frame_cache = v;
         break :blk v;
     };
@@ -268,21 +269,35 @@ fn selfScopeAuditEveryFrameEnabled() bool {
 
 fn collectSelfScopeAudit(
     node: *Node,
-    exclude: *Node,
+    exclude: ?*Node,
     buf: []SelfScopeAuditEntry,
     count: *usize,
 ) void {
+    collectScopeAudit(node, exclude, false, buf, count);
+}
+
+/// `skip_uncached`: leave out nodes at or below a disable_render_cache boundary (no cross-frame
+/// cache can hold them, so an unmarked write there cannot be replayed stale).
+fn collectScopeAudit(
+    node: *Node,
+    exclude: ?*Node,
+    skip_uncached: bool,
+    buf: []SelfScopeAuditEntry,
+    count: *usize,
+) void {
+    if (skip_uncached and node.frame_state.state_bits.flags.disable_render_cache) return;
     if (node != exclude) {
         if (count.* >= buf.len) return; // Capacity insufficient: caller gives up this audit
         buf[count.*] = .{
             .node = node,
             .paint_hash = paintHashOf(node),
             .content_version = node.meta.per_frame.caches.versions.content,
+            .composite_version = node.meta.per_frame.caches.versions.composite,
         };
         count.* += 1;
     }
     for (node.children.items) |child| {
-        collectSelfScopeAudit(child, exclude, buf, count);
+        collectScopeAudit(child, exclude, skip_uncached, buf, count);
     }
 }
 
@@ -305,14 +320,28 @@ pub fn runBeforeRenderHook(node: *Node, hook: *const fn (*Node) void) bool {
     // violations are continuous (the unmarked write repeats every frame), so the sample hits.
     // ZENIT_SELF_SCOPE_AUDIT_EVERY_FRAME=1 restores per-frame auditing (debugging).
     const audit_sampled = selfScopeAuditEveryFrameEnabled() or (g_debug_frame % 64 == 1);
+    const self_only = node.beforeRenderHooksSelfOnly();
+    // descendants_cache_safe guarantee: audited over the node and its subtree (siblings keep the
+    // conservative default), uncacheable boundary nodes excluded.
+    const descendants_safe = !self_only and node.frame_state.state_bits.flags.before_render_hook_descendants_cache_safe;
+    // `.self` / `.dirty_marking` scoped hooks: every write (the node's own included) must be marked.
+    const scoped_trusted = node.beforeRenderHooksScopedTrusted();
     const audit = (@import("builtin").mode == .debug or @import("builtin").mode == .safe) and
-        node.beforeRenderHooksSelfOnly() and
+        (self_only or descendants_safe or scoped_trusted) and
         audit_sampled;
     var audit_buf: [self_scope_audit_max]SelfScopeAuditEntry = undefined;
     var audit_count: usize = 0;
     var audit_overflow = false;
     if (audit) {
-        collectSelfScopeAudit(renderRootOf(node), node, &audit_buf, &audit_count);
+        if (descendants_safe)
+            collectScopeAudit(node, null, true, &audit_buf, &audit_count)
+        else if (scoped_trusted)
+            // Scoped `.self` / `.dirty_marking` hooks are cache-trusted
+            // (Node.beforeRenderHooksCacheTrusted): their own writes must go through dirty-marking
+            // entries too, so the node is audited as well.
+            collectSelfScopeAudit(renderRootOf(node), null, &audit_buf, &audit_count)
+        else
+            collectSelfScopeAudit(renderRootOf(node), node, &audit_buf, &audit_count);
         // Sample reaches limit = tree larger than buffer, incomplete sample
         // -> skip audit not misdiagnose.
         audit_overflow = audit_count >= self_scope_audit_max;
@@ -330,8 +359,11 @@ pub fn runBeforeRenderHook(node: *Node, hook: *const fn (*Node) void) bool {
             // Value changed but content_version changed = dirty-write path =
             // cache invalidates = legal.
             if (entry.node.meta.per_frame.caches.versions.content != entry.content_version) continue;
+            // Opacity goes through the composite path (markCompositePropDirty): its version bump
+            // and the subtree_composite bit invalidate cached content the same way.
+            if (entry.node.meta.per_frame.caches.versions.composite != entry.composite_version) continue;
             std.debug.panic(
-                "before_render_hook_affects_self_only 担保被违反：hook 所在 node_id={d} " ++
+                "before_render_hook_affects_self_only / before_render_hook_descendants_cache_safe 担保被违反：hook 所在 node_id={d} " ++
                     "component={s} test_id={s}；它改了 node_id={d} 的绘制态（背景/不透明度）" ++
                     "**且没有标脏**（content_version 未变）。未标脏的写入会让跨帧 payload 缓存" ++
                     "复用陈旧颜色（transform 有 property_tree 每帧重算兜底，颜色没有）。\n" ++
@@ -387,12 +419,36 @@ pub var g_slow_hook_name_len: u8 = 0;
 pub var g_profile_hooks: bool = false;
 
 var hook_trace_cache: ?bool = null;
+/// ZENIT_DEBUG_ANIM_REQUESTS=1: name every node whose tick asks for another
+/// frame (what keeps an idle window rendering).
+fn noteAnimationRequest(node: *Node, comptime source: []const u8) void {
+    const S = struct {
+        var enabled: ?bool = null;
+    };
+    if (S.enabled == null) S.enabled = @import("zenit_environment").flag("ZENIT_DEBUG_ANIM_REQUESTS");
+    if (!S.enabled.?) return;
+    // Anonymous nodes (hooks on plain boxes) are named by their nearest named
+    // ancestor so the report says which component keeps the window rendering.
+    var named: ?*Node = node.parent;
+    while (named) |n| : (named = n.parent) {
+        if (n.meta.ownership.meta.component_name != null or n.meta.ownership.meta.test_id != null) break;
+    }
+    std.debug.print("[anim-request] {s} node={d} component={s} test_id={s} under={s}/{s}\n", .{
+        source,
+        node.id,
+        node.meta.ownership.meta.component_name orelse "(nil)",
+        node.meta.ownership.meta.test_id orelse "(nil)",
+        if (named) |n| n.meta.ownership.meta.component_name orelse "(nil)" else "(root)",
+        if (named) |n| n.meta.ownership.meta.test_id orelse "(nil)" else "",
+    });
+}
+
 /// ZENIT_HOOK_TRACE=1: force per-hook timing, log >5ms hooks. Use:
 /// frame SLOW shows huge before_render but slow_hook empty (g_profile_hooks
 /// defaults off, devtools perf only), use this to find culprit.
 fn hookTraceEnabled() bool {
     return hook_trace_cache orelse blk: {
-        const v = @import("zenit_environment").has("ZENIT_HOOK_TRACE");
+        const v = @import("zenit_environment").flag("ZENIT_HOOK_TRACE");
         hook_trace_cache = v;
         break :blk v;
     };
@@ -426,7 +482,15 @@ fn runHookTimed(node: *Node, hook: *const fn (*Node) void) bool {
 // A callback may retire an ancestor while this subtree is still on the
 // traversal stack. Its allocations survive until Cx drains, but callbacks
 // must stop: their Scope-owned state may already have been disposed.
+//
+// Walking the parent chain on every check made the tick quadratic in depth (it runs on entry,
+// after every hook and after every child). A node is reached only through its ancestors, each of
+// which passed this check on entry; until something starts retiring during the tick
+// (node_tree.g_retire_gen advances), those results still hold and only the node's own state can
+// differ.
 fn isRetiring(node: *Node) bool {
+    if (node.pending_free_cx != null or node.freeing) return true;
+    if (@import("../node_tree.zig").g_retire_gen == retire_gen_at_tick_start) return false;
     var current: ?*Node = node;
     while (current) |ancestor| : (current = ancestor.parent) {
         if (ancestor.pending_free_cx != null or ancestor.freeing) return true;
@@ -434,8 +498,110 @@ fn isRetiring(node: *Node) bool {
     return false;
 }
 
+// -- Quiet-subtree skip --
+//
+// Most of a window has no per-frame tick work: no before_render hook, no active transition /
+// node animation / linger frame, no sticky node. A full tick that finds a subtree like that
+// stamps it quiet (NodeRuntime.tick_quiet_epoch = g_tick_quiet_epoch); later ticks skip the
+// subtree while the stamp is valid and nothing in the subtree changed. Every way to add tick
+// work goes through a mutation that sets a bubbling dirty bit (hook registration happens at
+// build/mount, which marks structure / layout; activating a transition or animation goes through
+// a dirty-marking setter), and dirty bits stay set until the next render. The one gap is a
+// mutation landing between the end of a tick and the render that cleans its bits:
+// noteRenderCleanedAfterTick then bumps g_tick_quiet_epoch, invalidating every stamp.
+
+/// Valid quiet stamps equal this; bumped to invalidate them all (never 0).
+pub var g_tick_quiet_epoch: u32 = 1;
+/// Subtrees skipped by the quiet-subtree rule this tick (perf).
+pub var g_tick_quiet_skip_count: u32 = 0;
+/// node_tree.g_scene_mutation_gen when the last tick ended.
+var mutation_gen_at_tick_end: u64 = 0;
+/// Escape hatch ZENIT_DISABLE_TICK_SKIP=1 (read once per process).
+var tick_skip_disabled: ?bool = null;
+/// Tests: force the skip on/off.
+pub var tick_skip_test_override: ?bool = null;
+
+fn tickSkipEnabled() bool {
+    if (tick_skip_test_override) |v| return v;
+    return !(tick_skip_disabled orelse blk: {
+        const v = @import("zenit_environment").flag("ZENIT_DISABLE_TICK_SKIP");
+        tick_skip_disabled = v;
+        break :blk v;
+    });
+}
+
+pub fn invalidateTickQuietStamps() void {
+    g_tick_quiet_epoch +%= 1;
+    if (g_tick_quiet_epoch == 0) g_tick_quiet_epoch = 1;
+}
+
+/// Call when a tick pass over the root ends.
+pub fn noteTickEnded() void {
+    mutation_gen_at_tick_end = @import("../node_tree.zig").g_scene_mutation_gen;
+}
+
+/// Call after the render pass that cleans dirty bits: a mutation since the last tick had its bits
+/// cleaned without the tick seeing it, so no quiet stamp can be trusted any more.
+pub fn noteRenderCleanedAfterTick() void {
+    if (@import("../node_tree.zig").g_scene_mutation_gen != mutation_gen_at_tick_end) invalidateTickQuietStamps();
+}
+
+/// Anything in the subtree changed since the last tick (all of these bubble to ancestors).
+fn subtreeChangedSinceTick(node: *const Node) bool {
+    const d = node.frame_state.state_bits.dirty;
+    return d.core.render or d.core.subtree_render or d.core.layout or d.core.subtree_layout or
+        d.pipeline.composite or d.pipeline.subtree_composite or
+        d.pipeline.interaction or d.pipeline.subtree_interaction or
+        d.pipeline.order or d.pipeline.subtree_order or
+        d.runtime.dirty or d.runtime.subtree_dirty;
+}
+
+fn tickQuietSkippable(node: *const Node) bool {
+    return node.frame_state.frame_local.runtime.tick_quiet_epoch == g_tick_quiet_epoch and
+        !subtreeChangedSinceTick(node) and tickSkipEnabled();
+}
+
+/// The node itself has per-frame tick work (after this frame's tick ran on it).
+fn nodeHasTickWork(node: *const Node) bool {
+    if (node.hasBeforeRenderHooks()) return true;
+    if (node.style.position == .sticky) return true;
+    const rt = node.frame_state.frame_local.runtime;
+    if (rt.linger.composite > 0 or rt.linger.opacity > 0 or rt.linger.transform > 0) return true;
+    if (rt.transitions) |slots| if (slots.any_active) return true;
+    if (rt.commands) |anims| if (anims.count > 0) return true;
+    return false;
+}
+
+/// node_tree.g_retire_gen when the running tick started (see isRetiring).
+var retire_gen_at_tick_start: u64 = 0;
+
 pub fn tickBeforeRender(node: *Node, offset_x: f32, offset_y: f32, clip_opt: ?ComputedRect, allocator: Allocator, dt_ms: f32, now_ms: f64) bool {
-    if (isRetiring(node)) return false;
+    // A root that is itself retiring is caught by the entry check; nothing above it is visited.
+    const saved_retire_gen = retire_gen_at_tick_start;
+    retire_gen_at_tick_start = @import("../node_tree.zig").g_retire_gen;
+    defer retire_gen_at_tick_start = saved_retire_gen;
+    var quiet = true;
+    const requested = tickBeforeRenderNode(node, offset_x, offset_y, clip_opt, allocator, dt_ms, now_ms, &quiet);
+    noteTickEnded();
+    return requested;
+}
+
+fn tickBeforeRenderNode(node: *Node, offset_x: f32, offset_y: f32, clip_opt: ?ComputedRect, allocator: Allocator, dt_ms: f32, now_ms: f64, parent_quiet: *bool) bool {
+    var subtree_quiet = true;
+    defer {
+        // Stamp only after every child was visited or proven quiet; any early return leaves the
+        // subtree unstamped (conservative).
+        if (!subtree_quiet or nodeHasTickWork(node)) {
+            node.frame_state.frame_local.runtime.tick_quiet_epoch = 0;
+            parent_quiet.* = false;
+        } else {
+            node.frame_state.frame_local.runtime.tick_quiet_epoch = g_tick_quiet_epoch;
+        }
+    }
+    if (isRetiring(node)) {
+        subtree_quiet = false;
+        return false;
+    }
     var redraw_requested = false;
     g_tick_node_count += 1;
 
@@ -445,7 +611,11 @@ pub fn tickBeforeRender(node: *Node, offset_x: f32, offset_y: f32, clip_opt: ?Co
     // runs before render over the whole tree and the flag only grows, so semantics = the old
     // recursive conservative superset. It may keep the flag for an unmounted hook, which is only
     // more conservative, the safe direction.
-    if (node.hasBeforeRenderHooks()) node.markSubtreeBeforeRenderHook();
+    if (node.hasBeforeRenderHooks()) {
+        node.markSubtreeBeforeRenderHook();
+        if (!node.beforeRenderHooksCacheTrusted())
+            @import("../node_interaction.zig").markSubtreeUntrustedBeforeRenderHook(node);
+    }
 
     // Read rect from global World hook.
     const local_rect = node.rectFromWorldOrFallback();
@@ -472,8 +642,12 @@ pub fn tickBeforeRender(node: *Node, offset_x: f32, offset_y: f32, clip_opt: ?Co
         if (slots.any_active) {
             if (tickTransitions(node, slots, allocator, now_ms)) {
                 redraw_requested = true;
+                noteAnimationRequest(node, "transition");
             }
-            if (isRetiring(node)) return true;
+            if (isRetiring(node)) {
+                subtree_quiet = false;
+                return true;
+            }
         }
     }
 
@@ -482,8 +656,12 @@ pub fn tickBeforeRender(node: *Node, offset_x: f32, offset_y: f32, clip_opt: ?Co
         if (anims.count > 0) {
             if (anims.tick(node, allocator, now_ms)) {
                 redraw_requested = true;
+                noteAnimationRequest(node, "animation");
             }
-            if (isRetiring(node)) return true;
+            if (isRetiring(node)) {
+                subtree_quiet = false;
+                return true;
+            }
         }
         if (anims.count == 0) {
             anims.deinit();
@@ -496,14 +674,26 @@ pub fn tickBeforeRender(node: *Node, offset_x: f32, offset_y: f32, clip_opt: ?Co
     // animation tick continue)
     if (node.meta.per_frame.hooks.before_render.main) |hook| {
         g_tick_hook_count += 1;
-        if (runHookTimed(node, hook)) redraw_requested = true;
-        if (isRetiring(node)) return true;
+        if (runHookTimed(node, hook)) {
+            redraw_requested = true;
+            noteAnimationRequest(node, "hook");
+        }
+        if (isRetiring(node)) {
+            subtree_quiet = false;
+            return true;
+        }
     }
     for (node.meta.per_frame.hooks.before_render.hooks[0..node.meta.per_frame.hooks.before_render.count]) |hook_opt| {
         if (hook_opt) |hook| {
             g_tick_hook_count += 1;
-            if (runHookTimed(node, hook)) redraw_requested = true;
-            if (isRetiring(node)) return true;
+            if (runHookTimed(node, hook)) {
+                redraw_requested = true;
+                noteAnimationRequest(node, "hook");
+            }
+            if (isRetiring(node)) {
+                subtree_quiet = false;
+                return true;
+            }
         }
     }
 
@@ -512,6 +702,7 @@ pub fn tickBeforeRender(node: *Node, offset_x: f32, offset_y: f32, clip_opt: ?Co
         !subtreeHasActiveAnimation(node))
     {
         clearHiddenSubtreeSceneDirty(node);
+        subtree_quiet = false;
         return redraw_requested;
     }
 
@@ -570,6 +761,7 @@ pub fn tickBeforeRender(node: *Node, offset_x: f32, offset_y: f32, clip_opt: ?Co
             !subtreeHasActiveAnimation(child))
         {
             clearHiddenSubtreeDirty(child);
+            if (child.frame_state.frame_local.runtime.tick_quiet_epoch != g_tick_quiet_epoch) subtree_quiet = false;
             continue;
         }
 
@@ -584,9 +776,13 @@ pub fn tickBeforeRender(node: *Node, offset_x: f32, offset_y: f32, clip_opt: ?Co
             (child.frame_state.frame_local.runtime.transitions == null or !child.frame_state.frame_local.runtime.transitions.?.any_active) and
             (child.frame_state.frame_local.runtime.commands == null or child.frame_state.frame_local.runtime.commands.?.count == 0))
         {
+            if (child.frame_state.frame_local.runtime.tick_quiet_epoch != g_tick_quiet_epoch) subtree_quiet = false;
             if (subtreeHasActiveAnimation(child)) {
                 tickOffscreenAnimationsInSubtree(child, allocator, now_ms);
-                if (isRetiring(node)) return true;
+                if (isRetiring(node)) {
+                    subtree_quiet = false;
+                    return true;
+                }
             }
             continue;
         }
@@ -618,23 +814,41 @@ pub fn tickBeforeRender(node: *Node, offset_x: f32, offset_y: f32, clip_opt: ?Co
                 out_of_clip = true;
             }
             if (out_of_clip) {
+                if (tickQuietSkippable(child)) {
+                    g_tick_quiet_skip_count += 1;
+                    continue;
+                }
+                subtree_quiet = false;
                 // Out of viewport: still tick active transitions in subtree to prevent
                 // any_active stuck at true
                 tickOffscreenAnimationsInSubtree(child, allocator, now_ms);
-                if (isRetiring(node)) return true;
+                if (isRetiring(node)) {
+                    subtree_quiet = false;
+                    return true;
+                }
                 continue; // Skip child render recursion
             }
         }
 
-        if (tickBeforeRender(child, child_offset_x, child_offset_y, effective_clip, allocator, dt_ms, now_ms)) {
+        if (tickQuietSkippable(child)) {
+            g_tick_quiet_skip_count += 1;
+            continue;
+        }
+        if (tickBeforeRenderNode(child, child_offset_x, child_offset_y, effective_clip, allocator, dt_ms, now_ms, &subtree_quiet)) {
             redraw_requested = true;
         }
-        if (isRetiring(node)) return true;
+        if (isRetiring(node)) {
+            subtree_quiet = false;
+            return true;
+        }
     }
     return redraw_requested;
 }
 
 fn clearHiddenSubtreeDirty(node: *Node) void {
+    // Cleaned without being rendered: a cross-frame copy recorded before this change would be
+    // spliced as clean once the subtree shows again.
+    @import("../node_render_cache.zig").dropCachesForUnrenderedClean(node);
     node.frame_state.state_bits.dirty.core.layout = false;
     node.frame_state.state_bits.dirty.core.subtree_layout = false;
     node.frame_state.state_bits.dirty.core.render = false;
@@ -651,6 +865,9 @@ fn clearHiddenSubtreeDirty(node: *Node) void {
 }
 
 fn clearHiddenSubtreeSceneDirty(node: *Node) void {
+    // Cleaned without being rendered: a cross-frame copy recorded before this change would be
+    // spliced as clean once the subtree shows again.
+    @import("../node_render_cache.zig").dropCachesForUnrenderedClean(node);
     node.frame_state.state_bits.dirty.core.render = false;
     node.frame_state.state_bits.dirty.core.subtree_render = false;
     node.frame_state.state_bits.dirty.pipeline.composite = false;

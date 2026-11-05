@@ -53,6 +53,7 @@ test "caret icon snapshots compare copied representations and detect contour cha
 }
 
 test "AppRenderer initializes caret ownership from poisoned storage" {
+    // SKIP-REASON: drives the null backend's fake GPU objects; real backends cover this path in their own suites.
     if (comptime gpu.backend_kind != .null_backend) return error.SkipZigTest;
     var device = gpu.Backend.Device{};
     var queue = gpu.Backend.Queue{};
@@ -87,6 +88,7 @@ test "AppRenderer initializes caret ownership from poisoned storage" {
 }
 
 test "AppRenderer manual getEncoder and beginFrame preserve pool retirement" {
+    // SKIP-REASON: drives the null backend's fake GPU objects; real backends cover this path in their own suites.
     if (comptime gpu.backend_kind != .null_backend) return error.SkipZigTest;
     var device = gpu.Backend.Device{};
     var queue = gpu.Backend.Queue{};
@@ -154,7 +156,46 @@ test "caret snapshots classify clips and conservatively bound paths transforms a
     try std.testing.expect(items[6].unbounded);
 }
 
+test "caret flips past later text whose glyph ink misses the patch, not past glyphs reaching it" {
+    // zeditor: a caret on the last visible editor line, then the status bar's 13 px text.
+    // Its generic envelope (800, 564, 174, 40.9) covers the caret's native patch; its glyphs
+    // (render.text_ink, measured in test-metal "status bar text ...") start below it.
+    const ui = @import("ui");
+    const caret_plan = @import("caret_patch_plan.zig");
+    const Item = @typeInfo(@TypeOf(@as(*ui.Cx, undefined).lowerForEncoderPaintTable())).pointer.child;
+    var renderer: AppRenderer = undefined;
+    renderer.allocator = std.testing.allocator;
+    renderer.caret_background_capture = false;
+    renderer.caret_patch_capture = false;
+    const bg: Item = .{ .kind = .rect, .geom = .{ .x = 0, .y = 0, .w = 1200, .h = 620 } };
+    const caret: Item = .{ .kind = .rect, .geom = .{ .x = 841, .y = 550, .w = 2, .h = 18 } };
+    const status: Item = .{ .kind = .text, .geom = .{ .x = 800, .y = 590.9 }, .text_content = "Ln 1205, Col 18   UTF-8", .text_font_size = 13 };
+    const patch = [_][4]f32{.{ 840, 549, 5, 20 }};
+    const rects = [_][4]f32{.{ 841, 550, 2, 18 }};
+    const Case = struct { ink: ?[4]f32, occluded: bool };
+    for ([_]Case{
+        .{ .ink = .{ 799, 578, 176, 15 }, .occluded = false },
+        // Unknown ink keeps the envelope.
+        .{ .ink = null, .occluded = true },
+        // Glyphs reaching one pixel into the patch.
+        .{ .ink = .{ 799, 568, 176, 15 }, .occluded = true },
+    }) |case| {
+        const hidden = try renderer.caretItemsInk(&[_]Item{ bg, status }, &.{ null, case.ink });
+        defer std.testing.allocator.free(hidden);
+        const visible = try renderer.caretItemsInk(&[_]Item{ bg, caret, status }, &.{ null, null, case.ink });
+        defer std.testing.allocator.free(visible);
+        if (case.occluded) {
+            try std.testing.expectError(error.CaretOccluded, caret_plan.select(std.testing.allocator, hidden, visible, &rects, &patch));
+        } else {
+            const selected = try caret_plan.select(std.testing.allocator, hidden, visible, &rects, &patch);
+            defer std.testing.allocator.free(selected);
+            try std.testing.expectEqualSlices(bool, &.{ false, true, false }, selected);
+        }
+    }
+}
+
 test "abandoned patch queues one ordinary content paint at the editor caret cadence" {
+    // SKIP-REASON: drives the null backend's fake GPU objects; real backends cover this path in their own suites.
     if (comptime gpu.backend_kind != .null_backend) return error.SkipZigTest;
     var device = gpu.Backend.Device{};
     var queue = gpu.Backend.Queue{};
@@ -183,6 +224,7 @@ test "abandoned patch queues one ordinary content paint at the editor caret cade
 }
 
 test "drawable acquisition retires a completed presentation but preserves an in-flight fence on timeout" {
+    // SKIP-REASON: drives the null backend's fake GPU objects; real backends cover this path in their own suites.
     if (comptime gpu.backend_kind != .null_backend) return error.SkipZigTest;
     var device = gpu.Backend.Device{};
     var queue = gpu.Backend.Queue{};
@@ -224,6 +266,8 @@ test "drawable acquisition retires a completed presentation but preserves an in-
 }
 
 test "AppRenderer successful new submission restarts stopped maintenance" {
+    // SKIP-REASON: drives the null backend's fake device / queue / surface; real GPU
+    // backends cover submission restart through their own presentation tests.
     if (comptime gpu.backend_kind != .null_backend) return error.SkipZigTest;
     var device = gpu.Backend.Device{};
     var queue = gpu.Backend.Queue{};
@@ -242,4 +286,71 @@ test "AppRenderer successful new submission restarts stopped maintenance" {
     try std.testing.expect(renderer.prev_frame_cmd_buffer != null);
     try std.testing.expect(!renderer.pool_maintenance_retry.stopped);
     try std.testing.expectEqual(@as(u64, 0), renderer.pool_maintenance_retry.deadline_ns);
+}
+
+test "AppRenderer discards a drawable whose size no longer matches the live view and recovers" {
+    // SKIP-REASON: drives the null backend's fake surface, whose drawable is
+    // exactly the configured extent; Metal drawables follow drawableSize.
+    if (comptime gpu.backend_kind != .null_backend) return error.SkipZigTest;
+    var device = gpu.Backend.Device{};
+    var queue = gpu.Backend.Queue{};
+    var surface = gpu.Backend.Surface{};
+    var renderer: AppRenderer = undefined;
+    try renderer.init(std.testing.allocator, std.testing.io, &device, &queue, &surface, .{});
+    defer renderer.deinit();
+    try surface.configure(std.testing.allocator, &device, .{ .format = gpu.color_format, .width = 100, .height = 100 });
+    const cx = try @import("ui").Cx.init(std.testing.allocator, std.testing.io);
+    defer cx.deinit();
+    cx.root = try @import("ui").box(cx, .{}, .{});
+    const View = struct {
+        size: [2]u32,
+        fn live(ctx: *anyopaque) [2]u32 {
+            const view: *@This() = @ptrCast(@alignCast(ctx));
+            return view.size;
+        }
+    };
+    var view: View = .{ .size = .{ 100, 100 } };
+    renderer.present_size_probe = .{ .ctx = &view, .live_pixels = View.live };
+    try renderer.frame(cx, 100, 100, 1);
+    const presented = renderer.frame_count;
+    // The view grew after the frame was configured: nothing reaches the screen,
+    // and the aborted attempt consumes no frame slot or counter.
+    view.size = .{ 120, 100 };
+    try std.testing.expectError(error.DrawableSizeStale, renderer.frame(cx, 100, 100, 1));
+    try std.testing.expect(!renderer.last_frame_presented);
+    try std.testing.expectEqual(presented, renderer.frame_count);
+    try std.testing.expectEqual(@as(u64, 1), renderer.stale_drawable_discards);
+    // Reconfigured to the live size, the redraw presents.
+    try surface.configure(std.testing.allocator, &device, .{ .format = gpu.color_format, .width = 120, .height = 100 });
+    try renderer.frame(cx, 120, 100, 1);
+    try std.testing.expect(renderer.last_frame_presented);
+    try std.testing.expectEqual(presented + 1, renderer.frame_count);
+    // Sources that never agree cannot stop presentation: bounded discards.
+    view.size = .{ 121, 100 };
+    try std.testing.expectError(error.DrawableSizeStale, renderer.frame(cx, 120, 100, 1));
+    try std.testing.expectError(error.DrawableSizeStale, renderer.frame(cx, 120, 100, 1));
+    try renderer.frame(cx, 120, 100, 1);
+    try std.testing.expectEqual(presented + 2, renderer.frame_count);
+    try std.testing.expectEqual(@as(u64, 3), renderer.stale_drawable_discards);
+}
+
+test "caret preparation scratch is reused per size and released by idle trim" {
+    // SKIP-REASON: drives the null backend's fake GPU objects; real backends cover this path in their own suites.
+    if (comptime gpu.backend_kind != .null_backend) return error.SkipZigTest;
+    var device = gpu.Backend.Device{};
+    var queue = gpu.Backend.Queue{};
+    var surface = gpu.Backend.Surface{};
+    var renderer: AppRenderer = undefined;
+    try renderer.init(std.testing.allocator, std.testing.io, &device, &queue, &surface, .{});
+    defer renderer.deinit();
+    const before = device.texture_count;
+    const first = try renderer.caretScratch(200, 100);
+    const first_binding = first.binding();
+    for (0..4) |_| try std.testing.expect(first_binding.eql((try renderer.caretScratch(200, 100)).binding()));
+    try std.testing.expectEqual(before + 1, device.texture_count);
+    const resized = try renderer.caretScratch(300, 100);
+    try std.testing.expectEqual(@as(u32, 300), resized.size.width);
+    try std.testing.expectEqual(before + 2, device.texture_count);
+    try std.testing.expect(renderer.trimIdleResources());
+    try std.testing.expect(renderer.caret_scratch == null);
 }

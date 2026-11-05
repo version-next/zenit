@@ -22,6 +22,7 @@
 ///   hue difference from the CSS spec's nonlinear space.
 const std = @import("std");
 const gpu = @import("gpu");
+const corner_radii = @import("zenit_corner_radii");
 const offscreen_texture = @import("offscreen_texture.zig");
 
 pub var blend_pipeline_compile_count: u64 = 0;
@@ -44,26 +45,39 @@ pub const BlendUniforms = extern struct {
     /// 2x2 of above (a, b, c, d: local.x = a*px + c*py + ..., local.y = b*px +
     /// d*py + ...).
     inv: [4]f32,
-    /// x = opacity, y = blend_mode (as float), z = corner_radius (layer-local
-    /// physical px), w reserved.
+    /// x = opacity, y = blend_mode (as float), z unused (see `corner_radii`), w = mask inset
+    /// (physical px: the clip rect inside the quad).
     params: [4]f32,
+    /// Layer rounded mask radii TL, TR, BR, BL (layer-local physical px).
+    corner_radii: [4]f32,
     /// Composite rect clip (target physical px; w < 0 = none), same as other
     /// pipelines' rect_clip.
     clip_rect: [4]f32,
-    /// Shape clip: x = kind (0 none / 1 rounded rect / 2 ellipse), y = corner_radius
-    /// (target physical px); rect z,w reuse clip_shape_rect.
+    /// Shape clip: x = kind (0 none / 1 rounded rect / 2 ellipse), yzw unused; rect in
+    /// clip_shape_rect, corner radii in clip_shape_radii.
     clip_shape: [4]f32,
     clip_shape_rect: [4]f32,
+    /// Shape clip corner radii TL, TR, BR, BL (target physical px; kind 1 only).
+    clip_shape_radii: [4]f32,
     /// Lens warp (physical px): x = shift across the rounded ends, y = across the long edges
     /// (+ = toward the centre), z = fade start inset, w = fade width; x = y = 0 -> none.
     warp: [4]f32,
     /// xy = src texture UV of the quad's origin (a rounded layer composites its own rect out of
     /// its grid-aligned texture, opacity_layer.compositeQuad); zw = last used texel center.
     src_uv_origin: [4]f32,
+    /// Second shape clip (shape_clip_pair.zig; kind in `clip_shape[1]`), target physical px.
+    /// Zero-sized off Metal.
+    clip2_rect: PartnerField = partner_none,
+    clip2_radii: PartnerField = partner_none,
 };
 
+const PartnerField = if (gpu.backend_kind == .metal) [4]f32 else [0]f32;
+const partner_none: PartnerField = if (gpu.backend_kind == .metal) .{ 0, 0, 0, 0 } else .{};
+
 comptime {
-    std.debug.assert(@sizeOf(BlendUniforms) == 144);
+    std.debug.assert(@sizeOf(BlendUniforms) == if (gpu.backend_kind == .metal) 208 else 176);
+    std.debug.assert(@offsetOf(BlendUniforms, "corner_radii") == 64);
+    std.debug.assert(@offsetOf(BlendUniforms, "clip_shape_radii") == 128);
 }
 
 /// Clips active at composite time, all in target physical pixels.
@@ -71,7 +85,12 @@ pub const CompositeClips = struct {
     rect: [4]f32 = .{ 0, 0, -1, -1 },
     shape_kind: u32 = 0,
     shape_rect: [4]f32 = .{ 0, 0, 0, 0 },
-    shape_radius: f32 = 0,
+    /// TL, TR, BR, BL.
+    shape_radii: [4]f32 = .{ 0, 0, 0, 0 },
+    /// Second shape clip (shape_clip_pair.zig): kind 0 none / 1 rounded rect / 2 ellipse.
+    partner_kind: u32 = 0,
+    partner_rect: [4]f32 = .{ 0, 0, 0, 0 },
+    partner_radii: [4]f32 = .{ 0, 0, 0, 0 },
 };
 
 /// Inverse map target pixel to layer-local pixel. `affine` = (a, b, c, d, tx,
@@ -188,7 +207,8 @@ pub fn drawBlendComposite(
     src_uv_scale: [2]f32,
     opacity: f32,
     blend_mode_raw: u8,
-    corner_radius_px: f32,
+    /// TL, TR, BR, BL (layer-local physical px).
+    corner_radii_px: [4]f32,
     clips: CompositeClips,
     warp: [4]f32,
     /// Inset (physical px) of the true clip rect inside the quad: the rounded mask and the warp's
@@ -208,12 +228,17 @@ pub fn drawBlendComposite(
         .src_uv_scale = src_uv_scale,
         .inv_offset = map.inv_offset,
         .inv = map.inv,
-        .params = .{ opacity, @floatFromInt(blend_mode_raw), corner_radius_px, mask_inset_px },
+        .params = .{ opacity, @floatFromInt(blend_mode_raw), 0, mask_inset_px },
+        // The mask is the quad shrunk by the inset (zb_rounded_rect_mask): fit the radii to it.
+        .corner_radii = corner_radii.normalize(corner_radii_px, rect_size_px[0] - 2 * mask_inset_px, rect_size_px[1] - 2 * mask_inset_px),
         .clip_rect = clips.rect,
-        .clip_shape = .{ @floatFromInt(clips.shape_kind), clips.shape_radius, 0, 0 },
+        .clip_shape = .{ @floatFromInt(clips.shape_kind), @floatFromInt(clips.partner_kind), 0, 0 },
         .clip_shape_rect = clips.shape_rect,
+        .clip_shape_radii = clips.shape_radii,
         .warp = warp,
         .src_uv_origin = .{ src_uv_origin[0], src_uv_origin[1], src_uv_max[0], src_uv_max[1] },
+        .clip2_rect = if (comptime gpu.backend_kind == .metal) clips.partner_rect else .{},
+        .clip2_radii = if (comptime gpu.backend_kind == .metal) clips.partner_radii else .{},
     };
 
     var pass = encoder.render_pass.?;

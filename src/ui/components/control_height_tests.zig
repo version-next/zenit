@@ -67,21 +67,22 @@ test "控件高度合同：各尺寸下 Button/Input/Select/DatePicker/DateRange
     try testing.expectEqual(@as(f32, 40), control_shell.metrics(&theme.light, .lg).derivedHeight());
 }
 
-test "控件高度合同：改基础 font_size / line_height，所有控件高度一起跟着变（证明未写死）" {
+test "控件高度合同：改基础 font_size，所有控件高度一起跟着变（证明未写死）" {
     var custom = theme.light;
-    custom.tokens.font_size.lg = 18;
-    custom.tokens.line_height.tight = 1.5;
-    const want: f32 = 18 * 1.5 + 7.25 * 2; // 41.5; vertical adjustment belongs to the recipe
+    // LKxqO: all sizes use font_size.md, control line-height 1.2, md padding 8.2.
+    custom.tokens.font_size.md = 18;
+    const want: f32 = 18 * 1.2 + 8.2 * 2;
     const h = try measure(&custom, .md);
     try expectAllEqual(h, want);
 }
 
 test "shell recipe preserves all measurements for every size and mode" {
+    // LKxqO controls; lg outer height follows Foundations (40px).
     const expected = [_]control_shell.ControlMetrics{
-        .{ .font_size = 12, .line_height = 1.25, .radius = 4, .padding_y = 2.5, .padding_h = 6, .padding_leading_icon = 4, .icon_size = 12, .gap = 4 },
-        .{ .font_size = 12, .line_height = 1.25, .radius = 6, .padding_y = 4.5, .padding_h = 8, .padding_leading_icon = 6, .icon_size = 14, .gap = 4 },
-        .{ .font_size = 14, .line_height = 1.25, .radius = 8, .padding_y = 7.25, .padding_h = 12, .padding_leading_icon = 10, .icon_size = 16, .gap = 6 },
-        .{ .font_size = 16, .line_height = 1.25, .radius = 10, .padding_y = 10, .padding_h = 16, .padding_leading_icon = 14, .icon_size = 20, .gap = 8 },
+        .{ .font_size = 13, .line_height = 1.2, .radius = 6, .padding_y = 2.2, .padding_h = 12, .padding_leading_icon = 10, .icon_size = 15.6, .gap = 8 },
+        .{ .font_size = 13, .line_height = 1.2, .radius = 6, .padding_y = 4.2, .padding_h = 12, .padding_leading_icon = 10, .icon_size = 15.6, .gap = 8 },
+        .{ .font_size = 13, .line_height = 1.2, .radius = 6, .padding_y = 8.2, .padding_h = 12, .padding_leading_icon = 10, .icon_size = 15.6, .gap = 8 },
+        .{ .font_size = 13, .line_height = 1.2, .radius = 6, .padding_y = 12.2, .padding_h = 16, .padding_leading_icon = 14, .icon_size = 15.6, .gap = 8 },
     };
     inline for (.{ &theme.light, &theme.dark, &theme.high_contrast }) |tokens| {
         inline for (.{ control_shell.ControlSize.xs, .sm, .md, .lg }, expected) |size, want| {
@@ -94,7 +95,8 @@ test "shell geometry adapts to material scales and keeps icons inside the line b
     var custom = theme.light;
     custom.tokens.space.space300 = 17;
     custom.tokens.space.space50 = 3;
-    custom.tokens.radius.xl = 11;
+    // LKxqO: shell radius follows the control role, not the legacy xl scale.
+    custom.tokens.radius.control = 11;
     custom.tokens.size.md = 30;
     const m = control_shell.metrics(&custom, .md);
     try testing.expectEqual(@as(f32, 17), m.padding_h);

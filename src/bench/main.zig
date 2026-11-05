@@ -2139,6 +2139,8 @@ pub fn main(init: std.process.Init) !void {
         },
         // v0.5-P3 frame-level scenario benches (v0.5 §5 exit criteria #1/#3/#4/#5/#8).
         // Start: #1 10k nodes zero-dirty frame, target < 0.5ms.
+        .{ .name = "layout_wrap_1k_incremental", .setup = wrapLayoutSetup, .teardown = wrapLayoutTeardown, .body = wrapIncrementalBody },
+        .{ .name = "layout_wrap_1k_full", .setup = wrapLayoutSetup, .teardown = wrapLayoutTeardown, .body = wrapFullBody },
         .{
             .name = "frame_10k_nodes_zero_dirty_relayout",
             .setup = frameZeroDirty10kSetup,
@@ -2184,6 +2186,51 @@ pub fn main(init: std.process.Init) !void {
     }
 
     try runner.run(allocator, io, &cases, filter, json_file);
+}
+
+// LC3B: 1,000 wrap cards / 10,000 leaves, fixed allocations. Measure both
+// a deep change that cannot affect line packing and an explicit full relayout.
+const WrapLayoutState = struct { cx: *Cx, leaf: *Node };
+fn wrapLayoutSetup(a: std.mem.Allocator, io: std.Io) anyerror!*anyopaque {
+    const cx = try Cx.init(a, io);
+    errdefer cx.deinit();
+    cx.setViewport(600, 2200);
+    const root = try Node.create(a, cx.nextId(), .box, .{ .width = .{ .px = 600 }, .height = .{ .px = 2200 }, .direction = .row, .align_items = .start, .align_content = .start });
+    cx.linkNodeToWorld(root);
+    cx.root = root;
+    (try root.style.ensureExtFallible(a)).flex_wrap = .wrap;
+    var last: *Node = undefined;
+    for (0..1000) |_| {
+        const card = try Node.create(a, cx.nextId(), .box, .{ .width = .{ .px = 60 }, .height = .{ .px = 20 }, .direction = .row, .flex_shrink = 0 });
+        cx.linkNodeToWorld(card);
+        try root.appendChild(a, card);
+        for (0..10) |_| {
+            last = try Node.create(a, cx.nextId(), .box, .{ .width = .{ .px = 1 }, .height = .{ .px = 1 } });
+            cx.linkNodeToWorld(last);
+            try card.appendChild(a, last);
+        }
+    }
+    cx.layout();
+    const state = try a.create(WrapLayoutState);
+    state.* = .{ .cx = cx, .leaf = last };
+    return state;
+}
+fn wrapLayoutTeardown(a: std.mem.Allocator, ptr: *anyopaque) void {
+    const s: *WrapLayoutState = @ptrCast(@alignCast(ptr));
+    s.cx.deinit();
+    a.destroy(s);
+}
+fn wrapIncrementalBody(_: std.mem.Allocator, ctx: *runner.BenchCtx) anyerror!void {
+    const s: *WrapLayoutState = @ptrCast(@alignCast(ctx.state.?));
+    s.leaf.markLayoutDirty();
+    s.cx.layout();
+    ctx.blackbox(s.leaf.rectFromWorldOrFallback());
+}
+fn wrapFullBody(_: std.mem.Allocator, ctx: *runner.BenchCtx) anyerror!void {
+    const s: *WrapLayoutState = @ptrCast(@alignCast(ctx.state.?));
+    s.cx.root.?.markLayoutDirty();
+    s.cx.layout();
+    ctx.blackbox(s.leaf.rectFromWorldOrFallback());
 }
 
 // Frame-level scenario benches. Unlike micro benches above: full Cx

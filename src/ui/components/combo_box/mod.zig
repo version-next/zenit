@@ -127,6 +127,9 @@ pub const ComboBoxState = struct {
     /// Selected index derived from value
     selected_index: ?usize = null,
     shown_open: bool = false,
+    /// Closing discarded the query: the rows show all options again on the next open. The
+    /// closing panel keeps the rows it had while it fades out.
+    filter_reset_pending: bool = false,
     /// Last label written into input by component (check when clearing)
     shown_label: ?[]const u8 = null,
 
@@ -185,12 +188,15 @@ pub const ComboBoxState = struct {
             }
         }
         const closing = self.shown_open and !open;
+        const opening = !self.shown_open and open;
         self.shown_open = open;
         // Values not in options don't display as selected, don't write back
         self.selected_index = if (v) |s| self.indexOf(s) else null;
         if (closing) self.discardQuery() else self.syncInputText();
+        if (opening and self.filter_reset_pending) _ = applyFilter(self, "");
         if (!open) self.nav.highlight_index = null;
-        applyHighlightStyles(self);
+        // The closing panel keeps its highlighted row while it fades out; the next open repaints.
+        if (!closing) applyHighlightStyles(self);
     }
 
     /// Selected item changed: write its label to input;
@@ -218,7 +224,7 @@ pub const ComboBoxState = struct {
         const text: []const u8 = if (self.selectedOption()) |opt| opt.label else "";
         if (!std.mem.eql(u8, self.input_value.peek(), text)) self.input_value.set(text);
         self.shown_label = if (self.selectedOption()) |opt| opt.label else null;
-        _ = applyFilter(self, "");
+        self.filter_reset_pending = true;
     }
 
     // ---- Interaction: propose only ----
@@ -310,7 +316,7 @@ pub const ComboBoxState = struct {
         }, .{
             // Label eats row's remaining width (push check to end)
             view.attrs(.{ .style = core.BoxStyle{ .width = .{ .grow = .{} } } }, view.text(.{ .style = comboItemTextStyle(opt.disabled, t) }, opt.label)),
-            view.icon(.{ .style = .{ .width = check_px, .height = check_px, .opacity = 0 }, .tint = t.tokens.color.accent }, icons.check),
+            view.icon(.{ .style = .{ .width = check_px, .height = check_px, .opacity = 0 }, .tint = t.tokens.color.selection_fg }, icons.check),
         }));
         parts.nodes[i] = item;
         parts.clicks[i] = .{ .state = self, .index = i };
@@ -356,6 +362,7 @@ fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
 
 /// Filter show/hide rows, rebuild nav table; return match count
 fn applyFilter(state: *ComboBoxState, filter: []const u8) usize {
+    state.filter_reset_pending = false;
     var matched: usize = 0;
     state.nav_options_len = 0;
     for (state.options, state.item_nodes, 0..) |opt, item, i| {
@@ -388,7 +395,17 @@ fn applyFilter(state: *ComboBoxState, filter: []const u8) usize {
 fn applyHighlightStyles(state: *ComboBoxState) void {
     const hi = state.highlightedIndex();
     for (state.item_nodes, 0..) |item, i| {
-        const want = if (hi != null and hi.? == i) state.highlight_bg else core.Color.TRANSPARENT;
+        const row_style = styles.optionStyle(state.tokens, state.selected_index == i).resolve(.{
+            .is_selected = state.selected_index == i,
+            .is_hovered = hi != null and hi.? == i,
+            .is_disabled = state.options[i].disabled,
+        });
+        const want = row_style.background.?;
+        if (item.children.items[0].getText()) |old| {
+            var text = old;
+            text.color = row_style.text_color.?;
+            item.children.items[0].setText(text);
+        }
         item.setBackgroundRaw(want);
         item.markRenderDirty();
     }
@@ -663,6 +680,10 @@ fn mountImpl(props: ComboBoxProps, scope: *Scope, cx: *Cx) !ComboBoxResult {
     try view.mount(my_scope, cx, pop.trigger, view.capture(&input_result, input_mod.Input(.{
         .value = initial_label orelse "",
         .placeholder = props.placeholder,
+        .leading_icon_asset = icons.search,
+        .append_icon_asset = icons.chevron_down,
+        .expanded = open.read,
+        .raised = true,
         .label_text = props.label_text,
         .width = props.width,
         .disabled = props.disabled,
@@ -687,6 +708,8 @@ fn mountImpl(props: ComboBoxProps, scope: *Scope, cx: *Cx) !ComboBoxResult {
     // (combobox->listbox->option three-level role chain)
     pop.content.behavior.interaction.a11y = .{ .role = .listbox };
     const panel_style = comboPanelStyle(t);
+    // the ext block first: applyTo cannot report a failed allocation and would drop ext fields
+    if (panel_style.needsExt()) _ = try pop.content.style.ensureExtFallible(allocator);
     panel_style.applyTo(&pop.content.style, allocator);
     if (panel_style.background) |bg| pop.content.setBackgroundRaw(bg);
     // Popover's default chrome 4px radius; ComboBox uses Pvnqs's 8px
@@ -823,15 +846,15 @@ test "ComboBox: 过滤 + 点选写回输入框并提议 value / 关闭" {
     const cb = try env.mount(.{ .options = &fruit, .width = 240 });
     const st = cb.state;
 
-    // Pvnqs panel / option chrome
-    try testing.expectEqual(@as(f32, 2), cb.panel.style.gap);
+    // RYMhT / ComboBox open: inset 4, row 28, horizontal padding 8, no row gap.
+    try testing.expectEqual(@as(f32, 0), cb.panel.style.gap);
     try testing.expectEqual(@as(f32, 4), cb.panel.style.padding.top);
-    try testing.expectEqual(@as(f32, 8), cb.panel.style.border.radius);
+    try testing.expectEqual(@as(f32, 10), cb.panel.style.border.radius);
     try testing.expectEqual(@as(usize, 1), cb.panel.style.shadowSlice().len);
     for (st.item_nodes) |item| {
         try testing.expectEqual(@as(f32, combo_item_height), item.style.height.px);
-        try testing.expectEqual(@as(f32, 8), item.style.padding.top);
-        try testing.expectEqual(@as(f32, 12), item.style.padding.left);
+        try testing.expectEqual(@as(f32, 0), item.style.padding.top);
+        try testing.expectEqual(@as(f32, 8), item.style.padding.left);
         try testing.expect(item.style.overflow_hidden);
     }
 
@@ -976,6 +999,36 @@ test "ComboBox: 父组件拒绝清空选择时，编辑中不覆盖用户输入�
     try testing.expectEqual(EventResult.ignored, comboKeyDown(.escape, .{}, @ptrCast(cb.state)));
 }
 
+test "ComboBox: a closing panel keeps its filtered rows; the next open shows every option" {
+    const env = try CEnv.init();
+    defer env.deinit();
+    const cb = try env.mount(.{ .options = &fruit });
+    const st = cb.state;
+    typeText(cb, "Bana");
+    try testing.expect(cb.open.?.peek());
+    try testing.expectEqual(core.Display.none, st.item_nodes[0].style.display);
+    try testing.expectEqual(core.Display.flex, st.item_nodes[1].style.display);
+
+    // Closing discards the draft in the input, but the fading panel keeps showing "Banana".
+    _ = comboKeyDown(.escape, .{}, @ptrCast(st));
+    try testing.expect(!cb.open.?.peek());
+    try testing.expectEqualStrings("", st.input_state.getText());
+    try testing.expectEqual(core.Display.none, st.item_nodes[0].style.display);
+    try testing.expectEqual(core.Display.flex, st.item_nodes[1].style.display);
+    try testing.expectEqual(core.Display.none, st.item_nodes[2].style.display);
+
+    // Reopening shows every option again.
+    cb.open.?.set(true);
+    for (st.item_nodes) |item| try testing.expectEqual(core.Display.flex, item.style.display);
+
+    // Typing after a close filters by the new text (the pending reset does not override it).
+    _ = comboKeyDown(.escape, .{}, @ptrCast(st));
+    typeText(cb, "Ch");
+    try testing.expect(cb.open.?.peek());
+    try testing.expectEqual(core.Display.none, st.item_nodes[1].style.display);
+    try testing.expectEqual(core.Display.flex, st.item_nodes[2].style.display);
+}
+
 test "a11y: ComboBox expanded/active_descendant/value 跟随交互且可撤回" {
     const env = try CEnv.init();
     defer env.deinit();
@@ -1085,4 +1138,34 @@ test "ComboBox: a11y item_selection / expansion —— 返回值如实反映受�
     try testing.expect(cb.state.shown_open);
     try testing.expect(expansion.set(expansion.context, false));
     try testing.expect(!cb.state.shown_open);
+}
+
+test "ComboBox: selected rows keep the selection pairing under hover in every mode" {
+    const S = @import("styles.zig");
+    const WCAG = struct {
+        fn linear(v: u8) f64 {
+            const c = @as(f64, @floatFromInt(v)) / 255;
+            return if (c <= 0.04045) c / 12.92 else std.math.pow(f64, (c + 0.055) / 1.055, 2.4);
+        }
+        fn luminance(c: core.Color) f64 {
+            return 0.2126 * linear(c.r) + 0.7152 * linear(c.g) + 0.0722 * linear(c.b);
+        }
+        fn contrast(a: core.Color, b: core.Color) f64 {
+            const x = luminance(a);
+            const y = luminance(b);
+            return (@max(x, y) + 0.05) / (@min(x, y) + 0.05);
+        }
+    };
+    for ([_]*const core.ThemeTokens{ &core.theme.high_contrast, &core.theme.light, &core.theme.dark }) |t| {
+        const option = S.optionStyle(t, true).resolve(.{ .is_selected = true, .is_hovered = true });
+        const backgrounds = [_]core.Color{ option.background.?, @import("../tree/styles.zig").rowVisual(true, true, false, t).background.?, @import("../data_table/styles.zig").rowVisual(t.tokens.color.bg_primary, true, true, t).background.? };
+        for (backgrounds) |bg| {
+            // Selected + hover must stay on the design pairing (list_selection_hover_bg with
+            // selection_fg); falling back to bg_hover made high contrast unreadable (1.42:1).
+            try std.testing.expectEqual(t.tokens.color.list_selection_hover_bg, bg);
+            // Light uses the design's blue.300 / blue.700 pair (4.27:1), tracked as a design
+            // review item rather than tuned here; dark and high contrast must meet AA.
+            if (t.scheme == .dark) try std.testing.expect(WCAG.contrast(t.tokens.color.selection_fg, bg) >= 4.5);
+        }
+    }
 }

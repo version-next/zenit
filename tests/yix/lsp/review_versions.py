@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Deterministic LSP regressions using a protocol-valid ZLS stub.
 
-Run: python3 tests/yix/lsp/review_versions.py /path/to/current/yix-lsp
+Run: python3 tests/yix/lsp/review_versions.py /path/to/current/yix-lsp /path/to/current/yix
 The stub delays a hover across an edit, coalesces diagnostics, and returns a
 definition in a stale disk twin. No installed ZLS or network is required.
 """
@@ -87,7 +87,7 @@ def stub():
             write(sys.stdout.buffer, {"jsonrpc": "2.0", "id": message["id"], "result": response})
 
 
-def run(binary):
+def run(binary, compiler):
     failures = []
     with tempfile.TemporaryDirectory(prefix="yix-lsp-review-") as directory:
         base = pathlib.Path(directory)
@@ -96,8 +96,22 @@ def run(binary):
         launcher.chmod(0o755)
         source = base / "target.yix"
         twin = base / "_target.yix.zig"
-        source.write_text("\n" * 8 + (ROOT / "tests/yix/lsp/fixture.yix").read_text())
-        twin.write_text((ROOT / "tests/yix/lsp/_fixture.yix.zig").read_text().replace("fixture.yix", "target.yix"))
+        canonical = (ROOT / "tests/yix/lsp/fixture.yix").read_text()
+        source.write_text(canonical)
+        # Generate with the same project root as the LSP. Editing the basename
+        # of a checked-in twin preserves the wrong module identity.
+        subprocess.run([compiler, "gen", "."], cwd=base, check=True, capture_output=True)
+        generated = twin.read_bytes()
+        if b'.module = "target.yix"' not in generated or b'@src().file' in generated:
+            raise AssertionError('CLI must emit literal project-relative module identities')
+        with tempfile.TemporaryDirectory(prefix="yix-lsp-other-root-") as other:
+            other_base = pathlib.Path(other)
+            (other_base / "target.yix").write_text(canonical)
+            subprocess.run([compiler, "gen", "."], cwd=other_base, check=True, capture_output=True)
+            if generated != (other_base / "_target.yix.zig").read_bytes():
+                raise AssertionError('generated identities changed across project roots')
+        print('PASS literal module identity is stable across project roots')
+        source.write_text("\n" * 8 + canonical)
         env = dict(os.environ, YIX_ZLS=str(launcher), REVIEW_TWIN_URI=twin.as_uri())
         process = subprocess.Popen([binary], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, cwd=ROOT, env=env)
@@ -171,4 +185,6 @@ if __name__ == "__main__":
     if sys.argv[1:] == ["--stub"]:
         stub()
     else:
-        sys.exit(run(str(pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ROOT / "zig-out/bin/yix-lsp").resolve())))
+        if len(sys.argv) != 3:
+            raise SystemExit("usage: review_versions.py CURRENT_YIX_LSP CURRENT_YIX")
+        sys.exit(run(str(pathlib.Path(sys.argv[1]).resolve()), str(pathlib.Path(sys.argv[2]).resolve())))

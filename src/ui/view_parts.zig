@@ -18,6 +18,7 @@
 //! Components with alternate mounting methods (like Card's `mountBody`) that support slots provide
 //! `pub fn viewMount(self, scope, cx) !ViewParts` on the builder, which takes precedence over
 //! `mount`.
+const std = @import("std");
 const Node = @import("core/node.zig").Node;
 const Scope = @import("reactive/scope.zig").Scope;
 
@@ -26,6 +27,26 @@ pub const SlotPoint = struct { parent: *Node, before: ?*Node = null };
 /// Named slot (Yix component `header: View` param, `ui.view.with(...).slots(.{ .header = ... })`)
 pub const NamedSlot = struct { name: []const u8, at: SlotPoint };
 pub const max_named_slots = 4;
+
+/// Named slots the caller actually filled for one mount (`?View` slots in Yix). Decided before
+/// the component mounts and fixed for its lifetime: an optional slot is structure, not state.
+/// Built by `ui.view.with(...).slots(...)`: a field whose value is `null` (or an optional that is
+/// null) is absent; any other value, including `{}`, is present.
+pub const SlotPresence = struct {
+    names: [max_named_slots][]const u8 = undefined,
+    len: u8 = 0,
+
+    pub fn has(self: SlotPresence, name: []const u8) bool {
+        for (self.names[0..self.len]) |n| if (std.mem.eql(u8, n, name)) return true;
+        return false;
+    }
+
+    pub fn add(self: *SlotPresence, name: []const u8) void {
+        if (self.has(name)) return;
+        self.names[self.len] = name;
+        self.len += 1;
+    }
+};
 
 pub const ViewParts = struct {
     /// Node attached to parent. null = component attached elsewhere (e.g., portal to overlay layer

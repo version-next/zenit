@@ -6,6 +6,13 @@ const std = @import("std");
 const utf8 = @import("text_core").utf8;
 const builtin = @import("builtin");
 
+// The freestanding core is single-threaded (no shared-memory/atomics target).
+const ThreadId = if (builtin.os.tag == .freestanding) u32 else std.Thread.Id;
+fn currentThreadId() ThreadId {
+    if (builtin.os.tag == .freestanding) return 0;
+    return std.Thread.getCurrentId();
+}
+
 pub const Level = enum(u8) {
     debug,
     log,
@@ -154,7 +161,7 @@ pub const Console = struct {
     dropped_oom: u64 = 0,
     dropped_oversize: u64 = 0,
     clear_generation: u64 = 0,
-    group_depths: std.AutoHashMap(std.Thread.Id, u16),
+    group_depths: std.AutoHashMap(ThreadId, u16),
     counters: std.StringHashMap(CounterState),
     timers: std.StringHashMap(i128),
 
@@ -166,7 +173,7 @@ pub const Console = struct {
             .io = io,
             .config = normalizedConfig(config),
             .started_ns = @import("zenit_time").monotonicTimestamp(io),
-            .group_depths = std.AutoHashMap(std.Thread.Id, u16).init(allocator),
+            .group_depths = std.AutoHashMap(ThreadId, u16).init(allocator),
             .counters = std.StringHashMap(CounterState).init(allocator),
             .timers = std.StringHashMap(i128).init(allocator),
         };
@@ -435,7 +442,7 @@ pub const Console = struct {
             self.bumpRevisionLocked();
             return;
         }
-        const thread_id = std.Thread.getCurrentId();
+        const thread_id = currentThreadId();
         const now = @import("zenit_time").monotonicTimestamp(self.io);
         const delta = @max(@as(i128, 0), now - self.started_ns);
         const event: Event = .{
@@ -497,7 +504,7 @@ pub const Console = struct {
     }
 
     fn adjustGroupDepth(self: *Console, delta: i8) void {
-        const thread_id = std.Thread.getCurrentId();
+        const thread_id = currentThreadId();
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         const old = self.group_depths.get(thread_id) orelse 0;
@@ -547,7 +554,7 @@ pub const Console = struct {
     }
 
     fn stateKeyLocked(self: *Console, scope: []const u8, label: []const u8) ![]u8 {
-        return std.fmt.allocPrint(self.allocator, "{d}:{d}:{s}:{s}", .{ std.Thread.getCurrentId(), scope.len, scope, label });
+        return std.fmt.allocPrint(self.allocator, "{d}:{d}:{s}:{s}", .{ currentThreadId(), scope.len, scope, label });
     }
 
     fn noteOom(self: *Console) void {

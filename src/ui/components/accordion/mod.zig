@@ -38,7 +38,7 @@ const styles = @import("styles.zig");
 
 // AccordionItemRecipe, recipe(variant) unifies AccordionItem styling.
 // variant dimension:
-//   - default: filled background + rounded corner, no border
+//   - default: primary surface + panel radius + 1px border
 //   - outline: transparent background + 1px border + rounded corner
 //   - ghost:   fully transparent, no border no corner
 
@@ -77,10 +77,6 @@ pub const AccordionItemState = struct {
     title_node: ?*Node = null,
     /// header button node (a11y expanded attribute on it).
     header_node: ?*Node = null,
-    /// item container hover signal (expanded hover -> border appears).
-    item_hovered: ?*Signal(bool) = null,
-    /// border color on hover.
-    hover_border_color: Color = Color.TRANSPARENT,
     /// animation allocator (must match node allocator, used in beforeRender callback).
     alloc: Allocator = std.heap.page_allocator,
 
@@ -134,11 +130,6 @@ fn accordionItemBeforeRender(node: *Node) void {
     const state: *AccordionItemState = @ptrCast(@alignCast(node.behavior.events.event_context orelse return));
     const content = state.content_node orelse return;
     const alloc = state.alloc;
-
-    // 0. hover -> item container border appears (direct switch, no transition).
-    if (state.item_hovered) |hovered_sig| {
-        node.style.border.color = if (hovered_sig.get()) state.hover_border_color else Color.TRANSPARENT;
-    }
 
     // 1. detect expanded state change.
     if (state.expanded != state.last_expanded) {
@@ -358,14 +349,12 @@ pub const AccordionItemBuilder = struct {
         const item_resolved = item_cs.resolve(.{});
 
         const item_bg = item_resolved.background orelse Color.TRANSPARENT;
-        const border_color = styles.accordionHoverBorderColor(item_bg, t);
 
         // allocate internal state.
         const state = try my_scope.allocator.create(AccordionItemState);
         state.* = .{
             .expanded = initially_expanded,
             .last_expanded = initially_expanded,
-            .hover_border_color = border_color,
             .alloc = allocator,
         };
         try my_scope.adoptResource(@ptrCast(state), struct {
@@ -383,12 +372,9 @@ pub const AccordionItemBuilder = struct {
         }.destroy);
 
         // outer container (vertical: header + content); style from Recipe variant; rounded
-        // corners + border extracted from recipe (border initially transparent, appears via
-        // transition on hover).
+        // corners + persistent border extracted from the recipe.
         const item_radius = item_resolved.corner_radius orelse 0;
-        var item_border: Border = .{};
-        item_border.color = Color.TRANSPARENT;
-        item_border.width = 1;
+        var item_border: Border = item_resolved.border orelse .{};
         if (item_resolved.border) |b| {
             item_border.radius = b.radius;
         } else if (item_radius > 0) {
@@ -400,6 +386,7 @@ pub const AccordionItemBuilder = struct {
             .background = item_bg,
             .corner_radius = if (item_radius > 0) item_radius else null,
             .border = item_border,
+            .overflow_hidden = true,
         };
         // Chevron indicator (rotate around icon's own center).
         const chevron_size: core.Sizing = .{ .px = styles.accordion_chevron_size };
@@ -416,7 +403,7 @@ pub const AccordionItemBuilder = struct {
         const item = try view.render(my_scope, cx, view.col(.{ .style = item_style }, .{
             // === Header (clickable) ===.
             view.capture(&parts.header, view.box(.{
-                .style = styles.accordionHeaderStyle(t),
+                .style = .{ styles.accordionHeaderStyle(t), view.hover(styles.accordionHeaderHover) },
                 .focusable = true,
                 // header is button semantic node.
                 .tag = .button,
@@ -426,7 +413,7 @@ pub const AccordionItemBuilder = struct {
                     .expansion = .{ .context = @ptrCast(rt), .set = setAccessibleExpanded },
                 },
             }, .{
-                view.capture(&parts.chevron, view.icon(.{ .style = chevron_style, .tint = t.tokens.color.fg_secondary, .hit_test = false }, p.chevron_asset orelse svg_assets.common.chevron_right)),
+                view.capture(&parts.chevron, view.icon(.{ .style = chevron_style, .tint = t.tokens.color.fg_tertiary, .hit_test = false }, p.chevron_asset orelse svg_assets.common.chevron_right)),
                 // title text: fills header remaining width (long titles clipped in header, same as
                 // box text node).
                 view.capture(&parts.title, view.attrs(.{ .style = core.BoxStyle{ .width = .{ .grow = .{} } } }, view.text(.{ .style = styles.accordionTitleText(initially_expanded, t), .hit_test = false }, p.title.peek()))),
@@ -449,8 +436,6 @@ pub const AccordionItemBuilder = struct {
         }));
         // sweep: item guard armed until return.
         errdefer cx.freeNode(item);
-        const item_hovered = try hooks.useHover(my_scope, item);
-        state.item_hovered = item_hovered;
 
         item.meta.ownership.meta.component_name = "AccordionItem";
         try core.bindScopeToNode(my_scope, item);

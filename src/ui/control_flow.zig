@@ -12,6 +12,14 @@ const Scope = core.Scope;
 const Signal = core.Signal;
 const reactive = @import("reactive.zig");
 
+// The next generated branch/row root is an independently replaceable view.
+// Consumed by template.Site; restored across nested dev emit/reentry. Release
+// keeps the original control-flow path without these descriptors or wrappers.
+const preview_enabled = @import("zenit_environment").dev_preview;
+pub var template_region_pending: if (preview_enabled) bool else void = if (preview_enabled) false else {};
+pub const TemplateRegionIdentity = struct { controller: ?*anyopaque = null, key: ?u64 = null };
+pub var template_region_identity: if (preview_enabled) TemplateRegionIdentity else void = if (preview_enabled) .{} else {};
+
 /// Build subtree in untrack: component mount reads don't become control flow effect
 /// dependencies (else any Signal child reads becomes Show/Match/For effect dep, Match may
 /// rebuild subtree). Mirrors Solid: component function body untracked.
@@ -52,6 +60,7 @@ pub var control_flow_suppress_error_log: bool = false;
 
 fn reportControlFlowError(site: []const u8, err: anyerror) void {
     control_flow_error_count += 1;
+    if (comptime @import("zenit_environment").dev_preview) if (@import("preview_mount.zig").reportFailure(err)) return;
     if (control_flow_suppress_error_log) return;
     std.log.scoped(.zenit_control_flow).err(
         "{s} failed: {s} (UI subtree omitted; see control_flow_error_count)",
@@ -316,6 +325,16 @@ pub fn SwitchRegion(comptime T: type, comptime Ctx: type, comptime emit: anytype
         fn build(self: *Self) !void {
             const cs = try self.parent_scope.childScope();
             self.content_scope = cs;
+            const pending = if (comptime preview_enabled) template_region_pending else {};
+            const identity = if (comptime preview_enabled) template_region_identity else {};
+            if (comptime preview_enabled) {
+                template_region_pending = true;
+                template_region_identity = .{ .controller = self };
+            }
+            defer if (comptime preview_enabled) {
+                template_region_pending = pending;
+                template_region_identity = identity;
+            };
             try callUntracked(self.cx, emit, .{ self.ctx, cs, self.cx, self.region.sink(), self.current });
             self.region.end.parent.?.markLayoutDirty();
             self.cx.needs_redraw = true;
@@ -475,12 +494,22 @@ pub fn ForRegion(comptime T: type, comptime Ctx: type, comptime opts: ForCtxOpts
             item: T,
             scope: *Scope,
             node: *Node,
+            lease: ?*@import("view.zig").RootLease = null,
+
             /// render_index_fn / render_source_fn row index signal (belongs to row scope).
             index: ?*reactive.Signal(usize) = null,
             /// render_source_fn row data source (belongs to row scope).
             source: ?*reactive.Signal(T) = null,
+
+            fn currentNode(entry: ItemEntry) ?*Node {
+                return if (entry.lease) |lease| lease.resolve() else entry.node;
+            }
+
+            fn cleanupNode(entry: ItemEntry) ?*Node {
+                return if (entry.lease) |lease| lease.retainedNode() else entry.node;
+            }
         };
-        const Rendered = struct { node: *Node, index: ?*reactive.Signal(usize), source: ?*reactive.Signal(T) = null };
+        const Rendered = struct { node: *Node, lease: ?*@import("view.zig").RootLease, index: ?*reactive.Signal(usize), source: ?*reactive.Signal(T) = null };
 
         entries: std.ArrayList(ItemEntry),
         region: Region,
@@ -520,10 +549,11 @@ pub fn ForRegion(comptime T: type, comptime Ctx: type, comptime opts: ForCtxOpts
                     c.state.reconcile(c.data.get());
                 }
             }.update) catch |err| {
-                for (state.entries.items) |entry| hooks.invalidateSubtreeHookState(entry.node);
+                for (state.entries.items) |entry| if (entry.currentNode()) |node| hooks.invalidateSubtreeHookState(node);
                 for (state.entries.items) |entry| {
                     if (!entry.scope.disposed) entry.scope.dispose();
                 }
+                for (state.entries.items) |entry| if (entry.lease) |lease| lease.release();
                 state.entries.clearRetainingCapacity();
                 state.region.close(cx, null);
                 return err;
@@ -541,11 +571,13 @@ pub fn ForRegion(comptime T: type, comptime Ctx: type, comptime opts: ForCtxOpts
             // on tree, freed via parent.
             if (s.has_unplaced) {
                 for (s.entries.items) |entry| {
-                    if (entry.node.parent != null) continue;
-                    hooks.invalidateSubtreeHookState(entry.node);
-                    s.cx_ptr.destroyDetached(entry.node);
+                    const node = entry.cleanupNode() orelse continue;
+                    if (node.parent != null) continue;
+                    hooks.invalidateSubtreeHookState(node);
+                    s.cx_ptr.destroyDetached(node);
                 }
             }
+            for (s.entries.items) |entry| if (entry.lease) |lease| lease.release();
             s.entries.deinit(allocator);
             allocator.destroy(s);
         }
@@ -553,6 +585,16 @@ pub fn ForRegion(comptime T: type, comptime Ctx: type, comptime opts: ForCtxOpts
         /// Render one row. On failure, self-cleanup (scope before node); caller must NOT
         /// dispose child_scope further.
         fn render(self: *Self, child_scope: *Scope, item: T, idx: usize) !Rendered {
+            const pending = if (comptime preview_enabled) template_region_pending else {};
+            const identity = if (comptime preview_enabled) template_region_identity else {};
+            if (comptime preview_enabled) {
+                template_region_pending = true;
+                template_region_identity = .{ .controller = self, .key = keyFn(item) };
+            }
+            defer if (comptime preview_enabled) {
+                template_region_pending = pending;
+                template_region_identity = identity;
+            };
             var root: ?*Node = null;
             var stray: ?*Node = null;
             var index: ?*reactive.Signal(usize) = null;
@@ -588,20 +630,26 @@ pub fn ForRegion(comptime T: type, comptime Ctx: type, comptime opts: ForCtxOpts
                     return err;
                 };
             }
-            return .{ .node = root orelse {
+            const node = root orelse {
                 discardCaptured(self.cx_ptr, child_scope, null, stray);
                 return error.ForRowEmpty;
-            }, .index = index, .source = source };
+            };
+            const lease = @import("view.zig").RootLease.acquire(self.alloc, node) catch |err| {
+                discardCaptured(self.cx_ptr, child_scope, root, stray);
+                return err;
+            };
+            return .{ .node = node, .lease = lease, .index = index, .source = source };
         }
 
         /// First render. On failure, entries on-tree freed by region.close (scopes are
         /// parent_scope children, dispose before detach nodes).
         fn mountInitial(self: *Self, initial_items: []const T) !void {
             errdefer {
-                for (self.entries.items) |entry| hooks.invalidateSubtreeHookState(entry.node);
+                for (self.entries.items) |entry| if (entry.currentNode()) |node| hooks.invalidateSubtreeHookState(node);
                 for (self.entries.items) |entry| {
                     if (!entry.scope.disposed) entry.scope.dispose();
                 }
+                for (self.entries.items) |entry| if (entry.lease) |lease| lease.release();
                 self.entries.clearRetainingCapacity();
             }
             for (initial_items, 0..) |item, idx| {
@@ -609,6 +657,7 @@ pub fn ForRegion(comptime T: type, comptime Ctx: type, comptime opts: ForCtxOpts
                 const child_scope = try self.parent_scope.childScope();
                 const rendered = try self.render(child_scope, item, idx);
                 const node = rendered.node;
+                errdefer if (rendered.lease) |lease| lease.release();
                 // Pre-reserve entries capacity before attach-to-tree: can't fail between steps or
                 // node on-tree but missing entries (diff never removes it).
                 self.entries.ensureUnusedCapacity(self.alloc, 1) catch |err| {
@@ -626,6 +675,7 @@ pub fn ForRegion(comptime T: type, comptime Ctx: type, comptime opts: ForCtxOpts
                     .item = item,
                     .scope = child_scope,
                     .node = node,
+                    .lease = rendered.lease,
                     .index = rendered.index,
                     .source = rendered.source,
                 });
@@ -677,6 +727,12 @@ pub fn ForRegion(comptime T: type, comptime Ctx: type, comptime opts: ForCtxOpts
                         continue;
                     }
                     var old_entry = s.entries.items[old_idx];
+                    if (old_entry.currentNode() == null) {
+                        s.discardEntry(old_entry);
+                        reused.putAssumeCapacity(old_idx, {});
+                        s.appendEntry(&new_entries, key, item, idx) catch {};
+                        continue;
+                    }
                     // row receives data source: same key reuses, content changed updates this row's
                     // source
                     // (in-place, preserves focus/hover/local state).
@@ -753,10 +809,14 @@ pub fn ForRegion(comptime T: type, comptime Ctx: type, comptime opts: ForCtxOpts
         }
 
         fn discardEntry(s: *Self, entry: ItemEntry) void {
-            hooks.invalidateSubtreeHookState(entry.node);
+            const node = entry.cleanupNode();
+            if (entry.lease) |lease| lease.release();
+            if (node) |n| hooks.invalidateSubtreeHookState(n);
             if (!entry.scope.disposed) entry.scope.dispose();
-            if (entry.node.parent) |p| s.cx_ptr.detachChild(p, entry.node);
-            s.cx_ptr.freeNode(entry.node);
+            if (node) |n| {
+                if (n.parent) |p| s.cx_ptr.detachChild(p, n);
+                s.cx_ptr.freeNode(n);
+            }
         }
 
         /// For 'create new entry' common path: childScope -> render -> bookkeeping; any step
@@ -783,6 +843,7 @@ pub fn ForRegion(comptime T: type, comptime Ctx: type, comptime opts: ForCtxOpts
                 .item = item,
                 .scope = child_scope,
                 .node = rendered.node,
+                .lease = rendered.lease,
                 .index = rendered.index,
                 .source = rendered.source,
             });
@@ -800,7 +861,9 @@ pub fn ForRegion(comptime T: type, comptime Ctx: type, comptime opts: ForCtxOpts
             defer order.deinit(s.alloc);
             try order.ensureTotalCapacity(s.alloc, (lo + 1) + s.entries.items.len + (items.len - hi));
             order.appendSliceAssumeCapacity(items[0 .. lo + 1]);
-            for (s.entries.items) |entry| order.appendAssumeCapacity(entry.node);
+            for (s.entries.items) |entry| if (entry.currentNode()) |node| {
+                order.appendAssumeCapacity(node);
+            };
             order.appendSliceAssumeCapacity(items[hi..]);
             try parent.replaceChildOrder(s.alloc, order.items);
         }

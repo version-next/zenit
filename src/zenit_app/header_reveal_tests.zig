@@ -189,6 +189,27 @@ test "body overlays and suspended or exiting header overlays do not request offs
     try expectSyncFrame(&f, t, .{ 0, 0 }, false);
 }
 
+test "a header overlay whose trigger was freed is not dereferenced and no longer owns the header" {
+    // The overlay outlives its trigger (a tooltip on a row the user just deleted): chrome sync
+    // must resolve the trigger through the stack's generation-checked handle, never the raw
+    // cached pointer.
+    const cx = try ui.Cx.init(std.testing.allocator, std.testing.io);
+    defer cx.deinit();
+    const t = try build(cx);
+    const trigger = try ui.box(cx, .{ .width = .{ .px = 20 }, .height = .{ .px = 20 } }, .{});
+    try t.header.appendChild(cx.allocator, trigger);
+    cx.layout();
+    try pushOverlay(cx, trigger);
+    t.header.removeChild(trigger);
+    cx.freeNode(trigger);
+    cx.layout();
+    var renderer: FakeRenderer = .{};
+    var f = Fake{ .cx = cx, .renderer = &renderer };
+    (try cx.windowChrome()).set(f.chrome.initial);
+    // No live header overlay: an offset change needs no frame.
+    try expectSyncFrame(&f, t, .{ 0, 30.25 }, false);
+}
+
 test "an open header overlay does not request a frame when offset is unchanged" {
     const cx = try ui.Cx.init(std.testing.allocator, std.testing.io);
     defer cx.deinit();

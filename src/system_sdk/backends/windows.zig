@@ -266,6 +266,11 @@ pub const WindowsBackend = struct {
                             if (comptime ordered_moves) {
                                 try queue.list.ensureUnusedCapacity(queue.allocator, 1);
                                 const move = self.window.getMouseMoveEvent() orelse break;
+                                if (comptime @hasField(@TypeOf(move), "left")) if (move.left) {
+                                    // WM_MOUSELEAVE: position unchanged, pointer no longer over the client area.
+                                    try pushEvent(queue, .{ .pointer_left = .{ .window_id = self.window_id } });
+                                    continue;
+                                };
                                 try pushEvent(queue, .{ .mouse_move = .{
                                     .window_id = self.window_id,
                                     .x = move.x,
@@ -517,6 +522,7 @@ const MockWindow = struct {
     redraw_requests: u32 = 0,
     button_sent: bool = false,
     move_pending: bool = false,
+    leave_pending: bool = false,
     move_after_button: bool = false,
     cancel_pending: bool = false,
     key_sent: bool = false,
@@ -570,6 +576,7 @@ const MockWindow = struct {
     fn peekInputKind(self: *MockWindow) c_int {
         if (self.drag_pending) return 6;
         if (self.frame != 2) return 0;
+        if (self.leave_pending) return 8;
         if (self.move_pending and (!self.move_after_button or self.button_sent)) return 8;
         if (!self.button_sent or self.cancel_pending) return 1;
         if (self.wheel_before_key and !self.wheel_sent) return 5;
@@ -582,7 +589,11 @@ const MockWindow = struct {
     }
 
     const Mods = struct { shift: bool = false, ctrl: bool = false, alt: bool = false, cmd: bool = false };
-    fn getMouseMoveEvent(self: *MockWindow) ?struct { x: f32, y: f32, dx: f32, dy: f32, modifiers: Mods } {
+    fn getMouseMoveEvent(self: *MockWindow) ?struct { x: f32, y: f32, dx: f32, dy: f32, modifiers: Mods, left: bool = false } {
+        if (self.leave_pending) {
+            self.leave_pending = false;
+            return .{ .x = 5, .y = 5, .dx = 0, .dy = 0, .modifiers = .{}, .left = true };
+        }
         if (!self.move_pending) return null;
         self.move_pending = false;
         return .{ .x = 7, .y = 9, .dx = 2, .dy = 4, .modifiers = .{ .shift = true } };
@@ -829,6 +840,29 @@ test "WindowsBackend does not sample the final mouse position before queued down
     try std.testing.expect(!win.move_pending);
     try std.testing.expectEqual(@as(usize, 1), sdk.events().len);
     try std.testing.expect(sdk.events()[0] == .mouse_move);
+}
+
+test "WindowsBackend reports WM_MOUSELEAVE as pointer_left in input order, not as a move" {
+    var win = MockWindow{ .leave_pending = true };
+    var sdk = try WindowsBackend.initSystemSdk(std.testing.allocator, &win, 17);
+    defer sdk.deinit();
+    _ = try sdk.pump(0);
+    _ = try sdk.pump(0);
+    var left_at: ?usize = null;
+    var button_at: ?usize = null;
+    for (sdk.events(), 0..) |event, i| switch (event) {
+        .pointer_left => |e| {
+            try std.testing.expectEqual(@as(WindowId, 17), e.window_id);
+            try std.testing.expect(left_at == null);
+            left_at = i;
+        },
+        .mouse_button => if (button_at == null) {
+            button_at = i;
+        },
+        else => {},
+    };
+    try std.testing.expect(left_at != null and button_at != null and left_at.? < button_at.?);
+    try std.testing.expect(!win.leave_pending);
 }
 
 test "WindowsBackend cursor routes by window, rejects unsupported shapes and propagates native rejection" {

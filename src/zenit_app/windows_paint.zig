@@ -4,6 +4,7 @@
 const std = @import("std");
 const ui = @import("ui");
 const platform = @import("platform");
+const render = @import("render");
 
 extern fn zenit_d3d11_probe_clear_text(probe: *anyopaque) c_int;
 extern fn zenit_d3d11_probe_create(hwnd: *anyopaque) ?*anyopaque;
@@ -539,8 +540,12 @@ pub const Painter = struct {
                             }
                         }
                         if (!item.use_draw_transform and item.rotate != 0) unsupported += 1;
-                        var blur = clipItem(21, item.geom, item.radii.tl);
-                        blur.shadow_radii = radiiArray(item.radii);
+                        // The glass shape fits its corners to the glass rect like the shared
+                        // encoder (render backdrop_blur.shapeRadii): oversized, +inf, negative and
+                        // NaN radii resolve the same way, single-radius shapes take one corner.
+                        const glass_radii = render.backdrop_blur.shapeRadii(.{ .corner_radii = radiiArray(item.radii), .arrow = glass.arrow, .tab_lens = glass.tab_lens }, 1, item.geom.w, item.geom.h);
+                        var blur = clipItem(21, item.geom, glass_radii[0]);
+                        blur.shadow_radii = glass_radii;
                         const sx = if (!std.math.isNan(item.draw_w) and item.geom.w > 0) item.draw_w / item.geom.w else 1;
                         const sy = if (!std.math.isNan(item.draw_h) and item.geom.h > 0) item.draw_h / item.geom.h else 1;
                         var matrix: [6]f32 = if (item.use_draw_transform) item.draw_transform else .{
@@ -558,7 +563,7 @@ pub const Painter = struct {
                             .surface = .{ @floatFromInt(@backingInt(glass.surface)), glass.bezel_width, glass.specular_angle, glass.magnification },
                             .bottom = .{ @floatFromInt(@backingInt(glass.bottom_surface)), glass.bottom_bezel_width, 0, 0 },
                             .lens = .{ glass.center_zoom_radius, glass.center_zoom_falloff, glass.edge_field_strength, glass.scale_ratio },
-                            .radii = radiiArray(item.radii),
+                            .radii = glass_radii,
                             .radius = glass.backdrop_blur,
                             .level = glass.blur_level,
                             .saturation = glass.backdrop_saturation,

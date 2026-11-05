@@ -18,6 +18,8 @@ pub const Props = struct {
     /// Caption row height. Windows buttons fill it (a 48 px "tall" title bar gets 46 x 48
     /// buttons, glyphs centred like the rest of the bar); round Linux buttons centre in it.
     height: f32 = 38,
+    /// Windows button width; null keeps the system's 46. Round Linux buttons ignore it.
+    windows_button_width: ?f32 = null,
     on_action: ?core.Handler(chrome.Action) = null,
     close_label: []const u8 = "Close window",
     minimize_label: []const u8 = "Minimize window",
@@ -130,13 +132,15 @@ const Controls = struct {
             }.read);
             const s = signal.peek();
             const appearance = self.props.appearance orelse s.appearance;
-            const width: f32 = if (appearance == .windows) 46 else if (appearance == .breeze) 18 else 24;
+            const width: f32 = if (appearance == .windows) self.props.windows_button_width orelse 46 else if (appearance == .breeze) 18 else 24;
             buttons[i] = try Button(.{ .variant = .ghost, .icon_only = true, .icon_asset = icon, .icon_size = if (appearance == .windows) @as(f32, 10) else @as(f32, 8), .icon_tint = tint, .a11y_label = switch (control) {
                 .minimize => self.props.minimize_label,
                 .maximize => self.props.maximize_label,
                 .close => self.props.close_label,
                 else => "",
             }, .on_click = cx.on(Context, c, Context.invoke), .on_event = Context.event, .event_context = @as(?*anyopaque, @ptrCast(c)), .base_style = .{ .width = .{ .px = width }, .height = .{ .px = self.props.height }, .padding = core.Padding.all(0), .border = .{ .radius = 0 }, .background = core.Color.TRANSPARENT }, .hover_style = core.BoxStyle{ .background = core.Color.TRANSPARENT }, .pressed_style = core.BoxStyle{ .background = core.Color.TRANSPARENT } }).mount(scope, cx);
+            // The caption runtime keeps this array and installs native hooks.
+            @import("../../view.zig").pinComponentRoot(buttons[i]);
             buttons[i].meta.ownership.meta.test_id = switch (control) {
                 .minimize => "window.controls.minimize",
                 .maximize => "window.controls.maximize",
@@ -150,8 +154,8 @@ const Controls = struct {
             try buttons[i].insertChildBefore(cx.allocator, circle, if (buttons[i].children.items.len > 0) buttons[i].children.items[0] else null);
             circle_orphan = false;
             try bind.bind(scope, look, .{ .node = circle, .allocator = cx.allocator }, struct {
-                fn update(b: anytype, l: Look) void {
-                    b.node.setStyleInline(b.allocator, .{ .background = l.background(), .opacity = if (l.active or l.appearance == .windows) @as(f32, 1) else @as(f32, 0.5) });
+                fn update(b: anytype, l: Look) error{OutOfMemory}!void {
+                    try b.node.setStyleInlineFallible(b.allocator, .{ .background = l.background(), .opacity = if (l.active or l.appearance == .windows) @as(f32, 1) else @as(f32, 0.5) });
                 }
             }.update);
         }
@@ -160,7 +164,9 @@ const Controls = struct {
             buttons: [3]*core.Node,
             props: Props,
             allocator: std.mem.Allocator,
-            fn update(b: @This(), s: chrome.State) void {
+            /// All or nothing: the inline style is staged and the child order (transactional)
+            /// replaced before anything else changes. The first run is part of the mount.
+            fn update(b: @This(), s: chrome.State) !void {
                 var ordered: [3]*core.Node = undefined;
                 var count: usize = 0;
                 var seen: u8 = 0;
@@ -181,13 +187,6 @@ const Controls = struct {
                         }
                     }
                 }
-                for (b.buttons) |button| {
-                    var found = false;
-                    for (ordered[0..count]) |active| {
-                        if (active == button) found = true;
-                    }
-                    button.setDisplay(if (found) .flex else .none);
-                }
                 var all = ordered;
                 var n = count;
                 for (b.buttons) |button| {
@@ -200,9 +199,20 @@ const Controls = struct {
                         n += 1;
                     }
                 }
-                b.root.replaceChildOrder(b.allocator, &all) catch {};
                 const appearance = b.props.appearance orelse s.appearance;
-                b.root.setStyleInline(b.allocator, .{ .gap = if (appearance == .windows) @as(f32, 0) else if (appearance == .breeze) @as(f32, 8) else @as(f32, 12), .padding = core.Padding.symmetric(0, if (appearance == .windows) @as(f32, 0) else if (appearance == .breeze) @as(f32, 10) else @as(f32, 8)) });
+                const staged = try b.root.stageStyleInline(b.allocator, .{ .gap = if (appearance == .windows) @as(f32, 0) else if (appearance == .breeze) @as(f32, 8) else @as(f32, 12), .padding = core.Padding.symmetric(0, if (appearance == .windows) @as(f32, 0) else if (appearance == .breeze) @as(f32, 10) else @as(f32, 8)) });
+                b.root.replaceChildOrder(b.allocator, &all) catch |err| {
+                    staged.abort();
+                    return err;
+                };
+                staged.commit();
+                for (b.buttons) |button| {
+                    var found = false;
+                    for (ordered[0..count]) |active| {
+                        if (active == button) found = true;
+                    }
+                    button.setDisplay(if (found) .flex else .none);
+                }
                 const visible = if (b.props.automatic_only) s.controls_owner == .framework else s.controls_owner != .native;
                 b.root.setDisplay(if (count > 0 and visible and (!s.fullscreen or b.props.fullscreen_controls)) .flex else .none);
                 for (b.buttons, 0..) |button, i| button.behavior.interaction.window_region = if ((b.props.native_regions orelse (b.props.state == null and b.props.on_action == null)) and s.appearance == .windows and s.effective_mode == .custom and !s.fullscreen) @fromBackingInt(@intCast(11 + i)) else .client;

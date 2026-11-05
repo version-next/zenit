@@ -6,3 +6,13 @@ style aliased($enabled: Flag, $width: Width) {
   width: $width ?? fit;
   when $enabled { gap: 3; }
 }
+
+// LC3B: generated styles must compile keyword constants as f32, not enum literals.
+style lc3_basis_auto { flex-basis: auto; }
+style lc3_basis_content { flex-basis: content; }
+style lc3_basis_zero { flex-basis: 0; }
+style lc3_lines { align-content: space-around; align-self: first-baseline; }
+
+// LC3C: static compiler and live reload preserve CSS text break controls.
+style lc3c_anywhere { wrap: word; overflow-wrap: anywhere; }
+style lc3c_break_all { wrap: word; word-break: break-all; }

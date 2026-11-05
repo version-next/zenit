@@ -28,6 +28,10 @@ pub fn scrollEventHandler(event: Event, context: ?*anyopaque) EventResult {
 
     switch (event) {
         .scroll => |scroll| {
+            // A wheel against a pinned end (or into content that cannot scroll) leaves every
+            // pixel as it was: tell the dispatcher, so the event requests no frame.
+            const before = VisibleScrollState.of(state, content);
+            defer if (VisibleScrollState.of(state, content).eql(before)) core.scroll_effect.declareInert();
             logScroll(
                 "event in id={d} dir={s} dy={d:.2} dx={d:.2} phase={s} momentum={s} scroll_y={d:.2} bonus_y={d:.2} scroll_x={d:.2} bonus_x={d:.2}",
                 .{
@@ -45,8 +49,8 @@ pub fn scrollEventHandler(event: Event, context: ?*anyopaque) EventResult {
             );
             if (content.parent) |parent| {
                 const pr = parent.rectFromWorldOrFallback();
-                state.viewport_height = pr.h - parent.style.padding.vertical();
-                state.viewport_width = pr.w - parent.style.padding.horizontal();
+                state.viewport_height = @max(0, pr.h - parent.style.contentInsets().vertical());
+                state.viewport_width = @max(0, pr.w - parent.style.contentInsets().horizontal());
             }
             const cr = content.rectFromWorldOrFallback();
             if (!state.external_content_height and cr.h > 0) state.content_height = cr.h;
@@ -295,15 +299,23 @@ pub fn scrollEventHandler(event: Event, context: ?*anyopaque) EventResult {
             // vertical bar hover: visual fine, but keep wider interaction hotzone.
             const sb = ctx.scrollbar orelse return .ignored;
             const was_hovered = state.scrollbar_hovered;
-            state.scrollbar_hovered = state.needsScrollbar() and sb.rectFromWorldOrFallback().w > 0 and
-                move.x >= sb.rectFromWorldOrFallback().x - state_mod.ScrollbarVisual.hover_slop and move.x <= sb.rectFromWorldOrFallback().x + sb.rectFromWorldOrFallback().w + state_mod.ScrollbarVisual.hover_slop;
+            state.scrollbar_hovered = state.needsScrollbar() and sb.globalRect().w > 0 and
+                move.x >= sb.globalRect().x - state_mod.ScrollbarVisual.hover_slop and move.x <= sb.globalRect().x + sb.globalRect().w + state_mod.ScrollbarVisual.hover_slop;
             if (state.scrollbar_hovered and !was_hovered) state.onScrollActivity();
             // horizontal bar hover: also use hotzone expansion, avoid fine bar hard-hit.
             const sb_h = ctx.scrollbar_h orelse return .ignored;
             const was_hovered_h = state.scrollbar_hovered_h;
-            state.scrollbar_hovered_h = state.needsHScrollbar() and sb_h.rectFromWorldOrFallback().h > 0 and
-                move.y >= sb_h.rectFromWorldOrFallback().y - state_mod.ScrollbarVisual.hover_slop and move.y <= sb_h.rectFromWorldOrFallback().y + sb_h.rectFromWorldOrFallback().h + state_mod.ScrollbarVisual.hover_slop;
+            state.scrollbar_hovered_h = state.needsHScrollbar() and sb_h.globalRect().h > 0 and
+                move.y >= sb_h.globalRect().y - state_mod.ScrollbarVisual.hover_slop and move.y <= sb_h.globalRect().y + sb_h.globalRect().h + state_mod.ScrollbarVisual.hover_slop;
             if (state.scrollbar_hovered_h and !was_hovered_h) state.onScrollActivity();
+            return .ignored;
+        },
+        .mouse_leave => {
+            // A pointer that exits through the hover slop sends no further move to the container;
+            // without this the hover track stays revealed and the bars never fade. Dragging is
+            // owned by the thumb's pointer capture and is unaffected.
+            state.scrollbar_hovered = false;
+            state.scrollbar_hovered_h = false;
             return .ignored;
         },
         .mouse_down => {
@@ -313,6 +325,44 @@ pub fn scrollEventHandler(event: Event, context: ?*anyopaque) EventResult {
         else => return .ignored,
     }
 }
+
+/// Everything of a ScrollArea a frame shows or animates from: offsets, overscroll and its spring,
+/// the finger on the pad (it holds the spring), the content transform, and the scrollers'
+/// opacity where they can show. A scroller's fade hold (idle frames) is excluded: it counts
+/// rendered frames, so restarting it changes no pixel and needs no frame of its own.
+pub const VisibleScrollState = struct {
+    scroll_x: f32,
+    scroll_y: f32,
+    bonus_x: f32,
+    bonus_y: f32,
+    bounce_active_x: bool,
+    bounce_active_y: bool,
+    touching: bool,
+    translate_x: f32,
+    translate_y: f32,
+    opacity_v: f32,
+    opacity_h: f32,
+
+    pub fn of(state: *const ScrollState, content: *const Node) VisibleScrollState {
+        return .{
+            .scroll_x = state.scroll_x,
+            .scroll_y = state.scroll_y,
+            .bonus_x = state.bonus_x,
+            .bonus_y = state.bonus_y,
+            .bounce_active_x = state.bounce_active_x,
+            .bounce_active_y = state.bounce_active_y,
+            .touching = state.touching,
+            .translate_x = content.style.translate_x,
+            .translate_y = content.style.translate_y,
+            .opacity_v = if (state.needsScrollbar()) state.scrollbar_fade.opacity else 0,
+            .opacity_h = if (state.needsHScrollbar()) state.scrollbar_fade_h.opacity else 0,
+        };
+    }
+
+    pub fn eql(a: VisibleScrollState, b: VisibleScrollState) bool {
+        return std.meta.eql(a, b);
+    }
+};
 
 // ========== helper functions ==========
 
@@ -532,7 +582,7 @@ fn syncContentTranslate(state: *const ScrollState, content: *Node) void {
         content.style.translate_x = new_tx;
         // scroll frame-by-frame offset (content unchanged): anim-frame combo
         // (interaction+composite).
-        content.markCompositeAnimFrameDirty();
+        content.markHitLayerMotionAnimFrameDirty();
     }
 }
 

@@ -8,7 +8,7 @@ const SkeletonVariant = mod.SkeletonVariant;
 /// Skeleton visually means 'content not here yet', AT side conveys via outer busy state (announced
 /// once, not N times per block);
 /// live=polite lets content actually arriving be announced in passing.
-pub fn Skeleton(variant: SkeletonVariant = .text, width: f32 = 200, height: f32 = 16, animate: bool = true, count: u8 = 1, gap: f32 = 8) View {
+pub fn Skeleton(variant: SkeletonVariant = .text, width: f32 = 200, height: f32 = 12, animate: bool = true, count: u8 = 1, gap: f32 = 8) View {
     const bones = computed(@as(usize, @max(count, 1)));
     return (
         <box style={S.stack.of(.{ .gap = gap })} a11y={.{ .role = .status, .label = "Loading", .busy = true, .live = "polite" }}>

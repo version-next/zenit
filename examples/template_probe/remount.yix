@@ -1,0 +1,80 @@
+const ui = @import("ui");
+pub const Mode = enum { a, b };
+pub var mounts: usize = 0;
+pub var unmounts: usize = 0;
+pub var unsafe_calls: usize = 0;
+pub var fail_mount: bool = false;
+pub var parent_ref: ?*ui.view.Ref(*ui.Node) = null;
+fn remember(r: *ui.view.Ref(*ui.Node)) void { parent_ref = r; }
+pub var mounted_hook: ?*const fn () anyerror!void = null;
+pub var unmounted_hook: ?*const fn () void = null;
+fn didMount() !void {
+    if (fail_mount) return error.ProbeMountFailed;
+    mounts += 1;
+    if (mounted_hook) |hook| try hook();
+}
+fn didUnmount() void { unmounts += 1; if (unmounted_hook) |hook| hook(); }
+fn unknownSetup() u32 { unsafe_calls += 1; return 0; }
+
+pub fn Child(id: []const u8 = "r3.child", button: []const u8 = "r3.child.button") View {
+    var value: u32 = signal(3);
+    onMount(try didMount());
+    onUnmount(didUnmount());
+    return <box><box testId={button} onClick={value += 1}/><text testId={id}>child {value}</text></box>;
+}
+
+pub fn Parent() View {
+    var count: u32 = signal(7);
+    var items: []const u32 = signal(&.{1, 2});
+    var shown: bool = signal(true);
+    var mode: Mode = signal(.a);
+    const handle = ref();
+    onMount(remember(handle));
+    return <col>
+        <box testId="r3.parent.button" onClick={count += 1}/>
+        <text testId="r3.parent">parent {count}</text>
+        <text>RemountOriginal</text>
+        <Child ref={handle}/>
+        <box testId="r3.list.add" onClick={items = &.{1, 2, 3}}/>
+        <box testId="r3.list.remove" onClick={items = &.{2}}/>
+        <text testId="r3.list.title">ListOriginal</text>
+        {for (items) |item| <Child key={item} id="r3.row" button="r3.row.button"/>}
+        {if (shown) <Child id="r3.show" button="r3.show.button"/> else <text>hidden</text>}
+        {switch (mode) { .a => <Child id="r3.match" button="r3.match.button"/>, .b => <text>mode b</text> }}
+    </col>;
+}
+
+pub fn UnsafeChild() View {
+    const value = unknownSetup();
+    return <text>{value}</text>;
+}
+pub fn UnsafeParent() View {
+    return <col><UnsafeChild/><text>UnsafeOriginal</text></col>;
+}
+
+const unsafeFunction: *const fn () u32 = unknownSetup;
+pub fn PointerChild() View {
+    const value = unsafeFunction.*();
+    return <text>{value}</text>;
+}
+pub fn PointerParent() View {
+    return <col><PointerChild/><text>PointerOriginal</text></col>;
+}
+pub fn BlockChild() View {
+    const value: u32 = blk: { unsafe_calls += 1; break :blk 0; };
+    return <text>{value}</text>;
+}
+pub fn BlockParent() View {
+    return <col><BlockChild/><text>BlockOriginal</text></col>;
+}
+
+// A hand-written builder can return a generated component's exact type. Its
+// return type alone must never attest the wrapper's external behavior.
+const WrappedElement = @TypeOf(Child(.{}));
+fn Wrapped(args: anytype) WrappedElement {
+    unsafe_calls += 1;
+    return Child(args);
+}
+pub fn WrappedParent() View {
+    return <col><Wrapped/><text>WrappedOriginal</text></col>;
+}

@@ -4,6 +4,12 @@ const mod = @import("mod.zig");
 const S = @import("styles.yss");
 const AlertVariant = mod.AlertVariant;
 
+const icons = @import("zenit_icons");
+
+fn statusIcon(v: AlertVariant) ui.SvgAsset {
+    return switch (v) { .info => icons.info, .success => icons.circle_check, .warning => icons.triangle_alert, .@"error" => icons.circle_alert };
+}
+
 /// Announcement level: error / warning interrupts current speech (assertive), info / success
 /// announces after (polite).
 /// role=alert alone won't be announced; AT only auto-announces live regions when non-off.
@@ -32,20 +38,31 @@ pub fn Alert(
     closable: bool = false,
     onClose: ?Handler(void) = null,
     closeIconAsset: ?ui.SvgAsset = null,
+    actionLabel: []const u8 = "",
+    actionIconAsset: ?ui.SvgAsset = null,
+    onAction: ?Handler(void) = null,
 ) View {
     const has_title = computed(title.len != 0);
     const live = computed(liveLevel(variant));
     const live_text = computed(spoken(title, message));
     return (
         <row style={S.Alert.slot(.root, .{ .kind = variant, .titled = has_title })} a11y={.{ .role = .alert, .live = live, .live_text = live_text }}>
-            <box style={S.Alert.slot(.accent, .{ .kind = variant })} />
+            <box style={S.status_alignment}><icon style={S.Alert.slot(.accent, .{ .kind = variant })} src={statusIcon(variant)} /></box>
             <col style={S.content}>
                 {if (has_title) <text style={S.title}>{title}</text>}
                 {if (message.len != 0) <text style={S.message}>{message}</text>}
+                {if (actionLabel.len != 0)
+                    <box style={S.action_inset}>
+                        <row style={S.action_root} focusable focusRing a11y={.{ .role = .button, .label = actionLabel }} onClick={onAction}>
+                            {if (actionIconAsset) |asset| <icon style={S.Action.slot(.icon, .{ .kind = variant })} src={asset} />}
+                            <text style={S.Action.slot(.label, .{ .kind = variant })}>{actionLabel}</text>
+                        </row>
+                    </box>
+                }
             </col>
             {if (closable)
                 <row style={S.close} a11y={.{ .role = .button, .label = "Dismiss" }} onClick={onClose}>
-                    {if (closeIconAsset) |asset| <icon style={S.close_icon} src={asset} /> else <text style={S.close_label}>x</text>}
+                    {if (closeIconAsset) |asset| <icon style={S.close_icon} src={asset} /> else <icon style={S.close_icon} src={ui.assets.common.x_close} />}
                 </row>
             }
         </row>

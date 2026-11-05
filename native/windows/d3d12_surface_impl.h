@@ -89,6 +89,10 @@ static int surface_load_buffers(ZenitD12Surface *s) {
         // pipeline samples the main target directly (native Liquid Glass grid
         // banks downsample the whole window), as Metal does on its drawable.
         t->usage=1u|2u|4u|16u;
+        if (d12_ledger_enabled()) {
+            t->ledger_kind=LK_SWAPCHAIN; t->ledger_bytes=d12_ledger_allocation_bytes(t->owner->raw,desc);
+            d12_ledger_add(t,t->ledger_kind,t->ledger_bytes,t->width,t->height,(uint32_t)desc.Format);
+        }
         s->buffers[i]=t;
     }
     return 0;
@@ -185,11 +189,18 @@ extern "C" int zenit_d12_surface_acquire(ZenitD12Surface *s,ZenitD12Texture **ou
     *out=s->acquired; return 0;
 }
 extern "C" int zenit_d12_surface_present(ZenitD12Surface *s,ZenitD12Texture *t,uint32_t interval,int *occluded) {
-    if (!s || !t || s->acquired!=t || interval>1 || !occluded) return 1;
+    if (!s || !t || s->acquired!=t || interval>4 || !occluded) return 1;
     *occluded=0;
+    zenit_d12_debug_drain(s->queue->owner->raw);
     HRESULT hr=surface_update_composition(s);
+    const bool composition_failed=FAILED(hr);
     if (SUCCEEDED(hr)) hr=s->raw->Present(interval,0);
-    if (FAILED(hr)) return FAILED(s->queue->owner->raw->GetDeviceRemovedReason())?4:2;
+    if (FAILED(hr)) {
+        fprintf(stderr,"[d3d12-present] %s failed hr=0x%08lx removed=0x%08lx\n",composition_failed?"composition update":"Present",
+            (unsigned long)hr,(unsigned long)s->queue->owner->raw->GetDeviceRemovedReason());
+        zenit_d12_debug_drain(s->queue->owner->raw);
+        return FAILED(s->queue->owner->raw->GetDeviceRemovedReason())?4:2;
+    }
     *occluded=hr==DXGI_STATUS_OCCLUDED; s->acquired=nullptr; s->present_pending=true; return 0;
 }
 extern "C" int zenit_d12_surface_discard(ZenitD12Surface *s,ZenitD12Texture *t) {
@@ -205,4 +216,63 @@ extern "C" int zenit_d12_surface_size(ZenitD12Surface *s,uint32_t *w,uint32_t *h
     if (!s || !w || !h) return 1;
     DXGI_SWAP_CHAIN_DESC1 desc={}; if (FAILED(s->raw->GetDesc1(&desc))) return 2;
     *w=desc.Width; *h=desc.Height; return 0;
+}
+
+// Compositor sprite atlas (src/zenit_app/sprite_host.zig): an opaque
+// composition swap chain that native/windows/compositor_sprites.cpp shows
+// through DirectComposition. Its back buffer is rendered once by the regular
+// encoder (the returned texture) and presented once; DWM keeps showing it.
+struct ZenitD12SpriteAtlas { IDXGISwapChain3 *raw; uint64_t ledger_bytes; };
+extern "C" int zenit_d12_sprite_atlas_create(ZenitD12Queue *q,uint32_t w,uint32_t h,uint32_t format,
+    ZenitD12SpriteAtlas **out,ZenitD12Texture **texture_out) {
+    if (!out || !texture_out) return 1;
+    *out=nullptr; *texture_out=nullptr;
+    if (!q || !w || !h || w>16384 || h>16384) return 1;
+    DXGI_FORMAT view=(DXGI_FORMAT)format, allocation=view;
+    if (allocation==DXGI_FORMAT_B8G8R8A8_UNORM_SRGB) allocation=DXGI_FORMAT_B8G8R8A8_UNORM;
+    if (allocation==DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) allocation=DXGI_FORMAT_R8G8B8A8_UNORM;
+    if (allocation!=DXGI_FORMAT_B8G8R8A8_UNORM && allocation!=DXGI_FORMAT_R8G8B8A8_UNORM) return 1;
+    auto a=(ZenitD12SpriteAtlas *)calloc(1,sizeof(ZenitD12SpriteAtlas));
+    auto t=(ZenitD12Texture *)calloc(1,sizeof(ZenitD12Texture));
+    if (!a || !t) { free(a); free(t); return 2; }
+    IDXGIFactory2 *factory=nullptr; IDXGISwapChain1 *chain=nullptr;
+    DXGI_SWAP_CHAIN_DESC1 desc={}; desc.Width=w; desc.Height=h; desc.Format=allocation;
+    desc.SampleDesc.Count=1; desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT|DXGI_USAGE_SHADER_INPUT;
+    // Composition swap chains: sequential flip, at least two buffers.
+    desc.BufferCount=2; desc.Scaling=DXGI_SCALING_STRETCH; desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    desc.AlphaMode=DXGI_ALPHA_MODE_IGNORE;
+    HRESULT hr=CreateDXGIFactory1(IID_IDXGIFactory2,(void **)&factory);
+    if (SUCCEEDED(hr)) hr=factory->CreateSwapChainForComposition(q->raw,&desc,nullptr,&chain);
+    if (SUCCEEDED(hr)) hr=chain->QueryInterface(IID_IDXGISwapChain3,(void **)&a->raw);
+    if (SUCCEEDED(hr)) hr=a->raw->GetBuffer(a->raw->GetCurrentBackBufferIndex(),IID_ID3D12Resource,(void **)&t->raw);
+    if (chain) chain->Release(); if (factory) factory->Release();
+    if (FAILED(hr)) { if (a->raw) a->raw->Release(); free(a); free(t); return 2; }
+    t->owner=q->owner; InterlockedIncrement(&t->owner->refs);
+    t->refs=1; t->dimension=2; t->width=w; t->height=h; t->depth=1; t->mips=1; t->samples=1; t->format=view;
+    t->usage=1u|2u|4u|16u;
+    if (d12_ledger_enabled()) {
+        // Two composition buffers; only the current one is wrapped.
+        D3D12_RESOURCE_DESC rd=t->raw->GetDesc();
+        a->ledger_bytes=2*d12_ledger_allocation_bytes(t->owner->raw,rd);
+        d12_ledger_add(a,LK_SPRITE_CHAIN,a->ledger_bytes,w,h,(uint32_t)rd.Format);
+    }
+    *out=a; *texture_out=t; return 0;
+}
+// After the render commands were submitted to the atlas' queue.
+extern "C" int zenit_d12_sprite_atlas_present(ZenitD12SpriteAtlas *a) {
+    if (!a) return 1;
+    return FAILED(a->raw->Present(0,0)) ? 2 : 0;
+}
+extern "C" IUnknown *zenit_d12_sprite_atlas_content(ZenitD12SpriteAtlas *a) { return a ? a->raw : nullptr; }
+extern "C" void zenit_d12_sprite_atlas_release(ZenitD12SpriteAtlas *a) {
+    if (!a) return;
+    d12_ledger_remove(a,LK_SPRITE_CHAIN,a->ledger_bytes);
+    a->raw->Release(); free(a);
+}
+// The surface's own DirectComposition device and root visual (custom-frame
+// windows), or nulls: compositor sprites join this tree when there is one.
+extern "C" int zenit_d12_surface_composition(ZenitD12Surface *s,IDCompositionDevice **device,IDCompositionVisual **root) {
+    if (!s || !device || !root) return 1;
+    *device=s->composition; *root=s->composition_root;
+    return 0;
 }

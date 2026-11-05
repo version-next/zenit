@@ -75,11 +75,11 @@ pub fn isValidUtf8(src: []const u8) bool {
 pub fn formatSizing(buf: *[20]u8, sizing: Sizing) []const u8 {
     return switch (sizing) {
         .px => |v| std.fmt.bufPrint(buf, "{d:.0}px", .{v}) catch "px",
-        .grow => |mm| if (mm.min == 0 and mm.max == std.math.inf(f32))
+        .grow => |mm| if (mm.min < 0 and mm.max == std.math.inf(f32))
             "grow"
         else
             std.fmt.bufPrint(buf, "grow({d:.0}..{d:.0})", .{ mm.min, mm.max }) catch "grow",
-        .fit => |mm| if (mm.min == 0 and mm.max == std.math.inf(f32))
+        .fit => |mm| if (mm.min < 0 and mm.max == std.math.inf(f32))
             "fit"
         else
             std.fmt.bufPrint(buf, "fit({d:.0}..{d:.0})", .{ mm.min, mm.max }) catch "fit",

@@ -102,6 +102,8 @@ pub const World = struct {
     /// DevTools-only sparse source table. Node body does not allocate for 50+ StyleFields;
     /// only styled / setStyle-modified nodes occupy an entry.
     style_origins: id_hash.U32HashMapUnmanaged(NodeStyleOrigins),
+    /// Element ids of destroyed nodes are not reused while their entries go away.
+    style_origin_removals: id_hash.TombstoneBudget = .{},
 
     pub fn init(allocator: std.mem.Allocator) World {
         return .{
@@ -213,6 +215,8 @@ pub const World = struct {
         const removed = self.style_origins.fetchRemove(element_raw) orelse return;
         var origins = removed.value;
         origins.deinit(self.allocator);
+        if (self.style_origin_removals.noteRemoval(self.style_origins.count(), self.style_origins.capacity()))
+            self.style_origins.rehash(id_hash.U32Context{});
     }
 
     /// Mark element dirty. Flags merged to existing entry via union.
@@ -291,6 +295,26 @@ test "World: style origins use base declarations with per-field last-writer over
 
     w.clearStyleOrigins(element_raw);
     try testing.expect(w.styleOrigin(element_raw, padding_index) == null);
+}
+
+test "World: style origins of destroyed elements do not accumulate tombstones" {
+    if (builtin.strip_debug_info) return error.SkipZigTest;
+    var w = World.init(testing.allocator);
+    defer w.deinit();
+    for (1..301) |raw| w.recordStyleBase(@intCast(raw), 1, .{ .address = 0x1111, .kind = .styled });
+    var next: u32 = 1000;
+    for (0..200) |_| {
+        const first = next;
+        for (0..80) |_| {
+            w.recordStyleBase(next, 1, .{ .address = 0x1111, .kind = .styled });
+            next += 1;
+        }
+        for (first..next) |raw| {
+            w.clearStyleOrigins(@intCast(raw));
+            try id_hash.expectFewTombstones(&w.style_origins);
+        }
+    }
+    try testing.expectEqual(@as(u32, 300), w.style_origins.count());
 }
 
 test "World: markDirty unions flags" {

@@ -336,7 +336,7 @@ test "Popover: reopening during the exit transition cancels the pending close" {
     result.open.?.set(true);
     result.open.?.set(false);
     var layer_ptr: ?*overlay_stack_mod.OverlayLayer = null;
-    for (&ctx.overlay_stack.layers) |*slot| {
+    for (ctx.overlay_stack.layers.items) |*slot| {
         if (slot.*) |*l| layer_ptr = l;
     }
     const layer = layer_ptr.?;
@@ -356,6 +356,125 @@ test "Popover: reopening during the exit transition cancels the pending close" {
     }
     try std.testing.expect(result.open.?.peek());
     try std.testing.expect(!layer.suspended);
+}
+
+fn onlyLayer(ctx: *Cx) *overlay_stack_mod.OverlayLayer {
+    var layer_ptr: ?*overlay_stack_mod.OverlayLayer = null;
+    for (ctx.overlay_stack.layers.items) |*slot| {
+        if (slot.*) |*l| layer_ptr = l;
+    }
+    return layer_ptr.?;
+}
+
+test "Popover: mounted open shows the open state at once; later opens animate" {
+    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer ctx.deinit();
+    ctx.setViewport(640, 480);
+    const root = try box(ctx, .{ .width = .{ .px = 640 }, .height = .{ .px = 480 } }, .{});
+    ctx.root = root;
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+
+    const open = try scope.createSignal(bool, true);
+    const result = try Popover(.{ .open = open, .position = .bottom_start }).mount(scope, ctx);
+    try root.appendChild(std.testing.allocator, result.wrapper);
+    try result.trigger.appendChild(std.testing.allocator, try box(ctx, .{ .width = .{ .px = 120 }, .height = .{ .px = 32 } }, .{}));
+    try result.content.appendChild(std.testing.allocator, try core.text(ctx, "Already open", .{}));
+
+    const layer = onlyLayer(ctx);
+    try std.testing.expectEqual(overlay_stack_mod.LayerState.visible, layer.state);
+    try std.testing.expect(!layer.suspended);
+
+    // The first frame that shows the content shows it fully: no scale_fade intermediate.
+    var now_ms: f64 = render_engine.current_frame_time_ms;
+    var first_visible: ?f32 = null;
+    for (0..6) |_| {
+        now_ms += 16;
+        render_engine.current_frame_time_ms = now_ms;
+        render_engine.current_frame_dt_ms = 16;
+        ctx.layout();
+        _ = ctx.render();
+        const opacity = result.chrome.getOpacity();
+        if (first_visible == null and opacity > HIDDEN_OPACITY + 0.0001) {
+            first_visible = opacity;
+            try std.testing.expectEqual(@as(f32, 1), result.chrome.style.scale_x());
+        }
+    }
+    try std.testing.expectEqual(@as(?f32, 1), first_visible);
+
+    // Closing still plays the exit transition, and reopening plays the enter transition.
+    open.set(false);
+    try std.testing.expectEqual(overlay_stack_mod.LayerState.exiting, layer.state);
+    for (0..60) |_| {
+        now_ms += 16;
+        _ = ctx.overlay_stack.tick(now_ms, 0.016, 640, 480, std.testing.allocator);
+    }
+    try std.testing.expect(layer.suspended);
+    open.set(true);
+    try std.testing.expectEqual(overlay_stack_mod.LayerState.entering, layer.state);
+}
+
+fn flippedDropdown(ctx: *Cx, scope: *Scope, open: *core.Signal(bool)) !popover_mod.PopoverResult {
+    ctx.setViewport(640, 480);
+    const root = try box(ctx, .{ .width = .{ .px = 640 }, .height = .{ .px = 480 }, .direction = .column }, .{});
+    ctx.root = root;
+    // The trigger sits near the bottom: a 120 px panel below it overflows, so it flips to top.
+    try root.appendChild(std.testing.allocator, try box(ctx, .{ .width = .{ .px = 10 }, .height = .{ .px = 420 } }, .{}));
+    const result = try Popover(.{ .open = open, .position = .bottom_start, .enter_transition = .dropdown, .exit_transition = .dropdown }).mount(scope, ctx);
+    try root.appendChild(std.testing.allocator, result.wrapper);
+    try result.trigger.appendChild(std.testing.allocator, try box(ctx, .{ .width = .{ .px = 120 }, .height = .{ .px = 32 } }, .{}));
+    try result.content.appendChild(std.testing.allocator, try box(ctx, .{ .width = .{ .px = 160 }, .height = .{ .px = 120 } }, .{}));
+    return result;
+}
+
+test "Popover: a dropdown mounted open lands at rest on its first opaque frame" {
+    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer ctx.deinit();
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const open = try scope.createSignal(bool, true);
+    const result = try flippedDropdown(ctx, scope, open);
+    var now_ms: f64 = render_engine.current_frame_time_ms;
+    var first_y: ?f32 = null;
+    for (0..8) |_| {
+        renderFrames(ctx, &now_ms, 1);
+        if (first_y == null and result.chrome.getOpacity() > 0.999) first_y = result.chrome.style.translate_y;
+    }
+    try std.testing.expect(first_y != null);
+    try std.testing.expectEqual(PopoverPosition.top_start, result.active_position_ptr.*);
+    try std.testing.expectApproxEqAbs(result.chrome.style.translate_y, first_y.?, 0.01);
+}
+
+test "Popover: a flipped dropdown exits toward its anchor" {
+    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer ctx.deinit();
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const open = try scope.createSignal(bool, true);
+    const result = try flippedDropdown(ctx, scope, open);
+    var now_ms: f64 = render_engine.current_frame_time_ms;
+    renderFrames(ctx, &now_ms, 8);
+    try std.testing.expectEqual(PopoverPosition.top_start, result.active_position_ptr.*);
+    const rest_y = result.chrome.style.translate_y;
+    open.set(false);
+    renderFrames(ctx, &now_ms, 4);
+    // Mid-exit the panel above its trigger has slid down (toward the trigger), not up.
+    try std.testing.expect(result.chrome.getOpacity() > 0.001);
+    try std.testing.expect(result.chrome.style.translate_y > rest_y + 0.1);
+}
+
+test "Popover: animate_initial_open plays the enter transition for a popover mounted open" {
+    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer ctx.deinit();
+    const root = try box(ctx, .{ .width = .{ .px = 400 }, .height = .{ .px = 300 } }, .{});
+    ctx.root = root;
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+
+    const open = try scope.createSignal(bool, true);
+    const result = try Popover(.{ .open = open, .animate_initial_open = true }).mount(scope, ctx);
+    try root.appendChild(std.testing.allocator, result.wrapper);
+    try std.testing.expectEqual(overlay_stack_mod.LayerState.entering, onlyLayer(ctx).state);
 }
 
 test "Popover: external visible signal" {
@@ -1591,6 +1710,106 @@ fn consumeCase(consume: bool) !usize {
     return first;
 }
 
+fn renderFrames(ctx: *Cx, now_ms: *f64, n: usize) void {
+    for (0..n) |_| {
+        now_ms.* += 16.0;
+        render_engine.current_frame_time_ms = now_ms.*;
+        render_engine.current_frame_dt_ms = 16.0;
+        ctx.frame_time_ms = now_ms.*;
+        ctx.layout();
+        _ = ctx.render();
+    }
+}
+
+test "Popover: an outside press closes the popover on release, not on press" {
+    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer ctx.deinit();
+    ctx.setViewport(640, 480);
+    const root = try box(ctx, .{ .width = .{ .px = 640 }, .height = .{ .px = 480 }, .direction = .column }, .{});
+    ctx.root = root;
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    try root.appendChild(std.testing.allocator, try box(ctx, .{ .width = .{ .px = 100 }, .height = .{ .px = 40 } }, .{}));
+    const result = try Popover(.{ .position = .bottom_start, .trigger = .click }).mount(scope, ctx);
+    try root.appendChild(std.testing.allocator, result.wrapper);
+    try result.trigger.appendChild(std.testing.allocator, try box(ctx, .{ .width = .{ .px = 40 }, .height = .{ .px = 20 } }, .{}));
+    try result.content.appendChild(std.testing.allocator, try box(ctx, .{ .width = .{ .px = 120 }, .height = .{ .px = 60 } }, .{}));
+    ctx.layout();
+    _ = ctx.render();
+    var now_ms: f64 = 0;
+    openPopoverForConsumeTest(ctx, result, &now_ms);
+    const layer = onlyLayer(ctx);
+    try std.testing.expect(!layer.suspended);
+
+    ctx.handleMouseDown(50, 20, .{});
+    renderFrames(ctx, &now_ms, 3);
+    try std.testing.expect(!layer.suspended);
+    try std.testing.expect(layer.state != .exiting);
+
+    ctx.handleMouseUp(50, 20);
+    renderFrames(ctx, &now_ms, 1);
+    try std.testing.expect(layer.suspended or layer.state == .exiting);
+}
+
+test "Popover: an outside click is not lost to a later press inside before the next frame" {
+    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer ctx.deinit();
+    ctx.setViewport(640, 480);
+    const root = try box(ctx, .{ .width = .{ .px = 640 }, .height = .{ .px = 480 }, .direction = .column }, .{});
+    ctx.root = root;
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    try root.appendChild(std.testing.allocator, try box(ctx, .{ .width = .{ .px = 100 }, .height = .{ .px = 40 } }, .{}));
+    const result = try Popover(.{ .position = .bottom_start, .trigger = .click }).mount(scope, ctx);
+    try root.appendChild(std.testing.allocator, result.wrapper);
+    try result.trigger.appendChild(std.testing.allocator, try box(ctx, .{ .width = .{ .px = 40 }, .height = .{ .px = 20 } }, .{}));
+    try result.content.appendChild(std.testing.allocator, try box(ctx, .{ .width = .{ .px = 120 }, .height = .{ .px = 60 } }, .{}));
+    ctx.layout();
+    _ = ctx.render();
+    var now_ms: f64 = 0;
+    openPopoverForConsumeTest(ctx, result, &now_ms);
+    const layer = onlyLayer(ctx);
+    try std.testing.expect(!layer.suspended);
+    const panel = result.content.globalRect();
+    // One event batch: a click outside, then a press inside the panel that is still held.
+    ctx.handleMouseDown(50, 20, .{});
+    ctx.handleMouseUp(50, 20);
+    ctx.handleMouseDown(panel.x + panel.w / 2, panel.y + panel.h / 2, .{});
+    renderFrames(ctx, &now_ms, 1);
+    try std.testing.expect(layer.suspended or layer.state == .exiting);
+}
+
+test "Popover: a popover its press opened survives that press's release" {
+    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer ctx.deinit();
+    ctx.setViewport(640, 480);
+    const root = try box(ctx, .{ .width = .{ .px = 640 }, .height = .{ .px = 480 }, .direction = .column }, .{});
+    ctx.root = root;
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const opener = try box(ctx, .{ .width = .{ .px = 100 }, .height = .{ .px = 40 } }, .{});
+    try root.appendChild(std.testing.allocator, opener);
+    const result = try Popover(.{ .position = .bottom_start, .trigger = .manual }).mount(scope, ctx);
+    try root.appendChild(std.testing.allocator, result.wrapper);
+    try result.trigger.appendChild(std.testing.allocator, try box(ctx, .{ .width = .{ .px = 40 }, .height = .{ .px = 20 } }, .{}));
+    try result.content.appendChild(std.testing.allocator, try box(ctx, .{ .width = .{ .px = 120 }, .height = .{ .px = 60 } }, .{}));
+    ctx.layout();
+    _ = ctx.render();
+    var now_ms: f64 = 0;
+
+    // The opener's press opens the popover (as an on-press handler would), several frames pass,
+    // then the press releases.
+    ctx.handleMouseDown(50, 20, .{});
+    result.open.?.set(true);
+    renderFrames(ctx, &now_ms, 4);
+    ctx.handleMouseUp(50, 20);
+    renderFrames(ctx, &now_ms, 2);
+    const layer = onlyLayer(ctx);
+    try std.testing.expect(!layer.suspended);
+    try std.testing.expect(layer.state != .exiting);
+    try std.testing.expect(result.open.?.peek());
+}
+
 test "Popover: consume_outside_click closes without activating what was clicked" {
     try std.testing.expectEqual(@as(usize, 0), try consumeCase(true));
     // Contrast: default behavior, close and click still reach below.
@@ -1601,8 +1820,9 @@ const LostUp = enum { cancel_pointer, new_press };
 
 /// If consumed press doesn't receive matching release (window loses focus / pointer interaction
 /// cancelled / release lost), swallow-release flag can't outlive this press, else next normal
-/// click's release swallowed, click doesn't synthesize.
-fn lostUpCase(mode: LostUp) !usize {
+/// click's release swallowed, click doesn't synthesize. Outside dismissal happens on release, so
+/// a press without one closes nothing by itself.
+fn lostUpCase(mode: LostUp) !struct { clicks: usize, open: bool } {
     var ctx = try Cx.init(std.testing.allocator, std.testing.io);
     defer ctx.deinit();
     ctx.setViewport(640, 480);
@@ -1643,22 +1863,34 @@ fn lostUpCase(mode: LostUp) !usize {
         },
         .new_press => {},
     }
-    for (0..20) |_| {
-        now_ms += 16;
-        render_engine.current_frame_time_ms = now_ms;
-        ctx.frame_time_ms = now_ms;
-        ctx.layout();
-        _ = ctx.render();
-    }
-    try std.testing.expect(!result.open.?.peek());
-    // next normal click must trigger normally.
+    const settle = struct {
+        fn run(c: *Cx, t: *f64) void {
+            for (0..20) |_| {
+                t.* += 16;
+                render_engine.current_frame_time_ms = t.*;
+                c.frame_time_ms = t.*;
+                c.layout();
+                _ = c.render();
+            }
+        }
+    }.run;
+    settle(ctx, &now_ms);
+    // No release, no click: the panel stays open.
+    try std.testing.expect(result.open.?.peek());
+    // Next click: a lost release counts as released (the panel closes and the click goes
+    // through); after a cancelled press the still-open panel consumes this click to close.
     ctx.handleClick(50, 20);
-    return clicks;
+    settle(ctx, &now_ms);
+    return .{ .clicks = clicks, .open = result.open.?.peek() };
 }
 
 test "Popover: consumed press whose mouse-up is lost does not swallow the next click" {
-    try std.testing.expectEqual(@as(usize, 1), try lostUpCase(.cancel_pointer));
-    try std.testing.expectEqual(@as(usize, 1), try lostUpCase(.new_press));
+    const lost = try lostUpCase(.new_press);
+    try std.testing.expectEqual(@as(usize, 1), lost.clicks);
+    try std.testing.expect(!lost.open);
+    const cancelled = try lostUpCase(.cancel_pointer);
+    try std.testing.expectEqual(@as(usize, 0), cancelled.clicks);
+    try std.testing.expect(!cancelled.open);
 }
 
 test "Popover: an item that closes a nested popover from its click handler keeps the parent open" {
@@ -1763,7 +1995,7 @@ test "Popover: wrapped text updated from a before_render hook re-wraps and repai
     try collapsed.appendChild(std.testing.allocator, row);
     const col = try box(ctx, .{ .width = .fill(), .direction = .column, .gap = 1 }, .{});
     try row.appendChild(std.testing.allocator, col);
-    const t = try core.text(ctx, "", .{ .font_size = 11.5, .wrap = .word });
+    const t = try core.text(ctx, "", .{ .font_size = 11.5, .wrap = .word_break });
     try col.appendChild(std.testing.allocator, t);
     t.style.width = .fill();
 
@@ -1890,4 +2122,36 @@ test "Popover: split open — trigger click and Esc are proposals the parent can
     gate.allow_close = true;
     ctx.handleKeyDown(.escape, .{});
     try std.testing.expect(!open.peek());
+}
+
+test "Popover: a trigger freed without disposing the Popover's scope closes the layer instead of dangling" {
+    // The trigger's nodes can be freed before the Popover's scope disposal lands (a disposal
+    // requested inside a reactive callback is deferred). Until then the portal content stays
+    // stacked: its before-render hook must not dereference the freed trigger
+    // (generation-checked through the overlay stack) and the layer closes.
+    var ctx = try Cx.init(std.testing.allocator, std.testing.io);
+    defer ctx.deinit();
+    ctx.setViewport(400, 300);
+    const root = try box(ctx, .{ .width = .{ .px = 400 }, .height = .{ .px = 300 } }, .{});
+    ctx.root = root;
+    // Content in the window portal, outside the trigger's subtree (as in an app).
+    const portal = try box(ctx, .{ .position = .absolute, .width = .{ .grow = .{} }, .height = .{ .grow = .{} } }, .{});
+    try root.appendChild(std.testing.allocator, portal);
+    ctx.popover_portal_root = portal;
+    const scope = try Scope.init(std.testing.allocator, null, ctx.owner);
+    defer scope.dispose();
+    const result = try Popover(.{ .enter_transition = .none, .exit_transition = .none }).mount(scope, ctx);
+    try root.appendChild(std.testing.allocator, result.wrapper);
+    result.open.?.set(true);
+    _ = ctx.render();
+    try std.testing.expect(result.content.parent == portal);
+    // Free the trigger subtree while the scope is still alive.
+    ctx.detachChild(root, result.wrapper);
+    ctx.freeDetachedNodeAfterScopeDispose(result.wrapper);
+    // The next frame runs the content's positioning hook (as the window relayout that follows
+    // the deletion does). It must not touch the freed trigger.
+    for (0..3) |_| popoverBeforeRender(result.content);
+    for (ctx.overlay_stack.layers.items) |slot| {
+        if (slot) |layer| try std.testing.expect(layer.suspended or layer.state == .exiting);
+    }
 }

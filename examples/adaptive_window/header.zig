@@ -185,6 +185,9 @@ pub fn mount(p: Props, scope: *ui.Scope, cx: *ui.Cx) !*ui.Node {
         }),
     };
     const root = if (p.preview) try v.render(scope, cx, v.row(.{ .test_id = p.test_id, .style = S.header }, children)) else try W.WindowHeader(.{ .test_id = p.test_id, .style = S.header }, children).mount(scope, cx);
-    if (p.preview and p.radius > 0) root.setStyleInline(cx.allocator, .{ .corner_radii = .{ .each = .{ p.radius, p.radius, 0, 0 } }, .overflow_hidden = true });
+    if (p.preview and p.radius > 0) root.setStyleInlineFallible(cx.allocator, .{ .corner_radii = .{ .each = .{ p.radius, p.radius, 0, 0 } }, .overflow_hidden = true }) catch |err| {
+        cx.freeNode(root);
+        return err;
+    };
     return root;
 }

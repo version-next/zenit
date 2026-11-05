@@ -126,7 +126,11 @@ pub const FontSystem = struct {
         var index: c_int = 0;
         const weight = cssWeight(descriptor.weight);
         const italic = descriptor.style == .italic;
-        if (zenit_linux_find_font(terminated.ptr, weight, @intFromBool(italic), &path, path.len, &index) != 1) return error.FontLoadFailed;
+        if (zenit_linux_find_font(terminated.ptr, weight, @intFromBool(italic), &path, path.len, &index) != 1) {
+            // "system-ui" is a fontconfig generic alias on current desktops; older configurations
+            // only know sans-serif, which is the desktop's UI face there.
+            if (!std.mem.eql(u8, family, "system-ui") or zenit_linux_find_font("sans-serif", weight, @intFromBool(italic), &path, path.len, &index) != 1) return error.FontLoadFailed;
+        }
         const length = std.mem.indexOfScalar(u8, &path, 0) orelse return error.InvalidFontPath;
         return loadFace(self.allocator, self.ft_library, self.layout_context, path[0..length :0], index, descriptor.size, weight, italic, 1);
     }

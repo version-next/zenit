@@ -8,6 +8,7 @@
 const std = @import("std");
 const pixel_domain = @import("command_encoder/pixel_domain.zig");
 const gpu = @import("gpu");
+const shape_clip_pair = @import("shape_clip_pair.zig");
 const Contour = @import("path_tessellator.zig").Contour;
 const TPoint = @import("path_tessellator.zig").TPoint;
 const path_fill_rule = @import("path_fill_rule.zig");
@@ -63,10 +64,11 @@ const PathUniforms = extern struct {
     polygon_points: [max_polygon_points][2]f32 = @as([max_polygon_points][2]f32, @splat(.{ 0, 0 })),
     // shape clip mask (aligned with path.metal; kind 0=none / 1=rounded_rect / 2=ellipse)
     clip_rect: [4]f32 = .{ 0, 0, 0, 0 },
-    clip_radius: f32 = 0,
+    clip_radii: [4]f32 = .{ 0, 0, 0, 0 }, // TL, TR, BR, BL
     clip_shape_kind: u32 = 0,
     _pad1: u32 = 0,
     _pad2: u32 = 0,
+    _pad6: u32 = 0,
     // draw_mode 2 (gradient): radial/conic gradient evaluated per fragment
     // over `rect` (the gradient bounds). Same t and stop rules as FillGradient.
     grad_dir: u32 = 0,
@@ -78,7 +80,16 @@ const PathUniforms = extern struct {
     _pad5: u32 = 0,
     grad_colors: [max_gradient_stops][4]f32 = @as([max_gradient_stops][4]f32, @splat(.{ 0, 0, 0, 0 })),
     grad_positions: [max_gradient_stops]f32 = @as([max_gradient_stops]f32, @splat(0)),
+    /// Second shape clip (shape_clip_pair.zig); zero-sized off Metal.
+    clip2: shape_clip_pair.Field = shape_clip_pair.none,
 };
+
+comptime {
+    // path.metal / path.hlsl cbuffer: the clip block is two 16-byte registers (rect, radii) + kind/pad.
+    std.debug.assert(@offsetOf(PathUniforms, "clip_rect") == 352);
+    std.debug.assert(@offsetOf(PathUniforms, "clip_radii") == 368);
+    std.debug.assert(@offsetOf(PathUniforms, "grad_dir") == 400);
+}
 const max_gradient_stops = 16;
 
 // ============================================================================
@@ -323,8 +334,9 @@ pub const PathRenderer = struct {
     scale_factor: f32,
     current_rect_clip: [4]f32 = .{ 0, 0, -1, -1 },
     clip_rect: [4]f32 = .{ 0, 0, 0, 0 },
-    clip_radius: f32 = 0,
+    clip_radii: [4]f32 = .{ 0, 0, 0, 0 },
     clip_shape_kind: u32 = 0,
+    clip2: shape_clip_pair.Uniform = .{},
 
     pub fn init(allocator: std.mem.Allocator, device: *gpu.Backend.Device) !PathRenderer {
         var shader = try gpu.Backend.ShaderModule.initFromSource(device, path_shader_source);
@@ -398,8 +410,20 @@ pub const PathRenderer = struct {
         self.raster_viewport = .{ self.viewport_width * self.scale_factor, self.viewport_height * self.scale_factor };
     }
 
+    /// Start a GPU frame.
     pub fn beginFrame(self: *PathRenderer, w: f32, h: f32, scale: f32) void {
+        self.beginFrameFor(w, h, scale, true);
+    }
+
+    /// `gpu_frame` false: a CPU patch encode (cpu_flat), which reads only the
+    /// CPU-side batches: the triple-buffered GPU slots keep rotating with GPU
+    /// frames alone, so a slot an in-flight frame reads is never reused.
+    pub fn beginFrameFor(self: *PathRenderer, w: f32, h: f32, scale: f32, gpu_frame: bool) void {
         self.setViewport(w, h, scale);
+        self.current_rect_clip = .{ 0, 0, -1, -1 };
+        self.frame_call_count = 0;
+        self.frame_draw_count = 0;
+        if (!gpu_frame) return;
         self.shrink_frame += 1;
         self.drainRetiredBuffers();
         // buffer_write_offset still holds prev-frame accum (cross-pass flushes total),
@@ -427,17 +451,23 @@ pub const PathRenderer = struct {
         self.current_rect_clip = rect orelse .{ 0, 0, -1, -1 };
     }
 
+    /// Second shape clip intersected with the primary one (shape_clip_pair.zig).
+    pub fn setPartnerClip(self: *PathRenderer, clip: shape_clip_pair.Uniform) void {
+        self.clip2 = clip;
+    }
+
     /// shape clip mask. path supports rounded_rect(1) / ellipse(2); polygon(3) inert
     /// to path pipeline (caller ensures polygon-clip scenariosse avoids shader-clip).
-    pub fn setClipMask(self: *PathRenderer, shape_kind: u32, rect: ?[4]f32, radius: f32) void {
+    pub fn setClipMask(self: *PathRenderer, shape_kind: u32, rect: ?[4]f32, radii: [4]f32) void {
         if (rect) |mask_rect| {
             self.clip_rect = mask_rect;
-            self.clip_radius = radius;
+            self.clip_radii = radii;
             self.clip_shape_kind = if (shape_kind <= 2) shape_kind else 0;
         } else {
             self.clip_rect = .{ 0, 0, 0, 0 };
-            self.clip_radius = 0;
+            self.clip_radii = .{ 0, 0, 0, 0 };
             self.clip_shape_kind = 0;
+            self.clip2 = .{};
         }
     }
 
@@ -825,8 +855,9 @@ pub const PathRenderer = struct {
                         .scale_factor = self.scale_factor,
                         .draw_mode = @backingInt(DrawMode.triangles),
                         .clip_rect = self.clip_rect,
-                        .clip_radius = self.clip_radius,
+                        .clip_radii = self.clip_radii,
                         .clip_shape_kind = self.clip_shape_kind,
+                        .clip2 = shape_clip_pair.field(self.clip2),
                     };
                     render_pass.setVertexBytes(1, std.mem.asBytes(&uniforms));
                     render_pass.setFragmentBytes(1, std.mem.asBytes(&uniforms));
@@ -855,8 +886,9 @@ pub const PathRenderer = struct {
                     .contour_end_points = dc.polygon.contour_end_points,
                     .polygon_points = dc.polygon.points,
                     .clip_rect = self.clip_rect,
-                    .clip_radius = self.clip_radius,
+                    .clip_radii = self.clip_radii,
                     .clip_shape_kind = self.clip_shape_kind,
+                    .clip2 = shape_clip_pair.field(self.clip2),
                     .grad_dir = dc.gradient.dir,
                     .grad_stop_count = dc.gradient.stop_count,
                     .grad_center = dc.gradient.center,

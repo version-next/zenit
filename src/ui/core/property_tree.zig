@@ -69,7 +69,8 @@ pub const ClipNode = struct {
     world_aabb: ComputedRect,
     /// Actual clip shape consumed by render runtime.
     shape_kind: display_list_mod.ClipShapeKind = .rect,
-    radius: f32 = 0,
+    /// Rounded-clip corner radii TL, TR, BR, BL (.rounded_rect only).
+    radii: [4]f32 = .{ 0, 0, 0, 0 },
     polygon: display_list_mod.ClipPolygon = .{},
     /// true means currently using bounds as conservative degeneration, not precise shape clip.
     bounds_fallback: bool = false,

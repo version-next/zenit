@@ -6,7 +6,7 @@ comptime {
 }
 
 test "Yix golden: story output is stable and parses as Zig" {
-    const r = try compiler.compile(std.testing.allocator, @embedFile("stories.yix"));
+    const r = try compiler.compileSource(std.testing.allocator, "tests/yix/stories.yix", @embedFile("stories.yix"));
     try std.testing.expect(r == .output);
     defer std.testing.allocator.free(r.output);
     // golden is checked-in twin (check-yix compares it too): any output change, this and check-yix
@@ -73,6 +73,12 @@ test "Yix diagnostics: unsupported features and malformed syntax fail explicitly
         .{ "pub fn C(header: View, header: View) View { return <col>{header}</col>; }", "slot `header` is declared twice" },
         .{ "pub fn C(children: View) View { return <text>{children}</text>; }", "must be inside box, row, col or grid" },
         .{ "pub fn C(children: View) View { var b: bool = signal(true); return <col>{if (b) <col>{children}</col>}</col>; }", "cannot be inside control flow" },
+        .{ "pub fn C(icon: ?View) View { return <row>{icon}</row>; }", "{icon} is an optional slot (?View); place it inside {if (icon)" },
+        .{ "pub fn C(icon: ?View) View { return <row>{if (icon) <box><text>x</text></box>}</row>; }", "{if (icon) …} must contain {icon}" },
+        .{ "pub fn C(icon: ?View) View { return <row>{if (icon) <box>{icon}</box> else <box></box>}</row>; }", "takes no else" },
+        .{ "pub fn C(icon: ?View) View { var b: bool = signal(true); return <row>{if (b) <box>{if (icon) <box>{icon}</box>}</box>}</row>; }", "{icon} (a slot) cannot be inside control flow" },
+        .{ "pub fn C(children: ?View) View { return <row>{children}</row>; }", "children cannot be optional" },
+        .{ "pub fn C(icon: ?View) View { return <row><text>x</text></row>; }", "component declares icon: ?View but the template has no {icon}" },
         .{ "pub fn C() View { return <box onClick={|x| foo(x)} />; }", "this host event carries no value" },
         .{ "pub fn C() View { var x: i32 = signal(0); const y = computed(blk: { const x = 1; break :blk x; }); return <text>{y}</text>; }", "expression-local bindings" },
         .{ "pub fn C() View { var x: i32 = signal(0); const y = computed(f(x) catch |e| g(e)); return <text>{y}</text>; }", "expression-local bindings" },
@@ -163,8 +169,8 @@ test "Yix icon host tag passes src positionally and keeps other attributes as pr
     const from_prop = try compiler.compile(std.testing.allocator, "pub fn C(asset: ?ui.SvgAsset = null, tex: u32 = 0) View { return <row><icon src={asset} /><image src={tex} /></row>; }");
     try std.testing.expect(from_prop == .output);
     defer std.testing.allocator.free(from_prop.output);
-    try std.testing.expect(std.mem.indexOf(u8, from_prop.output, "ui.view.icon(.{ }, asset)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, from_prop.output, "ui.view.image(.{ }, tex)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, from_prop.output, "ui.view.icon(.{ }, __yix_view_ctx.asset)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, from_prop.output, "ui.view.image(.{ }, __yix_view_ctx.tex)") != null);
 }
 
 fn srcToGen(segments: []const compiler.Segment, src: usize) ?usize {
@@ -496,9 +502,9 @@ test "文本空白与 JSX 相同：同一行保留、跨行去缩进并以单个
     const Case = struct { src: []const u8, want: []const u8 };
     const cases = [_]Case{
         // same line: as-is (including space before/after interpolation)
-        .{ .src = "<text>a b {x} c</text>", .want = "\"a b \" ++ ui.view.yixFormat(@TypeOf(x), \"\") ++ \" c\"" },
+        .{ .src = "<text>a b {x} c</text>", .want = "\"a b \" ++ ui.view.yixFormat(@TypeOf(__yix_view_ctx.x), \"\") ++ \" c\"" },
         // cross-line: space before interpolation preserved (was swallowed as 'a   b' before)
-        .{ .src = "<text>\n        a   b {x}\n        c\n    </text>", .want = "\"a   b \" ++ ui.view.yixFormat(@TypeOf(x), \"\") ++ \"c\"" },
+        .{ .src = "<text>\n        a   b {x}\n        c\n    </text>", .want = "\"a   b \" ++ ui.view.yixFormat(@TypeOf(__yix_view_ctx.x), \"\") ++ \"c\"" },
         // multi-line plain text: dedent, single space join, blank lines drop
         .{ .src = "<text>\n    one\n\n    two  \n</text>", .want = "\"one two\"" },
         // between first line end and next line add one space
@@ -668,11 +674,13 @@ test "惰性分支 / 行只捕获函数体实际用到的外层名字（不把�
     const out = r.output;
     // if: only capture b; switch: only capture c; for: only capture b; nested if: outer only
     // capture inner-need a, c
-    try std.testing.expect(std.mem.indexOf(u8, out, "ui.view.lazyIf(a, .{ .b = b, }") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "ui.view.lazySwitch(t, .{ .c = c, }") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "ui.view.eachWith(.{ .b = b, }") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "ui.view.lazyIf(a, .{ .a = a, .c = c, }") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, ".rows = rows") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "ui.view.lazyIf(__yix_view_ctx.a, .{ .b = __yix_view_ctx.b, }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "ui.view.lazySwitch(__yix_view_ctx.t, .{ .c = __yix_view_ctx.c, }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "ui.view.eachWith(.{ .b = __yix_view_ctx.b, }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "ui.view.lazyIf(__yix_view_ctx.a, .{ .a = __yix_view_ctx.a, .c = __yix_view_ctx.c, }") != null);
+    // The outer view captures rows to feed the list, while its row callback
+    // captures only b. Exact eachWith argument checks above guard that boundary.
+    try expectContains(out, ".rows = rows");
 }
 
 test "组件属性的派生值按 ui.view.attrType 定型；类型里的 const（[]const u8、*const fn）不当成局部绑定" {
@@ -703,7 +711,7 @@ test "errmap: 双胞胎里的报错位置映射回 .yix；库代码里的报错�
     ;
     try tmp.dir.createDirPath(std.testing.io, "sub");
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "sub/c.yix", .data = src });
-    const r = try compiler.compileMapped(a, src);
+    const r = try compiler.compileMappedSource(a, "sub/c.yix", src);
     const twin = try compiler.twinText(a, "c.yix", r.mapped.output);
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "sub/_c.yix.zig", .data = twin });
     // position of `.primary` in twin
@@ -779,6 +787,16 @@ test "yss: 参数化样式没有 when 时直接返回；多层阴影 shadow: a, 
     try expectContains(out, ".shadows = .{ ui.tokenRef(.shadow, \"lg\"), .{ .offset_x = 0, .offset_y = 32, .blur = 80, .spread = 0, .color = ui.Color.rgba(0x00, 0x00, 0x00, 0x19) }, }");
 }
 
+test "yss: 普通样式的 {zig} 读主题 t 时编成无参数的主题解析器（.of(.{})）；字段 .t 与字符串里的 t 不算" {
+    const out = try yss(
+        \\style ring { corner-radius: control; outline: {ui.Outline{ .color = t.tokens.color.focus_ring, .width = 2 }}; }
+        \\style plain { width: {cfg.t + 1}; height: {f("t")}; }
+    );
+    defer std.testing.allocator.free(out);
+    try expectContains(out, "pub const ring = ui.paramStyle(struct { pub const declared = &[_][]const u8{ \"corner_radius\", \"outline\", }; pub fn resolve(args: @This(), t: *const ui.theme.Values) ui.BoxStyle { _ = args; return ui.boxFrom(.{ .corner_radius = ui.tokenRef(.radius, \"control\"), .outline = ui.Outline{ .color = t.tokens.color.focus_ring, .width = 2 }, }, t); } }).of(.{});");
+    try expectContains(out, "pub const plain = ui.css(");
+}
+
 test "yss mapped: 参数化样式里参数类型、默认值与 {zig} 中 $p 两侧的原文逐字节映射回 .yss" {
     const src = "style s($w: Wide = Wide.n) { width: {f($w) + g}; }";
     const r = try compiler.style.compileMapped(std.testing.allocator, src);
@@ -824,6 +842,10 @@ test "yss 参数化样式的诊断" {
         .{ "style s($k: bool) { when $k gap: 1; }", "expected `&` or `{`" },
         .{ "style s($k: bool) { :hover { gap: 1; } when $k { gap: 2; } }", "pure function of its parameters" },
         .{ "style s($k: bool) { transition: opacity 1s; when $k { gap: 2; } }", "transitions are not supported" },
+        .{ "style s { outline: {ui.Outline{ .color = t.tokens.color.accent }}; :hover { opacity: 0.5; } }", "cannot hold interactive states" },
+        .{ "style s { :hover { opacity: 0.5; } width: {t.tokens.size.control_md}; }", "cannot hold interactive states" },
+        .{ "style s { transition: opacity 100ms; width: {t.tokens.size.control_md}; }", "cannot declare transitions" },
+        .{ "style s { font-size-set: true; }", "is not a style property" },
         .{ "style s($c: ?ui.Color) { background: mix($c ?? accent, accent, 0.5); }", "cannot be used inside mix()" },
         .{ "style s($w: f32 { gap: $w; }", "unterminated parameter list" },
         .{ "style s { shadow: lg, ; }", "empty shadow layer" },
@@ -938,4 +960,118 @@ test "yss: flag x { 开 } else { 关 }——关着时的块进 .false 选项" {
     const out = try yss("recipe R { flag on { opacity: 1; } else { opacity: 0.5; } }");
     defer std.testing.allocator.free(out);
     try expectContains(out, ".on = .{ .false = .{ .opacity = 0.5, }, .true = .{ .opacity = 1, }, }");
+}
+
+test "LP3 template metadata normalizes tokens preserves strings and separates branch paths" {
+    const cases = .{
+        "pub fn C() View { var n: i32 = signal(0); return <col><box testId=\"two  spaces\" visible={true} focusable={n + 1 > 0}/>{if (n > 0) <text>{n + 1}</text> else <text>{n + 1}</text>}</col>; }",
+        "pub fn C() View { var n: i32 = signal(0); return <col><box testId=\"two  spaces\" visible={true} focusable={n+1>0}/>{if(n>0)<text>{n+1}</text>else<text>{n+1}</text>}</col>; }",
+    };
+    inline for (cases) |source| {
+        const result = try compiler.compile(std.testing.allocator, source);
+        try std.testing.expect(result == .output);
+        defer std.testing.allocator.free(result.output);
+        for ([_][]const u8{
+            "ui.view.templateSite(",
+            ".module = \"<memory>\"",
+            ".path = \"C/keyword_if:1/branch:0\"",
+            ".path = \"C/keyword_if:1/branch:1\"",
+            ".tokens = \"n + 1 > 0 \"",
+            ".boolean = true",
+            ".text = \"two  spaces\"",
+        }) |expected| {
+            if (std.mem.indexOf(u8, result.output, expected) == null) std.debug.print("missing template metadata: {s}\n", .{expected});
+            try std.testing.expect(std.mem.indexOf(u8, result.output, expected) != null);
+        }
+    }
+}
+
+test "LP3 module identity uses repository-relative source not generated twin location" {
+    const source = "pub fn Stable() View { return <box><text>stable</text></box>; }";
+    const result = try compiler.compileSource(std.testing.allocator, "tests/yix/stable.yix", source);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(result == .output);
+    try expectContains(result.output, ".module = \"tests/yix/stable.yix\"");
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "@src().file") == null);
+    const mapped = try compiler.compileMappedSource(std.testing.allocator, "tests/yix/stable.yix", source);
+    defer mapped.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings(result.output, mapped.mapped.output);
+}
+
+test "LP4 preview baseline survives isolated cache output without source adjacency" {
+    const source = "const ui = @import(\"ui\");\npub fn Cached() View { var n: u32 = signal(3); return <text>{n}</text>; }\n";
+    const result = try compiler.compileSource(std.testing.allocator, "cached/view.yix", source);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(result == .output);
+    const prefix = "const __yix_preview_source: ?[]const u8 = if (ui.view.template.preview_enabled) ";
+    const start = std.mem.indexOf(u8, result.output, prefix).? + prefix.len;
+    const literal = result.output[start..];
+    const end = std.mem.indexOfScalar(u8, literal[1..], '"').? + 2;
+    const decoded = try std.zig.string_literal.parseAlloc(std.testing.allocator, literal[0..end]);
+    defer std.testing.allocator.free(decoded);
+    try std.testing.expectEqualStrings(source, decoded);
+    try expectContains(result.output, ".source = __yix_preview_source");
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "@embedFile(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "signal(") == null);
+}
+
+test "LP4 catalogs enumerate private nested styles and preserve static hole identity" {
+    const source = "const ui = @import(\"ui\"); const S = struct { value: []const u8 = \"\", const Hidden: @TypeOf(ui.css(.{ .gap = 4 })) = ui.css(.{ .gap = 4 }); }; pub fn C() View { var n: u32 = signal(1); return <box visible={true} onClick={n += 1}><text>before {n} after</text></box>; }";
+    const result = try compiler.compileSource(std.testing.allocator, "catalog.yix", source);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(result == .output);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".@\"S . Hidden \" = S.Hidden") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "S.u8") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "visible = @static") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "n  @interpolation") != null);
+}
+
+test "LP4 interpolation markers inside string arguments are literal data" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source = "pub fn C() View { return <box><text>before {\" @interpolation \"} after</text></box>; }";
+    const result = try compiler.compilePreview(arena.allocator(), "marker.yix", source);
+    try std.testing.expect(result == .document);
+    const op = result.document.components[0].ops[1];
+    try std.testing.expectEqual(@as(usize, 2), op.fragments.len);
+    try std.testing.expectEqualStrings("before ", op.fragments[0]);
+    try std.testing.expectEqualStrings(" after", op.fragments[1]);
+}
+
+test "LP4 containers leave interpolation fragments on the child text instruction" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source = "pub fn C() View { var n: u32 = signal(1); return <box onClick={n += 1}>before {n} after</box>; }";
+    const result = try compiler.compilePreview(arena.allocator(), "direct.yix", source);
+    try std.testing.expect(result == .document);
+    const ops = result.document.components[0].ops;
+    try std.testing.expectEqual(@as(usize, 0), ops[0].fragments.len);
+    try std.testing.expectEqual(@as(usize, 2), ops[1].fragments.len);
+}
+
+test "LP5 preview nested regions preserve envelopes controller keys and slot identities" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source =
+        \\pub fn C() View { var items: []const u32 = signal(&.{1}); var shown: bool = signal(true); return <col>{for (items) |item| <box key={item}><text>row</text></box>}{if (shown) <box><text>branch</text></box> else <text>else</text>}<Shell header={<box><text>header</text></box>}><box><text>default</text></box></Shell></col>; }
+    ;
+    const b1 = try std.mem.replaceOwned(u8, a, source, "<text>row</text>", "<row><text>changed row</text></row>");
+    const b2 = try std.mem.replaceOwned(u8, a, b1, "<text>branch</text>", "<col><text>changed branch</text></col>");
+    const b = try std.mem.replaceOwned(u8, a, b2, "<text>header</text>", "<box><text>changed header</text></box>");
+    const before = (try compiler.compilePreview(a, "fixture.yix", source)).document;
+    const after = (try compiler.compilePreview(a, "fixture.yix", b)).document;
+    try std.testing.expectEqualStrings(before.envelope, after.envelope);
+    try std.testing.expectEqual(@as(usize, 5), before.regions.len);
+    try std.testing.expectEqual(before.regions.len, after.regions.len);
+    for (before.components[0].ops, after.components[0].ops) |x, y| {
+        try std.testing.expectEqualStrings(x.identity_tokens orelse x.tokens, y.identity_tokens orelse y.tokens);
+    }
+    for (before.regions, after.regions) |x, y| {
+        try std.testing.expectEqualStrings(x.name, y.name);
+        try std.testing.expectEqualStrings(x.key_tokens, y.key_tokens);
+    }
+    const key = try std.mem.replaceOwned(u8, a, source, "key={item}", "key={item + 1}");
+    const keyed = (try compiler.compilePreview(a, "fixture.yix", key)).document;
+    try std.testing.expect(!std.mem.eql(u8, before.regions[0].key_tokens, keyed.regions[0].key_tokens));
 }

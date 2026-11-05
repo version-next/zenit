@@ -104,6 +104,14 @@ pub fn rasterContentHash(content_hash: u64, geometry: anytype, scale: f32) u64 {
 /// otherwise lands off the grid and snaps sharp the frame it stops scaling). A rounded surface
 /// is aligned the same way; its caller composites the original rect from it (the rounded mask
 /// stays put, see OffscreenLayer.quad and compositeQuad).
+///
+/// A surface that knows its rest origin (`surface_rest_origin`: where the matrix translation
+/// lands with the owner's scale back at 1 and its transient motion removed) anchors the grid
+/// there instead of at the current matrix. The texture-local frame then stays put for the whole
+/// animation: content snapped to its pixels (static text) rasterizes to the same texels every
+/// frame, and once the animation settles the texture lands texel-for-pixel on the direct-draw
+/// grid. Anchoring to the moving matrix instead shifts the texture-local frame by a fraction of a
+/// pixel each frame, so snapped glyphs re-round one by one.
 pub fn alignTranslationSurface(it: anytype, scale: f32, offset: [2]f32) @TypeOf(it) {
     var out = it;
     if (!std.math.isFinite(scale) or scale <= 0 or it.rotate != 0) return out;
@@ -117,6 +125,11 @@ pub fn alignTranslationSurface(it: anytype, scale: f32, offset: [2]f32) @TypeOf(
             (!std.math.isNan(it.draw_h) and it.draw_h > 0 and it.draw_h != it.geom.h)) return out;
     }
     const size = [2]f32{ it.geom.w, it.geom.h };
+    const rest: ?[2]f32 = if (comptime @hasField(@TypeOf(it), "surface_rest_origin"))
+        (if (it.use_draw_transform) it.surface_rest_origin else null)
+    else
+        null;
+    if (rest) |r| return alignToRestOrigin(it, scale, offset, lin, r);
     const origin: [2]f32 = if (it.use_draw_transform)
         .{ it.draw_transform[4], it.draw_transform[5] }
     else
@@ -147,6 +160,38 @@ pub fn alignTranslationSurface(it: anytype, scale: f32, offset: [2]f32) @TypeOf(
     out.draw_h = extent[1];
     out.draw_transform[4] += shift[0];
     out.draw_transform[5] += shift[1];
+    return out;
+}
+
+/// Rest-anchored variant of alignTranslationSurface: the texture origin sits on the target grid
+/// at the rest pose (matrix scale 1, translation `rest`), so at rest it is pixel-exact and while
+/// the owner scales or slides the texture-local frame (and every texel) stays the same. Bounds
+/// are surface-local units, which equal target units at rest; the composite translation moves by
+/// the current linear part times the bounds shift so the content keeps its place.
+fn alignToRestOrigin(it: anytype, scale: f32, offset: [2]f32, lin: [2]f32, rest: [2]f32) @TypeOf(it) {
+    var out = it;
+    var delta: [2]f32 = undefined;
+    var extent: [2]f32 = undefined;
+    const size = [2]f32{ it.geom.w, it.geom.h };
+    for (0..2) |axis| {
+        const target = rest[axis] + offset[axis];
+        const lo = @floor(target * scale);
+        const hi = @ceil((target + size[axis]) * scale);
+        if (!std.math.isFinite(lo) or !std.math.isFinite(hi)) return it;
+        delta[axis] = lo / scale - target;
+        extent[axis] = (hi - lo) / scale;
+    }
+    out.geom.x = it.geom.x + delta[0];
+    out.geom.y = it.geom.y + delta[1];
+    out.geom.w = extent[0];
+    out.geom.h = extent[1];
+    // draw_x/w stay the damage/cull envelope in the target frame: widen it by the scaled shift.
+    out.draw_x = (if (std.math.isNan(it.draw_x)) it.geom.x else it.draw_x) + delta[0] * lin[0];
+    out.draw_y = (if (std.math.isNan(it.draw_y)) it.geom.y else it.draw_y) + delta[1] * lin[1];
+    out.draw_w = extent[0] * lin[0];
+    out.draw_h = extent[1] * lin[1];
+    out.draw_transform[4] += delta[0] * lin[0];
+    out.draw_transform[5] += delta[1] * lin[1];
     return out;
 }
 
@@ -473,6 +518,65 @@ fn ensureDamageClearPipeline(encoder: anytype) bool {
     return true;
 }
 
+/// Fill the main target's damage rect (the current scissor) with the frame's
+/// clear colour: a full frame starts from that colour by its load action, a
+/// damage-scissored one keeps the presented pixels around the rect.
+pub fn fillFrameDamage(encoder: anytype, color: [4]f32) bool {
+    if (comptime gpu.backend_kind != .metal) return false;
+    const pass = encoder.render_pass orelse return false;
+    const pipeline = frameDamagePipeline(encoder, &encoder.persistent.damage_fill_pipeline, "damage_fill_fragment_main") orelse return false;
+    pass.setPipeline(pipeline);
+    pass.setFragmentBytes(0, std.mem.asBytes(&color));
+    pass.draw(3, 1, 0, 0);
+    return true;
+}
+
+/// Draw the kept copy of the presented frame over the whole main target
+/// (texel for texel, no blending): what a damage-scissored frame keeps
+/// outside its damage rect. Restores the frame's own scissor afterwards.
+pub fn copyFrameForward(encoder: anytype, presented: gpu.Backend.TextureBinding) bool {
+    if (comptime gpu.backend_kind != .metal) return false;
+    const pass = encoder.render_pass orelse return false;
+    const pipeline = frameDamagePipeline(encoder, &encoder.persistent.damage_copy_pipeline, "damage_copy_fragment_main") orelse return false;
+    pass.setScissorRect(0, 0, encoder.drawable_extent[0], encoder.drawable_extent[1]);
+    pass.setPipeline(pipeline);
+    pass.setFragmentTextureBinding(0, presented);
+    pass.draw(3, 1, 0, 0);
+    encoder.applyOffscreenTargetViewport();
+    return true;
+}
+
+fn frameDamagePipeline(encoder: anytype, slot: *?gpu.Backend.RenderPipeline, fragment: [:0]const u8) ?*const gpu.Backend.RenderPipeline {
+    if (slot.* == null) {
+        if (encoder.persistent.damage_fill_pipeline_failed) return null;
+        const device = encoder.sdf_renderer.device;
+        const built: ?gpu.Backend.RenderPipeline = build: {
+            var shader = gpu.Backend.ShaderModule.initFromSource(device, damage_clear_shader_source) catch break :build null;
+            defer shader.deinit();
+            var vtx = shader.getFunction("damage_clear_vertex_main") catch break :build null;
+            defer vtx.deinit();
+            var frag = shader.getFunction(fragment) catch break :build null;
+            defer frag.deinit();
+            break :build gpu.Backend.createRenderPipeline(device, .{
+                .vertex_function = &vtx,
+                .fragment_function = &frag,
+                .color_attachment_formats = &[_]gpu.TextureFormat{gpu.color_format},
+                .blend_state = null,
+            }) catch null;
+        };
+        slot.* = built orelse {
+            encoder.persistent.damage_fill_pipeline_failed = true;
+            return null;
+        };
+    }
+    return &slot.*.?;
+}
+
+/// Largest of TL, TR, BR, BL: a layer has a rounded mask when any corner is rounded.
+fn maxRadius(radii: [4]f32) f32 {
+    return @max(@max(radii[0], radii[1]), @max(radii[2], radii[3]));
+}
+
 /// Issue one clear draw in current pass within current scissor.
 fn drawDamageClear(encoder: anytype) bool {
     if (!ensureDamageClearPipeline(encoder)) return false;
@@ -493,7 +597,12 @@ fn compositeClips(encoder: anytype) blend_composite.CompositeClips {
     if (encoder.activeRoundedClip()) |shape| {
         clips.shape_kind = @backingInt(shape.shape_kind);
         clips.shape_rect = .{ shape.x * s, shape.y * s, shape.w * s, shape.h * s };
-        clips.shape_radius = shape.radius * s;
+        clips.shape_radii = .{ shape.radii[0] * s, shape.radii[1] * s, shape.radii[2] * s, shape.radii[3] * s };
+        if (shape.partner) |p| {
+            clips.partner_kind = if (p.shape_kind == .ellipse) 2 else 1;
+            clips.partner_rect = .{ p.x * s, p.y * s, p.w * s, p.h * s };
+            clips.partner_radii = .{ p.radii[0] * s, p.radii[1] * s, p.radii[2] * s, p.radii[3] * s };
+        }
     }
     return clips;
 }
@@ -614,8 +723,9 @@ pub fn endOpacityLayer(encoder: anytype) !void {
     // Clips in force where the layer is composited (the saved clip state is
     // restored before the composite): a polygon clip is not supported by the
     // blend composite and falls back to normal compositing.
-    // Like the other pipelines the composite honours the topmost shape clip;
-    // any polygon clip in the stack is not expressible and declines.
+    // Like the other pipelines the composite honours the active shape clip and its
+    // partner, the target's whole shape clip (see pushClipCommand); a polygon clip is
+    // not expressible and declines.
     const blend_clips_ok = blk: {
         for (layer.saved_logical_clip_stack[0..layer.saved_clip_depth]) |clip| {
             if (clip.shape_kind == .polygon) break :blk false;
@@ -744,12 +854,12 @@ pub fn endOpacityLayer(encoder: anytype) !void {
             .{ cq.uv[2] - cq.uv[0], cq.uv[3] - cq.uv[1] },
             layer.opacity,
             blend_mode_raw,
-            layer.corner_radius * encoder.scale,
+            .{ layer.corner_radii[0] * encoder.scale, layer.corner_radii[1] * encoder.scale, layer.corner_radii[2] * encoder.scale, layer.corner_radii[3] * encoder.scale },
             compositeClips(encoder),
             .{ layer.warp[0] * encoder.scale, layer.warp[1] * encoder.scale, layer.warp[2] * encoder.scale, layer.warp[3] * encoder.scale },
             // A warp moves content into the folded clip's 2 pt pad and its square corners, where
             // the padded mask lets it through: mask the true clip rect instead.
-            if (warp_active and layer.corner_radius >= 0.5) 2 * encoder.scale else 0,
+            if (warp_active and maxRadius(layer.corner_radii) >= 0.5) 2 * encoder.scale else 0,
             .{ (@as(f32, @floatFromInt(layer.used_tex_w)) - 0.5) / @as(f32, @floatFromInt(layer.alloc_tex_w)), (@as(f32, @floatFromInt(layer.used_tex_h)) - 0.5) / @as(f32, @floatFromInt(layer.alloc_tex_h)) },
         );
         // Copy this frame GPU-sampled, normal return with REUSE_LAG protection.
@@ -762,9 +872,9 @@ pub fn endOpacityLayer(encoder: anytype) !void {
     // pipeline.
     if (encoder.image_renderer) |ir| {
         if (layer.use_draw_transform) {
-            try ir.addImageUVWithTransform(layer.texture_id, cq.w, cq.h, cq.uv, .{ 1, 1, 1, 1 }, layer.corner_radius, layer.opacity, cq.transform, true);
+            try ir.addImageUVWithTransform(layer.texture_id, cq.w, cq.h, cq.uv, .{ 1, 1, 1, 1 }, layer.corner_radii, layer.opacity, cq.transform, true);
         } else {
-            try ir.addImageUVPremultiplied(layer.texture_id, cq.draw[0], cq.draw[1], cq.draw[2], cq.draw[3], cq.uv, .{ 1, 1, 1, 1 }, layer.corner_radius, layer.opacity, layer.rotate);
+            try ir.addImageUVPremultiplied(layer.texture_id, cq.draw[0], cq.draw[1], cq.draw[2], cq.draw[3], cq.uv, .{ 1, 1, 1, 1 }, layer.corner_radii, layer.opacity, layer.rotate);
         }
         try ir.flush(encoder.render_pass.?);
         ir.unregisterTextureBinding(layer.texture_id);
@@ -850,7 +960,7 @@ pub fn tryBeginRetainedOpacityLayer(
     use_draw_transform: bool,
     draw_transform: anytype,
     blend_mode: anytype,
-    corner_radius: f32,
+    corner_radii: [4]f32,
     surface_stable_id: u32,
     surface_content_version: u64,
     content_seq: usize,
@@ -956,8 +1066,8 @@ pub fn tryBeginRetainedOpacityLayer(
             }
             encoder.offscreen_stack[encoder.offscreen_depth - 1].retained_id = surface_stable_id;
             encoder.offscreen_stack[encoder.offscreen_depth - 1].retained_seq = content_seq;
-            if (corner_radius >= 0.5) {
-                encoder.offscreen_stack[encoder.offscreen_depth - 1].corner_radius = corner_radius;
+            if (maxRadius(corner_radii) >= 0.5) {
+                encoder.offscreen_stack[encoder.offscreen_depth - 1].corner_radii = corner_radii;
             }
             return .opened_for_repaint;
         }
@@ -991,7 +1101,7 @@ pub fn tryBeginRetainedOpacityLayer(
         .draw_y = if (std.math.isNan(draw_y)) draw_y else draw_y + outer_off[1],
         .draw_w = draw_w,
         .draw_h = draw_h,
-        .corner_radius = corner_radius,
+        .corner_radii = corner_radii,
         .used_tex_w = tex_w,
         .used_tex_h = tex_h,
         .alloc_tex_w = alloc_w,
@@ -1165,9 +1275,9 @@ pub fn compositeRetainedLayer(encoder: anytype) !void {
     // blank root cause).
     const cq = compositeQuad(layer, encoder.scale, if (layer.use_draw_transform) encoder.localizeDrawTransformForCurrentTarget(layer.draw_transform) else .{ 1, 0, 0, 1, 0, 0 });
     if (layer.use_draw_transform) {
-        try ir.addImageUVWithTransform(tex_id, cq.w, cq.h, cq.uv, .{ 1, 1, 1, 1 }, layer.corner_radius, layer.opacity, cq.transform, true);
+        try ir.addImageUVWithTransform(tex_id, cq.w, cq.h, cq.uv, .{ 1, 1, 1, 1 }, layer.corner_radii, layer.opacity, cq.transform, true);
     } else {
-        try ir.addImageUVPremultiplied(tex_id, cq.draw[0], cq.draw[1], cq.draw[2], cq.draw[3], cq.uv, .{ 1, 1, 1, 1 }, layer.corner_radius, layer.opacity, layer.rotate);
+        try ir.addImageUVPremultiplied(tex_id, cq.draw[0], cq.draw[1], cq.draw[2], cq.draw[3], cq.uv, .{ 1, 1, 1, 1 }, layer.corner_radii, layer.opacity, layer.rotate);
     }
     try ir.flush(encoder.render_pass.?);
 }
@@ -1219,8 +1329,8 @@ test "compositeRetainedLayer: hit 路径 flush 顺序与普通路径一致（sdf
             return error.Unreachable;
         }
         pub fn unregisterTextureBinding(_: *@This(), _: u32) void {}
-        pub fn addImageUVWithTransform(_: *@This(), _: u32, _: f32, _: f32, _: [4]f32, _: [4]f32, _: f32, _: f32, _: [6]f32, _: bool) !void {}
-        pub fn addImageUVPremultiplied(_: *@This(), _: u32, _: f32, _: f32, _: f32, _: f32, _: [4]f32, _: [4]f32, _: f32, _: f32, _: f32) !void {}
+        pub fn addImageUVWithTransform(_: *@This(), _: u32, _: f32, _: f32, _: [4]f32, _: [4]f32, _: [4]f32, _: f32, _: [6]f32, _: bool) !void {}
+        pub fn addImageUVPremultiplied(_: *@This(), _: u32, _: f32, _: f32, _: f32, _: f32, _: [4]f32, _: [4]f32, _: [4]f32, _: f32, _: f32) !void {}
     };
     const Pool = struct {
         pub fn binding(_: *@This(), _: u8) ?u8 {
@@ -1239,7 +1349,7 @@ test "compositeRetainedLayer: hit 路径 flush 顺序与普通路径一致（sdf
         draw_y: f32 = 0,
         draw_w: f32 = 0,
         draw_h: f32 = 0,
-        corner_radius: f32 = 0,
+        corner_radii: [4]f32 = .{ 0, 0, 0, 0 },
         used_tex_w: u32 = 0,
         used_tex_h: u32 = 0,
         alloc_tex_w: u32 = 0,
@@ -1373,6 +1483,71 @@ test "scaled surface grid: texture origin on the grid, screen placement unchange
         try std.testing.expect(out.geom.x <= src.geom.x and out.geom.x + out.geom.w >= src.geom.x + src.geom.w - 0.0001);
         try std.testing.expect(out.geom.y <= src.geom.y and out.geom.y + out.geom.h >= src.geom.y + src.geom.h - 0.0001);
     }
+}
+
+test "rest-anchored surface grid: one texture frame for the whole scale/slide, pixel-exact at rest" {
+    const Item = struct {
+        geom: struct { x: f32, y: f32, w: f32, h: f32 },
+        radii: struct { tl: f32 = 0, tr: f32 = 0, br: f32 = 0, bl: f32 = 0 } = .{},
+        rotate: f32 = 0,
+        use_draw_transform: bool = true,
+        draw_transform: [6]f32,
+        draw_x: f32 = std.math.nan(f32),
+        draw_y: f32 = std.math.nan(f32),
+        draw_w: f32 = std.math.nan(f32),
+        draw_h: f32 = std.math.nan(f32),
+        surface_rest_origin: ?[2]f32,
+    };
+    // A popover panel resting at (263.35, 184.8) (off the 2x grid), opening with scale about its
+    // top-left anchor (8, 0) and a dropdown slide of up to 6 pt.
+    const rest = [2]f32{ 263.35, 184.8 };
+    const geom = .{ .x = -12.0, .y = -8.0, .w = 260.0, .h = 120.0 };
+    const anchor = [2]f32{ 8, 0 };
+    const scale: f32 = 2;
+    var frame0: ?Item = null;
+    for ([_]f32{ 0.95, 0.97, 0.99, 0.9995, 1 }) |k| {
+        for ([_]f32{ 0, -2.7, -6 }) |slide| {
+            if (k == 1 and slide != 0) continue;
+            // M = T(rest + slide) * S_anchor(k) * T(geom): the quad origin maps to
+            // rest + slide + anchor + k * (geom - anchor).
+            const src = Item{
+                .geom = .{ .x = geom.x, .y = geom.y, .w = geom.w, .h = geom.h },
+                .draw_transform = .{ k, 0, 0, k, rest[0] + anchor[0] + k * (geom.x - anchor[0]), rest[1] + slide + anchor[1] + k * (geom.y - anchor[1]) },
+                .surface_rest_origin = .{ rest[0] + geom.x, rest[1] + geom.y },
+            };
+            const out = alignTranslationSurface(src, scale, .{ 0, 0 });
+            // The texture-local frame does not depend on the pose: same bounds every frame.
+            if (frame0) |f| {
+                try std.testing.expectEqual(f.geom.x, out.geom.x);
+                try std.testing.expectEqual(f.geom.y, out.geom.y);
+                try std.testing.expectEqual(f.geom.w, out.geom.w);
+                try std.testing.expectEqual(f.geom.h, out.geom.h);
+            } else frame0 = out;
+            // Its origin sits on the grid at rest, and texels are whole target pixels there.
+            try std.testing.expectApproxEqAbs(@round((rest[0] + out.geom.x) * scale), (rest[0] + out.geom.x) * scale, 0.001);
+            try std.testing.expectApproxEqAbs(@round((rest[1] + out.geom.y) * scale), (rest[1] + out.geom.y) * scale, 0.001);
+            // Every surface-local point composites where it did: t - k * geom is invariant.
+            try std.testing.expectApproxEqAbs(src.draw_transform[4] - k * src.geom.x, out.draw_transform[4] - k * out.geom.x, 0.0001);
+            try std.testing.expectApproxEqAbs(src.draw_transform[5] - k * src.geom.y, out.draw_transform[5] - k * out.geom.y, 0.0001);
+            try std.testing.expect(out.geom.x <= src.geom.x and out.geom.x + out.geom.w >= src.geom.x + src.geom.w - 0.0001);
+            try std.testing.expect(out.geom.y <= src.geom.y and out.geom.y + out.geom.h >= src.geom.y + src.geom.h - 0.0001);
+            // At rest the composite origin is on the target grid (texel-for-pixel).
+            if (k == 1) try std.testing.expectApproxEqAbs(@round(out.draw_transform[4] * scale), out.draw_transform[4] * scale, 0.001);
+        }
+    }
+    // Without a rest origin (null) the grid follows the current matrix, as before.
+    var unknown = Item{
+        .geom = .{ .x = geom.x, .y = geom.y, .w = geom.w, .h = geom.h },
+        .draw_transform = .{ 1, 0, 0, 1, rest[0] + geom.x, rest[1] + geom.y },
+        .surface_rest_origin = null,
+    };
+    const followed = alignTranslationSurface(unknown, scale, .{ 0, 0 });
+    unknown.surface_rest_origin = .{ rest[0] + geom.x, rest[1] + geom.y };
+    const anchored = alignTranslationSurface(unknown, scale, .{ 0, 0 });
+    try std.testing.expectEqual(followed.geom.x, anchored.geom.x);
+    try std.testing.expectEqual(followed.geom.y, anchored.geom.y);
+    try std.testing.expectApproxEqAbs(followed.draw_transform[4], anchored.draw_transform[4], 0.0001);
+    try std.testing.expectApproxEqAbs(followed.draw_transform[5], anchored.draw_transform[5], 0.0001);
 }
 
 test "compositeQuad: a rounded layer composites its own rect from the grid-aligned texture" {

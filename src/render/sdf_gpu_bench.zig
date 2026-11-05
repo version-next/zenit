@@ -128,7 +128,7 @@ fn measure(dq: anytype, r: *SdfRenderer, view: anytype, scene: Scene) !Stats {
 
 test "SDF pass GPU bench（ZENIT_SDF_GPU_BENCH=1 时运行）" {
     // SKIP-REASON: Opt-in GPU benchmark; enable ZENIT_SDF_GPU_BENCH to run.
-    if (!@import("zenit_environment").has("ZENIT_SDF_GPU_BENCH")) return error.SkipZigTest;
+    if (!@import("zenit_environment").flag("ZENIT_SDF_GPU_BENCH")) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var inst = try gpu.Backend.Instance.init(allocator, .{});
     defer inst.deinit();
@@ -232,10 +232,10 @@ fn renderEquivalence(dq: anytype, r: *SdfRenderer, target: anytype, staging: any
         // Second flush: rounded-corner clipping active (clip_shape_kind = 1)
         var end_points = @as([8]u8, @splat(0));
         _ = &end_points;
-        r.setClipMask(1, .{ 210, 120, 180, 170 }, 24, 0, 0, 0, end_points, @as([32][2]f32, @splat(.{ 0, 0 })));
+        r.setClipMask(1, .{ 210, 120, 180, 170 }, @splat(24), 0, 0, 0, end_points, @as([32][2]f32, @splat(.{ 0, 0 })));
         try emitEquivalenceScene(r);
         try r.flush(&pass);
-        r.setClipMask(0, null, 0, 0, 0, 0, end_points, @as([32][2]f32, @splat(.{ 0, 0 })));
+        r.setClipMask(0, null, @splat(0), 0, 0, 0, end_points, @as([32][2]f32, @splat(.{ 0, 0 })));
         pass.end();
     }
     var blit = try encoder.beginBlitPass();

@@ -238,3 +238,141 @@ fragment float4 kawase_upsample(
 
     return untap(sum / 12.0);
 }
+
+// ---- Batched forms of the native bank passes (Metal) ----
+//
+// A render pass costs the CPU a render encoder (~4 us of driver setup on
+// Apple GPUs even when hot; a native glass encoded 11 for its banks alone).
+// These forms write their target from the fragment function inside a render
+// pass without attachments, so independent bank passes of one glass share an
+// encoder (backdrop_blur bank batch). Each computes exactly what its form
+// above stores: the same rasterized uv (same full-screen triangle and
+// viewport), the same expressions, the same sampler at level 0 (one-level
+// textures: implicit and explicit LOD pick the same filter, and the explicit
+// level stays defined in the divergent branch), and the same float -> half
+// conversion on store. The render pass's clear + scissor becomes an explicit
+// region: outside it the clear color, or the texel untouched for a loaded
+// target. The GPU test "metal bank batch matches the render passes bit for
+// bit" pins this. (Compute kernels would cost even less CPU, but the first
+// compute dispatch makes the driver hold ~160 MB more while frames run.)
+
+struct BankRegion {
+    uint4 bounds; // x0, y0, x1, y1: texels computed; others cleared or kept.
+    uint keep_outside;
+    uint _padding[3];
+};
+
+// The bank render passes clear to gpu.Color.BLACK (opaque black).
+constant float4 bank_clear = float4(0, 0, 0, 1);
+
+// True when the texel is outside the region (and has been cleared if due).
+static inline bool bank_skip(uint2 g, constant BankRegion& r, texture2d<float, access::write> out) {
+    if (g.x >= r.bounds.x && g.y >= r.bounds.y && g.x < r.bounds.z && g.y < r.bounds.w) return false;
+    if (r.keep_outside == 0) out.write(bank_clear, g);
+    return true;
+}
+
+fragment void gaussian_filter_gamma_bank(
+    KawaseVertexOutput in [[stage_in]], constant GaussianUniforms& u [[buffer(0)]],
+    constant BankRegion& region [[buffer(1)]],
+    texture2d<float> source [[texture(0)]], texture2d<float, access::write> out [[texture(1)]],
+    sampler smp [[sampler(0)]]) {
+    uint2 g = uint2(in.position.xy);
+    if (bank_skip(g, region, out)) return;
+    float2 step = u.direction * u.texel_size;
+    float4 sum = source.sample(smp, clamp(in.uv, u.valid_uv.xy, u.valid_uv.zw), level(0)) * u.weights[0];
+    for (uint i = 1; i <= min(u.radius, 384u); i += 2) {
+        float w0 = u.weights[i];
+        float w1 = i < u.radius ? u.weights[i + 1] : 0.0;
+        float w = w0 + w1;
+        float2 offset = step * (float(i) + w1 / max(w, 1e-20));
+        sum += w * (source.sample(smp, clamp(in.uv + offset, u.valid_uv.xy, u.valid_uv.zw), level(0))
+                  + source.sample(smp, clamp(in.uv - offset, u.valid_uv.xy, u.valid_uv.zw), level(0)));
+    }
+    out.write(sum, g);
+}
+
+fragment void gaussian_downsample_gamma_bank(
+    KawaseVertexOutput in [[stage_in]], constant GaussianAreaUniforms& u [[buffer(0)]],
+    constant BankRegion& region [[buffer(1)]],
+    texture2d<float> source [[texture(0)]], texture2d<float, access::write> out [[texture(1)]],
+    sampler smp [[sampler(0)]]) {
+    uint2 g = uint2(in.position.xy);
+    if (bank_skip(g, region, out)) return;
+    float2 cell = u.source_size / u.output_size;
+    float2 lo = floor(in.uv * u.output_size) * cell;
+    float2 hi = lo + cell;
+    int2 first = int2(floor(lo));
+    float4 sum = 0;
+    for (int y = 0; y < 4; ++y) for (int x = 0; x < 4; ++x) {
+        float2 p = float2(first + int2(x, y));
+        float2 overlap = max(min(p + 1.0, hi) - max(p, lo), 0.0);
+        float weight = overlap.x * overlap.y;
+        if (weight > 0.0) {
+            float2 uv = (p + 0.5) / u.source_size;
+            sum += weight * source.sample(smp, uv, level(0));
+        }
+    }
+    out.write(sum / (cell.x * cell.y), g);
+}
+
+// kawase_downsample / kawase_upsample: their passes write every texel (full
+// viewport, no scissor), so no region.
+fragment void kawase_downsample_bank(
+    KawaseVertexOutput in [[stage_in]], constant KawaseUniforms& uniforms [[buffer(0)]],
+    texture2d<float> source [[texture(0)]], texture2d<float, access::write> out [[texture(1)]],
+    sampler smp [[sampler(0)]]) {
+    float2 lo = uniforms.valid_uv.xy;
+    float2 hi = uniforms.valid_uv.zw;
+    float2 uv = mix(lo - uniforms.texel_size * 0.5,
+                    hi + uniforms.texel_size * 0.5, in.uv);
+    float2 hp = uniforms.texel_size * (0.75 * uniforms.offset_scale);
+    float4 sum = source.sample(smp, clamp(uv, lo, hi), level(0)) * 4.0;
+    sum += source.sample(smp, clamp(uv + float2(-hp.x, -hp.y), lo, hi), level(0));
+    sum += source.sample(smp, clamp(uv + float2( hp.x, -hp.y), lo, hi), level(0));
+    sum += source.sample(smp, clamp(uv + float2(-hp.x,  hp.y), lo, hi), level(0));
+    sum += source.sample(smp, clamp(uv + float2( hp.x,  hp.y), lo, hi), level(0));
+    out.write(untap(sum / 8.0), uint2(in.position.xy));
+}
+
+fragment void kawase_upsample_bank(
+    KawaseVertexOutput in [[stage_in]], constant KawaseUniforms& uniforms [[buffer(0)]],
+    texture2d<float> source [[texture(0)]], texture2d<float, access::write> out [[texture(1)]],
+    sampler smp [[sampler(0)]]) {
+    float2 lo = uniforms.valid_uv.xy;
+    float2 hi = uniforms.valid_uv.zw;
+    float2 uv = mix(lo - uniforms.texel_size * 0.5,
+                    hi + uniforms.texel_size * 0.5, in.uv);
+    float2 hp = uniforms.texel_size * (0.65 * uniforms.offset_scale);
+    float4 sum  = source.sample(smp, clamp(uv + float2(-hp.x * 2.0, 0.0), lo, hi), level(0));
+    sum += source.sample(smp, clamp(uv + float2( hp.x * 2.0, 0.0), lo, hi), level(0));
+    sum += source.sample(smp, clamp(uv + float2(0.0, -hp.y * 2.0), lo, hi), level(0));
+    sum += source.sample(smp, clamp(uv + float2(0.0,  hp.y * 2.0), lo, hi), level(0));
+    sum += source.sample(smp, clamp(uv + float2(-hp.x, -hp.y), lo, hi), level(0)) * 2.0;
+    sum += source.sample(smp, clamp(uv + float2( hp.x, -hp.y), lo, hi), level(0)) * 2.0;
+    sum += source.sample(smp, clamp(uv + float2(-hp.x,  hp.y), lo, hi), level(0)) * 2.0;
+    sum += source.sample(smp, clamp(uv + float2( hp.x,  hp.y), lo, hi), level(0)) * 2.0;
+    out.write(untap(sum / 12.0), uint2(in.position.xy));
+}
+
+// The render copy (native/macos/render_copy.inc) as a batched draw: texels in
+// the destination rect take the source texel, the rest of the target is
+// cleared to transparent black (clear) or kept. Same pixel format both sides;
+// reads and writes are exact.
+struct BankCopy {
+    uint4 rect; // dst x0, y0, x1, y1
+    int2 offset; // source texel = destination texel + offset
+    uint clear;
+    uint _padding;
+};
+
+fragment void copy_bank(
+    KawaseVertexOutput in [[stage_in]], constant BankCopy& c [[buffer(0)]],
+    texture2d<float> source [[texture(0)]], texture2d<float, access::write> out [[texture(1)]]) {
+    uint2 g = uint2(in.position.xy);
+    if (g.x >= c.rect.x && g.y >= c.rect.y && g.x < c.rect.z && g.y < c.rect.w) {
+        out.write(source.read(uint2(int2(g) + c.offset)), g);
+    } else if (c.clear != 0) {
+        out.write(float4(0), g);
+    }
+}

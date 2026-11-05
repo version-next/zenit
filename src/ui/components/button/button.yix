@@ -1,9 +1,12 @@
-//! Button view. Styles and drawing in styles.yss, shared types and tests in mod.zig.
+//! Button: an action control composed on ControlShell. The shell owns the frame, tone, geometry
+//! (glyph icon fit) and every interaction state; Button fills its icon slot (svg glyph / texture /
+//! loading ring) and content slot (label), and merges its root style into the tone. Label, glyph
+//! and ring inherit the shell's foreground (currentColor), so hover / pressed / disabled recolor
+//! them with the frame. Styles in styles.yss, tests in mod.zig.
 const ui = @import("../../ui.zig");
 const core = @import("../../core.zig");
 const S = @import("styles.yss");
-const ButtonVariant = S.ButtonVariant;
-const ButtonSize = S.ButtonSize;
+const ControlShell = @import("../control_shell/mod.zig").ControlShell;
 
 /// Button semantics: name taken from a11yLabel, else label (falls back to child text if neither),
 /// disabled, loading (busy)
@@ -14,17 +17,20 @@ fn a11yOf(name: []const u8, text: []const u8, disabled: bool, loading: bool) ui.
 
 /// Button: W.Button(.{ .label = "Save", .disabled = ui.not(dirty), .on_click = cx.on(S, s, S.save)
 /// }).
-/// label / variant / loading / disabled can come from signals; disabled or loading suppresses click
-/// response, loading shows spinner and hides icon.
-/// Hover / pressed (held with pointer still inside) changes background; base_style / hover_style /
-/// pressed_style override recipe (style reserved for root node attrs).
-/// on_event is low-level generic event callback (not called when disabled, called when loading);
-/// event_context is its context.
+/// label / variant / size / pill / iconOnly / block / loading / disabled can come from signals;
+/// disabled or loading suppresses click response, loading shows the ring and hides the glyph.
+/// Hover / pressed (held with pointer still inside) / focus resolve on the shell's node.
+/// baseStyle / hoverStyle / pressedStyle merge into the tone per state (style is reserved for the
+/// root node attrs, an overlay that wins over every state).
+/// iconTint overrides the glyph's current color; iconSize its box.
+/// onEvent is low-level generic event callback (not called when disabled, called when loading);
+/// eventContext is its context.
 /// a11yLabel names the button for assistive tech without rendering text (icon-only buttons).
 pub fn Button(
     label: Text = "",
-    variant: ButtonVariant = .primary,
-    size: ButtonSize = .md,
+    variant: S.ButtonVariant = .primary,
+    size: S.ButtonSize = .md,
+    pill: bool = false,
     iconOnly: bool = false,
     loading: bool = false,
     disabled: bool = false,
@@ -44,33 +50,41 @@ pub fn Button(
 ) View {
     const has_svg = computed(iconAsset != null);
     const has_texture = computed(iconAsset == null and icon != null);
-    const icon_slot = computed(iconAsset != null or icon != null or loading);
-    const content_slot = computed(label.len != 0 or !icon_slot);
-    const shape = computed(S.Shape{ .variant = variant, .size = size, .icon_only = iconOnly, .leading_icon = !iconOnly and icon_slot and label.len != 0, .disabled = disabled, .block = block, .style = baseStyle, .hover_style = hoverStyle, .pressed_style = pressedStyle });
-    const look = computed(S.Look{ .variant = variant, .size = size, .disabled = disabled, .style = baseStyle, .tint = iconTint, .icon_size = iconSize });
-    const slot = computed(S.Slot{ .size = size, .icon_only = iconOnly });
+    const has_glyph = computed(iconAsset != null or icon != null or loading);
+    const leading = computed(!iconOnly and has_glyph and label.len != 0);
+    const shows_label = computed(label.len != 0 or !has_glyph);
+    const root = computed(S.rootStyle(.{ .block = block, .icon_only = iconOnly, .base = baseStyle, .hover = hoverStyle, .pressed = pressedStyle }));
+    const tier = computed(S.Label{ .size = size, .font_size = baseStyle.font_size });
     const semantics = computed(a11yOf(a11yLabel, label, disabled, loading));
-    const enabled = computed(!disabled);
-    const idle = computed(!loading);
-    const events = computed(if (disabled) null else onEvent);
+    const focus_ring = computed(@as(?ui.FocusRingConfig, focusRing));
     return (
-        <row
-            style={.{ ui.view.statesBy(shape, S.root), S.fade }}
-            focusable={enabled}
-            focusRing={focusRing}
-            a11y={semantics}
-            onClick={if (!disabled and !loading) onClick}
-            onEvent={events}
+        <ControlShell
+            tag={.button}
+            variant={variant}
+            size={size}
+            pill={pill}
+            iconOnly={iconOnly}
+            leadingIcon={leading}
+            iconFit={.glyph}
+            disabled={disabled}
+            focusable={!disabled}
+            focusRing={focus_ring}
+            onClick={if (!loading) onClick}
+            onEvent={onEvent}
             eventContext={eventContext}
-        >
-            {if (icon_slot)
-                <box style={ui.view.styleBy(slot, S.iconSlot)}>
-                    {if (has_svg) <icon style={ui.view.styleBy(look, S.icon)} tint={ui.view.tintBy(look, S.iconTint)} visible={idle} src={iconAsset} />}
-                    {if (has_texture) <image style={ui.view.styleBy(look, S.icon)} tint={ui.view.tintBy(look, S.iconTint)} visible={idle} src={icon} />}
-                    {if (loading) <box style={ui.view.styleBy(size, S.spinnerBox)}><canvas style={S.spinner_canvas} draw={S.drawSpinner} data={look} animate /></box>}
+            rootStyle={root}
+            contentStyle={.{ .width = .{ .fit = .{} } }}
+            iconVisible={has_glyph}
+            contentVisible={shows_label}
+            a11y={semantics}
+            icon={
+                <box style={S.glyph_stack}>
+                    {if (has_svg) <icon style={S.glyph.of(.{ .size = iconSize, .tier = size })} tint={ui.view.tintBy(iconTint, S.glyphTint)} visible={!loading} src={iconAsset} />}
+                    {if (has_texture) <image style={S.glyph.of(.{ .size = iconSize, .tier = size })} tint={ui.view.tintBy(iconTint, S.glyphTint)} visible={!loading} src={icon} />}
+                    {if (loading) <box style={S.ring_box}><canvas style={S.ring_canvas} draw={S.drawRing} data={size} animate={ui.view.LoopPeriod{ .period_ms = S.ring_loop_ms }} /></box>}
                 </box>
             }
-            {if (content_slot) <row style={ui.view.styleBy(size, S.contentSlot)}>{if (label.len != 0) <text style={ui.view.styleBy(look, S.label)}>{label}</text>}</row>}
-        </row>
+            content={<text style={ui.view.styleBy(tier, S.label)}>{label}</text>}
+        />
     );
 }

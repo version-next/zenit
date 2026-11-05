@@ -37,7 +37,7 @@ pub const CONTROL_HEADER: ItemHeader = .{ .transform_id = INVALID_ID, .node_id =
 ///
 /// Control variants manage scopes. Literal controls are already lowered;
 /// node_local push_clip also carries geometry that must follow its paint transform.
-fn isControlItem(item: display_list_mod.DisplayItem) bool {
+fn isControlItem(item: *const display_list_mod.DisplayItem) bool {
     // Single criterion: share DisplayItem.isControl with core.zig bulk quad ownership scan;
     // separate name lists on both sides will eventually get out of sync.
     return item.isControl();
@@ -46,26 +46,44 @@ fn isControlItem(item: display_list_mod.DisplayItem) bool {
 /// inline payload (polygon / glass / icon_rep / path geometry) spill to frame_arena for stable
 /// addresses; cannot use main_paint internal address since later append may realloc.
 pub fn appendLoweredBoth(cx: *RenderContext, item: display_list_mod.DisplayItem) !void {
+    if (!cx.paint_pass_lowering) return;
     if (cx.capture_lowered) |sink| {
         var frozen = item;
         frozen.headerPtr().* = .{ .already_lowered = true, .transform_id = INVALID_ID, .node_id = INVALID_ID };
+        // Referenced payloads may be the caller's temporaries: the sink outlives them.
+        switch (frozen) {
+            .push_clip => |*clip| if (clip.polygon) |p| {
+                const own = try cx.frame_allocator.create(display_list_mod.ClipPolygon);
+                own.* = p.*;
+                clip.polygon = own;
+            },
+            .begin_blur_layer => |*blur| {
+                const own = try cx.frame_allocator.create(@TypeOf(blur.glass.*));
+                own.* = blur.glass.*;
+                blur.glass = own;
+            },
+            else => {},
+        }
         try sink.append(cx.allocator, frozen);
     }
     var paint_item = gpu_draw_shadow.lowerDisplayItem(item);
+    paint_item.paint_digest = loweredDigest(cx, &item);
+    // Payloads by pointer: a capture by value copies the whole variant (a push_clip carries a
+    // 32-point polygon).
     switch (item) {
-        .push_clip => |it| {
+        .push_clip => |*it| {
             if (it.shape_kind == .polygon) {
                 const dup = try cx.frame_allocator.create(display_list_mod.ClipPolygon);
-                dup.* = it.polygon;
+                dup.* = display_list_mod.ClipPolygon.of(it.polygon);
                 paint_item.clip_polygon_ptr = dup;
             }
         },
-        .begin_blur_layer => |it| {
-            const dup = try cx.frame_allocator.create(@TypeOf(it.glass));
-            dup.* = it.glass;
+        .begin_blur_layer => |*it| {
+            const dup = try cx.frame_allocator.create(@TypeOf(it.glass.*));
+            dup.* = it.glass.*;
             paint_item.glass_ptr = dup;
         },
-        .icon_rep => |it| {
+        .icon_rep => |*it| {
             const dup = try cx.frame_allocator.create(@TypeOf(it.rep));
             dup.* = it.rep;
             paint_item.icon_rep_ptr = dup;
@@ -87,10 +105,49 @@ pub fn appendLoweredBoth(cx: *RenderContext, item: display_list_mod.DisplayItem)
         else => {},
     }
     try cx.lowering_buffer_paint.append(cx.allocator, paint_item);
+    if (cx.sprite_probe) |probe| probe.noteLowered(item.header().node_id, cx.lowering_buffer_paint.items.len - 1, isControlItem(&item));
 }
+/// paint_table.DisplayItem.paint_digest of a lowered item: its recorded
+/// content fingerprint, the transform it was lowered through, its place among
+/// the items lowered from the same recorded one, and the text it resolved
+/// (text runs read this frame's blob store). 0 (unknown) outside a recorded
+/// item's lowering scope or without a fingerprint. Clip pops and group ends
+/// carry nothing but their kind and lower to a constant item: their digest is
+/// their kind's, wherever they are lowered.
+fn loweredDigest(cx: *RenderContext, item: *const display_list_mod.DisplayItem) u64 {
+    switch (item.*) {
+        .pop_clip, .end_opacity_layer, .end_blur_layer, .end_rounded_clip => {
+            // A field added to one of them would make this digest lie.
+            comptime for ([_][]const u8{ "pop_clip", "end_opacity_layer", "end_blur_layer", "end_rounded_clip" }) |name| {
+                if (@typeInfo(@FieldType(display_list_mod.DisplayItem, name)).@"struct".field_names.len != 1) @compileError(name ++ " carries content: digest it");
+            };
+            const tag: u32 = @backingInt(std.meta.activeTag(item.*));
+            return std.hash.Wyhash.hash(0x6d61726b6572, std.mem.asBytes(&tag)) | 1;
+        },
+        else => {},
+    }
+    const transform = cx.lowering_fp_transform orelse return 0;
+    const header = item.header();
+    if (header.local_fp == 0 or header.already_lowered) return 0;
+    // One-shot hashes of packed words: this runs for every paint item of every frame.
+    const Packed = extern struct { t: [6]f32, seq: u32, kind: u32 };
+    const words: Packed = .{
+        // + 0 folds -0 into 0: transforms composed along different paths
+        // (replay vs fresh) may differ only in a zero's sign.
+        .t = .{ transform.a + 0, transform.b + 0, transform.c + 0, transform.d + 0, transform.tx + 0, transform.ty + 0 },
+        .seq = cx.lowering_fp_seq,
+        .kind = @backingInt(std.meta.activeTag(item.*)),
+    };
+    cx.lowering_fp_seq += 1;
+    var digest = std.hash.Wyhash.hash(header.local_fp, std.mem.asBytes(&words));
+    if (item.* == .text_run) digest = std.hash.Wyhash.hash(digest, item.text_run.content);
+    return if (digest == 0) 1 else digest;
+}
+
 /// Lower a node clip through exactly the same content/replay transform as its paint.
 /// The encoder subsequently applies the surface source-origin offset to both.
-pub fn lowerNodeClip(item: display_list_mod.DisplayItem, transform: Transform2D) display_list_mod.DisplayItem {
+/// A scaled polygon is written to `allocator` (the frame allocator).
+pub fn lowerNodeClip(allocator: std.mem.Allocator, item: display_list_mod.DisplayItem, transform: Transform2D) !display_list_mod.DisplayItem {
     var clip = item.push_clip;
     const rect = transform.transformRect(ComputedRect.init(clip.x, clip.y, clip.w, clip.h));
     const scale = transform.extractApproxScale();
@@ -98,10 +155,18 @@ pub fn lowerNodeClip(item: display_list_mod.DisplayItem, transform: Transform2D)
     clip.y = rect.y;
     clip.w = rect.w;
     clip.h = rect.h;
-    clip.radius *= scale;
-    for (clip.polygon.points[0..clip.polygon.point_count]) |*point| {
-        point[0] *= scale;
-        point[1] *= scale;
+    for (&clip.radii) |*radius| radius.* *= scale;
+    // Node-local corners land on the target-frame corners the transform maps them to (a mirrored
+    // or quarter-turned owner keeps each radius on its own corner).
+    clip.radii = transform.orientCornerRadii(clip.radii);
+    if (clip.polygon) |source| {
+        const scaled = try allocator.create(display_list_mod.ClipPolygon);
+        scaled.* = source.*;
+        for (scaled.points[0..scaled.point_count]) |*point| {
+            point[0] *= scale;
+            point[1] *= scale;
+        }
+        clip.polygon = scaled;
     }
     clip.node_local = false;
     return .{ .push_clip = clip };
@@ -252,7 +317,7 @@ fn appendDisplayItemsToRenderListInternal(
         const innermost_effect_for_clip: u32 =
             if (open_count > 0) open_ids[open_count - 1] else active_parent_effect_id;
         const want_clip = include_structure and (chain_len == 0 or blk: {
-            if (emit_in_effect == null) emit_in_effect = @import("zenit_environment").has("ZENIT_ENABLE_EFFECT_CLIP_BRIDGE");
+            if (emit_in_effect == null) emit_in_effect = @import("zenit_environment").flag("ZENIT_ENABLE_EFFECT_CLIP_BRIDGE");
             break :blk emit_in_effect.?;
         });
 
@@ -297,8 +362,11 @@ fn appendDisplayItemsToRenderListInternal(
             open_clip_count = 0;
         }
 
-        for (slice[i..group_end]) |item| {
+        // By pointer: a by-value capture copies every item of the frame (a few hundred bytes each).
+        for (slice[i..group_end]) |*item_ref| {
+            const item = item_ref;
             const item_header = item.header();
+            cx.lowering_fp_transform = null;
 
             // Literal controls are already lowered, may have INVALID transform IDs. Node-local
             // clips must reach
@@ -310,7 +378,7 @@ fn appendDisplayItemsToRenderListInternal(
             // anchor. The
             // effect_bridge path is unaffected: it uses appendLoweredBoth and writes the paint list
             // directly.
-            if (item_header.already_lowered or (isControlItem(item) and !(item == .push_clip and item.push_clip.node_local))) {
+            if (item_header.already_lowered or (isControlItem(item) and !(item.* == .push_clip and item.push_clip.node_local))) {
                 // Clip prefix bridge can't cross layer boundary token: encoder either skips full
                 // begin..end range (GPU retained hit), or restores clip
                 // stack snapshot at begin, both paths assume self-consistent clip. If
@@ -319,7 +387,7 @@ fn appendDisplayItemsToRenderListInternal(
                 // subsequent frame content clipped into tab
                 // (edit/hover frame full screen flash white root cause). Hit boundary, close first,
                 // defer after current group reopen.
-                const is_layer_boundary = switch (item) {
+                const is_layer_boundary = switch (item.*) {
                     .begin_opacity_layer,
                     .end_opacity_layer,
                     .begin_blur_layer,
@@ -333,7 +401,7 @@ fn appendDisplayItemsToRenderListInternal(
                     try effect_bridge.appendDisplayClipBridgeEnd(cx, open_clip_count);
                     open_clip_count = 0;
                 }
-                try appendLoweredBoth(cx, item);
+                try appendLoweredBoth(cx, item.*);
                 if (is_layer_boundary and want_clip) {
                     var boundary_chain: [8]u32 = undefined;
                     const boundary_len = effect_bridge.collectDisplayClipChainPublic(cx, group_clip_id, &boundary_chain);
@@ -375,8 +443,13 @@ fn appendDisplayItemsToRenderListInternal(
             // transform_id/clip_id/effect_id), but paint variant's x/y/w/h already lower-ed to
             // world coord, encoder no longer transforms twice.
             const lowered_header = item_header;
-            switch (item) {
-                .fill_rect => |it| {
+            // Everything below is a function of the recorded item and this transform
+            // (plus the text it resolves, hashed in appendLoweredBoth).
+            cx.lowering_fp_transform = item_transform;
+            cx.lowering_fp_seq = 0;
+            defer cx.lowering_fp_transform = null;
+            switch (item.*) {
+                .fill_rect => |*it| {
                     const rect = item_transform.transformRect(ComputedRect.init(it.x, it.y, it.w, it.h));
                     try appendLoweredBoth(cx, .{
                         .fill_rect = .{
@@ -394,7 +467,7 @@ fn appendDisplayItemsToRenderListInternal(
                         },
                     });
                 },
-                .stroke_rect => |it| {
+                .stroke_rect => |*it| {
                     const rect = item_transform.transformRect(ComputedRect.init(it.x, it.y, it.w, it.h));
                     try appendLoweredBoth(cx, .{
                         .stroke_rect = .{
@@ -410,7 +483,7 @@ fn appendDisplayItemsToRenderListInternal(
                         },
                     });
                 },
-                .border_side => |it| {
+                .border_side => |*it| {
                     const rect = item_transform.transformRect(ComputedRect.init(it.x, it.y, it.w, it.h));
                     const clip_rect = item_transform.transformRect(ComputedRect.init(it.clip_x, it.clip_y, it.clip_w, it.clip_h));
                     try appendLoweredBoth(cx, .{
@@ -420,7 +493,7 @@ fn appendDisplayItemsToRenderListInternal(
                             .y = clip_rect.y,
                             .w = clip_rect.w,
                             .h = clip_rect.h,
-                            .radius = it.clip_radius * scale,
+                            .radii = scaleLocalRadii(it.clip_radii, scale),
                             .shape_kind = it.clip_shape_kind,
                             .polygon = it.clip_polygon,
                         },
@@ -439,7 +512,7 @@ fn appendDisplayItemsToRenderListInternal(
                     });
                     try appendLoweredBoth(cx, .{ .pop_clip = .{ .header = CONTROL_HEADER } });
                 },
-                .border_per_side => |it| {
+                .border_per_side => |*it| {
                     const rect = item_transform.transformRect(ComputedRect.init(it.x, it.y, it.w, it.h));
                     try appendLoweredBoth(cx, .{
                         .border_per_side = .{
@@ -454,7 +527,7 @@ fn appendDisplayItemsToRenderListInternal(
                         },
                     });
                 },
-                .gradient_rect => |it| {
+                .gradient_rect => |*it| {
                     const rect = item_transform.transformRect(ComputedRect.init(it.x, it.y, it.w, it.h));
                     try appendLoweredBoth(cx, .{
                         .gradient_rect = .{
@@ -477,7 +550,7 @@ fn appendDisplayItemsToRenderListInternal(
                         },
                     });
                 },
-                .shadow_rect => |it| {
+                .shadow_rect => |*it| {
                     const rect = item_transform.transformRect(ComputedRect.init(it.x, it.y, it.w, it.h));
                     try appendLoweredBoth(cx, .{
                         .shadow_rect = .{
@@ -495,7 +568,7 @@ fn appendDisplayItemsToRenderListInternal(
                         },
                     });
                 },
-                .outline_rect => |it| {
+                .outline_rect => |*it| {
                     const rect = item_transform.transformRect(ComputedRect.init(it.x, it.y, it.w, it.h));
                     try appendLoweredBoth(cx, .{
                         .outline_rect = .{
@@ -510,9 +583,9 @@ fn appendDisplayItemsToRenderListInternal(
                         },
                     });
                 },
-                .text_run => |it| {
+                .text_run => |*it| {
                     const origin = item_transform.applyPoint(it.x, it.y);
-                    const resolved_content = display_list_mod.resolveTextRunContent(cx.text_blob_store, it);
+                    const resolved_content = display_list_mod.resolveTextRunContent(cx.text_blob_store, it.*);
                     if (bracket_debug.bracketRenderDebugEnabled() and resolved_content.len == 1 and
                         (bracket_debug.bracketDebugNodeFilter() == null or item_header.node_id == bracket_debug.bracketDebugNodeFilter().?) and
                         bracket_debug.shouldLogBracketReplay(cx.scene_runtime.frame_epoch, item_header.node_id, it.blob_byte_start, it.blob_byte_end))
@@ -586,7 +659,7 @@ fn appendDisplayItemsToRenderListInternal(
                         },
                     });
                 },
-                .image_quad => |it| {
+                .image_quad => |*it| {
                     const rect = item_transform.transformRect(ComputedRect.init(it.x, it.y, it.w, it.h));
                     try appendLoweredBoth(cx, .{
                         .image_quad = .{
@@ -602,7 +675,7 @@ fn appendDisplayItemsToRenderListInternal(
                         },
                     });
                 },
-                .icon_rep => |it| {
+                .icon_rep => |*it| {
                     const rect = item_transform.transformRect(ComputedRect.init(it.x, it.y, it.w, it.h));
                     try appendLoweredBoth(cx, .{
                         .icon_rep = .{
@@ -621,7 +694,7 @@ fn appendDisplayItemsToRenderListInternal(
                         },
                     });
                 },
-                .arc => |it| {
+                .arc => |*it| {
                     const center = item_transform.applyPoint(it.cx, it.cy);
                     try appendLoweredBoth(cx, .{
                         .arc = .{
@@ -636,7 +709,7 @@ fn appendDisplayItemsToRenderListInternal(
                         },
                     });
                 },
-                .multi_gradient_rect => |it| {
+                .multi_gradient_rect => |*it| {
                     const rect = item_transform.transformRect(ComputedRect.init(it.x, it.y, it.w, it.h));
                     try appendLoweredBoth(cx, .{
                         .multi_gradient_rect = .{
@@ -666,7 +739,7 @@ fn appendDisplayItemsToRenderListInternal(
                         },
                     });
                 },
-                .noise_rect => |it| {
+                .noise_rect => |*it| {
                     const rect = item_transform.transformRect(ComputedRect.init(it.x, it.y, it.w, it.h));
                     try appendLoweredBoth(cx, .{
                         .noise_rect = .{
@@ -684,7 +757,7 @@ fn appendDisplayItemsToRenderListInternal(
                         },
                     });
                 },
-                .inset_shadow_rect => |it| {
+                .inset_shadow_rect => |*it| {
                     const rect = item_transform.transformRect(ComputedRect.init(it.x, it.y, it.w, it.h));
                     try appendLoweredBoth(cx, .{
                         .inset_shadow_rect = .{
@@ -702,7 +775,7 @@ fn appendDisplayItemsToRenderListInternal(
                         },
                     });
                 },
-                .shadow_dual_rect => |it| {
+                .shadow_dual_rect => |*it| {
                     const rect = item_transform.transformRect(ComputedRect.init(it.x, it.y, it.w, it.h));
                     try appendLoweredBoth(cx, .{
                         .shadow_dual_rect = .{
@@ -724,7 +797,7 @@ fn appendDisplayItemsToRenderListInternal(
                         },
                     });
                 },
-                .fill_path => |it| {
+                .fill_path => |*it| {
                     const origin = item_transform.applyPoint(it.offset_x, it.offset_y);
                     try appendLoweredBoth(cx, .{
                         .fill_path = .{
@@ -746,7 +819,7 @@ fn appendDisplayItemsToRenderListInternal(
                         },
                     });
                 },
-                .stroke_path => |it| {
+                .stroke_path => |*it| {
                     const origin = item_transform.applyPoint(it.offset_x, it.offset_y);
                     try appendLoweredBoth(cx, .{
                         .stroke_path = .{
@@ -762,14 +835,14 @@ fn appendDisplayItemsToRenderListInternal(
                     });
                 },
                 // Stage B R3f: effect/clip literal tokens 1:1 passthrough (fields already lower-ed)
-                .push_clip => try appendLoweredBoth(cx, lowerNodeClip(item, item_transform)),
-                .pop_clip => |it| try appendLoweredBoth(cx, .{ .pop_clip = it }),
-                .begin_opacity_layer => |it| try appendLoweredBoth(cx, .{ .begin_opacity_layer = it }),
-                .end_opacity_layer => |it| try appendLoweredBoth(cx, .{ .end_opacity_layer = it }),
-                .begin_blur_layer => |it| try appendLoweredBoth(cx, .{ .begin_blur_layer = it }),
-                .end_blur_layer => |it| try appendLoweredBoth(cx, .{ .end_blur_layer = it }),
-                .begin_rounded_clip => |it| try appendLoweredBoth(cx, .{ .begin_rounded_clip = it }),
-                .end_rounded_clip => |it| try appendLoweredBoth(cx, .{ .end_rounded_clip = it }),
+                .push_clip => try appendLoweredBoth(cx, try lowerNodeClip(cx.frame_allocator, item.*, item_transform)),
+                .pop_clip => |*it| try appendLoweredBoth(cx, .{ .pop_clip = it.* }),
+                .begin_opacity_layer => |*it| try appendLoweredBoth(cx, .{ .begin_opacity_layer = it.* }),
+                .end_opacity_layer => |*it| try appendLoweredBoth(cx, .{ .end_opacity_layer = it.* }),
+                .begin_blur_layer => |*it| try appendLoweredBoth(cx, .{ .begin_blur_layer = it.* }),
+                .end_blur_layer => |*it| try appendLoweredBoth(cx, .{ .end_blur_layer = it.* }),
+                .begin_rounded_clip => |*it| try appendLoweredBoth(cx, .{ .begin_rounded_clip = it.* }),
+                .end_rounded_clip => |*it| try appendLoweredBoth(cx, .{ .end_rounded_clip = it.* }),
             }
         }
         i = group_end;
@@ -871,6 +944,9 @@ pub fn appendNodeDisplayPayloadToRenderListForReplay(
             );
         }
     }
+    // The replay's items are already in the display list; only the paint-pass lowering copy
+    // remains, which the caller does not want (see RenderContext.paint_pass_lowering).
+    if (!cx.paint_pass_lowering) return true;
     const start: usize = switch (scope) {
         .own => runtime.display_item_start,
         .subtree => runtime.subtree_display_item_start,

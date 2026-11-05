@@ -16,6 +16,7 @@ style stack(
   $wrap: bool = false,
 ) {
   direction: $direction;
+  no-cross-stretch: true;
   gap: $gap;
   justify: $justify;
   align-items: $align_items;

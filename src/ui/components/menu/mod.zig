@@ -117,6 +117,7 @@ pub const MenuState = struct {
     /// Visual highlight on screen (row view lights up by it); no highlight until keyboard move or
     /// pointer enter after create/rebuild
     highlighted: *Signal(usize),
+    keyboard_focus: *Signal(bool),
     /// Currently rendered menu items (click / keyboard activate by it, matches screen)
     items: []const MenuItem = &.{},
     /// Deep copy of static items (null if from signal source, borrows current value)
@@ -206,6 +207,7 @@ pub const MenuState = struct {
     }
 
     fn enterIndex(self: *MenuState, index: usize) void {
+        self.keyboard_focus.set(false);
         self.highlightIndex(index);
         if (index < self.item_count and !self.items[index].disabled) if (self.submenu_open[index]) |open| open.set(true);
     }
@@ -292,6 +294,7 @@ pub const MenuState = struct {
                 .label = item.label,
                 .index = args.index,
                 .highlighted = state.highlighted,
+                .keyboard_focus = state.keyboard_focus,
                 .danger = item.danger,
                 .disabled = item.disabled,
                 .shortcut = item.shortcut,
@@ -331,8 +334,8 @@ pub const MenuState = struct {
             const nested = try Menu(.{ .trigger = .manual, .items = item.children, .open = open, .on_open_change = Handler(bool).from(Parent, parent, Parent.changed), .position = .right_start, .on_select = Handler([]const u8).from(Parent, parent, Parent.selected), .on_back = cx.on(Parent, parent, Parent.back) }).mount(scope, cx);
             errdefer cx.destroyDetached(nested.wrapper);
             // Nested rows fill the panel, unlike a fit-content toolbar trigger.
-            nested.wrapper.setStyleInline(cx.allocator, .{ .width = core.Sizing.fill() });
-            nested.trigger.setStyleInline(cx.allocator, .{ .width = core.Sizing.fill() });
+            try nested.wrapper.setStyleInlineFallible(cx.allocator, .{ .width = core.Sizing.fill() });
+            try nested.trigger.setStyleInlineFallible(cx.allocator, .{ .width = core.Sizing.fill() });
             orphan = false; // adoptChild owns the row even when append fails
             _ = try core.adoptChild(cx, cx.allocator, nested.trigger, node);
             return nested.wrapper;
@@ -386,6 +389,7 @@ pub const MenuBuilder = struct {
         // ---- State ----
         // Do failables first: no fail points between create and adoptResource
         const highlighted = try menu_scope.createSignal(usize, MenuState.no_highlight);
+        const keyboard_focus = try menu_scope.createSignal(bool, false);
         const state = try menu_scope.allocator.create(MenuState);
         state.* = .{
             .cx = cx,
@@ -393,6 +397,7 @@ pub const MenuBuilder = struct {
             .on_back = p.on_back,
             .close = pop_result.close,
             .highlighted = highlighted,
+            .keyboard_focus = keyboard_focus,
         };
         // adoptResource fails, self-destroy (with owned_items)
         try menu_scope.adoptResource(@ptrCast(state), struct {
@@ -437,6 +442,7 @@ pub const MenuBuilder = struct {
             fn update(c: anytype) void {
                 const open = c.open.get();
                 if (open and !c.state.was_open) {
+                    c.state.keyboard_focus.set(false);
                     c.state.previous_focus = if (c.cx.focused_node) |node| c.cx.node_registry.handleFor(node) else null;
                     c.cx.setFocus(c.content);
                 } else if (!open and c.state.was_open) {
@@ -537,12 +543,14 @@ fn menuKeyHandler(key: KeyCode, _: Modifiers, context: ?*anyopaque) EventResult 
             return .stop;
         },
         .down => {
+            state.keyboard_focus.set(true);
             if (nextEnabledIndex(state.items, state.highlighted_index, true)) |idx| {
                 state.highlightIndex(idx);
             }
             return .stop;
         },
         .up => {
+            state.keyboard_focus.set(true);
             if (nextEnabledIndex(state.items, state.highlighted_index, false)) |idx| {
                 state.highlightIndex(idx);
             }
@@ -686,6 +694,13 @@ test "Menu: keyboard navigation skips separator and disabled" {
 
     _ = menuKeyHandler(.down, .{}, @ptrCast(st));
     try std.testing.expectEqual(@as(usize, 1), st.highlighted_index);
+    // Foundations keyboard focus: 2px ring + 2px offset on the virtual row.
+    const outline = st.item_nodes[1].?.style.outline().?;
+    try std.testing.expectEqual(@as(f32, 2), outline.width);
+    try std.testing.expectEqual(@as(f32, 2), outline.offset);
+    try std.testing.expectEqual(env.ctx.tokens.tokens.color.focus_ring, outline.color);
+    st.enterIndex(1);
+    try std.testing.expect(st.item_nodes[1].?.style.outline() == null);
     // Skip separator (index 2)
     _ = menuKeyHandler(.down, .{}, @ptrCast(st));
     try std.testing.expectEqual(@as(usize, 3), st.highlighted_index);
@@ -837,7 +852,8 @@ test "Menu: items from a signal rebuild when a new array is set" {
     const st = stateOf(result);
     try std.testing.expectEqual(@as(usize, 4), st.item_count);
     // Caller-scope signal lent to Popover scope: latter parented below former, borrow valid
-    try std.testing.expectEqual(@as(u32, 0), env.ctx.owner.debug.borrow_warnings);
+    if (reactive.SignalOwner.debug_checks)
+        try std.testing.expectEqual(@as(u32, 0), env.ctx.owner.debug.borrow_warnings);
 
     // Highlight past end, swap to shorter array: highlight back to start, no overflow, no stale
     // active_descendant on old nodes

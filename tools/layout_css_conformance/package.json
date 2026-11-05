@@ -1,0 +1,7 @@
+{
+  "name": "zenit-layout-css-conformance",
+  "private": true,
+  "type": "module",
+  "scripts": {"test": "node --test conformance.test.mjs", "browsers": "playwright install --with-deps chromium-headless-shell firefox webkit"},
+  "dependencies": {"playwright-core": "1.56.1"}
+}

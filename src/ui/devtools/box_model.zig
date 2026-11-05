@@ -38,18 +38,19 @@ pub fn colors(t: *const theme.ThemeTokens) Colors {
 
 /// Chrome DevTools style Box Model visualization, drawn per current engine semantics:
 /// - `node.rect` = node overall rect (outer frame)
-/// - `content` = rect minus padding, the content area
+/// - `content` = rect minus border and padding, the content area
 /// - padding four sides fill proportionally between rect and content
 pub fn build(cx: *Cx, node: *Node, parent: *Node) !void {
     const t = cx.tokens;
     const c = colors(t);
     const alloc = cx.allocator;
     const p = node.style.padding;
+    const insets = node.style.contentInsets();
     const rect = node.rectFromWorldOrFallback();
     const rect_w = @max(@as(f32, 0), rect.w);
     const rect_h = @max(@as(f32, 0), rect.h);
-    const content_w = @max(@as(f32, 0), rect_w - p.left - p.right);
-    const content_h = @max(@as(f32, 0), rect_h - p.top - p.bottom);
+    const content_w = @max(@as(f32, 0), rect_w - insets.horizontal());
+    const content_h = @max(@as(f32, 0), rect_h - insets.vertical());
 
     const viz_w: f32 = 220;
     const viz_h: f32 = 150;
@@ -63,10 +64,10 @@ pub fn build(cx: *Cx, node: *Node, parent: *Node) !void {
     const outer_h = @max(@as(f32, 24), rect_h * scale);
     const outer_x = (viz_w - outer_w) * 0.5;
     const outer_y = (viz_h - outer_h) * 0.5;
-    const content_x = outer_x + p.left * scale;
-    const content_y = outer_y + p.top * scale;
-    const content_w_s = @max(@as(f32, 0), outer_w - (p.left + p.right) * scale);
-    const content_h_s = @max(@as(f32, 0), outer_h - (p.top + p.bottom) * scale);
+    const content_x = outer_x + insets.left * scale;
+    const content_y = outer_y + insets.top * scale;
+    const content_w_s = @max(@as(f32, 0), outer_w - insets.horizontal() * scale);
+    const content_h_s = @max(@as(f32, 0), outer_h - insets.vertical() * scale);
 
     const wrapper = try core.box(cx, .{
         .direction = .column,
@@ -98,24 +99,28 @@ pub fn build(cx: *Cx, node: *Node, parent: *Node) !void {
     outer.setMargin(.{ .left = outer_x, .top = outer_y });
     try stage.appendChild(alloc, outer);
 
+    const padding_x = outer_x + (insets.left - p.left) * scale;
+    const padding_y = outer_y + (insets.top - p.top) * scale;
+    const padding_w = @max(0, outer_w - (insets.horizontal() - p.horizontal()) * scale);
+    const padding_h = @max(0, outer_h - (insets.vertical() - p.vertical()) * scale);
     if (p.top > 0) {
         const top_pad = try core.box(cx, .{
             .position = .absolute,
-            .width = .{ .px = outer_w },
+            .width = .{ .px = padding_w },
             .height = .{ .px = p.top * scale },
             .background = c.padding_bg,
         }, .{});
-        top_pad.setMargin(.{ .left = outer_x, .top = outer_y });
+        top_pad.setMargin(.{ .left = padding_x, .top = padding_y });
         try stage.appendChild(alloc, top_pad);
     }
     if (p.bottom > 0) {
         const bottom_pad = try core.box(cx, .{
             .position = .absolute,
-            .width = .{ .px = outer_w },
+            .width = .{ .px = padding_w },
             .height = .{ .px = p.bottom * scale },
             .background = c.padding_bg,
         }, .{});
-        bottom_pad.setMargin(.{ .left = outer_x, .top = outer_y + outer_h - p.bottom * scale });
+        bottom_pad.setMargin(.{ .left = padding_x, .top = padding_y + padding_h - p.bottom * scale });
         try stage.appendChild(alloc, bottom_pad);
     }
     if (p.left > 0 and content_h_s > 0) {
@@ -125,7 +130,7 @@ pub fn build(cx: *Cx, node: *Node, parent: *Node) !void {
             .height = .{ .px = content_h_s },
             .background = c.padding_bg,
         }, .{});
-        left_pad.setMargin(.{ .left = outer_x, .top = content_y });
+        left_pad.setMargin(.{ .left = padding_x, .top = content_y });
         try stage.appendChild(alloc, left_pad);
     }
     if (p.right > 0 and content_h_s > 0) {
@@ -135,7 +140,7 @@ pub fn build(cx: *Cx, node: *Node, parent: *Node) !void {
             .height = .{ .px = content_h_s },
             .background = c.padding_bg,
         }, .{});
-        right_pad.setMargin(.{ .left = outer_x + outer_w - p.right * scale, .top = content_y });
+        right_pad.setMargin(.{ .left = padding_x + padding_w - p.right * scale, .top = content_y });
         try stage.appendChild(alloc, right_pad);
     }
 

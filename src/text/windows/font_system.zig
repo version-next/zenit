@@ -15,6 +15,23 @@ extern fn zenit_dwrite_find_font(family: [*:0]const u8, locale: [*:0]const u8, s
 extern fn zenit_dwrite_load_font(path: [*:0]const u8, locale: [*:0]const u8, size: f32) ?*anyopaque;
 extern fn zenit_dwrite_derive_font(font: *anyopaque, size: f32) ?*anyopaque;
 extern fn zenit_dwrite_font_family_name(font: *anyopaque, out: [*]u8, capacity: u32) u32;
+extern fn zenit_windows_system_ui_family(out: [*]u8, capacity: u32) u32;
+extern fn zenit_windows_user_locale(out: [*]u8, capacity: u32) u32;
+
+/// The system UI font family (CSS `system-ui`): Windows' message font, e.g. "Segoe UI", or
+/// "Microsoft YaHei UI" on a Chinese system. Null when the system does not report one.
+pub fn systemUiFamily(buffer: []u8) ?[:0]const u8 {
+    const length = zenit_windows_system_ui_family(buffer.ptr, @intCast(buffer.len));
+    if (length == 0 or length >= buffer.len) return null;
+    return buffer[0..length :0];
+}
+
+/// The user's UI language (BCP-47, e.g. "zh-CN"). Null when the system does not report one.
+pub fn userLocale(buffer: []u8) ?[:0]const u8 {
+    const length = zenit_windows_user_locale(buffer.ptr, @intCast(buffer.len));
+    if (length == 0 or length >= buffer.len) return null;
+    return buffer[0..length :0];
+}
 extern fn zenit_dwrite_font_weight(font: *anyopaque) u32;
 extern fn zenit_dwrite_font_italic(font: *anyopaque) c_int;
 extern fn zenit_dwrite_release_font(font: *anyopaque) void;
@@ -223,8 +240,11 @@ pub const FontSystem = struct {
     }
 
     pub fn findFont(self: *FontSystem, descriptor: types.FontDescriptor) !*Font {
+        var system_ui: [256]u8 = undefined;
         const family = if (self.default_family != null and std.mem.eql(u8, descriptor.family, "system"))
             self.default_family.?
+        else if (std.mem.eql(u8, descriptor.family, "system-ui"))
+            systemUiFamily(&system_ui) orelse return error.FontNotFound
         else
             descriptor.family;
         const owned_family = try self.allocator.dupeSentinel(u8, family, 0);

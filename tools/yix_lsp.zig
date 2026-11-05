@@ -882,6 +882,21 @@ const Server = struct {
         }
     }
 
+    /// Match CLI generation: identity is relative to the workspace/build root,
+    /// independent of URI spelling, absolute diagnostic paths, or twin output.
+    fn stableSourcePath(s: *Server, a: Allocator, path: []const u8) ![]u8 {
+        const owned_base = if (s.build.root == null) try std.Io.Dir.cwd().realPathFileAlloc(s.io, ".", a) else null;
+        defer if (owned_base) |base| a.free(base);
+        const base = s.build.root orelse owned_base.?;
+        const absolute = try std.fs.path.resolve(a, &.{ base, path });
+        defer a.free(absolute);
+        const relative = try std.fs.path.relativeAlloc(a, base, null, base, absolute);
+        if (comptime @import("builtin").os.tag == .windows) for (relative) |*ch| {
+            if (ch.* == '\\') ch.* = '/';
+        };
+        return relative;
+    }
+
     fn twinSource(s: *Server, a: Allocator, uri: []const u8) !?TwinSource {
         const path = (try uriToPath(a, uri)) orelse return null;
         const src_path = (try compiler.sourceOfTwin(a, path)) orelse return null;
@@ -895,7 +910,7 @@ const Server = struct {
         const disk = std.Io.Dir.cwd().readFileAlloc(s.io, path, a, .limited(64 * 1024 * 1024)) catch return null;
         const head = compiler.twinOutputStart(disk) orelse return null;
         const text = std.Io.Dir.cwd().readFileAlloc(s.io, src_path, a, .limited(64 * 1024 * 1024)) catch return null;
-        return switch (try compiler.compileMappedSource(a, src_path, text)) {
+        return switch (try compiler.compileMappedSource(a, try s.stableSourcePath(a, src_path), text)) {
             // Disk coordinates belong to this exact output. A stale twin cannot be
             // mapped with a freshly compiled source's segment table.
             .mapped => |m| if (std.mem.eql(u8, disk, try compiler.twinText(a, src_path, m.output)))
@@ -924,7 +939,7 @@ const Server = struct {
         if (!isYixFamily(doc.uri)) return;
         for (repairs) |ins| {
             const patched = try std.mem.concat(s.gpa, u8, &.{ doc.text[0..cursor], ins, doc.text[cursor..] });
-            const result = compileDoc(s.gpa, doc.uri, patched) catch |err| {
+            const result = compileDoc(s, doc.uri, patched) catch |err| {
                 s.gpa.free(patched);
                 return err;
             };
@@ -976,7 +991,7 @@ const Server = struct {
             try s.installMapped(a, doc, .{ .output = out, .segments = segments }, text_owned);
             return s.publish(a, doc);
         }
-        switch (try compileDoc(s.gpa, doc.uri, doc.text)) {
+        switch (try compileDoc(s, doc.uri, doc.text)) {
             .diagnostic => |d| doc.yix_diag = d,
             .mapped => |m| {
                 doc.yix_diag = null;
@@ -1717,8 +1732,13 @@ fn isYss(uri: []const u8) bool {
 }
 
 /// `.yss` uses style compiler; else Yix (diagnostics owned by gpa)
-fn compileDoc(gpa: Allocator, uri: []const u8, text: []const u8) !compiler.MappedResult {
-    return if (isYss(uri)) style.compileMapped(gpa, text) else compiler.compileMapped(gpa, text);
+fn compileDoc(s: *Server, uri: []const u8, text: []const u8) !compiler.MappedResult {
+    if (isYss(uri)) return style.compileMapped(s.gpa, text);
+    const path = (try uriToPath(s.gpa, uri)) orelse return compiler.compileMapped(s.gpa, text);
+    defer s.gpa.free(path);
+    const stable = try s.stableSourcePath(s.gpa, path);
+    defer s.gpa.free(stable);
+    return compiler.compileMappedWithPath(s.gpa, stable, text);
 }
 
 fn freeDiag(gpa: Allocator, uri: []const u8, d: compiler.Diagnostic) void {

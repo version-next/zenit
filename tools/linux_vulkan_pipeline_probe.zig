@@ -70,10 +70,11 @@ const ImageUniforms = extern struct {
     scale: f32 = 1,
     clip_kind: u32 = 0,
     clip_rect: [4]f32 = @splat(0),
-    clip_radius: f32 = 0,
+    clip_radii: [4]f32 = @splat(0),
     clip_fill: u32 = 0,
     clip_points: u32 = 0,
     clip_contours: u32 = 0,
+    clip_pad: u32 = 0,
     endpoints: [2][4]u32 = @splat(@splat(0)),
     points: [16][4]f32 = @splat(@splat(0)),
 };
@@ -82,15 +83,15 @@ const ImageInstance = extern struct {
     uv: [4]f32 = .{ 0, 0, 1, 1 },
     tint: [4]f32 = .{ 1, 1, 1, 1 },
     linear: [4]f32 = .{ 1, 0, 0, 1 },
+    radii: [4]f32 = @splat(0),
     translation: [2]f32 = .{ 0, 0 },
-    radius: f32 = 0,
     opacity: f32 = 1,
     premultiplied: f32 = 0,
-    padding: [3]f32 = @splat(0),
+    sampling: [4]f32 = @splat(0),
     clip: [4]f32 = .{ 0, 0, -1, -1 },
 };
 comptime {
-    if (@sizeOf(ImageUniforms) != 336 or @sizeOf(ImageInstance) != 112) @compileError("image CPU ABI mismatch");
+    if (@sizeOf(ImageUniforms) != 352 or @sizeOf(ImageInstance) != 128) @compileError("image CPU ABI mismatch");
 }
 
 fn verifyImageDraw(device: *vk.Device, diag: *vk.Diagnostic) !void {
@@ -174,7 +175,7 @@ fn verifyImageDraw(device: *vk.Device, diag: *vk.Diagnostic) !void {
     if (pipeline.draw(&target, &feedback, 0, 6, 0, 1, null, diag)) |_| return error.SampledTargetAccepted else |err| {
         if (err != error.InvalidDescriptor) return err;
     }
-    std.debug.print("VULKAN_IMAGE PASS: pixels=3072 exact=true cpu_stride=112 first_vertex=true first_instance=true split_submissions=true\n", .{});
+    std.debug.print("VULKAN_IMAGE PASS: pixels=3072 exact=true cpu_stride=128 first_vertex=true first_instance=true split_submissions=true\n", .{});
 }
 
 const resource_indices align(4) = @embedFile("resource_indices").*;

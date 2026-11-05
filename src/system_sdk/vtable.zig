@@ -113,6 +113,11 @@ pub const ImeVTable = struct {
     set_surrounding: ?*const fn (ctx: *anyopaque, window_id: events.WindowId, text: []const u8, cursor: u32, anchor: u32, secure: bool) SdkError!void = null,
     /// Epoch tagging protects copied IME events from a later focus/session switch.
     generation: ?*const fn (ctx: *anyopaque) u64 = null,
+    /// Optional: replace the window's reserved key chords (`Cx.setReservedKeyChords`).
+    /// A reserved key-down is delivered as a key event but never interpreted
+    /// by the platform input method. Platforms whose modifier chords produce
+    /// no IME text leave it null.
+    set_reserved_chords: ?*const fn (ctx: *anyopaque, window_id: events.WindowId, chords: []const events.ReservedChord) SdkError!void = null,
 };
 
 pub const CursorVTable = struct {

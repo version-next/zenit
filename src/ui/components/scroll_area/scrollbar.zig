@@ -4,10 +4,10 @@
 const std = @import("std");
 const core = @import("../../core.zig");
 const Node = core.Node;
-const Color = core.Color;
 const Event = core.Event;
 const EventResult = core.EventResult;
 
+const styles = @import("styles.zig");
 const state_mod = @import("state.zig");
 const ScrollState = state_mod.ScrollState;
 const ScrollbarVisual = state_mod.ScrollbarVisual;
@@ -41,6 +41,21 @@ fn syncScrollbarFrame(node: *Node, x: f32, y: f32, w: f32, h: f32) bool {
     return rect_changed;
 }
 
+/// Thumb / track paint written by the per-frame hook: raw write (no transition), marked
+/// render-dirty only when it changed, so an unchanged bar stays clean and cacheable while a fading
+/// or resizing one is re-recorded (the container's descendants_cache_safe contract).
+fn syncBarBackground(node: *Node, color: core.Color) void {
+    if (std.meta.eql(node.getBackground(), color)) return;
+    node.setBackgroundRaw(color);
+    node.markRenderDirty();
+}
+
+fn syncBarBorder(node: *Node, border: core.Border) void {
+    if (std.meta.eql(node.style.border, border)) return;
+    node.style.border = border;
+    node.markRenderDirty();
+}
+
 /// Before each frame render: bonus decay + update scrollbar.
 pub fn scrollbarBeforeRender(container: *Node) void {
     if (container.behavior.events.on_event != scrollEventHandler) return;
@@ -55,10 +70,10 @@ pub fn scrollbarBeforeRender(container: *Node) void {
     // Update viewport/content size (only when rect valid, avoid first-frame rect=0 overwriting
     // mount init).
     if (cont_r.h > 0) {
-        state.viewport_height = cont_r.h - container.style.padding.vertical();
+        state.viewport_height = @max(0, cont_r.h - container.style.contentInsets().vertical());
     }
     if (cont_r.w > 0) {
-        state.viewport_width = cont_r.w - container.style.padding.horizontal();
+        state.viewport_width = @max(0, cont_r.w - container.style.contentInsets().horizontal());
     }
     if (!state.external_content_height) {
         if (content_r.h > 0) state.content_height = content_r.h;
@@ -72,13 +87,13 @@ pub fn scrollbarBeforeRender(container: *Node) void {
     if (state.scroll_y > max_y) {
         state.scroll_y = max_y;
         content.style.translate_y = state.contentTranslateY();
-        content.markCompositePropDirty();
+        content.markHitLayerMotionPropDirty();
     }
     const max_x = state.maxScrollX();
     if (state.scroll_x > max_x) {
         state.scroll_x = max_x;
         content.style.translate_x = state.contentTranslateX();
-        content.markCompositePropDirty();
+        content.markHitLayerMotionPropDirty();
     }
 
     const now_ms = render_engine.current_frame_time_ms;
@@ -92,7 +107,7 @@ pub fn scrollbarBeforeRender(container: *Node) void {
         const old_ty = content.style.translate_y;
         state.tickBonus(now_ms);
         content.style.translate_y = state.contentTranslateY();
-        if (content.style.translate_y != old_ty) content.markInteractionDirty();
+        if (content.style.translate_y != old_ty) content.markHitLayerMotion();
         needs_redraw = true;
     }
 
@@ -100,7 +115,7 @@ pub fn scrollbarBeforeRender(container: *Node) void {
         const old_tx = content.style.translate_x;
         state.tickBonusX(now_ms);
         content.style.translate_x = state.contentTranslateX();
-        if (content.style.translate_x != old_tx) content.markInteractionDirty();
+        if (content.style.translate_x != old_tx) content.markHitLayerMotion();
         needs_redraw = true;
     }
 
@@ -138,6 +153,22 @@ pub fn scrollbarBeforeRender(container: *Node) void {
     }
     const scrollbar_h = ctx.scrollbar_h orelse return;
 
+    // Track is a non-interactive sibling behind the thumb. Keep fade and theme
+    // resolution on the same frame as the thumb, including during drag.
+    const track_size = ScrollbarVisual.track_thickness;
+    if (ctx.track_v) |track| {
+        const visible = v_visible and (state.scrollbar_hovered or state.scrollbar_dragging);
+        const w: f32 = if (visible) track_size else 0;
+        if (syncScrollbarFrame(track, cont_r.w - track_size, 0, w, if (visible) cont_r.h else 0)) track.markRenderDirty();
+        syncBarBackground(track, styles.track(ctx.cx.tokens));
+    }
+    if (ctx.track_h) |track| {
+        const visible = h_visible and (state.scrollbar_hovered_h or state.scrollbar_dragging_h);
+        const h: f32 = if (visible) track_size else 0;
+        if (syncScrollbarFrame(track, 0, cont_r.h - track_size, if (visible) cont_r.w else 0, h)) track.markRenderDirty();
+        syncBarBackground(track, styles.track(ctx.cx.tokens));
+    }
+
     // ---- Vertical scrollbar update ----
     if (!v_visible) {
         const cur = scrollbar.rectFromWorldOrFallback();
@@ -159,21 +190,13 @@ pub fn scrollbarBeforeRender(container: *Node) void {
         // Scrollbar sticky to container edge, minimize content obstruction. Write both rect
         // (immediate this frame) and margin (maintain on layout rerun).
         const bar_x_local = cont_r.w - bar_width - ScrollbarVisual.edge_inset;
-        const bar_y_local = container.style.padding.top + bar_y;
+        const bar_y_local = container.style.contentInsets().top + bar_y;
         const rect_changed = syncScrollbarFrame(scrollbar, bar_x_local, bar_y_local, bar_width, bar_h);
         if (rect_changed) scrollbar.markInteractionDirty();
-        scrollbar.style.border = .{ .radius = bar_width / 2 };
+        syncBarBorder(scrollbar, .{ .radius = bar_width / 2 });
 
-        const base_alpha: f32 = if (state.scrollbar_dragging)
-            ScrollbarVisual.dragging_alpha
-        else if (state.scrollbar_hovered)
-            ScrollbarVisual.hover_alpha
-        else
-            ScrollbarVisual.idle_alpha;
         const fade = std.math.clamp(opacity / @max(state.scrollbar_fade.active_opacity, 0.001), 0.0, 1.0);
-        const alpha: u8 = @intFromFloat(@min(255, base_alpha * fade * 255));
-        const thumb = ctx.scrollbar_thumb;
-        scrollbar.setBackgroundRaw(Color.rgba(thumb.r, thumb.g, thumb.b, alpha));
+        syncBarBackground(scrollbar, styles.thumb(ctx.cx.tokens, active, fade));
     }
 
     // ---- Horizontal scrollbar update ----
@@ -196,22 +219,14 @@ pub fn scrollbarBeforeRender(container: *Node) void {
         scrollbar_h.style.width = .{ .px = bar_w };
         scrollbar_h.style.height = .{ .px = bar_height };
         // Horizontal sticky to bottom edge, reduce obstruction.
-        const bar_x_local = container.style.padding.left + bar_x;
+        const bar_x_local = container.style.contentInsets().left + bar_x;
         const bar_y_local = cont_r.h - bar_height - ScrollbarVisual.edge_inset;
         const rect_changed = syncScrollbarFrame(scrollbar_h, bar_x_local, bar_y_local, bar_w, bar_height);
         if (rect_changed) scrollbar_h.markInteractionDirty();
-        scrollbar_h.style.border = .{ .radius = bar_height / 2 };
+        syncBarBorder(scrollbar_h, .{ .radius = bar_height / 2 });
 
-        const base_alpha_h: f32 = if (state.scrollbar_dragging_h)
-            ScrollbarVisual.dragging_alpha
-        else if (state.scrollbar_hovered_h)
-            ScrollbarVisual.hover_alpha
-        else
-            ScrollbarVisual.idle_alpha;
         const fade_h = std.math.clamp(opacity_h / @max(state.scrollbar_fade_h.active_opacity, 0.001), 0.0, 1.0);
-        const alpha_h: u8 = @intFromFloat(@min(255, base_alpha_h * fade_h * 255));
-        const thumb_h = ctx.scrollbar_thumb;
-        scrollbar_h.setBackgroundRaw(Color.rgba(thumb_h.r, thumb_h.g, thumb_h.b, alpha_h));
+        syncBarBackground(scrollbar_h, styles.thumb(ctx.cx.tokens, active_h, fade_h));
     }
 }
 
@@ -375,7 +390,7 @@ fn applyScrollbarDrag(state: *ScrollState, content: *Node, mouse_dy: f32) void {
     state.input_serial +%= 1;
     state.onScrollActivity();
     content.style.translate_y = state.contentTranslateY();
-    content.markCompositeAnimFrameDirty();
+    content.markHitLayerMotionAnimFrameDirty();
 }
 
 /// Mouse pixel delta -> scroll_x delta (track pixels : content pixels ratio conversion).
@@ -388,5 +403,5 @@ fn applyHScrollbarDrag(state: *ScrollState, content: *Node, mouse_dx: f32) void 
     state.input_serial +%= 1;
     state.onScrollActivity();
     content.style.translate_x = state.contentTranslateX();
-    content.markCompositeAnimFrameDirty();
+    content.markHitLayerMotionAnimFrameDirty();
 }

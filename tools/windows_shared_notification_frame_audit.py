@@ -19,6 +19,8 @@ def body_points(node):
     top = rect['y']+rect['h']
     def visit(n):
         nonlocal top
+        if n.get('visible') is False:
+            return
         if n.get('tag') in ('text', 'image') and n.get('visible', True):
             top = min(top, n['rect']['y'])
         for child in n.get('children', []):

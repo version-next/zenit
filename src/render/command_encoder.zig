@@ -23,6 +23,17 @@ pub fn addImageOrSkip(ir: *ImageRenderer, handle: u64, x: f32, y: f32, w: f32, h
     };
 }
 
+/// Paint-table corner radii (`.tl/.tr/.br/.bl`, duck-typed for test mocks) as TL, TR, BR, BL.
+inline fn cornerRadiiArray(r: anytype) [4]f32 {
+    return .{ r.tl, r.tr, r.br, r.bl };
+}
+
+/// Largest corner: a rounded clip/mask exists when any corner is rounded (attached group items
+/// round only their outer corners, so the top-left alone is not representative).
+inline fn maxCornerRadius(r: anytype) f32 {
+    return @max(@max(r.tl, r.tr), @max(r.br, r.bl));
+}
+
 /// Same stale handle every frame: log only on change, avoid spam and silence.
 var last_unknown_texture: u64 = 0;
 fn logUnknownTextureOnce(handle: anytype) void {
@@ -40,6 +51,8 @@ const lsort = @import("command_encoder/local_sort.zig");
 const wire_types = @import("command_encoder/wire_types.zig");
 const script_detect = @import("command_encoder/script_detect.zig");
 const clip_geometry = @import("command_encoder/clip_geometry.zig");
+const shape_clip_pair = @import("shape_clip_pair.zig");
+const corner_radii = @import("zenit_corner_radii");
 // local-sort cluster state machine extracted: encoder's nested struct now borrows from
 // same-directory module; capacity constants follow.
 const cluster_mod = @import("command_encoder/local_sort_cluster.zig");
@@ -62,6 +75,7 @@ pub const BackdropCaptureRegion = backdrop_capture.BackdropCaptureRegion;
 // pipeline creation in backdrop_blur / opacity_layer / blend_composite; uniform slot allocation in
 // backdrop_blur; neither migrates.
 const persistent_gpu_cache = @import("command_encoder/persistent_gpu_cache.zig");
+const glass_reuse = @import("glass_reuse.zig");
 pub const PersistentGpuCache = persistent_gpu_cache.PersistentGpuCache;
 pub const LuminanceSlot = persistent_gpu_cache.LuminanceSlot;
 pub const BlurLevelSlot = persistent_gpu_cache.BlurLevelSlot;
@@ -72,10 +86,12 @@ const color_conversion = @import("color_conversion.zig");
 // codebase does **not** pull test blocks into runner; see render.zig test block comment).
 test {
     _ = @import("offscreen_maintenance_retry.zig");
+    _ = @import("glass_reuse.zig");
     _ = @import("command_encoder/local_sort_cluster.zig");
     _ = @import("command_encoder/backdrop_capture.zig");
     _ = @import("command_encoder/persistent_gpu_cache.zig");
     _ = @import("command_encoder/pixel_domain.zig");
+    _ = @import("command_encoder/clip_geometry.zig");
 }
 pub const colorToFloat4 = color_conversion.toFloat4;
 const colorToRenderColor = color_conversion.toRenderColor;
@@ -92,7 +108,9 @@ const GradientExtendMode = sdf.GradientExtendMode;
 const img = @import("image_renderer.zig");
 const ImageRenderer = img.ImageRenderer;
 const IconRenderer = @import("icon_renderer.zig").IconRenderer;
-const TextRenderer = @import("text_renderer.zig").TextRenderer;
+const text_renderer_mod = @import("text_renderer.zig");
+const TextRenderer = text_renderer_mod.TextRenderer;
+const text_ink = @import("text_ink.zig");
 const text_module = @import("text");
 const Font = text_module.Font;
 
@@ -148,6 +166,10 @@ pub const ClipPolygon = struct {
 };
 
 const RoundedClipMode = enum(u8) { shader, layer, noop };
+/// How a display-list push_clip was applied; its pop_clip undoes the same thing.
+/// `.isolated`: the clip crossed the active shape clip, so it opened an offscreen layer (see
+/// pushClipCommand) and the pop ends that layer after popping the clip inside it.
+pub const PushClipMode = enum(u8) { clip, isolated };
 const OpacityLayerMode = enum(u8) { layer, noop };
 
 const RoundedClipState = struct {
@@ -155,9 +177,41 @@ const RoundedClipState = struct {
     y: f32,
     w: f32,
     h: f32,
-    radius: f32,
+    /// Corner radii TL, TR, BR, BL (logical px), clamped to half the shorter side like the fill.
+    radii: [4]f32,
     shape_kind: ClipShapeKind,
     polygon: ClipPolygon = ClipPolygon.empty(),
+    /// Second shape clip in force with this one (shape_clip_pair.zig): the target clips to both.
+    partner: ?PartnerClip = null,
+
+    fn fromPartner(p: PartnerClip) RoundedClipState {
+        return .{ .x = p.x, .y = p.y, .w = p.w, .h = p.h, .radii = p.radii, .shape_kind = p.shape_kind };
+    }
+};
+
+/// A partner shape clip: a rounded rect or an ellipse (never a polygon), same frame as its
+/// primary.
+const PartnerClip = struct {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radii: [4]f32,
+    shape_kind: ClipShapeKind,
+
+    fn of(clip: RoundedClipState) PartnerClip {
+        std.debug.assert(clip.shape_kind == .rounded_rect or clip.shape_kind == .ellipse);
+        return .{ .x = clip.x, .y = clip.y, .w = clip.w, .h = clip.h, .radii = clip.radii, .shape_kind = clip.shape_kind };
+    }
+
+    fn uniform(partner: ?PartnerClip) shape_clip_pair.Uniform {
+        const p = partner orelse return .{};
+        return .{
+            .rect = .{ p.x, p.y, p.w, p.h },
+            .radii = p.radii,
+            .kind = if (p.shape_kind == .ellipse) 2 else 1,
+        };
+    }
 };
 
 /// SVG/CSS blend modes mirror src/ui/core/types.zig BlendMode; render module has no ui dependency,
@@ -212,7 +266,7 @@ const RetainedPending = struct {
     draw_y: f32,
     draw_w: f32,
     draw_h: f32,
-    corner_radius: f32,
+    corner_radii: [4]f32,
     used_tex_w: u32,
     used_tex_h: u32,
     alloc_tex_w: u32,
@@ -275,8 +329,8 @@ pub const OffscreenLayer = struct {
     draw_h: f32 = 0,
     /// Texture ID registered in image_renderer
     texture_id: u32,
-    /// Rounded clip radius (0 = ordinary opacity layer)
-    corner_radius: f32 = 0,
+    /// Rounded clip radii TL, TR, BR, BL (all 0 = ordinary opacity layer)
+    corner_radii: [4]f32 = .{ 0, 0, 0, 0 },
     /// SVG/CSS blend mode (normal = standard SrcOver)
     blend_mode: BlendMode = .normal,
     /// Lens warp at composite (see types.ContentWarp); all zero = none
@@ -317,6 +371,91 @@ pub fn isArcCommand(it: anytype) bool {
     return it.kind == .path and it.arc_outer_radius > 0;
 }
 
+pub const GlassCapture = struct {
+    ctx: *anyopaque,
+    target: *const fn (ctx: *anyopaque, item: *const anyopaque, rect: [4]u32) ?gpu.Backend.TextureBinding,
+};
+
+/// Bounding boxes covering one renderer's pending instance quads (one per scanned run of
+/// instances; folded into one box when full, which only over-covers): glyphs, icons, images.
+pub const InkSet = struct {
+    generation: u64 = std.math.maxInt(u64),
+    /// Pending instances (nearest, linear) already covered.
+    covered: [2]usize = .{ 0, 0 },
+    rects: [32][4]f32 = undefined,
+    count: usize = 0,
+
+    /// Whether a command painting within `bounds` (x0, y0, x1, y1) misses every pending
+    /// instance quad of `lists` (one renderer's pending instance lists, `generation` its
+    /// pending_generation). Covers the instances appended since the last call, whatever path
+    /// emitted them, and starts over whenever the renderer dropped them.
+    pub fn allows(self: *InkSet, generation: u64, lists: anytype, bounds: [4]f32) bool {
+        var stale = self.generation != generation;
+        inline for (0..lists.len) |li| stale = stale or lists[li].len < self.covered[li];
+        if (stale) self.* = .{ .generation = generation };
+        var run: ?[4]f32 = null;
+        inline for (0..lists.len) |li| {
+            for (lists[li][self.covered[li]..]) |*g| {
+                const q = quadOf(g);
+                run = if (run) |r| .{ @min(r[0], q[0]), @min(r[1], q[1]), @max(r[2], q[2]), @max(r[3], q[3]) } else q;
+            }
+            self.covered[li] = lists[li].len;
+        }
+        if (run) |r| self.add(r);
+        for (self.rects[0..self.count]) |r| {
+            if (bounds[0] < r[2] and r[0] < bounds[2] and bounds[1] < r[3] and r[1] < bounds[3]) return false;
+        }
+        return true;
+    }
+
+    /// An instance's quad as its vertex shader places it (logical pixels of the target, padded
+    /// by one logical pixel for snapping).
+    pub fn quadOf(g: anytype) [4]f32 {
+        const G = @typeInfo(@TypeOf(g)).pointer.child;
+        if (comptime @hasField(G, "skew_x")) return glyphQuad(g);
+        if (comptime @hasField(G, "transform_linear")) {
+            // Image: an affine map of its rect (text.metal / image.metal logical_pos).
+            const r = g.rect;
+            const m = g.transform_linear;
+            const t = g.transform_translation;
+            var lo: [2]f32 = .{ std.math.inf(f32), std.math.inf(f32) };
+            var hi: [2]f32 = .{ -std.math.inf(f32), -std.math.inf(f32) };
+            for ([_][2]f32{ .{ r[0], r[1] }, .{ r[0] + r[2], r[1] }, .{ r[0], r[1] + r[3] }, .{ r[0] + r[2], r[1] + r[3] } }) |c| {
+                const x = m[0] * c[0] + m[2] * c[1] + t[0];
+                const y = m[1] * c[0] + m[3] * c[1] + t[1];
+                lo = .{ @min(lo[0], x), @min(lo[1], y) };
+                hi = .{ @max(hi[0], x), @max(hi[1], y) };
+            }
+            return .{ lo[0] - 1, lo[1] - 1, hi[0] + 1, hi[1] + 1 };
+        }
+        // Icon: its rect, rotated about the center (icon.metal).
+        const r = g.rect;
+        if (@abs(g.rotate) > 0.0001) {
+            const radius = 0.5 * @sqrt(r[2] * r[2] + r[3] * r[3]);
+            const cx = r[0] + r[2] * 0.5;
+            const cy = r[1] + r[3] * 0.5;
+            return .{ cx - radius - 1, cy - radius - 1, cx + radius + 1, cy + radius + 1 };
+        }
+        return .{ r[0] - 1, r[1] - 1, r[0] + r[2] + 1, r[1] + r[3] + 1 };
+    }
+
+    /// A glyph instance's quad as the text vertex shader places it (text_renderer.glyphQuad,
+    /// shared with text ink bounds).
+    pub const glyphQuad = text_renderer_mod.glyphQuad;
+
+    fn add(self: *InkSet, r: [4]f32) void {
+        if (self.count == self.rects.len) {
+            var u = r;
+            for (self.rects) |q| u = .{ @min(u[0], q[0]), @min(u[1], q[1]), @max(u[2], q[2]), @max(u[3], q[3]) };
+            self.rects[0] = u;
+            self.count = 1;
+            return;
+        }
+        self.rects[self.count] = r;
+        self.count += 1;
+    }
+};
+
 pub const RenderCommandEncoder = struct {
     const local_sort_cluster_capacity: usize = cluster_mod.capacity;
     const max_kawase_uniform_updates: u32 = backdrop_blur.max_kawase_uniform_updates;
@@ -346,6 +485,9 @@ pub const RenderCommandEncoder = struct {
     /// (each sync is 4-5 renderers * ~300B value copy; push/pop clip and begin/end layer trigger).
     /// encoder rebuilt each frame, unsynced by default.
     last_synced_clip_mask: ?RoundedClipState = null,
+    /// false: crossing shape clips isolate as off Metal (shape_clip_pair.zig). Test hooks use it
+    /// to exercise isolation where the scene would pair.
+    pair_shape_clips: bool = true,
     clip_mask_synced: bool = false,
     /// begin_rounded_clip implementation path stack: end_rounded_clip must know whether begin took
     /// shader clip or offscreen layer path. Shader path saves 2 render passes + full RT load/store
@@ -353,6 +495,15 @@ pub const RenderCommandEncoder = struct {
     rounded_clip_mode_stack: [32]RoundedClipMode = undefined,
     rounded_clip_mode_depth: u32 = 0,
     rounded_clip_overflow_depth: u32 = 0,
+    /// push_clip implementation path stack (pushClipCommand): pop_clip must know whether its
+    /// push opened an isolation layer. Pushes past the stack depth are plain clips (counted in
+    /// push_clip_mode_overflow_depth so their pops stay paired).
+    push_clip_mode_stack: [64]PushClipMode = undefined,
+    push_clip_mode_depth: u32 = 0,
+    push_clip_mode_overflow_depth: u32 = 0,
+    /// Isolation layers that could not open this frame (diagnostic; the clip then degrades to
+    /// the innermost shape only).
+    isolated_clip_fallbacks: u32 = 0,
     /// Escape valve: ZENIT_ROUNDED_CLIP_LAYER=1 forces all old offscreen path (process-level
     /// cache).
     force_rounded_clip_layer: ?bool = null,
@@ -362,11 +513,40 @@ pub const RenderCommandEncoder = struct {
     /// parent clip pops incorrectly (push silent / pop unconditional = mismatch).
     clip_overflow_depth: u32 = 0,
     render_pass: ?*gpu.Backend.RenderPass = null,
+    /// CPU damage patch target (render/cpu_flat.zig): pending batches are
+    /// rasterized on the CPU instead of submitted. Borrowed for one encode.
+    cpu_flat_target: ?*anyopaque = null,
+    /// With `cpu_flat_target`: check every batch is supported and drop it
+    /// without rasterizing (the target is not touched).
+    cpu_flat_validate_only: bool = false,
+    /// Glass underlay capture (zenit_app/cpu_patch.zig): after a main-target
+    /// glass composite the pixels it produced are copied out, so a later CPU
+    /// patch can reuse them while the glass and its backdrop are unchanged.
+    /// `target` returns the copy destination for the begin token at `item`
+    /// (a pointer into the encoded command list) covering `rect` (device px).
+    glass_capture: ?GlassCapture = null,
+    /// Command being dispatched by encodeCommands (identifies glass tokens).
+    dispatch_item: ?*const anyopaque = null,
+    /// Cross-frame glass composite reuse (glass_reuse.zig): keys a glass
+    /// token's backdrop from the frame's paint table. Unset: every glass
+    /// composites anew.
+    glass_reuse: ?glass_reuse.Hook = null,
+    /// Backdrop keys of the glass encoded so far this frame.
+    glass_frame_keys: glass_reuse.FrameKeys = .{},
+    /// Glass composites drawn from a retained texture this frame.
+    glass_reuse_hits: u32 = 0,
+    /// Device-pixel capture rect of the last main-target glass composite;
+    /// set by backdrop_blur.applyBackdropBlur.
+    last_glass_capture: ?[4]u32 = null,
     drawable_extent: [2]u32 = .{ 0, 0 },
     viewport_width: f32 = 0,
     /// Pixel-aligned root crop, used by small caret render targets. Nested
     /// surfaces still accumulate their own offsets through the same algebra.
     root_crop_origin: [2]f32 = .{ 0, 0 },
+    /// Raster mapping of the main attachment. Passes may be reopened by
+    /// nested clip isolation; keep this mapping with the target, not the pass.
+    root_target_crop: ?[4]u32 = null,
+    root_target_offset: [2]u32 = .{ 0, 0 },
     viewport_height: f32 = 0,
     scale: f32 = 1,
     main_destination_opaque: bool = false,
@@ -382,6 +562,10 @@ pub const RenderCommandEncoder = struct {
     /// Diagnostics (ZENIT_DEBUG_PASSCOUNT): pass count categorized by callsite, answer "what are
     /// this frame's N passes". See PassSite for index.
     pass_sites: [8]u32 = @splat(0),
+    /// Where the pending text / image / icon instances can paint (see pendingInkAllows).
+    text_ink: InkSet = .{},
+    image_ink: InkSet = .{},
+    icon_ink: InkSet = .{},
     /// Actual layer-open result for each ordinary opacity begin. Must log per-layer; noop depth
     /// count alone can't represent "noop outer with real inner" legal nesting.
     /// Skip beginOpacityLayer offscreen pass + image composite when opacity ~= 1.0 && blend_mode =
@@ -416,6 +600,21 @@ pub const RenderCommandEncoder = struct {
     /// Semantic contract: one owner gets at most one backdrop per frame; repeated begin skips.
     blur_applied_owners: [64]u32 = undefined,
     blur_applied_count: usize = 0,
+    /// The frame's glass quarter-grid bank (backdrop_blur.frameQuarter) and
+    /// the window-space (logical px) union of everything drawn into the main
+    /// target since it was last brought up to date: the ink bounds of each
+    /// command dispatched at main-target depth (a group begin token covers its
+    /// whole group, its later composite included). `glass_open_group` holds
+    /// the ink bounds of the offscreen group open at main-target depth, whose
+    /// composite is still to come. `glass_bank_scale` maps them to target
+    /// pixels of a frame whose main target spans `glass_bank_extent` (the
+    /// whole window; a cropped target such as a caret patch keeps no bank).
+    /// Frame state: reset in beginFrame.
+    glass_quarter: ?backdrop_blur.FrameQuarter = null,
+    glass_bank_dirty: ?[4]f32 = null,
+    glass_open_group: ?[4]f32 = null,
+    glass_bank_scale: f32 = 1,
+    glass_bank_extent: [2]f32 = .{ 0, 0 },
     /// dispatch is at which begin_opacity_layer (aligns with prescan sequence number).
     retained_begin_seq: usize = 0,
     /// damage-rect: per-item {single fingerprint, expanded bounds} for each **top-level** opacity
@@ -443,6 +642,13 @@ pub const RenderCommandEncoder = struct {
     /// Main render target texture (restore point after ending offscreen)
     main_render_target: ?gpu.Backend.TextureBinding = null,
     frame_damage_scissor: ?[4]u32 = null,
+    /// With frame_damage_scissor: paint index ranges [first, last] of the
+    /// frame's table (ascending) that paint nothing inside it
+    /// (FrameDamage.prepareEffects). encodeDisplay does not encode them.
+    frame_damage_skip: []const [2]u32 = &.{},
+    /// Glass composited under frame_damage_scissor whose capture reached
+    /// outside it (the backdrop prediction missed): the frame is wrong there.
+    frame_damage_violations: u32 = 0,
     /// Offscreen layer stack (supports nesting)
     offscreen_stack: [8]OffscreenLayer = undefined,
     offscreen_depth: usize = 0,
@@ -509,14 +715,10 @@ pub const RenderCommandEncoder = struct {
     /// RenderCommandEncoder often used as per-frame local value; if some frame hits path/blur/glass
     /// paths without explicit cleanup, these resources leak when encoder leaves scope.
     pub fn deinit(self: *RenderCommandEncoder) void {
-        defer if (self.pool_session_active) {
-            self.offscreen_pool.releaseTransients();
-            self.offscreen_pool.encoder_active = false;
-            self.pool_session_active = false;
-        };
+        defer self.endPoolSession();
         // encoder is per-frame local value (AppRenderer.getEncoder creates fresh each frame),
         // deinit is frame end; pass_count here is full-frame final value.
-        if (@import("zenit_environment").has("ZENIT_DEBUG_PASSCOUNT")) {
+        if (@import("zenit_environment").flag("ZENIT_DEBUG_PASSCOUNT")) {
             std.debug.print("[passcount] passes={d} retained_hit={d} retained_miss={d} | op_restore={d} op_begin={d} op_composite={d} clear_tex={d} blur={d}/{d}/{d}\n", .{
                 self.pass_count,    self.retained_hits, self.retained_misses,
                 self.pass_sites[0], self.pass_sites[1], self.pass_sites[2],
@@ -541,6 +743,37 @@ pub const RenderCommandEncoder = struct {
         // per frame; continuous path/blur animation re-ran MSL compile every frame, see review
         // report P1).
         // encoder borrows, nothing to do at frame end; AppRenderer.deinit releases cache uniformly.
+    }
+
+    /// Account a command dispatched at main-target depth for the glass
+    /// quarter bank: grow glass_bank_dirty by the pixels it can change in the
+    /// main target (paint_fingerprint.inkWorldBounds; unbounded when unknown),
+    /// and track the offscreen group it opens or closes.
+    fn noteGlassBankDirty(self: *RenderCommandEncoder, it: anytype) void {
+        const opened_layer = self.offscreen_depth > 0;
+        if (!opened_layer) self.glass_open_group = null;
+        if (self.glass_quarter == null and !opened_layer) return;
+        const T = @TypeOf(it);
+        var b: [4]f32 = if (comptime @hasField(T, "shadow2_blur") and @hasField(T, "glass_ptr") and @hasField(T, "path_geometry_ptr") and @hasField(T, "text_content"))
+            paint_fp.inkWorldBounds(it)
+        else
+            unbounded_ink;
+        if (!(b[2] >= 0 and b[3] >= 0)) b = unbounded_ink; // NaN or inverted: never hide pixels
+        // This command opened an offscreen layer: it composites into the main
+        // target at its end token, possibly after the bank's next update.
+        if (opened_layer) self.glass_open_group = if (b[2] > 0 and b[3] > 0) b else unbounded_ink;
+        if (self.glass_quarter == null or b[2] == 0 or b[3] == 0) return;
+        self.glass_bank_dirty = if (self.glass_bank_dirty) |d| unionRect(d, b) else b;
+    }
+
+    const unbounded_ink: [4]f32 = .{ -1e7, -1e7, 2e7, 2e7 };
+
+    fn unionRect(a: [4]f32, b: [4]f32) [4]f32 {
+        const x0 = @min(a[0], b[0]);
+        const y0 = @min(a[1], b[1]);
+        const x1 = @max(a[0] + a[2], b[0] + b[2]);
+        const y1 = @max(a[1] + a[3], b[1] + b[3]);
+        return .{ x0, y0, x1 - x0, y1 - y0 };
     }
 
     fn releaseAbandonedOffscreenBindings(self: *RenderCommandEncoder) void {
@@ -594,6 +827,11 @@ pub const RenderCommandEncoder = struct {
         self.text_backdrop.reset(width, height, self.main_destination_opaque);
         self.text_layers = .{};
         self.pass_sites = @splat(0);
+        self.glass_quarter = null;
+        self.glass_bank_dirty = null;
+        self.glass_open_group = null;
+        self.glass_bank_scale = scale;
+        self.glass_bank_extent = .{ width * scale, height * scale };
         self.opacity_mode_depth = 0;
         self.opacity_mode_overflow_depth = 0;
         self.retained_skip_depth = 0;
@@ -602,16 +840,23 @@ pub const RenderCommandEncoder = struct {
         self.retained_hash_count = 0;
         self.rounded_clip_mode_depth = 0;
         self.rounded_clip_overflow_depth = 0;
-        self.sdf_renderer.beginFrame(width, height, scale, @truncate(self.frame_index));
-        self.text_renderer.beginFrame(width, height, scale);
-        if (self.image_renderer) |ir| ir.beginFrame(width, height, scale);
-        if (self.icon_renderer) |ir| ir.beginFrame(width, height, scale);
-        if (self.persistent.path_renderer) |*pr| pr.beginFrame(width, height, scale);
+        self.push_clip_mode_depth = 0;
+        self.push_clip_mode_overflow_depth = 0;
+        self.isolated_clip_fallbacks = 0;
+        // A CPU patch target (set before beginFrame) leaves the GPU slots alone.
+        const gpu_frame = self.cpu_flat_target == null;
+        self.sdf_renderer.beginFrameFor(width, height, scale, @truncate(self.frame_index), gpu_frame);
+        self.text_renderer.beginFrameFor(width, height, scale, gpu_frame);
+        if (self.image_renderer) |ir| ir.beginFrameFor(width, height, scale, gpu_frame);
+        if (self.icon_renderer) |ir| ir.beginFrameFor(width, height, scale, gpu_frame);
+        if (self.persistent.path_renderer) |*pr| pr.beginFrameFor(width, height, scale, gpu_frame);
         self.clip_depth = 0;
         self.clip_overflow_depth = 0;
         self.offscreen_depth = 0;
         self.beginOffscreenFrame();
         self.root_crop_origin = .{ 0, 0 };
+        self.root_target_crop = null;
+        self.root_target_offset = .{ 0, 0 };
         // Idle retirement is performed by the host between frames, using
         // monotonic deadlines and a completed submission fence.
         backdrop_blur.resetDynamicUniformOffsets(self);
@@ -623,6 +868,16 @@ pub const RenderCommandEncoder = struct {
         self.syncRectClipState();
         self.syncTextClipX();
         self.syncRendererClipMask();
+    }
+
+    /// Hand the shared offscreen pool back once this frame is submitted, so
+    /// another encoder (sprite builds after present) may begin before this
+    /// one is deinitialized. Idempotent; deinit calls it too.
+    pub fn endPoolSession(self: *RenderCommandEncoder) void {
+        if (!self.pool_session_active) return;
+        self.offscreen_pool.releaseTransients();
+        self.offscreen_pool.encoder_active = false;
+        self.pool_session_active = false;
     }
 
     fn beginOffscreenFrame(self: *RenderCommandEncoder) void {
@@ -639,6 +894,7 @@ pub const RenderCommandEncoder = struct {
     }
 
     test "external encoder ages retained and idle entries between frames" {
+        // SKIP-REASON: drives the null backend's fake GPU objects; real backends cover this path in their own suites.
         if (comptime gpu.backend_kind != .null_backend) return error.SkipZigTest;
         var device = gpu.Backend.Device{};
         var pool: OffscreenTexturePool = .{};
@@ -657,7 +913,26 @@ pub const RenderCommandEncoder = struct {
         try std.testing.expect(!pool.encoder_active);
     }
 
-    test "encoder teardown releases transient owners even without another frame" {
+    test "a submitted frame lets a second encoder use the pool before it is deinitialized" {
+        // SKIP-REASON: drives the null backend's fake GPU objects; real backends cover this path in their own suites.
+        if (comptime gpu.backend_kind != .null_backend) return error.SkipZigTest;
+        var pool: OffscreenTexturePool = .{};
+        defer pool.deinit();
+        var frame = RenderCommandEncoder.init(undefined, undefined, &pool, undefined);
+        frame.beginOffscreenFrame();
+        try std.testing.expect(pool.encoder_active);
+        frame.endPoolSession();
+        try std.testing.expect(!pool.encoder_active);
+        var sprite = RenderCommandEncoder.init(undefined, undefined, &pool, undefined);
+        sprite.beginOffscreenFrame();
+        try std.testing.expect(pool.encoder_active);
+        sprite.deinit();
+        frame.deinit();
+        try std.testing.expect(!pool.encoder_active);
+    }
+
+    test "encoder teardown hands transients back and idle maintenance frees them without another frame" {
+        // SKIP-REASON: drives the null backend's fake GPU objects; real backends cover this path in their own suites.
         if (comptime gpu.backend_kind != .null_backend) return error.SkipZigTest;
         var device = gpu.Backend.Device{};
         var pool: OffscreenTexturePool = .{};
@@ -670,6 +945,12 @@ pub const RenderCommandEncoder = struct {
         const transient = pool.acquire(&device, 64, 64, 1).?;
         try std.testing.expectEqual(@import("offscreen_texture.zig").TextureLease.Kind.transient, transient.kind);
         enc.deinit();
+        // Kept for later frames (no per-frame recreate), but no longer in use.
+        try std.testing.expect(pool.resolveTexture(transient) != null);
+        try std.testing.expect(!pool.transients[transient.slot].?.in_use);
+        // The idle deadline still wakes maintenance when no frame follows.
+        const deadline = pool.nextMaintenanceDelayNs(0) orelse return error.TestUnexpectedResult;
+        pool.maintain(deadline, true);
         try std.testing.expect(pool.resolveTexture(transient) == null);
         try std.testing.expectEqual(@as(u32, 0), pool.memorySnapshot(1).transient);
     }
@@ -686,6 +967,9 @@ pub const RenderCommandEncoder = struct {
     pub fn encodeDisplayFrom(self: *RenderCommandEncoder, cx: anytype, first: usize) !void {
         self.layer_outcome_count = 0;
         self.captureLayerTreeDamage(&cx.layer_tree);
+        const skip = self.frame_damage_skip;
+        defer self.frame_damage_skip = skip;
+        if (first != 0 or self.frame_damage_scissor == null) self.frame_damage_skip = &.{};
         try self.encodeCommands(cx.lowerForEncoderPaintTable()[first..]);
         self.writebackLayerOutcomes(&cx.layer_tree);
     }
@@ -758,11 +1042,15 @@ pub const RenderCommandEncoder = struct {
                 h.update(std.mem.asBytes(&it.geom));
                 h.update(std.mem.asBytes(&it.text_font_family));
             }
-            h.update(std.mem.asBytes(&it.text_font_size));
-            h.update(std.mem.asBytes(&it.text_font_weight));
-            h.update(std.mem.asBytes(&it.text_font_flags));
-            h.update(std.mem.asBytes(&it.text_monospace_char_width));
-            h.update(std.mem.asBytes(&it.text_raster_policy));
+            // One update for the fixed fields: the streaming hasher's per-call
+            // cost dominated this per-frame scan of every text item.
+            var fixed: [12]u8 = undefined;
+            @memcpy(fixed[0..4], std.mem.asBytes(&it.text_font_size));
+            @memcpy(fixed[4..6], std.mem.asBytes(&it.text_font_weight));
+            fixed[6] = it.text_font_flags;
+            @memcpy(fixed[7..11], std.mem.asBytes(&it.text_monospace_char_width));
+            fixed[11] = it.text_raster_policy;
+            h.update(&fixed);
         }
         return h.final();
     }
@@ -779,6 +1067,13 @@ pub const RenderCommandEncoder = struct {
             return;
         }
 
+        self.text_renderer.prewarm_full_passes += 1;
+        const tr = self.text_renderer;
+        // Items covered by the previous pass skip, unless its baseline is gone.
+        const reuse_known = tr.prewarm_signature_valid and tr.prewarm_gc_generation == gc_gen;
+        if (!reuse_known) tr.prewarm_known.clearRetainingCapacity();
+        tr.prewarm_seen.clearRetainingCapacity();
+        var seen_complete = true;
         // Only pre-stuff missing glyphs into atlas, turn off instance output, avoid "text encoded
         // twice" (review report P1). base_* kept as assertion: theory says glyph_only shouldn't
         // change instance count; if it does, some path bypassed this flag.
@@ -808,6 +1103,11 @@ pub const RenderCommandEncoder = struct {
                         ox -= offscreen_x[idx];
                         oy -= offscreen_y[idx];
                     }
+                    const item_key = prewarmItemKey(it, prewarm_scales[@min(offscreen_depth, prewarm_scales.len - 1)]);
+                    tr.prewarm_seen.put(tr.allocator, item_key, {}) catch {
+                        seen_complete = false;
+                    };
+                    if (tr.prewarm_known.contains(item_key)) continue;
                     if (comptime @import("builtin").os.tag == .windows) {
                         self.text_renderer.prewarm_layered = prewarm_layer_depth > 0;
                         self.text_renderer.prewarm_scales = prewarm_scales;
@@ -903,7 +1203,28 @@ pub const RenderCommandEncoder = struct {
         // insertion, generation changes, can't use old value as baseline.
         self.text_renderer.prewarm_signature = signature;
         self.text_renderer.prewarm_gc_generation = self.text_renderer.atlas.gc_generation;
-        self.text_renderer.prewarm_signature_valid = !self.text_renderer.atlas.had_transient_failure;
+        self.text_renderer.prewarm_signature_valid = !self.text_renderer.atlas.had_transient_failure and seen_complete;
+        std.mem.swap(std.AutoHashMapUnmanaged(u64, void), &tr.prewarm_known, &tr.prewarm_seen);
+    }
+
+    /// Identity of a text item for the prewarm: everything that selects its glyphs (the
+    /// signature's per-item part; on Windows also its position, family and raster scale).
+    fn prewarmItemKey(it: anytype, raster_scale: f32) u64 {
+        var h = std.hash.Wyhash.init(0x7072_6577_61726d);
+        h.update(it.text_content);
+        var fixed: [12]u8 = undefined;
+        @memcpy(fixed[0..4], std.mem.asBytes(&it.text_font_size));
+        @memcpy(fixed[4..6], std.mem.asBytes(&it.text_font_weight));
+        fixed[6] = it.text_font_flags;
+        @memcpy(fixed[7..11], std.mem.asBytes(&it.text_monospace_char_width));
+        fixed[11] = it.text_raster_policy;
+        h.update(&fixed);
+        if (comptime @import("builtin").os.tag == .windows) {
+            h.update(std.mem.asBytes(&it.geom));
+            h.update(std.mem.asBytes(&it.text_font_family));
+            h.update(std.mem.asBytes(&raster_scale));
+        }
+        return h.final();
     }
 
     /// Unified encoding loop:
@@ -912,7 +1233,7 @@ pub const RenderCommandEncoder = struct {
     /// 3. Remaining commands take normal dispatch
     pub fn encodeCommands(self: *RenderCommandEncoder, commands: anytype) !void {
         self.blur_applied_count = 0;
-        if (@import("zenit_environment").has("ZENIT_DEBUG_CMDSTREAM")) {
+        if (@import("zenit_environment").flag("ZENIT_DEBUG_CMDSTREAM")) {
             std.debug.print("[cmdstream] ── frame {d} commands={d} ──\n", .{ self.frame_index, commands.len });
             for (commands, 0..) |it, ci| {
                 if (it.kind == .control) {
@@ -927,9 +1248,28 @@ pub const RenderCommandEncoder = struct {
             }
         }
         self.computeRetainedContentHashes(commands);
+        // A fixed zero-length array cannot instantiate dispatch indexing,
+        // even though the normal loop would have no work at runtime.
+        if (commands.len == 0) return;
         var cluster = LocalSortCluster{};
         var i: usize = 0;
+        const skip = self.frame_damage_skip;
+        var next_skip: usize = 0;
         while (i < commands.len) {
+            // Outside the damage scissor: nothing of it would reach the target.
+            if (next_skip < skip.len and skip[next_skip][0] == i) {
+                // Keep the exclusive end address-sized even for a fixed array
+                // of length zero or one (@min otherwise infers u0 for last).
+                const end: usize = @min(@as(usize, skip[next_skip][1]) +| 1, commands.len);
+                // Keep the prescan's begin_opacity_layer numbering (see the no-op block skip).
+                for (commands[i..end]) |sk| {
+                    if (sk.kind == .control and sk.control_kind == .begin_opacity_layer) self.retained_begin_seq += 1;
+                }
+                next_skip += 1;
+                i = end;
+                continue;
+            }
+            while (next_skip < skip.len and skip[next_skip][0] < i) next_skip += 1;
             const tok = paint_fp.structuralToken(commands[i]);
             if (paint_fp.isBeginStructuralToken(tok)) {
                 if (paint_fp.tryFindNoOpStructuralBlock(commands, i)) |block| {
@@ -950,6 +1290,7 @@ pub const RenderCommandEncoder = struct {
             }
             if (tok != .none) {
                 try self.flushLocalSortCluster(commands, &cluster);
+                self.dispatch_item = @ptrCast(&commands[i]);
                 try self.dispatchCommand(commands[i]);
                 i += 1;
                 continue;
@@ -961,6 +1302,7 @@ pub const RenderCommandEncoder = struct {
                     try self.flushLocalSortCluster(commands, &cluster);
                     const retry = cluster.tryAppend(commands, i);
                     if (retry != .none) {
+                        self.dispatch_item = @ptrCast(&commands[i]);
                         try self.dispatchCommand(commands[i]);
                     }
                 },
@@ -968,11 +1310,13 @@ pub const RenderCommandEncoder = struct {
                     try self.flushLocalSortCluster(commands, &cluster);
                     const retry = cluster.tryAppend(commands, i);
                     if (retry != .none) {
+                        self.dispatch_item = @ptrCast(&commands[i]);
                         try self.dispatchCommand(commands[i]);
                     }
                 },
                 .unsortable => {
                     try self.flushLocalSortCluster(commands, &cluster);
+                    self.dispatch_item = @ptrCast(&commands[i]);
                     try self.dispatchCommand(commands[i]);
                 },
             }
@@ -1067,6 +1411,9 @@ pub const RenderCommandEncoder = struct {
     const roundedClipEqual = clip_geometry.roundedClipEqual;
     const clipPolygonEqual = clip_geometry.clipPolygonEqual;
 
+    /// The shape clip in force in the current target: the innermost non-rect stack entry. It is
+    /// the target's whole shape clip, not just the innermost one, because display-list pushes go
+    /// through pushClipCommand, which never leaves an outer shape that still matters behind it.
     pub fn activeRoundedClip(self: *const RenderCommandEncoder) ?RoundedClipState {
         var i = self.clip_depth;
         while (i > 0) {
@@ -1111,6 +1458,10 @@ pub const RenderCommandEncoder = struct {
     /// stretching); main target, scissor full drawable.
     pub fn applyOffscreenTargetViewport(self: *RenderCommandEncoder) void {
         const rp = self.render_pass orelse return;
+        if (comptime gpu.backend_kind == .metal) {
+            rp.root_crop = if (self.offscreen_depth == 0) self.root_target_crop else null;
+            rp.root_offset = if (self.offscreen_depth == 0) self.root_target_offset else .{ 0, 0 };
+        }
         if (self.offscreen_depth > 0) {
             const layer = self.offscreen_stack[self.offscreen_depth - 1];
             if (layer.used_tex_w == 0 or layer.used_tex_h == 0) return;
@@ -1160,6 +1511,31 @@ pub const RenderCommandEncoder = struct {
     pub const BackdropCaptureRegion = backdrop_capture.BackdropCaptureRegion;
     pub const computeBackdropCaptureRegion = backdrop_capture.computeBackdropCaptureRegion;
 
+    /// Copy the pixels a main-target glass composite just produced (its whole
+    /// capture rect) for glass_capture. Only for a full repaint of the main
+    /// target: a damage scissor leaves stale pixels inside the rect.
+    fn captureGlassUnderlay(self: *RenderCommandEncoder) !void {
+        const capture = self.glass_capture orelse return;
+        const rect = self.last_glass_capture orelse return;
+        const item = self.dispatch_item orelse return;
+        if (self.offscreen_depth != 0 or self.render_pass == null) return;
+        // Under a damage scissor the target outside it still shows the presented
+        // frame: only a rect inside it holds what this composite produced.
+        if (self.frame_damage_scissor) |d| {
+            if (rect[0] < d[0] or rect[1] < d[1] or rect[0] + rect[2] > d[0] + d[2] or rect[1] + rect[3] > d[1] + d[3]) return;
+        }
+        const rt = self.main_render_target orelse return;
+        const ir = self.image_renderer orelse return;
+        const destination = capture.target(capture.ctx, item, rect) orelse return;
+        try self.flushAllPending();
+        self.render_pass.?.end();
+        self.render_pass = null;
+        defer if (self.render_pass == null) {
+            _ = backdrop_blur.restoreRenderTargetPass(self, rt, ir, self.scale);
+        };
+        try self.copyTextureRegion(rt, rect[0], rect[1], rect[2], rect[3], destination, 0, 0, false);
+    }
+
     pub fn copyTextureRegion(self: *RenderCommandEncoder, source: gpu.Backend.TextureBinding, sx: u32, sy: u32, width: u32, height: u32, destination: gpu.Backend.TextureBinding, dx: u32, dy: u32, clear: bool) !void {
         return gpu.copyTextureRegionAudited(self.gpu_command_encoder.?, source, sx, sy, width, height, destination, dx, dy, clear, .{
             .pass_count = &self.pass_count,
@@ -1206,6 +1582,11 @@ pub const RenderCommandEncoder = struct {
     /// and
     /// commands encode normally. Error counts stay in the renderers for diagnostics.
     pub fn flushAllPending(self: *RenderCommandEncoder) !void {
+        if (comptime gpu.backend_kind == .metal) if (self.cpu_flat_target) |target| {
+            const path_pending = if (self.persistent.path_renderer) |*pr| pr.vertices.items.len > 0 else false;
+            if (path_pending) return error.CpuFlatUnsupportedPath;
+            return self.cpuFlushRenderers(target, true, true, true);
+        };
         const rp = self.render_pass orelse return;
         if (self.sdf_renderer.instances.items.len > 0) {
             self.sdf_renderer.flush(rp) catch |err| self.noteFlushDropped("sdf", err);
@@ -1232,6 +1613,7 @@ pub const RenderCommandEncoder = struct {
     /// Before encoding path command: flush all except path (ensure path paints on top), path itself
     /// stays in path_renderer for cross-command batching.
     fn flushNonPathPending(self: *RenderCommandEncoder) !void {
+        if (comptime gpu.backend_kind == .metal) if (self.cpu_flat_target) |target| return self.cpuFlushRenderers(target, true, true, true);
         const rp = self.render_pass orelse return;
         if (self.sdf_renderer.instances.items.len > 0) self.sdf_renderer.flush(rp) catch |err| self.noteFlushDropped("sdf", err);
         if (self.image_renderer) |ir| {
@@ -1265,7 +1647,7 @@ pub const RenderCommandEncoder = struct {
 
     fn forceRoundedClipLayer(self: *RenderCommandEncoder) bool {
         return self.force_rounded_clip_layer orelse blk: {
-            const forced = @import("zenit_environment").has("ZENIT_ROUNDED_CLIP_LAYER");
+            const forced = @import("zenit_environment").flag("ZENIT_ROUNDED_CLIP_LAYER");
             self.force_rounded_clip_layer = forced;
             break :blk forced;
         };
@@ -1281,19 +1663,25 @@ pub const RenderCommandEncoder = struct {
             const fill_rule: u32 = @backingInt(clip.polygon.fill_rule);
             const point_count: u32 = clip.polygon.point_count;
             const contour_count: u32 = clip.polygon.contour_count;
-            self.sdf_renderer.setClipMask(@backingInt(clip.shape_kind), rect, clip.radius, fill_rule, point_count, contour_count, clip.polygon.contour_end_points, clip.polygon.points);
-            self.text_renderer.setClipMask(@backingInt(clip.shape_kind), rect, clip.radius, fill_rule, point_count, contour_count, clip.polygon.contour_end_points, clip.polygon.points);
-            if (self.image_renderer) |ir| ir.setClipMask(@backingInt(clip.shape_kind), rect, clip.radius, fill_rule, point_count, contour_count, clip.polygon.contour_end_points, clip.polygon.points);
-            if (self.icon_renderer) |ir| ir.setClipMask(@backingInt(clip.shape_kind), rect, clip.radius, fill_rule, point_count, contour_count, clip.polygon.contour_end_points, clip.polygon.points);
-            if (self.persistent.path_renderer) |*pr| pr.setClipMask(@backingInt(clip.shape_kind), rect, clip.radius);
+            self.sdf_renderer.setClipMask(@backingInt(clip.shape_kind), rect, clip.radii, fill_rule, point_count, contour_count, clip.polygon.contour_end_points, clip.polygon.points);
+            self.text_renderer.setClipMask(@backingInt(clip.shape_kind), rect, clip.radii, fill_rule, point_count, contour_count, clip.polygon.contour_end_points, clip.polygon.points);
+            if (self.image_renderer) |ir| ir.setClipMask(@backingInt(clip.shape_kind), rect, clip.radii, fill_rule, point_count, contour_count, clip.polygon.contour_end_points, clip.polygon.points);
+            if (self.icon_renderer) |ir| ir.setClipMask(@backingInt(clip.shape_kind), rect, clip.radii, fill_rule, point_count, contour_count, clip.polygon.contour_end_points, clip.polygon.points);
+            if (self.persistent.path_renderer) |*pr| pr.setClipMask(@backingInt(clip.shape_kind), rect, clip.radii);
+            const partner = PartnerClip.uniform(clip.partner);
+            self.sdf_renderer.setPartnerClip(partner);
+            self.text_renderer.setPartnerClip(partner);
+            if (self.image_renderer) |ir| ir.setPartnerClip(partner);
+            if (self.icon_renderer) |ir| ir.setPartnerClip(partner);
+            if (self.persistent.path_renderer) |*pr| pr.setPartnerClip(partner);
         } else {
             const empty_points = @as([max_clip_polygon_points][2]f32, @splat(.{ 0, 0 }));
             const empty_contours = @as([max_clip_polygon_contours]u8, @splat(0));
-            self.sdf_renderer.setClipMask(0, null, 0, 0, 0, 0, empty_contours, empty_points);
-            self.text_renderer.setClipMask(0, null, 0, 0, 0, 0, empty_contours, empty_points);
-            if (self.image_renderer) |ir| ir.setClipMask(0, null, 0, 0, 0, 0, empty_contours, empty_points);
-            if (self.icon_renderer) |ir| ir.setClipMask(0, null, 0, 0, 0, 0, empty_contours, empty_points);
-            if (self.persistent.path_renderer) |*pr| pr.setClipMask(0, null, 0);
+            self.sdf_renderer.setClipMask(0, null, .{ 0, 0, 0, 0 }, 0, 0, 0, empty_contours, empty_points);
+            self.text_renderer.setClipMask(0, null, .{ 0, 0, 0, 0 }, 0, 0, 0, empty_contours, empty_points);
+            if (self.image_renderer) |ir| ir.setClipMask(0, null, .{ 0, 0, 0, 0 }, 0, 0, 0, empty_contours, empty_points);
+            if (self.icon_renderer) |ir| ir.setClipMask(0, null, .{ 0, 0, 0, 0 }, 0, 0, 0, empty_contours, empty_points);
+            if (self.persistent.path_renderer) |*pr| pr.setClipMask(0, null, .{ 0, 0, 0, 0 });
         }
     }
 
@@ -1339,6 +1727,8 @@ pub const RenderCommandEncoder = struct {
     }
 
     fn dispatchCommand(self: *RenderCommandEncoder, it: anytype) !void {
+        const at_main_depth = self.offscreen_depth == 0;
+        defer if (at_main_depth) self.noteGlassBankDirty(it);
         if (comptime @import("builtin").os.tag == .windows) {
             if (it.kind == .control) switch (it.control_kind) {
                 .begin_opacity_layer => self.text_layers.opacity_depth += 1,
@@ -1401,7 +1791,7 @@ pub const RenderCommandEncoder = struct {
                 const w = it.geom.w;
                 const h = it.geom.h;
                 if (w <= 0 or h <= 0) return;
-                try self.flushIfTextPending();
+                try self.flushIfTextPendingUnder(it, ox, oy);
                 const radii = it.radii.toArray();
                 if (comptime @import("builtin").os.tag == .windows) {
                     if (self.text_layers.allowsLCD(true) and self.offscreen_depth == 0 and self.activeRoundedClip() == null and !it.use_draw_transform and it.color.a == 255 and it.shape_kind == 0 and
@@ -1500,80 +1890,12 @@ pub const RenderCommandEncoder = struct {
                     radii,
                 );
             },
-            .text => {
-                const dbg_surf = @import("zenit_environment").has("ZENIT_DEBUG_SURFDUMP") and self.offscreen_depth > 0;
-                const dbg_before = if (dbg_surf) self.text_renderer.instances_nearest.items.len + self.text_renderer.instances_linear.items.len else 0;
-                defer if (dbg_surf) {
-                    const after = self.text_renderer.instances_nearest.items.len + self.text_renderer.instances_linear.items.len;
-                    std.debug.print("[surftext] depth={d} x={d:.1} y={d:.1} len={d} fs={d:.1} pol={d} added={d}\n", .{
-                        self.offscreen_depth, it.geom.x, it.geom.y, it.text_content.len, it.text_font_size, it.text_raster_policy, after - dbg_before,
-                    });
-                };
-                if (it.text_content.len == 0 or it.text_font_size <= 0) return;
-                const use_italic = (it.text_font_flags & 1) != 0;
-                const use_mono = (it.text_font_flags & 2) != 0;
-                const use_sym = (it.text_font_flags & 4) != 0;
-                const raster = wire_types.textRasterControls(it.text_raster_policy);
-                if (comptime @import("builtin").os.tag == .windows) self.text_renderer.cleartype_allowed =
-                    self.hasOpaqueTextBackdrop(it);
-                self.text_renderer.lcd_backdrop = &self.text_backdrop;
-                defer {
-                    self.text_renderer.lcd_backdrop = null;
-                    self.text_renderer.cleartype_allowed = false;
-                }
-                // TextFontFlag.no_smoothing (TextProps.font_smoothing = false)
-                self.text_renderer.smooth_fonts = (it.text_font_flags & 8) == 0;
-                defer self.text_renderer.smooth_fonts = true;
-                // Right-edge fade mask: convert to absolute x for renderer, set per-command and
-                // reset (same pattern as clip_x_*; fade affects alpha only, not glyph atlas).
-                if (it.text_fade_dx1 > it.text_fade_dx0) {
-                    self.text_renderer.fade_x0 = it.geom.x + ox + it.text_fade_dx0;
-                    self.text_renderer.fade_x1 = it.geom.x + ox + it.text_fade_dx1;
-                }
-                defer {
-                    self.text_renderer.fade_x0 = std.math.inf(f32);
-                    self.text_renderer.fade_x1 = std.math.inf(f32);
-                }
-                if (it.text_spans) |s| {
-                    try self.encodeTextWithSpans(
-                        it.geom.x + ox,
-                        it.geom.y + oy,
-                        it.text_content,
-                        it.color,
-                        it.text_font_size,
-                        it.text_font_weight,
-                        it.text_font_family,
-                        use_sym,
-                        use_mono,
-                        it.text_monospace_char_width,
-                        use_italic,
-                        raster.force_linear,
-                        raster.shader_snap,
-                        s,
-                    );
-                } else {
-                    try self.encodeText(
-                        it.geom.x + ox,
-                        it.geom.y + oy,
-                        it.text_content,
-                        it.color,
-                        it.text_font_size,
-                        it.text_font_weight,
-                        it.text_font_family,
-                        use_sym,
-                        use_mono,
-                        it.text_monospace_char_width,
-                        use_italic,
-                        raster.force_linear,
-                        raster.shader_snap,
-                    );
-                }
-            },
+            .text => try self.encodeTextCommand(it, ox, oy),
             .image => {
                 const w = it.geom.w;
                 const h = it.geom.h;
                 if (w <= 0 or h <= 0 or it.image_opacity <= 0) return;
-                try self.flushIfTextPending();
+                try self.flushIfTextPendingUnder(it, ox, oy);
                 if (it.icon_rep_ptr) |rep_ptr| {
                     // icon_rep
                     try self.flushIfImagePending();
@@ -1616,7 +1938,7 @@ pub const RenderCommandEncoder = struct {
                     // Inset/dual shadow commands carry the surface fill too.
                     // Drop only decoration, never the underlying control body.
                     if ((it.shadow_secondary_color.a > 0 or it.shadow2_color.a > 0) and it.color.a > 0) {
-                        try self.flushIfTextPending();
+                        try self.flushIfTextPendingUnder(it, ox, oy);
                         try self.sdf_renderer.addRoundedRect(it.geom.x + ox, it.geom.y + oy, it.geom.w, it.geom.h, colorToFloat4(it.color), it.radii.toArray());
                     }
                     return;
@@ -1624,7 +1946,7 @@ pub const RenderCommandEncoder = struct {
                 const w = it.geom.w;
                 const h = it.geom.h;
                 if (w <= 0 or h <= 0) return;
-                try self.flushIfTextPending();
+                try self.flushIfTextPendingUnder(it, ox, oy);
                 const radii = it.radii.toArray();
                 // shadow_dual: shadow2_color.a > 0
                 if (it.shadow2_color.a > 0) {
@@ -1690,7 +2012,7 @@ pub const RenderCommandEncoder = struct {
                 const w = it.geom.w;
                 const h = it.geom.h;
                 if (w <= 0 or h <= 0) return;
-                try self.flushIfTextPending();
+                try self.flushIfTextPendingUnder(it, ox, oy);
                 const radii = it.radii.toArray();
                 if (it.mg_stop_count > 0) {
                     // multi_gradient_rect
@@ -1741,7 +2063,7 @@ pub const RenderCommandEncoder = struct {
                     // Key: **can't** continue down: arc command carries no path_geometry_ptr,
                     // fill_path branch silently drops.
                     if (it.stroke_width <= 0 or it.color.a == 0) return;
-                    try self.flushIfTextPending();
+                    try self.flushIfTextPendingUnder(it, ox, oy);
                     try self.sdf_renderer.addArc(
                         it.geom.x + ox,
                         it.geom.y + oy,
@@ -1783,7 +2105,7 @@ pub const RenderCommandEncoder = struct {
         switch (it.control_kind) {
             .none => return,
             .push_clip => {
-                if (@import("zenit_environment").has("ZENIT_DEBUG_SURFDUMP") and self.offscreen_depth > 0) {
+                if (@import("zenit_environment").flag("ZENIT_DEBUG_SURFDUMP") and self.offscreen_depth > 0) {
                     std.debug.print("[surfclip] depth={d} clip=({d:.1},{d:.1},{d:.1},{d:.1}) off=({d:.1},{d:.1})\n", .{
                         self.offscreen_depth, it.geom.x, it.geom.y, it.geom.w, it.geom.h, ox, oy,
                     });
@@ -1794,23 +2116,41 @@ pub const RenderCommandEncoder = struct {
                     coerceClipPolygon(pp.*)
                 else
                     ClipPolygon.empty();
-                try self.pushClip(
+                const mode = try self.pushClipCommand(
                     it.geom.x + ox,
                     it.geom.y + oy,
                     it.geom.w,
                     it.geom.h,
-                    it.radii.tl,
+                    cornerRadiiArray(it.radii),
                     @fromBackingInt(@intCast(it.clip_shape_kind)),
                     polygon,
                 );
+                if (self.push_clip_mode_overflow_depth > 0 or self.push_clip_mode_depth >= self.push_clip_mode_stack.len) {
+                    // Only a plain clip can land here: pushClipCommand never isolates once the
+                    // mode stack is full (see there).
+                    self.push_clip_mode_overflow_depth +|= 1;
+                } else {
+                    self.push_clip_mode_stack[self.push_clip_mode_depth] = mode;
+                    self.push_clip_mode_depth += 1;
+                }
             },
             .pop_clip => {
+                if (self.push_clip_mode_overflow_depth > 0) {
+                    self.push_clip_mode_overflow_depth -= 1;
+                    try self.popClip();
+                    return;
+                }
+                const mode: PushClipMode = if (self.push_clip_mode_depth > 0) blk: {
+                    self.push_clip_mode_depth -= 1;
+                    break :blk self.push_clip_mode_stack[self.push_clip_mode_depth];
+                } else .clip;
                 try self.popClip();
+                if (mode == .isolated) try opacity_layer.endOpacityLayer(self);
             },
             .begin_opacity_layer => {
                 const aligned = opacity_layer.alignTranslationSurface(it, self.scale, self.offscreenOffset());
                 // A rounded layer composites its own rect (the mask) from the aligned texture.
-                const quad: [4]f32 = if (it.radii.tl >= 0.5) opacity_layer.maskQuad(it, aligned) else .{ 0, 0, 0, 0 };
+                const quad: [4]f32 = if (maxCornerRadius(it.radii) >= 0.5) opacity_layer.maskQuad(it, aligned) else .{ 0, 0, 0, 0 };
                 const content_seq = self.retained_begin_seq;
                 var content_hash: u64 = blk: {
                     const seq = self.retained_begin_seq;
@@ -1854,7 +2194,7 @@ pub const RenderCommandEncoder = struct {
                     (!aligned.use_draw_transform or identity_surface) and
                     (aligned.use_draw_transform or same_rect) and
                     aligned.rotate == 0 and
-                    aligned.radii.tl < 0.5;
+                    maxCornerRadius(aligned.radii) < 0.5;
                 if (trivial) {
                     self.pushOpacityMode(.noop);
                 } else switch (if (warp_active) opacity_layer.RetainedBegin.declined else try opacity_layer.tryBeginRetainedOpacityLayer(
@@ -1872,7 +2212,7 @@ pub const RenderCommandEncoder = struct {
                     aligned.use_draw_transform,
                     aligned.draw_transform,
                     blend_mode_val,
-                    aligned.radii.tl,
+                    cornerRadiiArray(aligned.radii),
                     aligned.surface_stable_id,
                     content_hash,
                     content_seq,
@@ -1907,8 +2247,8 @@ pub const RenderCommandEncoder = struct {
                             blend_mode_val,
                         );
                         self.pushOpacityMode(if (opened) .layer else .noop);
-                        if (opened and aligned.radii.tl >= 0.5 and self.offscreen_depth > 0) {
-                            self.offscreen_stack[self.offscreen_depth - 1].corner_radius = aligned.radii.tl;
+                        if (opened and maxCornerRadius(aligned.radii) >= 0.5 and self.offscreen_depth > 0) {
+                            self.offscreen_stack[self.offscreen_depth - 1].corner_radii = cornerRadiiArray(aligned.radii);
                             self.offscreen_stack[self.offscreen_depth - 1].quad = quad;
                         }
                         if (opened and warp_active and self.offscreen_depth > 0) {
@@ -1938,7 +2278,7 @@ pub const RenderCommandEncoder = struct {
                     !it.use_draw_transform and
                     self.activeRoundedClip() == null and
                     !self.forceRoundedClipLayer();
-                if (@import("zenit_environment").has("ZENIT_DEBUG_PASSCOUNT")) {
+                if (@import("zenit_environment").flag("ZENIT_DEBUG_PASSCOUNT")) {
                     std.debug.print("[rclip] mode={s}\n", .{if (can_shader_clip) "shader" else "layer"});
                 }
                 if (can_shader_clip) {
@@ -1947,7 +2287,7 @@ pub const RenderCommandEncoder = struct {
                         it.geom.y + oy,
                         it.geom.w,
                         it.geom.h,
-                        it.radii.tl,
+                        cornerRadiiArray(it.radii),
                         .rounded_rect,
                         ClipPolygon.empty(),
                     );
@@ -1980,7 +2320,7 @@ pub const RenderCommandEncoder = struct {
                         .normal,
                     );
                     if (opened and self.offscreen_depth > 0) {
-                        self.offscreen_stack[self.offscreen_depth - 1].corner_radius = it.radii.tl;
+                        self.offscreen_stack[self.offscreen_depth - 1].corner_radii = cornerRadiiArray(it.radii);
                         self.offscreen_stack[self.offscreen_depth - 1].quad = quad;
                     }
                     if (self.rounded_clip_mode_depth < self.rounded_clip_mode_stack.len) {
@@ -2084,7 +2424,7 @@ pub const RenderCommandEncoder = struct {
                         if (group_count == 0) return;
                     }
                 }
-                if (@import("zenit_environment").has("ZENIT_DEBUG_GLASS")) {
+                if (@import("zenit_environment").flag("ZENIT_DEBUG_GLASS")) {
                     std.debug.print("[glassenc-params] owner={d} tab_lens=({d:.1},{d:.1},{d:.1}) lens_bezel={d:.2} gi={d:.2} surface={d} tint_mode={d} tint=({d:.2},{d:.2},{d:.2},{d:.2}) native_tint_mode={d:.0} sat={d:.3} bri={d:.3} fine=({d:.2},{d:.2}) coarse=({d:.2},{d:.2}) chroma=({d:.2},{d:.2},{d:.0}) blur_level={d:.2} group_count={d} rect=({d:.1},{d:.1},{d:.1},{d:.1})\n", .{ glass_owner, g.tab_lens[0], g.tab_lens[1], g.tab_lens[2], g.lens_bezel_px, g.glass_intensity, coerceGlassSurfaceValue(g.surface), g.tint_mode, g.glass_tint[0], g.glass_tint[1], g.glass_tint[2], g.glass_tint[3], g.native_tint_mode, g.backdrop_saturation, g.backdrop_brightness, g.native_fine_sigma, g.native_fine_weight, g.native_coarse_sigma, g.native_coarse_weight, g.native_chroma_fine, g.native_chroma_coarse, g.native_chroma_enabled, g.blur_level, group_count, it.geom.x, it.geom.y, it.geom.w, it.geom.h });
                 }
                 try backdrop_blur.applyBackdropBlur(self, .{
@@ -2102,7 +2442,6 @@ pub const RenderCommandEncoder = struct {
                     .w = it.geom.w,
                     .h = it.geom.h,
                     .blur_radius = g.backdrop_blur,
-                    .corner_radius = @max(@max(it.radii.tl, it.radii.tr), @max(it.radii.br, it.radii.bl)),
                     .corner_radii = it.radii.toArray(),
                     .glass_tint = g.glass_tint,
                     .tint_mode = g.tint_mode,
@@ -2156,6 +2495,7 @@ pub const RenderCommandEncoder = struct {
                     .draw_transform = it.draw_transform,
                     .rotate = it.rotate,
                 });
+                try self.captureGlassUnderlay();
             },
             .end_blur_layer => {
                 // backdrop blur completes at begin, end needs no action
@@ -2347,11 +2687,55 @@ pub const RenderCommandEncoder = struct {
     /// child is full-frame tile base, all following SDF boxes covered).
     /// Flush all first, start new batch. Cost: SDF-image/icon interleave fragments batches; correct
     /// first, fast later (downstream app).
+    /// CPU patch counterpart of the GPU flush sequence sdf, image, icon, text
+    /// (render/cpu_flat.zig); images cannot be drawn on the CPU.
+    fn cpuFlushRenderers(self: *RenderCommandEncoder, target: *anyopaque, sdf_too: bool, image_too: bool, text_too: bool) !void {
+        const cpu = @import("cpu_flat.zig");
+        const raster = !self.cpu_flat_validate_only;
+        if (sdf_too) try cpu.flushSdf(target, self.sdf_renderer, raster);
+        if (image_too) if (self.image_renderer) |ir| if (ir.instances.items.len > 0) return error.CpuFlatUnsupportedImage;
+        try cpu.flushIcons(target, self.icon_renderer, raster);
+        if (text_too) try cpu.flushText(target, self.text_renderer, raster);
+    }
+
+    /// Z-order barrier before an SDF or image command `it`: pending image, icon and text
+    /// instances come from earlier commands, which must stay beneath `it` but would draw over it
+    /// (their pipelines flush later), so they are flushed first. Pending text alone is kept when `it` cannot reach any pending glyph:
+    /// disjoint quads paint the same pixels in either order, so the SDF batch may draw before
+    /// that text (the per-text flush made a row of label buttons cost two draws per button).
+    fn flushIfTextPendingUnder(self: *RenderCommandEncoder, it: anytype, ox: f32, oy: f32) !void {
+        const text_pending = self.text_renderer.getPendingInstanceCount() > 0;
+        const image_pending = if (self.image_renderer) |ir| ir.instances.items.len > 0 else false;
+        const icon_pending = if (self.icon_renderer) |ir| ir.instances.items.len > 0 else false;
+        if (!(text_pending or image_pending or icon_pending)) return;
+        if (self.cpu_flat_target == null) if (commandPaintBounds(it, ox, oy)) |bounds| {
+            // An image or icon command goes on to flush the other image-like batch alone
+            // (flushIfIconPending / flushIfImagePending), which must not overtake pending SDF:
+            // only pending text may stay for it.
+            const sdf_command = it.kind != .image;
+            const tr = self.text_renderer;
+            const clear = (!text_pending or self.text_ink.allows(tr.pending_generation, .{ tr.instances_nearest.items, tr.instances_linear.items }, bounds)) and
+                (!image_pending or (sdf_command and self.image_ink.allows(self.image_renderer.?.pending_generation, .{self.image_renderer.?.instances.items}, bounds))) and
+                (!icon_pending or (sdf_command and self.icon_ink.allows(self.icon_renderer.?.pending_generation, .{self.icon_renderer.?.instances.items}, bounds)));
+            if (clear) return;
+        };
+        return self.flushIfTextPending();
+    }
+
+    /// Target-space bounds (x0, y0, x1, y1) of every pixel `it` can paint, padded by one
+    /// logical pixel; null when unknown (transformed or rotated), which keeps the barrier.
+    pub fn commandPaintBounds(it: anytype, ox: f32, oy: f32) ?[4]f32 {
+        if (it.use_draw_transform or @abs(it.rotate) > 0.0001) return null;
+        const b = lsort.localSortBoundsForCommand(it) orelse return null;
+        return .{ b[0] + ox - 1, b[1] + oy - 1, b[0] + b[2] + ox + 1, b[1] + b[3] + oy + 1 };
+    }
+
     fn flushIfTextPending(self: *RenderCommandEncoder) !void {
         const text_pending = self.text_renderer.getPendingInstanceCount() > 0;
         const image_pending = if (self.image_renderer) |ir| ir.instances.items.len > 0 else false;
         const icon_pending = if (self.icon_renderer) |ir| ir.instances.items.len > 0 else false;
         if (!(text_pending or image_pending or icon_pending)) return;
+        if (comptime gpu.backend_kind == .metal) if (self.cpu_flat_target) |target| return self.cpuFlushRenderers(target, true, true, true);
         if (self.render_pass) |rp| {
             if (self.sdf_renderer.instances.items.len > 0) {
                 self.sdf_renderer.flush(rp) catch |err| self.noteFlushDropped("sdf", err);
@@ -2369,6 +2753,7 @@ pub const RenderCommandEncoder = struct {
     fn flushIfImagePending(self: *RenderCommandEncoder) !void {
         if (self.image_renderer) |ir| {
             if (ir.instances.items.len > 0) {
+                if (self.cpu_flat_target != null) return error.CpuFlatUnsupportedImage;
                 if (self.render_pass) |rp| ir.flush(rp) catch |err| self.noteFlushDropped("image", err);
             }
         }
@@ -2377,12 +2762,85 @@ pub const RenderCommandEncoder = struct {
     fn flushIfIconPending(self: *RenderCommandEncoder) !void {
         if (self.icon_renderer) |ir| {
             if (ir.instances.items.len > 0) {
+                if (comptime gpu.backend_kind == .metal) if (self.cpu_flat_target) |target| return @import("cpu_flat.zig").flushIcons(target, self.icon_renderer, !self.cpu_flat_validate_only);
                 if (self.render_pass) |rp| ir.flush(rp) catch |err| self.noteFlushDropped("icon", err);
             }
         }
     }
 
     // Script detection / ASCII classification pure function cluster extracted to
+    /// dispatchCommand's `.text` arm: draw text command `it` offset by (ox, oy) (the offscreen
+    /// surface origin). Every glyph it paints is a TextRenderer instance; text_ink bounds them.
+    pub fn encodeTextCommand(self: *RenderCommandEncoder, it: anytype, ox: f32, oy: f32) !void {
+        const dbg_surf = @import("zenit_environment").flag("ZENIT_DEBUG_SURFDUMP") and self.offscreen_depth > 0;
+        const dbg_before = if (dbg_surf) self.text_renderer.instances_nearest.items.len + self.text_renderer.instances_linear.items.len else 0;
+        defer if (dbg_surf) {
+            const after = self.text_renderer.instances_nearest.items.len + self.text_renderer.instances_linear.items.len;
+            std.debug.print("[surftext] depth={d} x={d:.1} y={d:.1} len={d} fs={d:.1} pol={d} added={d}\n", .{
+                self.offscreen_depth, it.geom.x, it.geom.y, it.text_content.len, it.text_font_size, it.text_raster_policy, after - dbg_before,
+            });
+        };
+        if (it.text_content.len == 0 or it.text_font_size <= 0) return;
+        const use_italic = (it.text_font_flags & 1) != 0;
+        const use_mono = (it.text_font_flags & 2) != 0;
+        const use_sym = (it.text_font_flags & 4) != 0;
+        const raster = wire_types.textRasterControls(it.text_raster_policy);
+        if (comptime @import("builtin").os.tag == .windows) self.text_renderer.cleartype_allowed =
+            self.hasOpaqueTextBackdrop(it);
+        self.text_renderer.lcd_backdrop = &self.text_backdrop;
+        defer {
+            self.text_renderer.lcd_backdrop = null;
+            self.text_renderer.cleartype_allowed = false;
+        }
+        // TextFontFlag.no_smoothing (TextProps.font_smoothing = false)
+        self.text_renderer.smooth_fonts = (it.text_font_flags & 8) == 0;
+        defer self.text_renderer.smooth_fonts = true;
+        // Right-edge fade mask: convert to absolute x for renderer, set per-command and
+        // reset (same pattern as clip_x_*; fade affects alpha only, not glyph atlas).
+        if (it.text_fade_dx1 > it.text_fade_dx0) {
+            self.text_renderer.fade_x0 = it.geom.x + ox + it.text_fade_dx0;
+            self.text_renderer.fade_x1 = it.geom.x + ox + it.text_fade_dx1;
+        }
+        defer {
+            self.text_renderer.fade_x0 = std.math.inf(f32);
+            self.text_renderer.fade_x1 = std.math.inf(f32);
+        }
+        if (it.text_spans) |s| {
+            try self.encodeTextWithSpans(
+                it.geom.x + ox,
+                it.geom.y + oy,
+                it.text_content,
+                it.color,
+                it.text_font_size,
+                it.text_font_weight,
+                it.text_font_family,
+                use_sym,
+                use_mono,
+                it.text_monospace_char_width,
+                use_italic,
+                raster.force_linear,
+                raster.shader_snap,
+                s,
+            );
+        } else {
+            try self.encodeText(
+                it.geom.x + ox,
+                it.geom.y + oy,
+                it.text_content,
+                it.color,
+                it.text_font_size,
+                it.text_font_weight,
+                it.text_font_family,
+                use_sym,
+                use_mono,
+                it.text_monospace_char_width,
+                use_italic,
+                raster.force_linear,
+                raster.shader_snap,
+            );
+        }
+    }
+
     // command_encoder/script_detect.zig.
     // Keep same re-export here, public API (RenderCommandEncoder.preferCjkFallback etc.) and
     // callsites/tests all unchanged.
@@ -2411,18 +2869,10 @@ pub const RenderCommandEncoder = struct {
             // This used to have inline if chain + selectCjkFallbackFont; measureTextWidth chose
             // differently, same text measured and drawn different widths (symbols cover / CJK
             // content-fallback / force_linear three forks).
-            // Don't move font logic back here.
-            const resolved = fonts.resolveFonts(content, .{
-                .stack_mode_override = if (self.text_renderer.fallback_stack != null) true else null,
-                .font_size = font_size,
-                .font_weight = font_weight,
-                .font_family = font_family,
-                .use_italic = use_italic_font,
-                .use_monospace = use_monospace_font,
-                .use_symbols = use_symbols_font,
-                .force_linear = force_linear,
-            });
-            const font = if (self.text_renderer.font_ranges_provider != null) resolved.shapingFont() else resolved.primary;
+            // Don't move font logic back here: text_ink.chooseFonts is also what text ink
+            // bounds (caret occlusion, CPU damage) are computed with.
+            const choice = text_ink.chooseFonts(fonts, self.text_renderer, content, font_size, font_weight, font_family, use_symbols_font, use_monospace_font, monospace_char_width, use_italic_font, force_linear);
+            const font = choice.font;
             var ranges: ?*@import("text").FontRanges = null;
             if (comptime @import("builtin").os.tag == .windows) {
                 if (self.text_renderer.font_ranges_provider) |provider| {
@@ -2431,7 +2881,11 @@ pub const RenderCommandEncoder = struct {
                 }
             }
             self.text_renderer.active_font_ranges = ranges;
+            // Animated raster draws the primary's glyphs from a stable instance; never a script
+            // fallback's (its glyph ids belong to another face).
+            self.text_renderer.raster_font = if (font == choice.primary) choice.raster else null;
             defer {
+                self.text_renderer.raster_font = null;
                 self.text_renderer.active_font_ranges = null;
                 if (comptime @import("builtin").os.tag == .windows) {
                     if (ranges) |owned| {
@@ -2441,8 +2895,8 @@ pub const RenderCommandEncoder = struct {
                 }
             }
             const render_color = colorToRenderColor(color);
-            const cjk_fallback = resolved.fallback;
-            const fixed_advance = fixedMonospaceAdvance(content, use_monospace_font, monospace_char_width);
+            const cjk_fallback = choice.fallback;
+            const fixed_advance = choice.fixed_advance;
             self.text_renderer.drawTextWithOptions(
                 content,
                 x,
@@ -2483,20 +2937,11 @@ pub const RenderCommandEncoder = struct {
         spans: anytype,
     ) !void {
         if (self.fonts) |fonts| {
-            // Like drawText: font decisions route to FontSelector.resolveFonts.
+            // Like drawText: font decisions route to FontSelector.resolveFonts (chooseFonts).
             // Was second identical if chain, both copies diverged = "measure and draw width
             // mismatch" kept recurring.
-            const resolved = fonts.resolveFonts(content, .{
-                .stack_mode_override = if (self.text_renderer.fallback_stack != null) true else null,
-                .font_size = font_size,
-                .font_weight = font_weight,
-                .font_family = font_family,
-                .use_italic = use_italic_font,
-                .use_monospace = use_monospace_font,
-                .use_symbols = use_symbols_font,
-                .force_linear = force_linear,
-            });
-            const font = if (self.text_renderer.font_ranges_provider != null) resolved.shapingFont() else resolved.primary;
+            const choice = text_ink.chooseFonts(fonts, self.text_renderer, content, font_size, font_weight, font_family, use_symbols_font, use_monospace_font, monospace_char_width, use_italic_font, force_linear);
+            const font = choice.font;
             var ranges: ?*@import("text").FontRanges = null;
             if (comptime @import("builtin").os.tag == .windows) {
                 if (self.text_renderer.font_ranges_provider) |provider| {
@@ -2505,7 +2950,11 @@ pub const RenderCommandEncoder = struct {
                 }
             }
             self.text_renderer.active_font_ranges = ranges;
+            // Animated raster draws the primary's glyphs from a stable instance; never a script
+            // fallback's (its glyph ids belong to another face).
+            self.text_renderer.raster_font = if (font == choice.primary) choice.raster else null;
             defer {
+                self.text_renderer.raster_font = null;
                 self.text_renderer.active_font_ranges = null;
                 if (comptime @import("builtin").os.tag == .windows) {
                     if (ranges) |owned| {
@@ -2515,11 +2964,11 @@ pub const RenderCommandEncoder = struct {
                 }
             }
             const render_color = colorToRenderColor(color);
-            const cjk_fallback = resolved.fallback;
-            const fixed_advance = fixedMonospaceAdvance(content, use_monospace_font, monospace_char_width);
+            const cjk_fallback = choice.fallback;
+            const fixed_advance = choice.fixed_advance;
 
             // Build render-level color spans
-            var render_spans_buf: [128]TextRenderer.ColorSpan = undefined;
+            var render_spans_buf: [text_ink.max_spans]TextRenderer.ColorSpan = undefined;
             const span_count = @min(spans.len, render_spans_buf.len);
             for (spans[0..span_count], 0..) |s, i| {
                 render_spans_buf[i] = .{
@@ -2648,7 +3097,26 @@ pub const RenderCommandEncoder = struct {
     /// Push clip region (lazy flush: update clip stack only, actual GPU scissor set deferred to
     /// next draw)
     /// pub: unit tests (command_encoder_test.zig) drive clip stack directly.
-    pub fn pushClip(self: *RenderCommandEncoder, x: f32, y: f32, w: f32, h: f32, radius: f32, shape_kind: ClipShapeKind, polygon: ClipPolygon) !void {
+    /// `radii` = TL, TR, BR, BL (logical px; read only for `.rounded_rect`).
+    pub fn pushClip(self: *RenderCommandEncoder, x: f32, y: f32, w: f32, h: f32, radii: [4]f32, shape_kind: ClipShapeKind, polygon: ClipPolygon) !void {
+        try self.pushClipEntry(.{ x, y, w, h }, .{
+            .x = x,
+            .y = y,
+            .w = w,
+            .h = h,
+            .radii = corner_radii.normalize(radii, w, h),
+            .shape_kind = shape_kind,
+            .polygon = polygon,
+        });
+    }
+
+    /// Push a clip entry: `rect` narrows the rect clip, `shape` (with its partner) becomes the
+    /// shape clip in force when it is not a plain rect.
+    fn pushClipEntry(self: *RenderCommandEncoder, rect: [4]f32, shape: RoundedClipState) !void {
+        const x = rect[0];
+        const y = rect[1];
+        const w = rect[2];
+        const h = rect[3];
         if (self.clip_overflow_depth > 0 or self.clip_depth >= self.logical_clip_stack.len) {
             if (self.clip_overflow_depth == 0) {
                 std.debug.print("[ENC pushClip] WARNING: clip stack overflow (depth=64), ignoring\n", .{});
@@ -2663,17 +3131,155 @@ pub const RenderCommandEncoder = struct {
             intersectClipRects(parent_rect, raw_rect)
         else
             raw_rect;
-        self.logical_clip_stack[self.clip_depth] = .{
+        self.logical_clip_stack[self.clip_depth] = shape;
+        self.clip_depth += 1;
+        try self.syncClipStateAfterMutation(prev_rounded);
+    }
+
+    /// A display-list push_clip (coordinates already in the current target, like pushClip).
+    ///
+    /// Every pipeline evaluates the shape clip in force and, on Metal, its partner
+    /// (shape_clip_pair.zig), so the target's clip is always "those shapes ∩ the rect clips". A
+    /// shape clip pushed while others are active keeps that exact (clip_geometry.resolveShapeClips,
+    /// placeNestedShapeClipWithin elsewhere): nested shapes that contain one another inside the
+    /// rect clip or share a rect collapse into one shape; two that genuinely cross pair up; a
+    /// further crossing shape (or any crossing pair off Metal) opens an isolation layer, an
+    /// offscreen surface over the clip where the new shape is the only shape clip, composited back
+    /// under the active ones. Depth is unbounded: each crossing level isolates in turn. Returns how
+    /// the matching pop_clip undoes it.
+    pub fn pushClipCommand(self: *RenderCommandEncoder, x: f32, y: f32, w: f32, h: f32, radii: [4]f32, shape_kind: ClipShapeKind, polygon: ClipPolygon) !PushClipMode {
+        const plain = shape_kind == .rect or
+            self.clip_overflow_depth > 0 or self.clip_depth >= self.logical_clip_stack.len or
+            self.push_clip_mode_overflow_depth > 0 or self.push_clip_mode_depth >= self.push_clip_mode_stack.len;
+        const outer = if (plain) null else self.activeRoundedClip();
+        if (outer == null) {
+            try self.pushClip(x, y, w, h, radii, shape_kind, polygon);
+            return .clip;
+        }
+        const inner = RoundedClipState{
             .x = x,
             .y = y,
             .w = w,
             .h = h,
-            .radius = radius,
+            .radii = corner_radii.normalize(radii, w, h),
             .shape_kind = shape_kind,
             .polygon = polygon,
         };
-        self.clip_depth += 1;
-        try self.syncClipStateAfterMutation(prev_rounded);
+        const visible = if (self.currentRectClip()) |rc| intersectClipRects(rc, .{ x, y, @max(w, 0), @max(h, 0) }) else [4]f32{ x, y, @max(w, 0), @max(h, 0) };
+        if (shape_clip_pair.supported and self.pair_shape_clips) {
+            var active: [2]RoundedClipState = .{ outer.?, undefined };
+            var active_count: usize = 1;
+            if (outer.?.partner) |partner| {
+                active[1] = RoundedClipState.fromPartner(partner);
+                active_count = 2;
+            }
+            const resolution = clip_geometry.resolveShapeClips(active[0..active_count], inner, visible);
+            if (@import("zenit_environment").flag("ZENIT_DEBUG_PASSCOUNT")) {
+                const tag = switch (resolution) {
+                    .redundant => "keep_outer",
+                    .shapes => |set| if (set.count == 2) "pair" else "replace",
+                    .isolate => "isolate",
+                };
+                std.debug.print("[clip] nested shape clip -> {s}\n", .{tag});
+            }
+            switch (resolution) {
+                .redundant => try self.pushClip(x, y, w, h, .{ 0, 0, 0, 0 }, .rect, ClipPolygon.empty()),
+                .shapes => |set| {
+                    var primary = set.shapes[0];
+                    primary.partner = if (set.count == 2) PartnerClip.of(set.shapes[1]) else null;
+                    try self.pushClipEntry(.{ x, y, w, h }, primary);
+                },
+                .isolate => return self.isolateShapeClip(x, y, w, h, radii, shape_kind, polygon),
+            }
+            return .clip;
+        }
+        const placement = clip_geometry.placeNestedShapeClipWithin(outer.?, inner, visible);
+        if (@import("zenit_environment").flag("ZENIT_DEBUG_PASSCOUNT")) {
+            std.debug.print("[clip] nested shape clip -> {s}\n", .{@tagName(placement)});
+        }
+        switch (placement) {
+            .replace => try self.pushClip(x, y, w, h, radii, shape_kind, polygon),
+            .keep_outer => try self.pushClip(x, y, w, h, .{ 0, 0, 0, 0 }, .rect, ClipPolygon.empty()),
+            .merged => |merged| try self.pushClip(x, y, w, h, merged, .rounded_rect, ClipPolygon.empty()),
+            .isolate => return self.isolateShapeClip(x, y, w, h, radii, shape_kind, polygon),
+        }
+        return .clip;
+    }
+
+    /// Isolate a shape clip that crosses the shape clips in force: an offscreen surface over the
+    /// clip where the new shape is the only shape clip, composited back under the active ones.
+    fn isolateShapeClip(self: *RenderCommandEncoder, x: f32, y: f32, w: f32, h: f32, radii: [4]f32, shape_kind: ClipShapeKind, polygon: ClipPolygon) !PushClipMode {
+        const parent_off = self.offscreenOffset();
+        switch (try self.beginIsolatedClipLayer(x, y, w, h)) {
+            .opened => {
+                // Same clip, re-expressed in the layer's target (stack starts empty there).
+                const off = self.offscreenOffset();
+                try self.pushClip(x - parent_off[0] + off[0], y - parent_off[1] + off[1], w, h, radii, shape_kind, polygon);
+                return .isolated;
+            },
+            .empty => {
+                // The effective rect clip already excludes every pixel;
+                // no shape isolation or resource fallback is necessary.
+                try self.pushClip(x, y, w, h, radii, shape_kind, polygon);
+                return .clip;
+            },
+            .unavailable => {},
+        }
+        // No layer available (offscreen nesting limit / pool exhausted):
+        // the innermost shape wins, as it did before isolation existed.
+        self.isolated_clip_fallbacks += 1;
+        if (self.isolated_clip_fallbacks == 1) {
+            std.log.warn("[clip] nested shape clip could not isolate; outer shape not applied", .{});
+        }
+        try self.pushClip(x, y, w, h, radii, shape_kind, polygon);
+        return .clip;
+    }
+
+    /// Open the isolation layer for a crossing shape clip at target-local (x, y, w, h): the clip
+    /// rect ∩ the current rect clip (nothing outside both can show), aligned to the pixel grid
+    /// like an opacity layer so the composite lands texel-for-pixel. No mask of its own: the
+    /// shape is pushed inside, and the composite runs under the parent's clip state.
+    fn beginIsolatedClipLayer(self: *RenderCommandEncoder, x: f32, y: f32, w: f32, h: f32) !enum { opened, empty, unavailable } {
+        var bounds = [4]f32{ x, y, @max(w, 0), @max(h, 0) };
+        if (self.currentRectClip()) |rc| bounds = intersectClipRects(rc, bounds);
+        if (!(bounds[2] > 0 and bounds[3] > 0)) return .empty;
+        const off = self.offscreenOffset();
+        const nan = std.math.nan(f32);
+        const Surface = struct {
+            geom: struct { x: f32, y: f32, w: f32, h: f32 },
+            rotate: f32 = 0,
+            use_draw_transform: bool = false,
+            draw_transform: [6]f32 = .{ 1, 0, 0, 1, 0, 0 },
+            draw_x: f32,
+            draw_y: f32,
+            draw_w: f32,
+            draw_h: f32,
+        };
+        const src = Surface{
+            .geom = .{ .x = bounds[0] - off[0], .y = bounds[1] - off[1], .w = bounds[2], .h = bounds[3] },
+            .draw_x = nan,
+            .draw_y = nan,
+            .draw_w = nan,
+            .draw_h = nan,
+        };
+        const aligned = opacity_layer.alignTranslationSurface(src, self.scale, off);
+        const opened = try opacity_layer.beginOpacityLayer(
+            self,
+            aligned.geom.x,
+            aligned.geom.y,
+            aligned.geom.w,
+            aligned.geom.h,
+            1.0,
+            0,
+            aligned.draw_x,
+            aligned.draw_y,
+            aligned.draw_w,
+            aligned.draw_h,
+            false,
+            aligned.draw_transform,
+            .normal,
+        );
+        return if (opened) .opened else .unavailable;
     }
 
     /// Pop clip region (lazy flush: update clip stack only, actual GPU scissor restore deferred to

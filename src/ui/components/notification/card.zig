@@ -319,7 +319,7 @@ pub const Card = struct {
 pub const BuildParams = struct {
     cx: *Cx,
     scope: *Scope,
-    palette: *const styles.Palette,
+    palette: styles.Palette,
     strings: *const Strings,
     width: f32,
 };
@@ -421,7 +421,7 @@ pub fn buildShell(card: *Card, p: BuildParams) !void {
                 .align_items = .center,
                 .justify = .center,
                 .background = pal.close_light,
-                .border = .{ .width = 0.5, .color = pal.close_light_edge, .radius = M.close_size / 2 },
+                .border = .{ .overlay = true, .width = 0.5, .color = pal.close_light_edge, .radius = M.close_size / 2 },
                 .inset = .{ .left = .{ .px = M.close_inset }, .top = .{ .px = M.close_inset } },
                 .corner_radius = M.close_size / 2,
                 .z_index = 10,
@@ -531,20 +531,20 @@ pub fn buildContent(card: *Card, p: BuildParams) !Content {
                 .justify = .center,
                 .flex_shrink = 0,
             } }, .{
-                // Semantic color block + white glyph / spinner
+                // Transparent lead box with semantic-color glyph / spinner
                 if (chip_like) view.capture(&content.lead, view.box(.{ .style = .{
                     .width = fixed(M.lead_size),
                     .height = fixed(M.lead_size),
                     .align_items = .center,
                     .justify = .center,
-                    .background = tone,
-                    .border = .{ .width = 0, .color = tone, .radius = M.chip_radius },
+                    .background = Color.TRANSPARENT,
+                    .border = .{ .overlay = true, .width = 0, .color = tone, .radius = M.chip_radius },
                     .corner_radius = M.chip_radius,
                 } }, view.branch(
                     spec.lead == .chip,
                     view.icon(.{
                         .style = .{ .width = fixed(M.glyph_size), .height = fixed(M.glyph_size) },
-                        .tint = pal.on_semantic,
+                        .tint = tone,
                     }, spec.glyph orelse defaultGlyph(spec.tone)),
                     view.capture(&content.spinner, view.setup(view.box(.{ .style = .{
                         .width = fixed(M.spinner_size),
@@ -576,14 +576,14 @@ pub fn buildContent(card: *Card, p: BuildParams) !Content {
                     .align_items = .center,
                     .justify = .center,
                     .background = pal.avatar_bg,
-                    .border = .{ .width = 0, .color = pal.avatar_bg, .radius = M.lead_size / 2 },
+                    .border = .{ .overlay = true, .width = 0, .color = pal.avatar_bg, .radius = M.lead_size / 2 },
                     .corner_radius = M.lead_size / 2,
                 } }, plainText(spec.avatar, .{ .color = pal.avatar_fg, .font_size = M.avatar_initial_size, .font_weight = 600 }))) else null,
                 if (spec.lead == .dot) view.capture(&content.lead, view.box(.{ .style = .{
                     .width = fixed(M.quiet_dot),
                     .height = fixed(M.quiet_dot),
                     .background = tone,
-                    .border = .{ .width = 0, .color = tone, .radius = M.quiet_dot / 2 },
+                    .border = .{ .overlay = true, .width = 0, .color = tone, .radius = M.quiet_dot / 2 },
                     .corner_radius = M.quiet_dot / 2,
                 } }, {})) else null,
             })),
@@ -594,7 +594,7 @@ pub fn buildContent(card: *Card, p: BuildParams) !Content {
                         .color = pal.ink,
                         .font_size = M.title_size,
                         .font_weight = M.title_weight,
-                        .wrap = .word,
+                        .wrap = .word_break,
                         .line_height = M.title_line_height,
                     })),
                     view.capture(&content.timestamp, styledText(p.strings.now, .{
@@ -608,17 +608,17 @@ pub fn buildContent(card: *Card, p: BuildParams) !Content {
                     .color = pal.ink_2,
                     .font_size = M.body_size,
                     .line_height = M.body_line_height,
-                    .wrap = .word,
+                    .wrap = .word_break,
                     .max_lines = M.body_max_lines,
                 })) else null,
                 if (spec.quote) |q| view.capture(&content.quote, view.row(.{ .style = .{
                     .width = fill,
                     .gap = 6,
                     .padding = .{ .top = 4, .right = 0, .bottom = 0, .left = 8 },
-                    .border = .{ .width = 0, .color = pal.separator, .radius = 0 },
+                    .border = .{ .overlay = true, .width = 0, .color = pal.separator, .radius = 0 },
                 } }, .{
                     view.box(.{ .style = .{ .width = fixed(2), .height = fill, .background = pal.track } }, {}),
-                    plainText(q, .{ .color = pal.ink_2, .font_size = M.body_size, .line_height = M.body_line_height, .wrap = .word, .max_lines = 2 }),
+                    plainText(q, .{ .color = pal.ink_2, .font_size = M.body_size, .line_height = M.body_line_height, .wrap = .word_break, .max_lines = 2 }),
                 })) else null,
                 if (spec.progress != null) view.capture(&content.progress_block, view.col(.{ .style = .{
                     .width = fill,
@@ -629,14 +629,14 @@ pub fn buildContent(card: *Card, p: BuildParams) !Content {
                         .width = fill,
                         .height = fixed(M.progress_track),
                         .background = pal.track,
-                        .border = .{ .width = 0, .color = pal.track, .radius = M.progress_track / 2 },
+                        .border = .{ .overlay = true, .width = 0, .color = pal.track, .radius = M.progress_track / 2 },
                         .corner_radius = M.progress_track / 2,
                         .overflow_hidden = true,
                     } }, view.capture(&content.progress_fill, view.box(.{ .style = .{
                         .width = core.Sizing.pct(model.clamp01(prog.value) * 100),
                         .height = fill,
                         .background = pal.info,
-                        .border = .{ .width = 0, .color = pal.info, .radius = M.progress_track / 2 },
+                        .border = .{ .overlay = true, .width = 0, .color = pal.info, .radius = M.progress_track / 2 },
                         .corner_radius = M.progress_track / 2,
                     } }, {}))),
                     view.row(.{ .style = .{ .width = fill, .align_items = .center, .gap = 8 } }, .{
@@ -682,7 +682,7 @@ pub fn buildContent(card: *Card, p: BuildParams) !Content {
     return content;
 }
 
-const ActionCtx = struct { content: *Content, pal: *const styles.Palette };
+const ActionCtx = struct { content: *Content, pal: styles.Palette };
 const ActionButton = view.NodeCapture(*?*Node, view.Setup(button_mod.ButtonBuilder, NodeTweak, tweakNode));
 
 /// Action buttons (up to 2). Event context points to stable address in card.content: content
@@ -692,6 +692,7 @@ fn actionElement(c: ActionCtx, action: Action, i: usize) ActionButton {
     const pal = c.pal;
     const bg = if (action.primary) pal.button_primary else pal.button_secondary;
     const bg_hover = if (action.primary) pal.button_primary_hover else pal.button_secondary_hover;
+    const bg_pressed = if (action.primary) pal.button_primary_pressed else pal.button_secondary_pressed;
     return view.capture(&c.content.buttons[i], view.setup(button_mod.Button(.{
         .label = action.label,
         .variant = .secondary,
@@ -703,13 +704,13 @@ fn actionElement(c: ActionCtx, action: Action, i: usize) ActionButton {
             .width = .fill(),
             .height = .fixed(M.button_height),
             .background = bg,
-            .border = .{ .width = 0, .color = bg, .radius = M.button_radius },
-            .text_color = if (action.primary) pal.ink else pal.ink_2,
+            .border = .{ .overlay = true, .width = if (action.primary) @as(f32, 0) else @as(f32, 1), .color = pal.separator, .radius = M.button_radius },
+            .text_color = if (action.primary) pal.on_semantic else pal.ink,
             .font_size = M.button_font,
             .font_weight = if (action.primary) 600 else 500,
         },
-        .hover_style = .{ .background = bg_hover, .border = .{ .width = 0, .color = bg_hover, .radius = M.button_radius } },
-        .pressed_style = .{ .background = bg_hover, .border = .{ .width = 0, .color = bg_hover, .radius = M.button_radius } },
+        .hover_style = .{ .background = bg_hover, .border = .{ .overlay = true, .width = if (action.primary) @as(f32, 0) else @as(f32, 1), .color = pal.separator, .radius = M.button_radius } },
+        .pressed_style = .{ .background = bg_pressed, .border = .{ .overlay = true, .width = if (action.primary) @as(f32, 0) else @as(f32, 1), .color = pal.separator, .radius = M.button_radius } },
     }), NodeTweak{ .name = "Notification.action" }, tweakNode));
 }
 
@@ -739,7 +740,7 @@ fn buildReply(card: *Card, p: BuildParams, scope: *Scope, row: *Node, content: *
         .gap = 8,
         .padding = M.reply_padding,
         .background = pal.reply_field,
-        .border = .{ .width = 0.5, .color = pal.reply_border, .radius = M.button_radius },
+        .border = .{ .overlay = true, .width = 0.5, .color = pal.reply_border, .radius = M.button_radius },
         .corner_radius = M.button_radius,
     } }, {})));
 
@@ -751,18 +752,21 @@ fn buildReply(card: *Card, p: BuildParams, scope: *Scope, row: *Node, content: *
         .placeholder_color = pal.ink_3,
         .size = .sm,
         .embedded = true,
+        // field_style lands in the caller overlay layer, above inline and declarative layers,
+        // so it survives layer recomputes (unlike direct node.style writes).
+        .field_style = .{
+            .height = .{ .px = M.reply_height - 2 },
+            .border_width = 0,
+            .padding = Padding.ZERO,
+            .background = Color.TRANSPARENT,
+            .border_color = Color.TRANSPARENT,
+        },
     }).mountResult(scope, cx);
     field.appendChild(cx.allocator, result.node) catch |err| {
         result.abandon(cx);
         return err;
     };
-    result.node.style.width = .fill();
-    result.node.style.flex_shrink = 1;
-    result.input_container.setBackground(Color.TRANSPARENT);
-    result.input_container.setBorderColor(Color.TRANSPARENT);
-    result.input_container.style.border.width = 0;
-    result.input_container.style.padding = Padding.ZERO;
-    result.input_container.style.height = .fixed(M.reply_height - 2);
+    // width grow / flex_shrink declared by embedded Input's wrapper itself.
     // Horizontal padding handled by reply shell (left 11); Input internal layer (sm 8) zeros out,
     // cursor hit test reads same padding_h, appearance and hit align.
     result.state.padding_h = 0;
@@ -787,13 +791,13 @@ fn buildReply(card: *Card, p: BuildParams, scope: *Scope, row: *Node, content: *
                 .height = .fixed(M.send_height),
                 .padding = Padding.symmetric(0, 10),
                 .background = pal.button_primary,
-                .border = .{ .width = 0, .color = pal.button_primary, .radius = M.send_radius },
-                .text_color = pal.ink,
+                .border = .{ .overlay = true, .width = 0, .color = pal.button_primary, .radius = M.send_radius },
+                .text_color = pal.on_semantic,
                 .font_size = M.send_font,
                 .font_weight = 600,
             },
-            .hover_style = .{ .background = pal.button_primary_hover, .border = .{ .width = 0, .color = pal.button_primary_hover, .radius = M.send_radius } },
-            .pressed_style = .{ .background = pal.button_primary_hover, .border = .{ .width = 0, .color = pal.button_primary_hover, .radius = M.send_radius } },
+            .hover_style = .{ .background = pal.button_primary_hover, .border = .{ .overlay = true, .width = 0, .color = pal.button_primary_hover, .radius = M.send_radius } },
+            .pressed_style = .{ .background = pal.button_primary_hover, .border = .{ .overlay = true, .width = 0, .color = pal.button_primary_hover, .radius = M.send_radius } },
         }), NodeTweak{ .name = "Notification.send" }, tweakNode))),
     });
 }

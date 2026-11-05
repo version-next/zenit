@@ -2,7 +2,7 @@
 //! console_probe styles
 const ui = @import("ui");
 
-pub const root = ui.css(.{ .width = .fill, .height = .fill, .padding = ui.tokenRef(.space, "space800"), .background = ui.tokenRef(.color, "bg-primary"), });
-pub const title = ui.css(.{ .font_size = ui.arb.px(22), .font_weight = 600, .color = ui.tokenRef(.color, "fg-primary"), });
+pub const root = ui.previewCss("examples/console_probe/styles.yss", "root", @embedFile("styles.yss"), .{ .width = .fill, .height = .fill, .padding = ui.tokenRef(.space, "space800"), .background = ui.tokenRef(.color, "bg-primary"), });
+pub const title = ui.previewCss("examples/console_probe/styles.yss", "title", @embedFile("styles.yss"), .{ .font_size = ui.arb.px(22), .font_weight = 600, .color = ui.tokenRef(.color, "fg-primary"), });
 
 //# yix-map styles.yss

@@ -101,6 +101,28 @@ pub fn hasActiveOpacityAnimation(node: *Node) bool {
     return node.frame_state.state_bits.flags.manual_opacity_animation_active or hasActiveOpacityTransition(node) or hasActiveOpacityNodeAnimation(node);
 }
 
+/// A transform animation that may move the node's content frame (its translate) without telling
+/// the renderer where it comes to rest: declarative transitions and node animations. Overlay
+/// enter/exit motion (manual_transform_animation_active) only scales about the owner and slides
+/// by StyleExt.motion_offset, which a composited surface takes out of its rest origin.
+pub fn hasUnanchoredTransformAnimation(node: *Node) bool {
+    return hasActiveTransformTransition(node) or hasActiveTransformNodeAnimation(node);
+}
+
+/// A transform animation that moves an uncomposited node's content this frame. The composite
+/// linger after an animation ends does not (the content sits at rest), nor does overlay enter/exit
+/// motion that is down to its last sliver of scale: an own scale opens a capture surface
+/// (computeUseOpacityLayer), so without one that motion is only the StyleExt.motion_offset slide.
+/// Text layout is identical under both rasters (FontSelector.resolveFonts), but the rasters still
+/// differ (device-pixel snap vs. unsnapped linear placement), so content at rest keeps the static
+/// one instead of a needless round trip through the animated raster.
+pub fn hasMovingTransformAnimation(node: *Node) bool {
+    if (hasUnanchoredTransformAnimation(node)) return true;
+    if (!node.frame_state.state_bits.flags.manual_transform_animation_active) return false;
+    const ext = node.style.ext orelse return false;
+    return @abs(ext.motion_offset[0]) > 0.01 or @abs(ext.motion_offset[1]) > 0.01;
+}
+
 pub fn hasActiveTransformAnimation(node: *Node) bool {
     if (node.frame_state.frame_local.runtime.linger.transform > 0) return true;
     return node.frame_state.state_bits.flags.manual_transform_animation_active or hasActiveTransformTransition(node) or hasActiveTransformNodeAnimation(node);

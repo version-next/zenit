@@ -9,10 +9,11 @@ pub const Uniforms = extern struct {
     scale: f32 = 1,
     clip_kind: u32 = 0,
     clip_rect: [4]f32 = .{ 0, 0, 0, 0 },
-    clip_radius: f32 = 0,
+    clip_radii: [4]f32 = .{ 0, 0, 0, 0 },
     fill_rule: u32 = 0,
     point_count: u32 = 8,
     contour_count: u32 = 2,
+    clip_pad: u32 = 0,
     ends: [8]u32 = .{ 4, 8, 0, 0, 0, 0, 0, 0 },
     points: [32][2]f32 = @splat(.{ 0, 0 }),
 };
@@ -21,15 +22,15 @@ const Instance = extern struct {
     uv: [4]f32 = .{ 0.25, 0.25, 0.75, 0.75 },
     tint: [4]f32 = .{ 0.8, 0.5, 0.25, 0.7 },
     linear: [4]f32 = .{ 1, 0, 0, 1 },
+    radii: [4]f32 = @splat(1.3),
     translation: [2]f32 = .{ 0, 0 },
-    radius: f32 = 1.3,
     opacity: f32,
     premultiplied: f32,
-    padding: [3]f32 = .{ 0, 0, 0 },
+    sampling: [4]f32 = .{ 0, 0, 0, 0 },
     clip: [4]f32 = .{ 0, 0, -1, -1 },
 };
 comptime {
-    if (@sizeOf(Uniforms) != 336 or @offsetOf(Uniforms, "points") != 80 or @sizeOf(Instance) != 112 or @offsetOf(Instance, "clip") != 96) @compileError("Image renderer ABI mismatch");
+    if (@sizeOf(Uniforms) != 352 or @offsetOf(Uniforms, "clip_radii") != 32 or @offsetOf(Uniforms, "ends") != 64 or @offsetOf(Uniforms, "points") != 96 or @sizeOf(Instance) != 128 or @offsetOf(Instance, "radii") != 64 or @offsetOf(Instance, "clip") != 112) @compileError("Image renderer ABI mismatch");
 }
 fn smooth(signed_distance: f64, aa: f64) f64 {
     const t = std.math.clamp((aa - signed_distance) / (2 * aa), 0, 1);
@@ -40,11 +41,19 @@ fn rectDistance(x: f64, y: f64, origin: f64, size: f64, radius: f64) f64 {
     const qy = @abs(y - origin - size * 0.5) - size * 0.5 + radius;
     return @sqrt(@max(qx, 0) * @max(qx, 0) + @max(qy, 0) * @max(qy, 0)) + @min(@max(qx, qy), 0) - radius;
 }
+/// Per-corner rounded clip radii TL, TR, BR, BL (device px) of the shape-clip case.
+pub const clip_radii_px = [4]f64{ 1.7, 0, 1.2, 0.6 };
+/// Square {origin, size}: the quadrant (relative to the centre) picks the corner radius.
+fn cornersDistance(x: f64, y: f64, origin: f64, size: f64, radii: [4]f64) f64 {
+    const left = x < origin + size * 0.5;
+    const top = y < origin + size * 0.5;
+    return rectDistance(x, y, origin, size, if (left) (if (top) radii[0] else radii[3]) else (if (top) radii[1] else radii[2]));
+}
 fn distance(x: f64, y: f64, kind: usize) f64 {
     return switch (kind) {
         0 => rectDistance(x, y, 0, 8, 1.3),
         1 => rectDistance(x, y, 0.5, 7, 0),
-        2 => rectDistance(x, y, 1, 6, 1.7),
+        2 => cornersDistance(x, y, 1, 6, clip_radii_px),
         else => @sqrt((x - 4) * (x - 4) / 9 + (y - 4) * (y - 4) / 9) - 1,
     };
 }
@@ -82,7 +91,7 @@ pub fn run() !void {
     defer fragment.deinit();
     var pipeline = try p.createRenderPipeline(&device, .{ .vertex_function = &vertex, .fragment_function = &fragment, .color_attachment_formats = &.{.bgra8_unorm} });
     defer pipeline.deinit();
-    if (try pipeline.bufferStride(0, 1) != 112) return error.IncorrectImageStride;
+    if (try pipeline.bufferStride(0, 1) != 128) return error.IncorrectImageStride;
     var sampler = try device.createSampler(a, .{});
     defer sampler.destroy();
     var target = try context.createTexture(a, .{ .size = .{ .width = 8, .height = 8 }, .format = .bgra8_unorm, .usage = .{ .render_attachment = true, .copy_src = true } });
@@ -108,11 +117,11 @@ pub fn run() !void {
         defer texture.destroy();
         try texture.writeRegion(0, 0, 0, 4, 4, &input, 16);
         for ([_]f32{ 1, 2 }) |scale| for ([_]f32{ 0, 0.35, 1 }) |opacity| for (0..5) |clip_case| {
-            var uniforms = Uniforms{ .scale = scale, .clip_kind = @intCast(@min(clip_case, 3)), .clip_rect = .{ 1 / scale, 1 / scale, 6 / scale, 6 / scale }, .clip_radius = 1.7 / scale, .fill_rule = @intFromBool(clip_case == 4) };
+            var uniforms = Uniforms{ .scale = scale, .clip_kind = @intCast(@min(clip_case, 3)), .clip_rect = .{ 1 / scale, 1 / scale, 6 / scale, 6 / scale }, .clip_radii = .{ @floatCast(clip_radii_px[0] / scale), @floatCast(clip_radii_px[1] / scale), @floatCast(clip_radii_px[2] / scale), @floatCast(clip_radii_px[3] / scale) }, .fill_rule = @intFromBool(clip_case == 4) };
             const points = [_][2]f32{ .{ 0, 0 }, .{ 6, 0 }, .{ 6, 6 }, .{ 0, 6 }, .{ 2, 2 }, .{ 4, 2 }, .{ 4, 4 }, .{ 2, 4 } };
             for (points, 0..) |point, i| uniforms.points[i] = .{ point[0] / scale, point[1] / scale };
             const transform = clip_case % 3;
-            var instance = Instance{ .rect = .{ 0, 0, 8 / scale, 8 / scale }, .opacity = opacity, .premultiplied = @floatFromInt(premultiplied), .radius = 1.3 / scale };
+            var instance = Instance{ .rect = .{ 0, 0, 8 / scale, 8 / scale }, .opacity = opacity, .premultiplied = @floatFromInt(premultiplied), .radii = @splat(1.3 / scale) };
             if (clip_case > 0) instance.clip = .{ 0.5 / scale, 0.5 / scale, 7 / scale, 7 / scale };
             if (transform == 1) {
                 instance.linear = .{ 0, 1, -1, 0 };
@@ -132,8 +141,8 @@ pub fn run() !void {
             defer encoder.deinit();
             var pass = try encoder.beginRenderPass(.{ .color_attachments = &.{.{ .view = view, .load_op = .clear, .store_op = .store, .clear_value = .TRANSPARENT }} });
             pass.setPipeline(&pipeline);
-            pass.setVertexBuffer(1, &buffer, 112);
-            pass.setFragmentBuffer(1, &buffer, 112);
+            pass.setVertexBuffer(1, &buffer, 128);
+            pass.setFragmentBuffer(1, &buffer, 128);
             try pass.setVertexBytesChecked(0, std.mem.asBytes(&uniforms));
             try pass.setFragmentBytesChecked(0, std.mem.asBytes(&uniforms));
             pass.setFragmentTexture(0, &texture);
@@ -176,7 +185,7 @@ pub fn run() !void {
     }
     const baseline = output;
     for (0..64) |i| std.mem.swap(u8, &output[i * 4], &output[i * 4 + 2]);
-    std.debug.print("RENDERER_IMAGE_RGBA8_HEX={s}\nPASS: production HLSL image, {d} draws/{d} CPU-reference pixels (byte tolerance2), stride112/uniform336, vertex instance properties, nonzero instance/buffer offsets, premultiplied/straight alpha, opacity/tint, UV subrect, rotation/mirror, scale1/2, rounded/rect/ellipse/polygon clips\n", .{ std.fmt.bytesToHex(output, .lower), draws, draws * 64 });
+    std.debug.print("RENDERER_IMAGE_RGBA8_HEX={s}\nPASS: production HLSL image, {d} draws/{d} CPU-reference pixels (byte tolerance2), stride128/uniform352, vertex instance properties, nonzero instance/buffer offsets, premultiplied/straight alpha, opacity/tint, UV subrect, rotation/mirror, scale1/2, per-corner rounded/rect/ellipse/polygon clips\n", .{ std.fmt.bytesToHex(output, .lower), draws, draws * 64 });
     // Damage clear is replace, with load preserving pixels outside the scissor.
     var clear_module = try p.ShaderModule.initFromSource(&device, @import("render").shader_sources.damage_clear);
     defer clear_module.deinit();

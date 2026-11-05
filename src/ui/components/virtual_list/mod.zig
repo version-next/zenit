@@ -125,6 +125,18 @@ pub const VirtualListProps = struct {
 /// - cx: UI context
 pub const RenderItemFn = *const fn (node: *Node, index: usize, cx: *Cx) void;
 pub const RenderItemWithContextFn = *const fn (node: *Node, index: usize, cx: *Cx, user_context: ?*anyopaque) void;
+/// Item render callback that also receives the list's own scope (`mountScoped`). That scope owns
+/// the pool slots and is retired with the list container, so content mounted under it (e.g. via
+/// `ui.view.renderInto`) is released with its slot on recycle *and* with the list when the list
+/// itself is freed -- never left behind in a longer-lived caller scope.
+pub const RenderItemScopedFn = *const fn (node: *Node, index: usize, scope: *Scope, cx: *Cx, user_context: ?*anyopaque) void;
+
+/// How the list populates a slot (exactly one callback form per list).
+const RenderCallback = union(enum) {
+    plain: RenderItemFn,
+    with_context: RenderItemWithContextFn,
+    scoped: RenderItemScopedFn,
+};
 
 /// VirtualList internal state (lifecycle managed via Scope)
 pub const VirtualListState = struct {
@@ -143,9 +155,11 @@ pub const VirtualListState = struct {
     item_count: usize,
     /// Applied data version
     shown_version: u64 = 0,
-    render_fn: RenderItemFn,
-    render_with_context_fn: ?RenderItemWithContextFn = null,
+    render: RenderCallback,
     render_user_context: ?*anyopaque = null,
+    /// The list's own scope (bound to the container): owner of the pool slots and of everything
+    /// the scoped render callback mounts into them.
+    scope: *Scope,
     cx: *Cx,
 
     /// ScrollArea's scroll state pointer
@@ -188,7 +202,7 @@ pub const VirtualListState = struct {
     /// next frame updateVisibleItems re-slots and re-calls for the same data index.
     /// Separate from rebind_incomplete because the end of updateVisibleItems overwrites it.
     render_retry_pending: bool = false,
-    /// Persistent callback failure backoff (GLM cross-review): no ceiling, intervals
+    /// Persistent callback failure backoff: no ceiling, intervals
     /// grow. Otherwise continuous OOM on one row makes VL drop range each frame,
     /// full pass + markLayoutDirty every frame, frame loop never stops. streak =
     /// consecutive failure passes, wait = frames to skip before retry (1,3,7,15,31,60).
@@ -376,7 +390,7 @@ pub const VirtualListState = struct {
         const desired_translate_y = -self.scroll_state.snapToPixel(effective_y);
         if (self.content_node.style.translate_y != desired_translate_y) {
             self.content_node.style.translate_y = desired_translate_y;
-            self.content_node.markCompositePropDirty();
+            self.content_node.markHitLayerMotionPropDirty();
         }
 
         const range = self.visibleRange();
@@ -468,11 +482,10 @@ pub const VirtualListState = struct {
                 .collection_item = @intCast(@min(item_idx, std.math.maxInt(u32))),
             };
             // Call user render function to populate content
-            if (self.render_with_context_fn) |render_with_context| {
-                render_with_context(node, item_idx, self.cx, self.render_user_context);
-            } else {
-                self.render_fn(node, item_idx, self.cx);
-            }
+            self.renderSlot(node, item_idx);
+            // The row callback may write the slot with any entry (raw or not): invalidate it
+            // so no cross-frame cache replays its previous binding.
+            node.markRenderDirty();
         }
 
         // Bound rows must also lock height: rebind_incomplete spans several frames of
@@ -538,7 +551,7 @@ pub const VirtualListState = struct {
     fn a11yViewport(ctx: *anyopaque) a11y_collection.Rect {
         const self = fromCtx(ctx);
         const r = self.container_node.globalRect();
-        const pad = self.container_node.style.padding;
+        const pad = self.container_node.style.contentInsets();
         return .{
             .x = r.x + pad.left,
             .y = r.y + pad.top,
@@ -724,6 +737,15 @@ pub const VirtualListState = struct {
 
     /// Reclaim slot must destroy old subtree, prevent user render only resetting
     /// children.len from leaking.
+    /// Populate a (cleared) pool slot through the list's render callback.
+    fn renderSlot(self: *VirtualListState, node: *Node, index: usize) void {
+        switch (self.render) {
+            .plain => |f| f(node, index, self.cx),
+            .with_context => |f| f(node, index, self.cx, self.render_user_context),
+            .scoped => |f| f(node, index, self.scope, self.cx, self.render_user_context),
+        }
+    }
+
     fn clearSlotNode(self: *VirtualListState, node: *Node) void {
         while (node.children.items.len > 0) {
             const child = node.children.items[node.children.items.len - 1];
@@ -887,13 +909,15 @@ pub fn VirtualListRows(comptime Ctx: type, comptime row_fn: anytype) type {
 
         pub fn viewMount(self: Self, scope: *Scope, cx: *Cx) !core.ViewParts {
             const st = try State.create(scope, self.ctx);
-            const r = try self.builder.mountWithContext(scope, cx, @ptrCast(st), null, render);
+            const r = try self.builder.mountScoped(scope, cx, @ptrCast(st), render);
             return .{ .root = r.container };
         }
 
-        fn render(node: *Node, index: usize, cx: *Cx, user: ?*anyopaque) void {
+        /// Row scopes open under the list's own scope (`list_scope`), not the caller's: freeing
+        /// the list container retires every bound row with it.
+        fn render(node: *Node, index: usize, list_scope: *Scope, cx: *Cx, user: ?*anyopaque) void {
             const st: *State = @ptrCast(@alignCast(user.?));
-            view.renderInto(st.scope, cx, node, row_fn, st.ctx, .{index}, what) catch {
+            view.renderInto(list_scope, cx, node, row_fn, st.ctx, .{index}, what) catch {
                 _ = markPoolNodeRenderIncomplete(node);
             };
         }
@@ -940,6 +964,30 @@ pub const VirtualListBuilder = struct {
         user_context: ?*anyopaque,
         render_fn: ?RenderItemFn,
         render_with_context_fn: ?RenderItemWithContextFn,
+    ) !MountResult {
+        const render: RenderCallback = if (render_with_context_fn) |f| .{ .with_context = f } else .{ .plain = render_fn orelse noopRenderItem };
+        return self.mountImpl(scope, cx, user_context, render);
+    }
+
+    /// Mount with a scoped render callback: the callback receives the list's own scope, which
+    /// owns the slots. Use it whenever slot content carries scope-owned state (effects, signal
+    /// subscriptions, resources), so that state is retired with the list as well as with the slot.
+    pub fn mountScoped(
+        self: VirtualListBuilder,
+        scope: *Scope,
+        cx: *Cx,
+        user_context: ?*anyopaque,
+        render_fn: RenderItemScopedFn,
+    ) !MountResult {
+        return self.mountImpl(scope, cx, user_context, .{ .scoped = render_fn });
+    }
+
+    fn mountImpl(
+        self: VirtualListBuilder,
+        scope: *Scope,
+        cx: *Cx,
+        user_context: ?*anyopaque,
+        render: RenderCallback,
     ) !MountResult {
         const my_scope = try scope.childScope();
         errdefer my_scope.dispose();
@@ -999,7 +1047,6 @@ pub const VirtualListBuilder = struct {
         errdefer cx.freeNode(sa.container);
 
         sa.container.meta.ownership.meta.component_name = "VirtualList";
-        sa.container.frame_state.state_bits.flags.disable_render_cache = true;
         // a11y: container inferred as AXScrollArea from scroll container; content node
         // after state setup declared as table (semantic collection, see content a11y below).
 
@@ -1081,9 +1128,9 @@ pub const VirtualListBuilder = struct {
             .props = p,
             .item_count = count0,
             .shown_version = p.data_version.peek(),
-            .render_fn = render_fn orelse noopRenderItem,
-            .render_with_context_fn = render_with_context_fn,
+            .render = render,
             .render_user_context = user_context,
+            .scope = my_scope,
             .cx = cx,
             .scroll_state = scroll_state_ptr,
             .container_node = sa.container,
@@ -1132,6 +1179,11 @@ pub const VirtualListBuilder = struct {
         // frame tick, attach early is no-op; markPoolNodeRenderIncomplete uses it for identity
         // check).
         sa.content.meta.per_frame.hooks.before_render.main = vlBeforeRender;
+        // The hook only moves `content` (translate), resizes spacers/slots (layout-dirty) and
+        // rebinds pool slots, and every rebound slot is marked render-dirty after the row callback
+        // ran (updateVisibleItems / refreshRange), so whatever the callback wrote is never replayed stale. Rows
+        // that stay bound are untouched and reusable across frames while scrolling.
+        sa.content.frame_state.state_bits.flags.before_render_hook_descendants_cache_safe = true;
 
         // Semantic collection: content node as table exposes all data rows to assistive tech
         // (AXTable > AXRow > AXCell), decoupled from pool rendering. Collection bound to content,
@@ -1321,6 +1373,16 @@ pub fn markPoolNodeRenderIncomplete(node: *Node) bool {
     return state.markSlotRenderIncomplete(node);
 }
 
+/// Whether `node` is a VirtualList's content node: its children (spacers and pool slots) are the
+/// per-frame projection of the visible rows, re-derived by every pass. A row that failed to
+/// render (OOM in the callback, pool growth or reordering) is unbound and retried by a later
+/// pass rather than failing the mount (see `markPoolNodeRenderIncomplete`); test support
+/// comparing mounts (oom_sweep) treats this subtree accordingly.
+pub fn isVirtualContent(node: *const Node) bool {
+    const hook = node.meta.per_frame.hooks.before_render.main orelse return false;
+    return hook == vlBeforeRender;
+}
+
 /// Refresh bound items in range (row count unchanged, content may change)
 pub fn refreshRange(state: *VirtualListState, start: usize, end: usize) void {
     for (state.pool_bindings, 0..) |binding, slot| {
@@ -1338,11 +1400,7 @@ pub fn refreshRange(state: *VirtualListState, start: usize, end: usize) void {
                     state.pool_nodes[slot].style.height = .{ .fit = .{} };
                 }
                 state.clearSlotNode(state.pool_nodes[slot]);
-                if (state.render_with_context_fn) |render_with_context| {
-                    render_with_context(state.pool_nodes[slot], idx, state.cx, state.render_user_context);
-                } else {
-                    state.render_fn(state.pool_nodes[slot], idx, state.cx);
-                }
+                state.renderSlot(state.pool_nodes[slot], idx);
                 // Content changed -> rect often unchanged: skip mark-dirty -> damage-tracking
                 // renderer
                 // won't redraw, IME input shows no text but cursor advances (cursor/selection
@@ -2954,4 +3012,251 @@ test "VirtualList: 回调报 markPoolNodeRenderIncomplete 后该行解绑并在�
     try testing.expectEqual(@as(usize, 7), Probe.calls);
     // Not this VL's current bound pool node -> false (root not pool node)
     try testing.expect(!markPoolNodeRenderIncomplete(root));
+}
+
+test "review regression 3: generic default row geometry stays 32" {
+    const p: VirtualListProps = .{};
+    try std.testing.expectEqual(@as(f32, 32), p.item_height);
+    try std.testing.expectEqual(@as(f32, 32), p.estimate_item_height);
+}
+
+test "LC3C VirtualList accessibility viewport includes layout border" {
+    var cx = try Cx.init(testing.allocator, std.testing.io);
+    defer cx.deinit();
+    const scope = try Scope.init(testing.allocator, null, cx.owner);
+    defer scope.dispose();
+    const result = try VirtualList(.{ .item_count = 20, .item_height = 20, .width = 300, .height = 200 }).mount(scope, cx, struct {
+        fn render(_: *Node, _: usize, _: *Cx) void {}
+    }.render);
+    cx.root = result.container;
+    result.container.style.padding = core.Padding.all(10);
+    result.container.style.border = .{ .width = 5 };
+    cx.layout();
+    scroll_area.scrollbarBeforeRender(result.container);
+    const viewport = VirtualListState.a11yViewport(result.state);
+    try testing.expectEqual(@as(f32, 15), viewport.x);
+    try testing.expectEqual(@as(f32, 15), viewport.y);
+    try testing.expectEqual(@as(f32, 270), viewport.w);
+    try testing.expectEqual(@as(f32, 170), viewport.h);
+    result.container.style.border.overlay = true;
+    result.container.markLayoutDirty();
+    cx.layout();
+    scroll_area.scrollbarBeforeRender(result.container);
+    const overlay = VirtualListState.a11yViewport(result.state);
+    try testing.expectEqual(@as(f32, 10), overlay.x);
+    try testing.expectEqual(@as(f32, 10), overlay.y);
+    try testing.expectEqual(@as(f32, 280), overlay.w);
+    try testing.expectEqual(@as(f32, 180), overlay.h);
+}
+
+// ---- Hit index under scrolling (core/hit_runtime.zig HitBlock): each pool slot is a block ----
+
+const VlHitRig = struct {
+    cx: *Cx,
+    scope: *Scope,
+    state: *VirtualListState,
+    container: *Node,
+
+    /// Data index of the last clicked row (row click handlers carry their index).
+    var clicked: ?usize = null;
+    /// Bumped to make every row render differently (data change).
+    var generation: usize = 0;
+
+    const row_h: f32 = 28;
+    const view_h: f32 = 280;
+
+    fn rowHeight(index: usize, measured: bool) f32 {
+        return if (measured) 20 + @as(f32, @floatFromInt(index % 4)) * 9 else row_h;
+    }
+
+    fn renderRow(node: *Node, index: usize, cx: *Cx, measured: bool) void {
+        const row = box(cx, .{ .width = .{ .grow = .{} }, .height = .{ .px = rowHeight(index, measured) } }, .{}) catch return;
+        row.behavior.events.on_click = .{ .callback = onClick, .context = @ptrFromInt(index + 1 + generation * 100_000) };
+        node.appendChild(cx.allocator, row) catch cx.freeNode(row);
+    }
+
+    fn onClick(ctx: *anyopaque) void {
+        clicked = (@intFromPtr(ctx) - 1) % 100_000;
+    }
+
+    fn init(rig: *VlHitRig, count: usize, comptime measured: bool) !void {
+        clicked = null;
+        generation = 0;
+        rig.cx = try Cx.init(testing.allocator, testing.io);
+        errdefer rig.cx.deinit();
+        rig.cx.setViewport(400, 300);
+        try rig.cx.setTestFrameStep(16);
+        rig.cx.caret_flip_host = true;
+        rig.scope = try Scope.init(testing.allocator, null, rig.cx.owner);
+        const root = try box(rig.cx, .{ .width = .{ .px = 400 }, .height = .{ .px = 300 } }, .{});
+        rig.cx.root = root;
+        const render = if (measured) struct {
+            fn f(node: *Node, index: usize, cx: *Cx) void {
+                renderRow(node, index, cx, true);
+            }
+        }.f else struct {
+            fn f(node: *Node, index: usize, cx: *Cx) void {
+                renderRow(node, index, cx, false);
+            }
+        }.f;
+        const result = if (measured)
+            try VirtualList(.{ .item_count = count, .measure_items = true, .estimate_item_height = 30, .width = 300, .height = view_h, .overscan = 2 }).mount(rig.scope, rig.cx, render)
+        else
+            try VirtualList(.{ .item_count = count, .item_height = row_h, .width = 300, .height = view_h, .overscan = 2 }).mount(rig.scope, rig.cx, render);
+        try root.appendChild(testing.allocator, result.container);
+        rig.state = result.state;
+        rig.container = result.container;
+        try rig.settle();
+    }
+
+    fn deinit(rig: *VlHitRig) void {
+        rig.scope.dispose();
+        rig.cx.deinit();
+    }
+
+    fn settle(rig: *VlHitRig) !void {
+        var frames: usize = 0;
+        while (rig.cx.wantsFrame() and frames < 600) : (frames += 1) {
+            rig.cx.advanceFrameClock();
+            rig.cx.layout();
+            _ = rig.cx.render();
+        }
+        try testing.expect(!rig.cx.wantsFrame());
+    }
+
+    /// Data index of the row painted at content-space y (what the user sees there).
+    fn expectedIndex(rig: *VlHitRig, y: f32) ?usize {
+        const content_y = y - rig.container.rectFromWorldOrFallback().y - rig.state.content_node.style.translate_y;
+        if (content_y < 0 or content_y >= rig.state.totalContentHeight()) return null;
+        var lo: usize = 0;
+        var hi: usize = rig.state.item_count;
+        while (lo < hi) {
+            const mid = lo + (hi - lo) / 2;
+            if (rig.state.offsetOf(mid + 1) <= content_y) lo = mid + 1 else hi = mid;
+        }
+        // Only rows rendered at their full measured height are unambiguous.
+        const top = rig.state.offsetOf(lo);
+        if (content_y - top < 2 or top + rig.state.itemHeight(lo) - content_y < 2) return null;
+        return lo;
+    }
+
+    /// Data index of the row the hit index resolves at (x, y), through the pool slot it hit.
+    fn hitIndex(rig: *VlHitRig, x: f32, y: f32) ?usize {
+        var node = rig.cx.hitTest(x, y);
+        while (node) |n| : (node = n.parent) {
+            for (rig.state.pool_nodes, 0..) |slot, i| {
+                if (slot == n) return rig.state.pool_bindings[i];
+            }
+        }
+        return null;
+    }
+
+    fn click(rig: *VlHitRig, x: f32, y: f32) ?usize {
+        clicked = null;
+        rig.cx.handleMouseDown(x, y, .{});
+        rig.cx.handleMouseUp(x, y);
+        return clicked;
+    }
+
+    /// Every probed point resolves (hit test and click) to the row painted there.
+    fn expectHitsMatchPaint(rig: *VlHitRig) !void {
+        var y: f32 = 3;
+        while (y < view_h) : (y += 11) {
+            const want = rig.expectedIndex(y) orelse continue;
+            try testing.expectEqual(@as(?usize, want), rig.hitIndex(100, y));
+        }
+        const probe_y: f32 = 137;
+        if (rig.expectedIndex(probe_y)) |want| try testing.expectEqual(@as(?usize, want), rig.click(100, probe_y));
+    }
+
+    fn scroll(rig: *VlHitRig, dy: f32) void {
+        rig.cx.handleScroll(.{ .x = 100, .y = 137, .dx = 0, .dy = dy });
+    }
+};
+
+test "VirtualList hit: rows rebound by scrolling are hit at once, only they are rebuilt" {
+    var rig: VlHitRig = undefined;
+    try rig.init(1000, false);
+    defer rig.deinit();
+    const cx = rig.cx;
+    const deltas = [_]f32{ -28, -7, -50, -28, -90, 13, -28, -28, 40, -200, -3 };
+    for (0..4) |round| {
+        for (deltas) |dy| {
+            var bindings_before: [max_pool_size]?usize = undefined;
+            @memcpy(bindings_before[0..rig.state.pool_size], rig.state.pool_bindings);
+            const blocks_before = cx.interaction_index.stat_build_blocks;
+            cx.input_perf = .{};
+            // Event time, no frame in between: the hit scene commits the rebind first.
+            rig.scroll(dy);
+            try rig.expectHitsMatchPaint();
+            try testing.expectEqual(@as(u32, 0), cx.input_perf.in_hit_full_rebuilds);
+            var rebound: u32 = 0;
+            for (rig.state.pool_bindings, 0..) |b, i| {
+                if (!std.meta.eql(b, bindings_before[i])) rebound += 1;
+            }
+            // Rebuilt hit blocks: the rebound slots, plus the two spacers that resized.
+            try testing.expect(cx.interaction_index.stat_build_blocks - blocks_before <= rebound + 2);
+            if (round % 2 == 1) try rig.settle();
+        }
+    }
+    try rig.settle();
+    try rig.expectHitsMatchPaint();
+}
+
+test "VirtualList hit: fast scroll and both ends hit the painted rows" {
+    var rig: VlHitRig = undefined;
+    try rig.init(1000, false);
+    defer rig.deinit();
+    rig.scroll(-5000);
+    try rig.expectHitsMatchPaint();
+    try rig.settle();
+    try rig.expectHitsMatchPaint();
+    // Past the end: the last row is at the bottom.
+    rig.scroll(-1_000_000);
+    try rig.settle();
+    try rig.expectHitsMatchPaint();
+    try testing.expectEqual(@as(?usize, 999), rig.hitIndex(100, VlHitRig.view_h - 5));
+    try testing.expectEqual(@as(?usize, 999), rig.click(100, VlHitRig.view_h - 5));
+    // Back to the top in one event.
+    rig.scroll(1_000_000);
+    try rig.expectHitsMatchPaint();
+    try rig.settle();
+    try testing.expectEqual(@as(?usize, 0), rig.hitIndex(100, 5));
+    try testing.expectEqual(@as(?usize, 0), rig.click(100, 5));
+}
+
+test "VirtualList hit: measured variable-height rows hit where they are painted" {
+    var rig: VlHitRig = undefined;
+    try rig.init(400, true);
+    defer rig.deinit();
+    const deltas = [_]f32{ -30, -61, -200, 45, -17, -900, 300, -2 };
+    for (deltas) |dy| {
+        rig.cx.input_perf = .{};
+        rig.scroll(dy);
+        try rig.settle();
+        try rig.expectHitsMatchPaint();
+        try testing.expectEqual(@as(u32, 0), rig.cx.input_perf.in_hit_full_rebuilds);
+    }
+}
+
+test "VirtualList hit: data change rebinds visible rows and the hit index follows" {
+    var rig: VlHitRig = undefined;
+    try rig.init(1000, false);
+    defer rig.deinit();
+    rig.scroll(-300);
+    try rig.settle();
+    const old_row = rig.cx.hitTest(100, 137).?;
+    VlHitRig.generation = 1;
+    updateItemCount(rig.state, 600);
+    // Event-time query straight after the data change: new row nodes, same painted indices.
+    try rig.expectHitsMatchPaint();
+    try testing.expect(rig.cx.hitTest(100, 137).? != old_row);
+    try rig.settle();
+    try rig.expectHitsMatchPaint();
+    // Shrink below the scroll position: the list clamps and the hits follow.
+    updateItemCount(rig.state, 5);
+    try rig.settle();
+    try rig.expectHitsMatchPaint();
+    try testing.expectEqual(@as(?usize, 4), rig.hitIndex(100, 4 * VlHitRig.row_h + 10));
+    try testing.expectEqual(@as(?usize, null), rig.hitIndex(100, 5 * VlHitRig.row_h + 10));
 }

@@ -15,6 +15,8 @@ typedef struct {
 typedef struct { float x, y; uint32_t buttons, focused; } ZenitWaylandInputState;
 typedef struct { float x, y; uint32_t button, pressed, cancelled; } ZenitWaylandButtonEvent;
 typedef struct { float x, y, dx, dy; } ZenitWaylandScrollEvent;
+/* kind: 1 button, 2 key, 3 text, 4 motion, 5 scroll, 6 preedit, 7 commit, 8 delete surrounding,
+ * 9 pointer left the surface. */
 typedef struct {
     uint32_t kind, keycode, modifiers, button, pressed, cancelled, text_length;
     float x, y, dx, dy;

@@ -266,7 +266,7 @@ fn mount(cx: *ui.Cx, scope: *ui.Scope) anyerror!*ui.Node {
         };
         break :ok true;
     };
-    const root = try ui.box(cx, .{ .width = .{ .grow = .{} }, .height = .{ .grow = .{} }, .direction = .column, .padding = ui.Padding.all(20), .gap = 20, .background = background }, .{});
+    const root = try ui.box(cx, .{ .width = .{ .grow = .{} }, .height = .{ .grow = .{} }, .min_height = 0, .direction = .column, .padding = ui.Padding.all(20), .gap = 20, .background = background }, .{});
     status = try ui.text(cx, "textures=2 bytes=20", .{ .font_size = 14, .color = ui.Color.WHITE });
     status.meta.ownership.meta.test_id = "gallery.status";
     const status_row = try ui.box(cx, .{ .width = .{ .grow = .{} }, .direction = .row, .gap = 20 }, .{});
@@ -348,7 +348,8 @@ fn mount(cx: *ui.Cx, scope: *ui.Scope) anyerror!*ui.Node {
     const button = try ui.widgets.Button(.{ .label = "Replace texture", .on_click = cx.on(Actions, state, Actions.replace) }).mount(scope, cx);
     button.meta.ownership.meta.test_id = "gallery.replace";
     try root.appendChild(cx.allocator, button);
-    const shadows = try ui.box(cx, .{ .width = .{ .grow = .{} }, .height = .{ .px = 160 }, .direction = .row, .padding = ui.Padding.all(24), .gap = 32, .background = ui.Color.WHITE }, .{});
+    const shadows = try ui.box(cx, .{ .width = .{ .grow = .{} }, .height = .{ .px = 160 }, .flex_shrink = 0, .direction = .row, .padding = ui.Padding.all(24), .gap = 32, .background = ui.Color.WHITE }, .{});
+    shadows.meta.ownership.meta.test_id = "gallery.shadow-panel";
     try root.appendChild(cx.allocator, shadows);
     const outer = try shadowBox(cx, shadows, "shadow.outer", .{ .color = ui.Color.rgba(0, 0, 0, 200), .blur = 12, .offset_y = 8 });
     // Transparent body still punches a hole in its own outer shadow.

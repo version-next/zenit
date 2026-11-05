@@ -25,10 +25,11 @@ struct PathUniforms {
     // shape clip mask (align with sdf/text/image/icon pipeline; path only supports kind 0=none /
     // 1=rounded_rect / 2=ellipse, polygon clip not effective for path)
     float4 clip_rect; // logical pixels x,y,w,h
-    float  clip_radius;
+    float4 clip_radii; // TL, TR, BR, BL (logical px)
     uint   clip_shape_kind;
     uint   _pad1;
     uint   _pad2;
+    uint   _pad6;
     // draw_mode 2: radial/conic gradient per fragment over `rect`.
     uint   grad_dir;
     uint   grad_stop_count;
@@ -39,6 +40,11 @@ struct PathUniforms {
     uint   _pad5;
     float4 grad_colors[16];
     float  grad_positions[16];
+    // Second shape clip (shape_clip_pair.zig): kind 0 none, 1 rounded rect, 2 ellipse;
+    // logical px like clip_rect. Coverage multiplies the primary shape clip's.
+    float4 clip2_rect;
+    float4 clip2_radii; // TL, TR, BR, BL
+    uint clip2_shape_kind;
 };
 
 /// Same t as FillGradient.tAt (4 = radial, 5 = conic) on bounds-normalized uv.
@@ -174,6 +180,13 @@ float sdf_rounded_rect_path(float2 p, float2 half_size, float radius) {
     return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
 }
 
+/// Overflow clip with per-corner radii (TL, TR, BR, BL): the quadrant picks the corner, so a
+/// uniform radius evaluates exactly as the single-radius distance.
+float sdf_rounded_rect_corners_path(float2 p, float2 size, float4 radii) {
+    const float r = (p.x < 0.0) ? ((p.y < 0.0) ? radii.x : radii.w) : ((p.y < 0.0) ? radii.y : radii.z);
+    return sdf_rounded_rect_path(p, size, r);
+}
+
 float sdf_ellipse_path(float2 p, float2 half_size) {
     const float2 safe = max(half_size, float2(0.0001));
     const float2 n = p / safe;
@@ -182,7 +195,7 @@ float sdf_ellipse_path(float2 p, float2 half_size) {
 }
 
 /// screen_pos is device px (fragment [[position]]); clip_rect logical pixels.
-float shape_clip_alpha_path(float2 screen_pos, constant PathUniforms& u) {
+float primary_shape_clip_alpha_path(float2 screen_pos, constant PathUniforms& u) {
     if (u.clip_shape_kind == 0u) {
         return 1.0;
     }
@@ -190,12 +203,29 @@ float shape_clip_alpha_path(float2 screen_pos, constant PathUniforms& u) {
     const float2 clip_size = u.clip_rect.zw * u.scale_factor * 0.5;
     float clip_sdf = -1.0;
     if (u.clip_shape_kind == 1u) {
-        clip_sdf = sdf_rounded_rect_path(screen_pos - clip_center, clip_size, u.clip_radius * u.scale_factor);
+        clip_sdf = sdf_rounded_rect_corners_path(screen_pos - clip_center, clip_size, u.clip_radii * u.scale_factor);
     } else if (u.clip_shape_kind == 2u) {
         clip_sdf = sdf_ellipse_path(screen_pos - clip_center, clip_size);
     }
     const float clip_aa = max(fwidth(clip_sdf) * 0.5, 0.5);
     return smoothstep(clip_aa, -clip_aa, clip_sdf);
+}
+
+float partner_shape_clip_alpha_path(float2 screen_pos, constant PathUniforms& u) {
+    if (u.clip2_shape_kind == 0u) {
+        return 1.0;
+    }
+    const float2 clip_center = (u.clip2_rect.xy + u.clip2_rect.zw * 0.5) * u.scale_factor;
+    const float2 clip_size = u.clip2_rect.zw * u.scale_factor * 0.5;
+    const float clip_sdf = u.clip2_shape_kind == 2u
+        ? sdf_ellipse_path(screen_pos - clip_center, clip_size)
+        : sdf_rounded_rect_corners_path(screen_pos - clip_center, clip_size, u.clip2_radii * u.scale_factor);
+    const float clip_aa = max(fwidth(clip_sdf) * 0.5, 0.5);
+    return smoothstep(clip_aa, -clip_aa, clip_sdf);
+}
+
+float shape_clip_alpha_path(float2 screen_pos, constant PathUniforms& u) {
+    return primary_shape_clip_alpha_path(screen_pos, u) * partner_shape_clip_alpha_path(screen_pos, u);
 }
 
 fragment float4 path_fragment_main(PathVertexOut in [[stage_in]], constant PathUniforms& u [[buffer(1)]])

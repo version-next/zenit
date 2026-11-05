@@ -16,9 +16,9 @@ pub fn containerStyle(panel_width: f32, t: *const theme.ThemeTokens) core.BoxSty
         // White-background panel (same surface as Card / Popover), date cells distinguished by
         // hover / today / selected.
         .background = t.tokens.color.bg_primary,
-        .border = .{ .width = 1, .color = t.tokens.color.border, .radius = 14 },
-        .padding = Padding.all(20),
-        .gap = 16,
+        .border = .{ .overlay = true, .width = 1, .color = t.tokens.color.border, .radius = t.tokens.radius.panel },
+        .padding = Padding.all(12),
+        .gap = 8,
     };
 }
 
@@ -33,20 +33,22 @@ pub fn headerStyle(_: *const theme.ThemeTokens) core.BoxStyle {
 }
 
 pub fn monthLabelTextStyle(t: *const theme.ThemeTokens) core.TextStyle {
-    return .{ .color = t.tokens.color.fg_primary, .font_size = 14, .font_weight = 600 };
+    return .{ .color = t.tokens.color.fg_primary, .font_size = t.tokens.font_size.md, .font_weight = 600 };
 }
 
 pub fn weekdayCellStyle(_: *const theme.ThemeTokens) core.BoxStyle {
     return .{
-        .width = .{ .px = 34 },
+        .width = .{ .px = 36 },
         .height = .{ .px = 28 },
         .justify = .center,
-        .align_items = .center,
+        // Preserve the original text block's inline start position; only
+        // vertical centering used to come from the hidden paint offset.
+        .align_items = .start,
     };
 }
 
 pub fn weekdayTextStyle(t: *const theme.ThemeTokens) core.TextStyle {
-    return .{ .color = t.tokens.color.fg_tertiary, .font_size = 11, .font_weight = 600 };
+    return .{ .color = t.tokens.color.fg_tertiary, .font_size = t.tokens.font_size.xs, .font_weight = 600 };
 }
 
 pub fn gridStyle(_: *const theme.ThemeTokens) core.BoxStyle {
@@ -79,27 +81,18 @@ pub fn dayCellStyle(f: DayCellFlags, cell_size: f32, t: *const theme.ThemeTokens
     // Panel is white: non-selected cells match panel, adjacent-month dates distinguished
     // by fg_tertiary text only.
     const bg: Color = if (f.selected) t.tokens.color.accent else t.tokens.color.bg_primary;
-    // keyboard focus priority > today border > normal; selected already strong visual, no
-    // ring
-    const border_width: f32 = if (f.keyboard_focus and !f.selected)
-        2
-    else if (f.today and !f.selected)
-        1
-    else
-        0;
-    const border_color: Color = if (f.keyboard_focus and !f.selected)
-        t.tokens.color.accent
-    else if (f.today and !f.selected)
-        t.tokens.color.border_strong
-    else
-        t.tokens.color.border;
+    // RxE0k: today is accent text with no frame; keyboard focus is an independent 2px ring with
+    // 2px offset, including selected dates.
+    const border_width: f32 = 0;
+    const border_color = t.tokens.color.border_strong;
     return .{
         .width = .{ .px = cell_size },
         .height = .{ .px = cell_size },
         .justify = .center,
         .align_items = .center,
         .background = bg,
-        .border = .{ .width = border_width, .color = border_color, .radius = 10 },
+        .outline = if (f.keyboard_focus) .{ .color = t.tokens.color.focus_ring, .width = t.tokens.border_width.focus, .offset = 2 } else null,
+        .border = .{ .overlay = true, .width = border_width, .color = border_color, .radius = t.tokens.radius.control },
     };
 }
 
@@ -107,12 +100,14 @@ pub fn dayTextStyle(f: DayCellFlags, t: *const theme.ThemeTokens) core.TextStyle
     return .{
         .color = if (f.selected)
             t.tokens.color.fg_inverse
+        else if (f.today)
+            t.tokens.color.accent
         else if (f.current_month)
             t.tokens.color.fg_primary
         else
-            t.tokens.color.fg_tertiary,
-        .font_size = 13,
-        .font_weight = if (f.selected) 600 else 400,
+            t.tokens.color.fg_disabled,
+        .font_size = t.tokens.font_size.md,
+        .font_weight = if (f.selected or f.today) 600 else 400,
     };
 }
 

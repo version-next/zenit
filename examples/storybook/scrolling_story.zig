@@ -21,9 +21,9 @@ const S = struct {
     fn status(t: *const ui.theme.Values) ui.TextStyle {
         return .{ .font_size = 11, .color = t.tokens.color.fg_secondary };
     }
-    fn line(t: *const ui.theme.Values) ui.BoxStyle {
-        return .{ .height = .{ .px = 30 }, .width = .{ .grow = .{} }, .padding = ui.Padding.symmetric(4, 10), .background = t.tokens.color.bg_secondary };
-    }
+    /// Hoverable rows: with the pointer resting on a list, scrolling moves the highlight to the
+    /// row that arrives under it (stationary-pointer hover, core/cx_hover.zig).
+    const line = ui.css(.{ .height = 30, .width = .fill, .padding = .{ .x = 10, .y = 4 }, .background = .bg_secondary, ._hover = .{ .background = .bg_active } });
     fn body(t: *const ui.theme.Values) ui.TextStyle {
         return .{ .font_size = 13, .color = t.tokens.color.fg_primary };
     }
@@ -96,11 +96,15 @@ fn panel(scope: *ui.Scope, cx: *ui.Cx, comptime id: []const u8, title: []const u
     try root.appendChild(cx.allocator, label);
     return .{ .root = root, .area = area };
 }
-fn rows(scope: *ui.Scope, cx: *ui.Cx, parent: *ui.Node, comptime prefix: []const u8, count: usize) !void {
-    for (0..count) |i| {
-        var buf: [80]u8 = undefined;
-        const text = try std.fmt.bufPrint(&buf, prefix ++ " {d:0>2}  ·  Scroll to explore", .{i + 1});
-        const node = try v.render(scope, cx, v.row(.{ .style = S.line }, v.text(.{ .style = S.body }, text)));
+/// Rows carry `<id>.row.NN` test ids (1-based, as labelled) when `id` is given.
+fn rows(scope: *ui.Scope, cx: *ui.Cx, parent: *ui.Node, comptime id: ?[]const u8, comptime prefix: []const u8, comptime count: usize) !void {
+    inline for (0..count) |i| {
+        const text = std.fmt.comptimePrint(prefix ++ " {d:0>2}  ·  Scroll to explore", .{i + 1});
+        const row = v.row(.{ .style = S.line }, v.text(.{ .style = S.body }, text));
+        const node = if (id) |prefix_id|
+            try v.render(scope, cx, v.attrs(.{ .test_id = std.fmt.comptimePrint("{s}.row.{d:0>2}", .{ prefix_id, i + 1 }) }, row))
+        else
+            try v.render(scope, cx, row);
         try parent.appendChild(cx.allocator, node);
     }
 }
@@ -109,25 +113,25 @@ pub fn build(scope: *ui.Scope, cx: *ui.Cx) anyerror!*ui.Node {
     const top = try v.render(scope, cx, v.row(.{ .style = S.row }, .{}));
     try root.appendChild(cx.allocator, top);
     const vertical = try panel(scope, cx, "story.scrolling.vertical", "Vertical · wheel / trackpad", 300, 170, .vertical);
-    try rows(scope, cx, vertical.area.content, "Row", 40);
+    try rows(scope, cx, vertical.area.content, "story.scrolling.vertical", "Row", 40);
     try top.appendChild(cx.allocator, vertical.root);
     const horizontal = try panel(scope, cx, "story.scrolling.horizontal", "Horizontal · sideways scroll", 300, 170, .horizontal);
-    horizontal.area.content.setStyleInline(cx.allocator, .{ .width = .{ .px = 1200 } });
+    try horizontal.area.content.setStyleInlineFallible(cx.allocator, .{ .width = .{ .px = 1200 } });
     const strip = try ui.box(cx, .{ .width = .{ .px = 1200 }, .height = .{ .px = 160 }, .direction = .row, .gap = 12 }, .{});
     try horizontal.area.content.appendChild(cx.allocator, strip);
     for (0..8) |i| {
         var buf: [32]u8 = undefined;
         const text = try std.fmt.bufPrint(&buf, "Card {d}", .{i + 1});
         const card = try W.Card(.{ .title = text, .variant = .outlined }).mount(scope, cx);
-        card.setStyleInline(cx.allocator, .{ .width = .{ .px = 130 }, .height = .{ .px = 140 } });
+        try card.setStyleInlineFallible(cx.allocator, .{ .width = .{ .px = 130 }, .height = .{ .px = 140 } });
         try strip.appendChild(cx.allocator, card);
     }
     try top.appendChild(cx.allocator, horizontal.root);
     const outer = try panel(scope, cx, "story.scrolling.outer", "Nested · inner first, then parent at the edge", 620, 190, .vertical);
     const inner = try panel(scope, cx, "story.scrolling.inner", "Inner list", 560, 100, .vertical);
-    try rows(scope, cx, inner.area.content, "Inner", 20);
+    try rows(scope, cx, inner.area.content, "story.scrolling.inner", "Inner", 20);
     try outer.area.content.appendChild(cx.allocator, inner.root);
-    try rows(scope, cx, outer.area.content, "Outer", 16);
+    try rows(scope, cx, outer.area.content, null, "Outer", 16);
     try root.appendChild(cx.allocator, outer.root);
     return root;
 }

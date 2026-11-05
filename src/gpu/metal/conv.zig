@@ -104,7 +104,11 @@ pub fn toMetalTextureType(dimension: gpu.TextureDimension) mtl.MTLTextureType {
 // Texture Usage Conversion
 // ============================================================================
 
-pub fn toMetalTextureUsage(usage: gpu.TextureUsages) c_ulong {
+/// `pixel_format_view` must be true only for textures that will be viewed or
+/// reinterpreted with another pixel format (`TextureDescriptor.view_formats`).
+/// MTLTextureUsagePixelFormatView prevents the driver from using lossless
+/// compression on Private render targets, so it is never added implicitly.
+pub fn toMetalTextureUsage(usage: gpu.TextureUsages, pixel_format_view: bool) c_ulong {
     var result: c_ulong = 0;
 
     if (usage.texture_binding) {
@@ -117,8 +121,9 @@ pub fn toMetalTextureUsage(usage: gpu.TextureUsages) c_ulong {
         result |= @backingInt(mtl.MTLTextureUsage.RenderTarget);
     }
 
-    // Metal always allows PixelFormatView
-    result |= @backingInt(mtl.MTLTextureUsage.PixelFormatView);
+    if (pixel_format_view) {
+        result |= @backingInt(mtl.MTLTextureUsage.PixelFormatView);
+    }
 
     return result;
 }
@@ -134,7 +139,30 @@ pub fn toMetalResourceOptions(usage: gpu.BufferUsages) mtl.MTLResourceOptions {
     else
         .Private; // GPU only (fastest)
 
-    return mtl.resourceOptionsFromStorageMode(storage_mode);
+    var options = mtl.resourceOptionsFromStorageMode(storage_mode);
+    // Upload-only streams (instances, uniforms, vertices): write-combined
+    // avoids CPU cache pollution and snooping. Read-back buffers keep caching.
+    if (usage.map_write and !usage.map_read) options |= mtl.MTLResourceCPUCacheModeWriteCombined;
+    return options;
+}
+
+/// Write-combined CPU mapping applies only to host textures declared write-only.
+pub fn textureWriteCombined(desc: gpu.TextureDescriptor) bool {
+    return desc.memory == .host_upload and desc.host_access == .write_only;
+}
+
+test "only CPU write-only resources are write-combined" {
+    const testing = @import("std").testing;
+    const wc = mtl.MTLResourceCPUCacheModeWriteCombined;
+    try testing.expectEqual(wc, toMetalResourceOptions(.{ .vertex = true, .map_write = true }) & wc);
+    try testing.expectEqual(@as(mtl.MTLResourceOptions, 0), toMetalResourceOptions(.{ .map_read = true, .copy_dst = true }) & wc);
+    try testing.expectEqual(@as(mtl.MTLResourceOptions, 0), toMetalResourceOptions(.{ .map_read = true, .map_write = true }) & wc);
+    try testing.expectEqual(@as(mtl.MTLResourceOptions, 0), toMetalResourceOptions(.{ .vertex = true }) & wc);
+    const size: gpu.Extent3D = .{ .width = 4, .height = 4 };
+    const usage: gpu.TextureUsages = .{ .texture_binding = true, .copy_dst = true };
+    try testing.expect(textureWriteCombined(.{ .size = size, .format = .r8_unorm, .usage = usage, .memory = .host_upload, .host_access = .write_only }));
+    try testing.expect(!textureWriteCombined(.{ .size = size, .format = .r8_unorm, .usage = usage, .memory = .host_upload }));
+    try testing.expect(!textureWriteCombined(.{ .size = size, .format = .r8_unorm, .usage = usage, .host_access = .write_only }));
 }
 
 // ============================================================================
@@ -175,6 +203,31 @@ pub fn toMetalCompareFunction(function: gpu.CompareFunction) c_ulong {
         .greater_equal => 6,
         .always => 7,
     };
+}
+
+/// True when a texture created with `desc` may be viewed in a pixel format
+/// other than its own. Views in the texture's own format need no flag.
+pub fn needsPixelFormatView(desc: gpu.TextureDescriptor) bool {
+    for (desc.view_formats) |format| {
+        if (format != desc.format) return true;
+    }
+    return false;
+}
+
+test "texture usage adds PixelFormatView only for declared foreign view formats" {
+    const testing = @import("std").testing;
+    const pfv: c_ulong = @backingInt(mtl.MTLTextureUsage.PixelFormatView);
+    const usage: gpu.TextureUsages = .{ .texture_binding = true, .render_attachment = true, .storage_binding = true };
+    const base: gpu.TextureDescriptor = .{ .size = .{ .width = 4, .height = 4 }, .format = .bgra8_unorm, .usage = usage };
+    try testing.expect(!needsPixelFormatView(base));
+    try testing.expectEqual(@as(c_ulong, 0), toMetalTextureUsage(usage, needsPixelFormatView(base)) & pfv);
+    var same = base;
+    same.view_formats = &.{.bgra8_unorm};
+    try testing.expect(!needsPixelFormatView(same));
+    var foreign = base;
+    foreign.view_formats = &.{ .bgra8_unorm, .bgra8_unorm_srgb };
+    try testing.expect(needsPixelFormatView(foreign));
+    try testing.expectEqual(pfv, toMetalTextureUsage(usage, needsPixelFormatView(foreign)) & pfv);
 }
 
 test "sampler descriptor enums map without leaking Metal values to callers" {

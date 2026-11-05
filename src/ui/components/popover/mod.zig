@@ -177,6 +177,11 @@ pub const PopoverProps = struct {
     open_delay_ms: f32 = 0,
     /// Enter animation
     enter_transition: overlay_stack_mod.Transition = .scale_fade,
+    /// Play `enter_transition` when `open` is already true as the popover mounts. Default false:
+    /// a popover mounted open (a page shown with its picker open) is the open result, not an
+    /// opening, so it appears at once. Set true when the caller mounts it in response to the
+    /// opening itself.
+    animate_initial_open: bool = false,
     /// Semantic z-index tier; null = overlay (Tooltip passes .tooltip). See StackTier.
     tier: ?overlay_stack_mod.StackTier = null,
     /// Exit animation
@@ -313,6 +318,7 @@ pub const PopoverBuilder = struct {
             .style = BoxStyle{
                 .width = .{ .fit = .{} },
                 .height = .{ .fit = .{} },
+                .no_cross_stretch = true,
                 // `.start` required: column's default cross-axis stretch/center pushes trigger to
                 // container center, misaligning trigger visual position with its box rect origin
                 // (popover positions by this).
@@ -350,7 +356,7 @@ pub const PopoverBuilder = struct {
                 .padding = Padding.all(0),
                 .border = styles.popoverContentBorder(t),
                 .transform_origin = transformOriginForPlacement(p.position),
-                .shadows = core.ShadowList.of(&.{ styles.popoverKeyShadow(t), styles.popover_ambient_shadow }),
+                .shadows = core.ShadowList.of(&.{styles.popoverKeyShadow(t)}),
                 .keep_rendering_when_transparent = true,
                 .max_width = p.max_width,
                 .hit_shape = .{ .rounded_rect = styles.popoverRadius(t) },
@@ -434,6 +440,7 @@ pub const PopoverBuilder = struct {
             .layer_handle = layer_handle,
             .detach_hidden_content = p.detach_hidden_content,
             .portaled = true,
+            .animate_initial_open = p.animate_initial_open,
         };
         my_scope.adoptResource(@ptrCast(mount_ctx), struct {
             fn cleanup(ptr: *anyopaque, alloc: Allocator) void {
@@ -515,9 +522,13 @@ pub const PopoverBuilder = struct {
             .clip_subtree = p.clip_subtree_to_chrome,
         }, struct {
             fn update(c: anytype) void {
+                const initial = !c.mount_ctx.presence_settled;
+                c.mount_ctx.presence_settled = true;
                 if (c.is_open.get()) {
                     ensurePopoverContentAttached(c.mount_ctx);
-                    c.cx.overlay_stack.reactivate(c.layer_handle);
+                    const animate = !initial or c.mount_ctx.animate_initial_open;
+                    c.mount_ctx.instant_enter = !animate;
+                    c.cx.overlay_stack.reactivateWith(c.layer_handle, .{ .animate = animate });
                     // Re-open mid-exit animation: reactivate only handles suspended layers; exiting
                     // layers
                     // must pull back to entering, else animation finishes commitExit writes
@@ -693,6 +704,11 @@ const DetachedContentCtx = struct {
     detach_hidden_content: bool,
     /// Content on popover_portal_root (not caller subtree), on dispose must manually detach.
     portaled: bool = false,
+    /// The open effect has run once (mount); later opens are openings.
+    presence_settled: bool = false,
+    /// The current open shows at once (no enter transition), see `animate_initial_open`.
+    instant_enter: bool = false,
+    animate_initial_open: bool = false,
 };
 
 fn ensurePopoverContentAttached(ctx: *DetachedContentCtx) void {
@@ -753,6 +769,8 @@ pub const PopoverPositionCtx = struct {
     is_visible: bool,
     prewarm_hidden_layout: bool,
     mount_ctx: ?*DetachedContentCtx = null,
+    /// The trigger was found freed (traced once under the popover debug switch).
+    orphan_reported: bool = false,
     enter_transition: overlay_stack_mod.Transition,
     exit_transition: overlay_stack_mod.Transition,
     /// Each frame fetch 'must-avoid rect list' via it (see PopoverProps.avoid_rects_provider
@@ -848,6 +866,10 @@ fn applyDropdownSlide(ctx: *PopoverPositionCtx) bool {
         const off = dropdownSlideOffset(floating.getSide(ctx.active_position), ctx.popover.getOpacity());
         x += off[0];
         y += off[1];
+        // The slide is transient: a composited panel anchors its pixel grid to the rest position.
+        if (ctx.popover.style.ext) |ext| ext.motion_offset = off else if (off[0] != 0 or off[1] != 0) {
+            ctx.popover.style.ensureExtPanic(ctx.cx.allocator).motion_offset = off;
+        }
     }
     return setPopoverTranslate(ctx.popover, x, y);
 }
@@ -895,7 +917,7 @@ fn syncTransformOriginForPlacement(node: *Node, pos: PopoverPosition, allocator:
 }
 
 fn popoverDebugEnabled() bool {
-    return @import("zenit_environment").has("ZENIT_POPOVER_DEBUG");
+    return @import("zenit_environment").flag("ZENIT_POPOVER_DEBUG");
 }
 
 fn popoverContentReady(node: *Node) bool {
@@ -978,18 +1000,27 @@ fn applyAutosizeMaxHeight(ctx: *PopoverPositionCtx, auto_opt: ?floating.Autosize
 
 pub fn popoverBeforeRender(node: *Node) void {
     const ctx: *PopoverPositionCtx = @ptrCast(@alignCast(node.meta.per_frame.hooks.slots.anim_state orelse return));
+    // The trigger lives in the caller's subtree and can be freed before the Popover's scope is
+    // disposed: a scope disposal requested inside a reactive callback is deferred, while the
+    // subtree's nodes may already be gone, and a frame can run in between (zeditor rebuilding a
+    // blockquote citation row under its tooltips). Never dereference the freed trigger (the
+    // stack's generation-checked handle tells): close the layer until the scope disposal lands.
+    if (ctx.cx.overlay_stack.findLayer(ctx.layer_handle)) |layer| {
+        // A layer pushed without a trigger has nothing to lose.
+        if (layer.trigger_node != null and ctx.cx.overlay_stack.resolveTrigger(layer) == null) {
+            if (popoverDebugEnabled() and !ctx.orphan_reported) {
+                ctx.orphan_reported = true;
+                std.debug.print("[popover] trigger freed before the scope disposal (content test_id={s})\n", .{ctx.popover.meta.ownership.meta.test_id orelse "(nil)"});
+            }
+            if (!layer.suspended and layer.state != .exiting) ctx.cx.overlay_stack.beginExit(ctx.layer_handle);
+            return;
+        }
+    }
     const overlay_visual_in_progress = ctx.popover.frame_state.state_bits.flags.manual_opacity_animation_active or
         ctx.popover.frame_state.state_bits.flags.manual_transform_animation_active or
         ((ctx.popover.getOpacity() > (HIDDEN_OPACITY + 0.0001) and ctx.popover.getOpacity() < 0.999) or
             @abs(ctx.popover.style.scale_x() - 1.0) > 0.0001 or
             @abs(ctx.popover.style.scale_y() - 1.0) > 0.0001);
-    const should_stabilize_text = (ctx.enter_transition == .scale_fade or ctx.enter_transition == .dropdown or ctx.enter_transition == .glass_popover) and overlay_visual_in_progress;
-    if (ctx.popover.frame_state.state_bits.flags.text_stabilize_subtree != should_stabilize_text) {
-        ctx.popover.frame_state.state_bits.flags.text_stabilize_subtree = should_stabilize_text;
-        ctx.popover.markRenderDirty();
-        ctx.popover.markCompositeDirty();
-    }
-
     if (!ctx.is_open.peek()) {
         if (ctx.mount_ctx) |mount_ctx| {
             if (ctx.cx.overlay_stack.findLayer(ctx.layer_handle)) |layer| {
@@ -1026,8 +1057,6 @@ pub fn popoverBeforeRender(node: *Node) void {
             });
         }
         ctx.cx.overlay_stack.setEnterPaused(ctx.layer_handle, false, ctx.cx.allocator);
-        ctx.active_position = ctx.pos;
-        syncTransformOriginForPlacement(ctx.popover, ctx.active_position, ctx.cx.allocator);
         ctx.entry_ready = false;
         ctx.is_visible = false;
         // During an exit transition OR while a visible remnant remains, don't reset
@@ -1040,6 +1069,13 @@ pub fn popoverBeforeRender(node: *Node) void {
         const popup_still_visible = ctx.popover.getOpacity() > (HIDDEN_OPACITY + 0.0001) or
             @abs(ctx.popover.style.scale_x() - exit_hidden_scale) > 0.001 or
             @abs(ctx.popover.style.scale_y() - exit_hidden_scale) > 0.001;
+        // The exit leaves from where the popover is placed: a flipped (top) popover keeps its side,
+        // so the dropdown slide and the scale origin point at its anchor. Placement resets once
+        // the exit has finished.
+        if (!(overlay_visual_in_progress or popup_still_visible)) {
+            ctx.active_position = ctx.pos;
+            syncTransformOriginForPlacement(ctx.popover, ctx.active_position, ctx.cx.allocator);
+        }
         if (overlay_visual_in_progress or popup_still_visible) {
             // During exit, positioner doesn't run: pass landing direction to exit controller, it
             // same-frame push slide-out.
@@ -1483,13 +1519,24 @@ pub fn popoverBeforeRender(node: *Node) void {
             });
         }
         ctx.cx.overlay_stack.setEnterPaused(ctx.layer_handle, false, ctx.cx.allocator);
-        // `.none` layers enter the overlay stack directly in `.visible`, so
-        // there is no TransitionController tick to restore the opacity that
+        // `.none` layers (and an instant initial open) enter the overlay stack
+        // directly in `.visible`, so there is no TransitionController tick to
+        // restore the opacity (and hidden prewarm scale) that
         // commitExit set to zero. Once geometry is ready, make the content
         // atomically visible here. Animated transitions keep ownership of
         // opacity in the overlay controller.
-        if (ctx.enter_transition == .none and ctx.popover.getOpacity() != 1) {
+        if ((ctx.enter_transition == .none or (if (ctx.mount_ctx) |m| m.instant_enter else false)) and
+            (ctx.popover.getOpacity() != 1 or ctx.popover.style.scale_x() != 1 or ctx.popover.style.scale_y() != 1))
+        {
             ctx.popover.setOpacityRaw(1);
+            if (ctx.popover.style.scale_x() != 1 or ctx.popover.style.scale_y() != 1) {
+                const ext = ctx.popover.style.ensureExtPanic(ctx.cx.allocator);
+                ext.scale_x = 1;
+                ext.scale_y = 1;
+            }
+            // Positioning added the hidden dropdown offset (it tracks opacity): land at rest now,
+            // or the first opaque frame sits 6 px off and jumps on the next.
+            _ = applyDropdownSlide(ctx);
             ctx.popover.markCompositeAnimFrameDirty();
             ctx.popover.markRenderDirty();
             ctx.cx.needs_redraw = true;

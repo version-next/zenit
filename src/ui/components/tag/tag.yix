@@ -24,7 +24,7 @@ pub fn Tag(
             {if (label.len != 0) <text style={p.label}>{label}</text>}
             {if (closable)
                 <box style={p.close} a11y={.{ .role = .button, .label = "Remove" }} onClick={onClose}>
-                    {if (closeIconAsset) |asset| <icon style={p.close_icon} src={asset} /> else <text style={p.close_text}>x</text>}
+                    {if (closeIconAsset) |asset| <icon style={p.close_icon} src={asset} /> else <icon style={p.close_icon} src={ui.assets.common.x_close} />}
                 </box>
             }
         </row>

@@ -330,6 +330,9 @@ pub fn Signal(comptime T: type) type {
                 self.value = new_value;
             }
 
+            if (comptime @import("builtin").is_test) {
+                if (self.owner.test_write_trace) |trace| trace.write(trace.context, &self.base);
+            }
             if (debug_checks) self.recordWrite(@returnAddress());
 
             // Writes go through the graph. graph.markSignalWritten internally:
@@ -342,9 +345,14 @@ pub fn Signal(comptime T: type) type {
             // freedom.
             if (self.base.graph_node_raw != 0xFFFFFFFF) {
                 const gid: @import("graph.zig").NodeId = @bitCast(self.base.graph_node_raw);
-                self.owner.graph.markSignalWritten(gid) catch |err| {
+                // The drain may run an effect that disposes this signal's scope: only the owner
+                // (which outlives it) is used afterwards.
+                const owner = self.owner;
+                owner.graph.markSignalWritten(gid) catch |err| {
                     std.log.err("[reactive.Signal] graph.markSignalWritten failed: {}", .{err});
                 };
+                // the write's effect drain (if any) has finished: settle point
+                owner.drainSettledTasks();
             }
         }
 

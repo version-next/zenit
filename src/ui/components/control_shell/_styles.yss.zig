@@ -1,10 +1,9 @@
 // GENERATED FILE, do not edit: generated from styles.yss; after editing the source run `zig build gen-yix` (yix-lsp regenerates it on save).
 //! ControlShell styles: size recipe and variant coloring (YSS, shared source for
-//! Button/Input/Select/DatePicker),
+//! Button/Input/Select/DatePicker/Chip),
 //! plus theme-computed metrics and cross-dimension geometry (literal Zig: line_height = font_size *
 //! multiplier is arithmetic, read theme).
-//! Business logic (controlShell() / ControlShellConfig / slot assembly) in mod.zig; variant enum
-//! from mod.zig.
+//! Structure and states in control_shell.yix; variant enum re-exported from mod.zig.
 const ui = @import("../../ui.zig");
 const core = @import("../../core.zig");
 const theme = core.theme;
@@ -12,20 +11,19 @@ const Sizing = core.Sizing;
 const Padding = core.Padding;
 const ConditionalStyle = core.ConditionalStyle;
 const recipe_mod = @import("../../recipe.zig");
-const mod = @import("mod.zig");
-const ControlVariant = mod.ControlVariant;
 
 /// Size recipe: outer padding (vertical fractional is optical widget tweak) / radius / gap,
 /// text font-size and line-height, icon size. Size tiers are recipe not theme category;
 /// gap, font-size, radius, icon size still draw design-system token.
-pub const SizeRecipe = ui.sva(.{ .slots = .{ .root, .content, .icon, }, .base = .{ .content = .{ .line_height = ui.tokenRef(.line_height, "tight"), }, }, .variants = .{ .size = .{ .xs = .{ .root = .{ .padding = .{ .y = 2.5, .x = ui.tokenRef(.space, "space150") }, .corner_radius = ui.tokenRef(.radius, "md"), .gap = ui.tokenRef(.space, "space100"), }, .content = .{ .font_size = ui.tokenRef(.font_size, "sm"), }, .icon = .{ .width = ui.tokenRef(.size, "xs"), }, }, .sm = .{ .root = .{ .padding = .{ .y = 4.5, .x = ui.tokenRef(.space, "space200") }, .corner_radius = ui.tokenRef(.radius, "lg"), .gap = ui.tokenRef(.space, "space100"), }, .content = .{ .font_size = ui.tokenRef(.font_size, "sm"), }, .icon = .{ .width = ui.tokenRef(.size, "sm"), }, }, .md = .{ .root = .{ .padding = .{ .y = 7.25, .x = ui.tokenRef(.space, "space300") }, .corner_radius = ui.tokenRef(.radius, "xl"), .gap = ui.tokenRef(.space, "space150"), }, .content = .{ .font_size = ui.tokenRef(.font_size, "lg"), }, .icon = .{ .width = ui.tokenRef(.size, "md"), }, }, .lg = .{ .root = .{ .padding = .{ .y = 10, .x = ui.tokenRef(.space, "space400") }, .corner_radius = ui.tokenRef(.radius, "xxl"), .gap = ui.tokenRef(.space, "space200"), }, .content = .{ .font_size = ui.tokenRef(.font_size, "xl"), }, .icon = .{ .width = ui.tokenRef(.size, "lg"), }, }, }, }, .defaults = .{ .size = .md, }, });
+pub const SizeRecipe = ui.sva(.{ .slots = .{ .root, .content, .icon, }, .base = .{ .content = .{ .line_height = 1.2, .font_size = ui.tokenRef(.font_size, "md"), }, .root = .{ .corner_radius = ui.tokenRef(.radius, "control"), .gap = ui.tokenRef(.space, "space200"), }, .icon = .{ .width = ui.tokenRef(.size, "md"), }, }, .variants = .{ .size = .{ .xs = .{ .root = .{ .padding = .{ .y = 2.2, .x = ui.tokenRef(.space, "space300") }, }, }, .sm = .{ .root = .{ .padding = .{ .y = 4.2, .x = ui.tokenRef(.space, "space300") }, }, }, .md = .{ .root = .{ .padding = .{ .y = 8.2, .x = ui.tokenRef(.space, "space300") }, }, }, .lg = .{ .root = .{ .padding = .{ .y = 12.2, .x = ui.tokenRef(.space, "space400") }, }, }, }, }, .defaults = .{ .size = .md, }, });
 
-/// Variant coloring: background / text / weight / border, hover/press/disabled states.
-/// primary reads theme button-primary-* token (custom theme swaps brand), hover/press derived from
-/// background.
-pub const Tone = ui.cva(.{ .variants = .{ .kind = .{ .primary = .{ .background = ui.tokenRef(.color, "button-primary-bg"), .color = ui.tokenRef(.color, "button-primary-fg"), .font_weight = 600, .border_width = 0, .border_color = ui.Color.TRANSPARENT, ._hover = .{ .background = ui.mix(ui.tokenRef(.color, "button-primary-bg"), ui.Color.hex(0x000000), 0.35), }, ._active = .{ .background = ui.mix(ui.tokenRef(.color, "button-primary-bg"), ui.Color.hex(0xffffff), 0.1), }, ._disabled = .{ .background = ui.tokenRef(.color, "bg-secondary"), .color = ui.tokenRef(.color, "fg-tertiary"), }, }, .secondary = .{ .background = ui.tokenRef(.color, "bg-primary"), .color = ui.tokenRef(.color, "fg-primary"), .font_weight = 500, .border_width = 1, .border_color = ui.tokenRef(.color, "border"), ._hover = .{ .background = ui.tokenRef(.color, "bg-hover"), .border_color = ui.tokenRef(.color, "border-strong"), }, ._active = .{ .background = ui.tokenRef(.color, "bg-active"), }, ._disabled = .{ .opacity = 0.5, }, }, .ghost = .{ .color = ui.tokenRef(.color, "fg-secondary"), .font_weight = 500, ._hover = .{ .background = ui.tokenRef(.color, "bg-hover"), }, ._active = .{ .background = ui.tokenRef(.color, "bg-active"), }, ._disabled = .{ .opacity = 0.5, }, }, .danger = .{ .background = ui.tokenRef(.color, "danger"), .color = ui.tokenRef(.color, "status-fg"), .font_weight = 600, ._hover = .{ .background = ui.tokenRef(.color, "danger-hover"), }, ._active = .{ .background = ui.mix(ui.tokenRef(.color, "danger-hover"), ui.Color.hex(0x000000), 0.1), }, ._disabled = .{ .opacity = 0.5, }, }, .link = .{ .color = ui.tokenRef(.color, "accent"), .font_weight = 500, ._disabled = .{ .opacity = 0.5, }, }, .field = .{ .background = ui.tokenRef(.color, "input-bg"), .color = ui.tokenRef(.color, "fg-primary"), .font_weight = 400, .border_width = 1, .border_color = ui.tokenRef(.color, "border-strong"), ._hover = .{ .border_color = ui.tokenRef(.color, "border-focus"), }, ._disabled = .{ .background = ui.tokenRef(.color, "bg-secondary"), .color = ui.tokenRef(.color, "fg-secondary"), .border_color = ui.tokenRef(.color, "separator"), }, }, }, }, .defaults = .{ .kind = .secondary, }, });
+/// LKxqO: finite interaction colors belong to the shared tone recipe.
+pub const Tone = ui.previewCva("src/ui/components/control_shell/styles.yss", "Tone", @embedFile("styles.yss"), .{ .variants = .{ .kind = .{ .primary = .{ .background = ui.tokenRef(.color, "button-primary-bg"), .color = ui.tokenRef(.color, "button-primary-fg"), .font_weight = 500, .border_overlay = true, .border_width = 0, .border_color = ui.Color.TRANSPARENT, ._hover = .{ .background = ui.tokenRef(.color, "accent-hover"), }, ._active = .{ .background = ui.tokenRef(.color, "accent-pressed"), }, ._disabled = .{ .background = ui.tokenRef(.color, "disabled-bg"), .color = ui.tokenRef(.color, "fg-disabled"), }, }, .secondary = .{ .background = ui.tokenRef(.color, "bg-primary"), .color = ui.tokenRef(.color, "fg-primary"), .font_weight = 500, .border_overlay = true, .border_width = 1, .border_color = ui.tokenRef(.color, "border"), .shadow = ui.tokenRef(.shadow, "xs"), ._hover = .{ .background = ui.tokenRef(.color, "bg-hover"), }, ._active = .{ .background = ui.tokenRef(.color, "button-pressed-bg"), }, ._disabled = .{ .background = ui.tokenRef(.color, "disabled-bg"), .color = ui.tokenRef(.color, "fg-disabled"), }, }, .ghost = .{ .background = ui.Color.TRANSPARENT, .color = ui.tokenRef(.color, "fg-primary"), .font_weight = 500, .border_overlay = true, .border_width = 0, .border_color = ui.Color.TRANSPARENT, ._hover = .{ .background = ui.tokenRef(.color, "bg-hover"), }, ._active = .{ .background = ui.tokenRef(.color, "button-pressed-bg"), }, ._disabled = .{ .background = ui.Color.TRANSPARENT, .color = ui.tokenRef(.color, "fg-disabled"), }, }, .danger = .{ .background = ui.tokenRef(.color, "danger"), .color = ui.tokenRef(.color, "fg-inverse"), .font_weight = 500, .border_overlay = true, .border_width = 1, .border_color = ui.Color.TRANSPARENT, .shadow = ui.tokenRef(.shadow, "xs"), ._hover = .{ .background = ui.tokenRef(.color, "danger-hover"), }, ._active = .{ .background = ui.tokenRef(.color, "danger-pressed"), }, ._disabled = .{ .background = ui.tokenRef(.color, "disabled-bg"), .color = ui.tokenRef(.color, "fg-disabled"), .border_color = ui.tokenRef(.color, "border"), .shadow = .{ .offset_x = 0, .offset_y = 0, .blur = 0, .spread = 0, .color = ui.Color.TRANSPARENT }, }, }, .link = .{ .background = ui.Color.TRANSPARENT, .color = ui.tokenRef(.color, "accent"), .font_weight = 500, .border_overlay = true, .border_width = 0, .border_color = ui.Color.TRANSPARENT, ._hover = .{ .color = ui.tokenRef(.color, "accent-hover"), }, ._active = .{ .color = ui.tokenRef(.color, "accent-pressed"), }, ._disabled = .{ .background = ui.Color.TRANSPARENT, .color = ui.tokenRef(.color, "fg-disabled"), }, }, .field = .{ .background = ui.tokenRef(.color, "input-bg"), .color = ui.tokenRef(.color, "fg-primary"), .font_weight = 400, .border_overlay = true, .border_width = 1, .border_color = ui.tokenRef(.color, "input-border"), .shadow = ui.tokenRef(.shadow, "xs"), ._hover = .{ .border_color = ui.tokenRef(.color, "accent"), }, ._expanded = .{ .border_color = ui.tokenRef(.color, "accent"), }, ._focus = .{ .border_color = ui.tokenRef(.color, "accent"), .shadow = .{ .offset_x = 0, .offset_y = 0, .blur = 5, .spread = 0, .color = ui.tokenRef(.color, "focus-halo") }, }, ._invalid = .{ .border_color = ui.tokenRef(.color, "danger"), }, ._disabled = .{ .background = ui.tokenRef(.color, "disabled-bg"), .color = ui.tokenRef(.color, "fg-disabled"), .border_color = ui.tokenRef(.color, "border"), .shadow = .{ .offset_x = 0, .offset_y = 0, .blur = 0, .spread = 0, .color = ui.Color.TRANSPARENT }, }, }, .base = .{ .background = ui.tokenRef(.color, "button-base-bg"), .color = ui.tokenRef(.color, "button-base-fg"), .font_weight = 500, .border_overlay = true, .border_width = 0, .border_color = ui.Color.TRANSPARENT, ._hover = .{ .background = ui.tokenRef(.color, "button-base-hover-bg"), }, ._active = .{ .background = ui.tokenRef(.color, "button-base-pressed-bg"), }, ._disabled = .{ .background = ui.tokenRef(.color, "disabled-bg"), .color = ui.tokenRef(.color, "fg-disabled"), .border_color = ui.tokenRef(.color, "border"), }, }, }, }, .defaults = .{ .kind = .secondary, }, });
 
 pub const ControlSize = SizeRecipe.Dim(.size);
+/// Control tones (Tone recipe is the single source): Button defaults to primary, ControlShell to
+/// secondary; base = neutral emphasis, field = Input / Select frame.
+pub const ControlVariant = Tone.Dim(.kind);
 pub const ControlMetrics = struct {
     /// Text font size
     font_size: f32,
@@ -60,85 +58,98 @@ pub const ControlMetrics = struct {
 /// Measurement adapter for controls sharing the shell's line-box contract.
 /// The recipe is the sole owner of the size mapping.
 pub fn metrics(t: *const theme.ThemeTokens, size: ControlSize) ControlMetrics {
-    const root = SizeRecipe.Slot(.root).resolve(.{ .size = size }, t).base;
-    const content = SizeRecipe.Slot(.content).resolveText(.{ .size = size }, .{}, t);
-    const icon = SizeRecipe.Slot(.icon).resolve(.{ .size = size }, t).base;
+    const frame = SizeRecipe.Slot(.root).resolve(.{ .size = size }, t).base;
+    const text = SizeRecipe.Slot(.content).resolveText(.{ .size = size }, .{}, t);
+    const glyph = SizeRecipe.Slot(.icon).resolve(.{ .size = size }, t).base;
     return .{
-        .font_size = content.font_size,
-        .line_height = content.line_height,
-        .radius = root.corner_radius.?,
-        .padding_y = root.padding.?.top,
-        .padding_h = root.padding.?.right,
-        .padding_leading_icon = @max(0, root.padding.?.left - t.tokens.space.space50),
-        .icon_size = @min(icon.width.?.px, content.font_size * content.line_height),
-        .gap = root.gap.?,
+        .font_size = text.font_size,
+        .line_height = text.line_height,
+        .radius = frame.corner_radius.?,
+        .padding_y = frame.padding.?.top,
+        .padding_h = frame.padding.?.right,
+        .padding_leading_icon = @max(0, frame.padding.?.left - t.tokens.space.space50),
+        .icon_size = @min(glyph.width.?.px, text.font_size * text.line_height),
+        .gap = frame.gap.?,
     };
 }
 
 // ============================================================================
-// ControlShellRecipe: recipe() unifying variant x size and 5 dimensions
-//
-// Resolve order: base < variant < derived < external override
-// Variant dimension owns: background / border / text_color / font_weight / interaction states
-// Derived owns cross-dimension geometry: padding / radius / gap (height/width always fit,
-//   height set by content) = f(size, pill, icon_only, leading_icon) (a single-dimension
-//   resolver cannot express this)
+// ControlShell element styles (control_shell.yix). Geometry derives from the size recipe through
+// metrics(t, size): one source for outer height = padding_y * 2 + line box.
 // ============================================================================
-pub const ControlShellRecipe = recipe_mod.recipe(struct {
-    pub const Variants = struct {
-        variant: ControlVariant = .secondary,
-        size: ControlSize = .md,
-        /// pill mode affects radius, dimension three
-        pill: bool = false,
-        /// icon_only affects padding, dimension four
-        icon_only: bool = false,
-        /// leading_icon affects padding, dimension five
-        leading_icon: bool = false,
-    };
 
-    /// Coloring only from YSS Tone recipe (shared with Button)
-    pub const variants = .{
-        .variant = struct {
-            fn resolve(v: ControlVariant, t: *const theme.ThemeTokens) ConditionalStyle {
-                return Tone.resolve(.{ .kind = Tone.toDim(@FieldType(Tone.Variants, "kind"), v) }, t);
-            }
-        }.resolve,
-    };
+/// Root: a row whose hit / clip shapes follow its corner radii (core .auto derivation, per-corner
+/// inside a Group).
+pub const root = ui.previewCss("src/ui/components/control_shell/styles.yss", "root", @embedFile("styles.yss"), .{ .direction = .row, .align_items = .center, });
 
-    /// Cross-dimension geometry only; must not touch background (pollutes bgColors tri-state
-    /// color).
-    /// size/pill/icon_only/leading_icon have no independent resolver, all combined here.
-    ///
-    /// **No height/width pixel output**: outer height = padding_y * 2 + line box (line_height),
-    /// from layout
-    /// fit (line box min height is set in controlShell() per metrics.lineHeightPx()). icon_only:
-    /// four-side padding = padding_y + (line_height - icon_size) / 2, icon slot min icon_size
-    /// square
-    /// -> outer = icon_size + 2*pad = line_height + 2*padding_y: naturally square, text-control
-    /// height.
-    pub fn derived(v: Variants, t: *const theme.ThemeTokens) ConditionalStyle {
-        const m = metrics(t, v.size);
-        const pad: Padding = if (v.icon_only)
-            Padding.all(m.padding_y + (m.lineHeightPx() - m.icon_size) / 2)
-        else if (v.leading_icon)
-            Padding{
-                .top = m.padding_y,
-                .right = m.padding_h,
-                .bottom = m.padding_y,
-                .left = m.padding_leading_icon,
+/// Interaction colors ease like the old animated background (0.15s ease-out = ease_out_quad).
+pub const fade = ui.previewCss("src/ui/components/control_shell/styles.yss", "fade", @embedFile("styles.yss"), .{ .transition = ui.transition("background 150ms ease-out, border-color 150ms ease-out"), });
+
+/// Padding / radius / gap per size and icon fit (see IconFit).
+pub const geometry = ui.paramStyle(struct { size: ControlSize, pill: bool, icon_only: bool, leading_icon: bool, icon_fit: IconFit, pub const declared = &[_][]const u8{ "width", "no_cross_stretch", "height", "padding", "corner_radius", "gap", }; pub fn resolve(args: @This(), t: *const ui.theme.Values) ui.BoxStyle { return ui.boxFrom(.{ .width = .fit, .no_cross_stretch = true, .height = .fit, .padding = geometryPadding(t, args.size, args.icon_only, args.leading_icon, args.icon_fit), .corner_radius = if (args.pill) @as(f32, 999) else metrics(t, args.size).radius, .gap = geometryGap(t, args.size, args.leading_icon, args.icon_fit), }, t); } });
+
+/// Cursor follows disabled (before the tone, so a composing control's root style can set it).
+pub const pointer = ui.paramStyle(struct { cursor: core.CursorShape, disabled_cursor: core.CursorShape, disabled: bool, pub const declared = &[_][]const u8{ "cursor", }; pub fn resolve(args: @This(), t: *const ui.theme.Values) ui.BoxStyle { return ui.boxFrom(.{ .cursor = if (args.disabled) args.disabled_cursor else args.cursor, }, t); } });
+
+/// Embedded drops the frame (a compound control draws one shell); after the tone, over every state.
+pub const chrome = ui.paramStyle(struct { embedded: bool, pub const declared = &[_][]const u8{ "border_overlay", "border_width", "padding", "background", "shadow", }; pub fn resolve(args: @This(), t: *const ui.theme.Values) ui.BoxStyle { var out: ui.BoxStyle = .{}; if (args.embedded) out = out.merge(ui.boxFrom(.{ .border_overlay = true, .border_width = 0, .padding = 0, .background = ui.Color.TRANSPARENT, .shadow = .{ .offset_x = 0, .offset_y = 0, .blur = 0, .spread = 0, .color = ui.Color.TRANSPARENT }, }, t)); return out; } });
+
+/// Slots: line-box minimum heights so empty / short content never collapses the control.
+pub const icon_slot = ui.paramStyle(struct { size: ControlSize, icon_only: bool, pub const declared = &[_][]const u8{ "width", "height", "align_items", "justify", "min_height", "min_width", }; pub fn resolve(args: @This(), t: *const ui.theme.Values) ui.BoxStyle { var out = ui.boxFrom(.{ .width = .fit, .height = .fit, .align_items = .center, .justify = .center, .min_height = if (args.icon_only) metrics(t, args.size).icon_size else metrics(t, args.size).lineHeightPx(), }, t); if (args.icon_only) out = out.merge(ui.boxFrom(.{ .min_width = metrics(t, args.size).icon_size, }, t)); return out; } });
+/// The content slot takes the frame's remaining width and never more: `min-width: 0` opts out of
+/// the CSS automatic minimum, so a long value / label (an Input's unscrolled text, a Select's
+/// value) is clipped or scrolled inside the frame instead of widening the slot past it.
+pub const content_slot = ui.paramStyle(struct { size: ControlSize, pub const declared = &[_][]const u8{ "direction", "width", "height", "align_items", "min_width", "min_height", }; pub fn resolve(args: @This(), t: *const ui.theme.Values) ui.BoxStyle { return ui.boxFrom(.{ .direction = .row, .width = .{ .grow = .{} }, .height = .fit, .align_items = .center, .min_width = 0, .min_height = metrics(t, args.size).lineHeightPx(), }, t); } });
+pub const append_slot = ui.paramStyle(struct { size: ControlSize, pub const declared = &[_][]const u8{ "direction", "width", "height", "align_items", "gap", "min_height", }; pub fn resolve(args: @This(), t: *const ui.theme.Values) ui.BoxStyle { return ui.boxFrom(.{ .direction = .row, .width = .fit, .height = .fit, .align_items = .center, .gap = metrics(t, args.size).gap, .min_height = metrics(t, args.size).lineHeightPx(), }, t); } });
+
+/// How the icon slot sits in the frame's padding.
+pub const IconFit = enum {
+    /// The icon shares the text line box (Input / Select / DatePicker): icon-only is square at
+    /// text-control height, a leading icon takes the narrower left padding.
+    line_box,
+    /// The icon is the tier's glyph (glyphSize, Button, LKxqO): the vertical padding absorbs it
+    /// so the frame keeps the size tier's height; a leading glyph takes the narrower left padding
+    /// and icon-only is square in every tier.
+    glyph,
+};
+
+/// The Button glyph of each size tier (LKxqO).
+pub fn glyphSize(size: ControlSize) f32 {
+    return switch (size) {
+        .xs => 12,
+        .sm => 14,
+        .md => 16,
+        .lg => 20,
+    };
+}
+
+/// Icon-to-label gap: a leading glyph sits closer than the tier's default (LKxqO).
+pub fn geometryGap(t: *const theme.ThemeTokens, size: ControlSize, leading_icon: bool, icon_fit: IconFit) f32 {
+    if (icon_fit != .glyph or !leading_icon) return metrics(t, size).gap;
+    return switch (size) {
+        .xs => t.tokens.space.space100,
+        .sm, .md => t.tokens.space.space150,
+        .lg => t.tokens.space.space200,
+    };
+}
+
+pub fn geometryPadding(t: *const theme.ThemeTokens, size: ControlSize, icon_only: bool, leading_icon: bool, icon_fit: IconFit) Padding {
+    const m = metrics(t, size);
+    switch (icon_fit) {
+        .line_box => {
+            if (icon_only) return Padding.all(m.padding_y + (m.lineHeightPx() - m.icon_size) / 2);
+            if (leading_icon) return .{ .top = m.padding_y, .right = m.padding_h, .bottom = m.padding_y, .left = m.padding_leading_icon };
+        },
+        .glyph => {
+            const glyph = glyphSize(size);
+            if (icon_only) return Padding.all(@max(0, (m.derivedHeight() - glyph) / 2));
+            if (leading_icon) {
+                const pad_y = @max(0, (m.derivedHeight() - @max(m.lineHeightPx(), glyph)) / 2);
+                return .{ .top = pad_y, .right = t.tokens.space.space300, .bottom = pad_y, .left = if (size == .lg) t.tokens.space.space200 else 10 };
             }
-        else
-            Padding.symmetric(m.padding_y, m.padding_h);
-        return .{
-            .base = .{
-                .padding = pad,
-                .corner_radius = if (v.pill) 999 else m.radius,
-                .height = Sizing{ .fit = .{} },
-                .width = Sizing{ .fit = .{} },
-                .gap = m.gap,
-            },
-        };
+        },
     }
-});
+    return Padding.symmetric(m.padding_y, m.padding_h);
+}
 
 //# yix-map styles.yss

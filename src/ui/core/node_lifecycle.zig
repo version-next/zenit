@@ -261,6 +261,7 @@ pub fn create(allocator: Allocator, id: u32, tag: ElementTag, style: Style) !*No
         legacy_node_create_hits += 1;
         hook(node);
     }
+    @import("node_tree.zig").hostCreated(node);
     return node;
 }
 
@@ -310,6 +311,7 @@ pub fn createIn(
     node.element_id_raw = eid.raw();
     node.world_id = world_id;
     node.world_ref = world;
+    @import("node_tree.zig").hostCreated(node);
     return node;
 }
 
@@ -328,6 +330,7 @@ pub fn destroy(self: *Node, allocator: Allocator) void {
     }
     if (self.freeing) return;
     self.freeing = true;
+    @import("node_tree.zig").g_retire_gen +%= 1;
     self.deferred_disposal.cancel();
     self.pending_free_cx = null;
     for (self.children.items) |child| {
@@ -347,6 +350,10 @@ pub fn destroy(self: *Node, allocator: Allocator) void {
     if (self.meta.per_frame.hooks.style_host) |h| {
         self.meta.per_frame.hooks.style_host = null;
         h.destroy(h.ptr);
+    }
+    if (self.meta.per_frame.hooks.theme_inline) |rec| {
+        self.meta.per_frame.hooks.theme_inline = null;
+        rec.destroy();
     }
 
     self.invalidateRenderCache();
@@ -417,7 +424,35 @@ pub fn destroy(self: *Node, allocator: Allocator) void {
 }
 
 /// Called by both standalone destroy and Cx reclamation, after owned payloads.
+// Both Node.destroy and Cx.freeNodeNow pass this release boundary. Layout's
+// callback publication compares the epoch without dereferencing freed nodes.
+pub const ReleaseWatch = struct {
+    node: *const Node,
+    alive: bool = true,
+    previous: ?*ReleaseWatch = null,
+    pub fn begin(self: *ReleaseWatch) void {
+        self.previous = release_watch_head;
+        release_watch_head = self;
+    }
+    pub fn end(self: *ReleaseWatch) void {
+        std.debug.assert(release_watch_head == self);
+        release_watch_head = self.previous;
+    }
+};
+var release_watch_head: ?*ReleaseWatch = null;
+
+var node_release_revision: u64 = 0;
+pub fn releaseRevision() u64 {
+    return node_release_revision;
+}
+
 pub fn releaseStandaloneState(node: *Node) void {
+    @import("node_tree.zig").hostDestroyed(node);
+    node_release_revision +%= 1;
+    var watch = release_watch_head;
+    while (watch) |w| : (watch = w.previous) {
+        if (w.node == node) w.alive = false;
+    }
     const ptr = @intFromPtr(node);
     @import("paint_content_accessor.zig").releaseStandaloneNode(ptr);
     if (g_standalone_rects_init) _ = g_standalone_rects.remove(ptr);
@@ -499,6 +534,15 @@ pub fn fireCleanupCallbacks(node: *Node) void {
     }
     if (node.frame_state.state_bits.flags.is_mounted) {
         node.frame_state.state_bits.flags.is_mounted = false;
+        // Cleanup may be followed by a same-geometry remount, even without a
+        // tree mutation. Restore the conservative publication path before user
+        // code can reenter layout. Stop at an already-pending ancestor.
+        var pending: ?*Node = node;
+        while (pending) |current| {
+            if (current.frame_state.frame_local.runtime.layout_mount_pending) break;
+            current.frame_state.frame_local.runtime.layout_mount_pending = true;
+            pending = current.parent;
+        }
         if (node.meta.ownership.hooks.on_cleanup) |cleanup_handler| {
             node.meta.ownership.hooks.on_cleanup = null;
             cleanup_handler.invoke();
@@ -516,7 +560,6 @@ pub fn clearNodeScopes(node: *Node) void {
     node.meta.ownership.scope.scope = null;
     // Mark hook/component state pointers invalid to avoid dangling references after
     // scope freed first.
-    node.meta.per_frame.hooks.slots.animated_bg_state = null;
     node.meta.per_frame.hooks.slots.hover_highlight_state = null;
     node.meta.per_frame.hooks.slots.anim_state = null;
     node.meta.per_frame.hooks.slots.focus_ring_anim = null;

@@ -317,6 +317,9 @@ pub const NodeAnimations = struct {
             },
             .border_width => {
                 node.style.border.setUniformWidth(v);
+                if (comptime @hasField(@TypeOf(node.style.border), "overlay")) {
+                    if (!node.style.border.overlay) node.markLayoutDirty();
+                } else node.markLayoutDirty();
                 node.markInteractionDirty();
                 node.markRenderDirty();
             },
@@ -423,6 +426,8 @@ pub fn animateNode(node: anytype, allocator: Allocator, config: AnimateConfig) v
         node.frame_state.frame_local.runtime.commands = a;
         break :blk a;
     };
+    // New tick work: the before-render tick must visit this node again (quiet-subtree skip).
+    if (comptime @hasDecl(@TypeOf(node.*), "invalidateTickQuietChain")) node.invalidateTickQuietChain();
 
     const from = config.from orelse NodeAnimations.getCurrentPropValue(node, config.prop);
 

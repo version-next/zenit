@@ -67,6 +67,10 @@ pub const SelectProps = struct {
     /// its search placeholder while the selected row remains checked.
     show_selected_value_in_search: bool = true,
     clearable: bool = false,
+    /// Limit visible multi-select chips and show the remaining count. null keeps all chips.
+    max_visible_tags: ?usize = null,
+    /// Multi-select panel footer with selected count and a Clear action.
+    selection_footer: bool = false,
     leading_icon: ?svg_assets.Asset = null,
     /// Single-select value (option `value`; null = unselected). Active when `.mode = .single`
     value: Model(?[]const u8) = .{ .local = null },
@@ -83,7 +87,12 @@ pub const SelectProps = struct {
     on_open_change: ?Handler(bool) = null,
     disabled: Source(bool) = .{ .value = false },
     max_dropdown_height: f32 = 280,
+    /// Dropdown panel width: `.trigger` matches the trigger (default); `.content` lets the panel
+    /// size itself to its rows, independent of the trigger width.
+    panel_width: PanelWidth = .trigger,
 };
+
+pub const PanelWidth = enum { trigger, content };
 
 /// Create Select: `W.Select(.{ .options = &opts, .value = lang, .on_change = cx.on(S, s, S.picked)
 /// })`
@@ -101,117 +110,11 @@ pub const SelectBuilder = struct {
     }
 };
 
-const Metrics = struct {
-    /// Option row / checkmark size bounds from (trigger geometry not here, uses control metrics)
-    icon_size: f32,
-    tag_radius: f32,
-    tag_gap: f32,
-    tag_padding: core.Padding,
-    tag_font: f32,
-    close_size: f32,
-    panel_radius: f32,
-    panel_padding: f32,
-    row_radius: f32,
-    row_padding: core.Padding,
-    row_font: f32,
-    checkbox_size: f32,
-    checkbox_radius: f32,
-    check_size: f32,
-};
-
-fn metrics(size: SelectSize) Metrics {
-    return switch (size) {
-        .sm => metrics(.md),
-        .lg => .{
-            .icon_size = 20,
-            .tag_radius = 4,
-            .tag_gap = 4,
-            .tag_padding = .{ .top = 2, .right = 6, .bottom = 2, .left = 10 },
-            .tag_font = 12,
-            .close_size = 12,
-            .panel_radius = 8,
-            .panel_padding = 4,
-            .row_radius = 6,
-            .row_padding = .{ .top = 8, .right = 12, .bottom = 8, .left = 12 },
-            .row_font = 14,
-            .checkbox_size = 18,
-            .checkbox_radius = 4,
-            .check_size = 14,
-        },
-        .md => .{
-            .icon_size = 16,
-            .tag_radius = 3,
-            .tag_gap = 3,
-            .tag_padding = .{ .top = 2, .right = 4, .bottom = 2, .left = 8 },
-            .tag_font = 11,
-            .close_size = 10,
-            .panel_radius = 8,
-            .panel_padding = 4,
-            .row_radius = 6,
-            .row_padding = core.Padding.all(8),
-            .row_font = 12,
-            .checkbox_size = 18,
-            .checkbox_radius = 4,
-            .check_size = 14,
-        },
-        .xs => .{
-            .icon_size = 12,
-            .tag_radius = 2,
-            .tag_gap = 2,
-            .tag_padding = .{ .top = 1, .right = 3, .bottom = 1, .left = 6 },
-            .tag_font = 10,
-            .close_size = 8,
-            .panel_radius = 6,
-            .panel_padding = 3,
-            .row_radius = 4,
-            .row_padding = core.Padding.all(6),
-            .row_font = 11,
-            .checkbox_size = 14,
-            .checkbox_radius = 3,
-            .check_size = 10,
-        },
-    };
-}
-
-const Palette = struct {
-    bg: Color,
-    panel: Color,
-    hover: Color,
-    inset: Color,
-    text_primary: Color,
-    text_secondary: Color,
-    text_tertiary: Color,
-    primary: Color,
-    border: Color,
-    border_strong: Color,
-};
-
-fn palette(t: *const core.theme.ThemeTokens) Palette {
-    if (t.scheme == .light) return .{
-        .bg = Color.hex(0xFAFAFA),
-        .panel = Color.hex(0xFFFFFF),
-        .hover = Color.hex(0xF5F5F5),
-        .inset = Color.hex(0xEFEFEF),
-        .text_primary = Color.hex(0x1A1A1A),
-        .text_secondary = Color.hex(0x787878),
-        .text_tertiary = Color.hex(0x9B9B9B),
-        .primary = Color.hex(0x4A6741),
-        .border = Color.hex(0xE5E5E5),
-        .border_strong = Color.hex(0xD4D4D4),
-    };
-    return .{
-        .bg = t.tokens.color.bg_secondary,
-        .panel = t.tokens.color.bg_primary,
-        .hover = t.tokens.color.bg_hover,
-        .inset = t.tokens.color.bg_tertiary,
-        .text_primary = t.tokens.color.fg_primary,
-        .text_secondary = t.tokens.color.fg_secondary,
-        .text_tertiary = t.tokens.color.fg_tertiary,
-        .primary = t.tokens.color.accent,
-        .border = t.tokens.color.border,
-        .border_strong = t.tokens.color.border_strong,
-    };
-}
+const styles = @import("styles.zig");
+const Metrics = styles.Metrics;
+const Palette = styles.Palette;
+const metrics = styles.metrics;
+const palette = styles.palette;
 
 /// Select runtime (belongs to component scope). View = f(value/values, open, disabled): selection
 /// bitmap derived by
@@ -230,9 +133,14 @@ pub const SelectState = struct {
     /// Text shown in label when unselected; sync reads current value (label holds own copy)
     placeholder: Source([]const u8),
     metrics: Metrics,
+    /// Theme the parts below were painted with: a theme switch rebuilds the option rows and
+    /// recolors the trigger and panel (`applyTheme`), so they match a fresh mount.
     colors: Palette,
     tokens: *const core.theme.ThemeTokens,
     shell_size: control_shell.ControlSize,
+    max_visible_tags: ?usize = null,
+    overflow_label: ?*Node = null,
+    footer_label: ?*Node = null,
 
     value: ?reactive.Bound(?[]const u8),
     values: ?reactive.Bound([]const []const u8),
@@ -259,8 +167,11 @@ pub const SelectState = struct {
     /// Search box text value (component-owned text signal, bound to embedded Input)
     query_text: ?*Signal([]const u8) = null,
     input_node: ?*Node,
-    /// Multi-select tag row
+    /// Multi-select tag row, translated inside `tags_viewport` when the chips overflow
     tags_row: ?*Node,
+    /// Clips the tag row; wheel/trackpad scrolls it horizontally behind edge fades
+    tags_viewport: ?*Node = null,
+    tags_scroll_x: f32 = 0,
 
     // ---- Rebuilt with options (arrays belong to rebuild child scope, cleared at rebuild start)
     // ----
@@ -271,7 +182,14 @@ pub const SelectState = struct {
 
     // ---- Derived / internal interaction state ----
     selected_mask: u64 = 0,
+    /// Multi-select option indices in the order the user picked them (the `values` order); tags
+    /// render in this order.
+    selection_order: [64]u8 = undefined,
+    selection_len: usize = 0,
     shown_open: bool = false,
+    /// Closing discarded the search draft: the rows show all options again on the next open.
+    /// The closing panel keeps the rows it had while it fades out.
+    filter_reset_pending: bool = false,
     shown_disabled: bool = false,
     /// Last selected label written to search box (only overwrite when changes, don't interrupt user
     /// input)
@@ -314,8 +232,15 @@ pub const SelectState = struct {
                 mask = @as(u64, 1) << @intCast(i);
             };
         } else {
+            self.selection_len = 0;
             for (self.values.?.readAs(tracked)) |s| {
-                if (self.indexOf(s)) |i| mask |= @as(u64, 1) << @intCast(i);
+                const i = self.indexOf(s) orelse continue;
+                if (i >= 64) continue;
+                const bit = @as(u64, 1) << @intCast(i);
+                if (mask & bit != 0) continue;
+                mask |= bit;
+                self.selection_order[self.selection_len] = @intCast(i);
+                self.selection_len += 1;
             }
         }
         // Label displays placeholder when unselected: subscribe to it, redraw when changes
@@ -323,9 +248,11 @@ pub const SelectState = struct {
         if (self.trigger_label != null) _ = self.placeholder.read(tracked);
         self.selected_mask = mask;
         const closing = self.shown_open and !open;
+        const opening = !self.shown_open and open;
         self.shown_open = open;
         if (disabled != self.shown_disabled) self.applyDisabled(disabled);
         if (closing) self.discardSearchDraft() else self.syncSearchLabel();
+        if (opening and self.filter_reset_pending) applyFilter(self);
         self.paint();
     }
 
@@ -367,20 +294,16 @@ pub const SelectState = struct {
                 if (!std.mem.eql(u8, query_text.peek(), label)) query_text.set(label);
                 self.shown_search_label = label;
                 self.setQuery("");
-                applyFilter(self);
+                self.filter_reset_pending = true;
                 return;
             }
         }
-        clearSearch(self);
+        clearSearchText(self);
+        self.filter_reset_pending = true;
     }
 
     fn applyDisabled(self: *SelectState, disabled: bool) void {
         self.shown_disabled = disabled;
-        const cs = (control_shell.ControlShellConfig{ .size = self.shell_size, .variant = .field }).resolvedConditionalStyle(self.tokens);
-        const resolved = cs.resolve(.{ .is_disabled = disabled });
-        self.trigger.setOpacityRaw(resolved.opacity orelse 1.0);
-        const cursor: core.CursorShape = if (disabled) .default else .pointer;
-        self.trigger.style.cursor = cursor;
         self.focus_target.setFocusable(!disabled);
         if (self.focus_target.behavior.interaction.a11y) |*a| a.disabled = disabled;
         if (self.input_node) |n| {
@@ -422,16 +345,32 @@ pub const SelectState = struct {
 
     /// Multi-select: propose value set corresponding to mask in option order
     /// Return whether proposal settled (data source actually changed)
+    /// Values for a proposed mask in pick order: kept selections stay where they were and newly
+    /// picked options append at the end.
+    fn valuesForMask(self: *const SelectState, mask: u64, buf: *[64][]const u8) usize {
+        var n: usize = 0;
+        var placed: u64 = 0;
+        for (self.selection_order[0..self.selection_len]) |i| {
+            const bit = @as(u64, 1) << @intCast(i);
+            if (mask & bit == 0) continue;
+            buf[n] = self.options[i].value;
+            n += 1;
+            placed |= bit;
+        }
+        for (self.options, 0..) |o, i| {
+            if (i >= 64) break;
+            const bit = @as(u64, 1) << @intCast(i);
+            if (mask & bit == 0 or placed & bit != 0) continue;
+            buf[n] = o.value;
+            n += 1;
+        }
+        return n;
+    }
+
     fn proposeMask(self: *SelectState, mask: u64) bool {
         const b = self.values orelse return false;
         var buf: [64][]const u8 = undefined;
-        var n: usize = 0;
-        for (self.options, 0..) |o, i| {
-            if (i < 64 and (mask & (@as(u64, 1) << @intCast(i))) != 0) {
-                buf[n] = o.value;
-                n += 1;
-            }
-        }
+        const n = self.valuesForMask(mask, &buf);
         const on_change = self.on_values_change;
         const landed = b.commit(buf[0..n]) orelse return false;
         if (on_change) |h| h.call(landed);
@@ -439,6 +378,55 @@ pub const SelectState = struct {
     }
 
     // ---- Option rebuild (ui.rebuildOn) ----
+
+    /// Rebuild source: the options and the theme they are painted with.
+    const OptionsView = struct {
+        options: []const SelectOption,
+        tokens: *const core.theme.ThemeTokens,
+    };
+
+    const OptionsViewSources = struct {
+        options: Source([]const SelectOption),
+        theme: *Signal(*const core.theme.ThemeTokens),
+
+        fn compute(src: @This()) OptionsView {
+            return .{ .options = src.options.read(true), .tokens = src.theme.get() };
+        }
+    };
+
+    fn optionsViewKey(v: OptionsView) u64 {
+        var h = std.hash.Wyhash.init(optionsKey(v.options));
+        h.update(std.mem.asBytes(&@intFromPtr(v.tokens)));
+        return h.final();
+    }
+
+    fn buildOptionsView(self: *SelectState, child: *Scope, container: *Node, v: OptionsView) !void {
+        if (v.tokens != self.tokens) self.applyTheme(v.tokens);
+        try self.buildOptions(child, container, v.options);
+    }
+
+    /// Theme switch, before the option rows rebuild: recolor what the mount painted outside them.
+    fn applyTheme(self: *SelectState, t: *const core.theme.ThemeTokens) void {
+        self.tokens = t;
+        self.colors = palette(t);
+        const colors = self.colors;
+        if (self.leading_icon_node) |n| _ = n.setTint(colors.text_tertiary);
+        _ = self.chevron_down.setTint(colors.text_tertiary);
+        _ = self.chevron_up.setTint(colors.primary);
+        if (self.input_state) |st| st.placeholder_color = colors.text_tertiary;
+        if (self.tags_viewport) |vp| {
+            if (vp.style.ext) |ext| if (ext.overflow_fade) |*fade| {
+                fade.color = colors.bg;
+            };
+            vp.markRenderDirty();
+        }
+        self.panel.setBackgroundRaw(colors.panel);
+        self.panel.style.border.color = t.tokens.color.border;
+        if (self.panel.style.ext) |ext| ext.setShadow(t.tokens.shadow.md);
+        self.panel.markRenderDirty();
+        // The rows are already gone (rebuildOn clears before building): buildOptions repaints
+        // the selection, label and filter once they are back.
+    }
 
     fn optionsKey(opts: []const SelectOption) u64 {
         var h = std.hash.Wyhash.init(0);
@@ -460,6 +448,7 @@ pub const SelectState = struct {
     /// Detach previous tag nodes (their event contexts released with old child scope). Doesn't fail
     fn clearTags(self: *SelectState) void {
         const tags = self.tags_row orelse return;
+        self.overflow_label = null;
         while (tags.children.items.len > 0) {
             const n = tags.children.items[tags.children.items.len - 1];
             hooks.invalidateSubtreeHookState(n);
@@ -524,7 +513,9 @@ pub const SelectState = struct {
                 .direction = .row,
                 .align_items = .center,
                 .justify = .space_between,
-                .padding = if (self.mode == .multiple) core.Padding.all(m.row_padding.top) else m.row_padding,
+                .gap = self.tokens.tokens.space.space200,
+                .height = .{ .px = self.tokens.tokens.size.row },
+                .padding = m.row_padding,
                 .corner_radius = m.row_radius,
                 .cursor = if (option.disabled) .default else .pointer,
             };
@@ -535,7 +526,7 @@ pub const SelectState = struct {
                 .align_items = .center,
                 .justify = .center,
                 .background = colors.bg,
-                .border = .{ .width = 1.5, .color = colors.border_strong, .radius = m.checkbox_radius },
+                .border = .{ .overlay = true, .width = self.tokens.tokens.border_width.thin, .color = colors.border_strong, .radius = m.checkbox_radius },
             };
             var check_node: *Node = undefined;
             // Row = [content (icon + text), selection mark]: single is check icon, multi is
@@ -546,15 +537,13 @@ pub const SelectState = struct {
                 .a11y = .{ .role = .option, .label = option.label, .disabled = option.disabled, .selected = false },
                 .test_id = option.test_id,
             }, .{
-                view.row(.{ .style = rowStyle(8) }, .{
+                if (self.mode == .multiple) view.capture(&check_node, view.box(.{ .style = checkbox_style }, iconEl(icons.check, m.check_size, colors.panel))) else null,
+                view.row(.{ .style = styles.optionContentStyle }, .{
                     if (option.icon) |asset| iconEl(asset, @min(m.icon_size, 16), colors.text_secondary) else null,
-                    textEl(option.label, m.row_font, if (option.disabled) colors.text_tertiary else colors.text_primary, 400),
+                    // min_width 0 lets a long label shrink and ellipsize (CSS flex min-width: auto).
+                    view.attrs(.{ .style = core.BoxStyle{ .min_width = 0 } }, textEl(option.label, m.row_font, if (option.disabled) colors.text_tertiary else colors.text_primary, 400)),
                 }),
-                view.branch(
-                    self.mode == .single,
-                    view.capture(&check_node, iconEl(icons.check, @min(m.icon_size, 16), colors.primary)),
-                    view.capture(&check_node, view.box(.{ .style = checkbox_style }, iconEl(icons.check, m.check_size, colors.panel))),
-                ),
+                if (self.mode == .single) view.capture(&check_node, iconEl(icons.check, @min(m.icon_size, 16), colors.primary)) else null,
             }));
             parts.options[i] = option_node;
             parts.checks[i] = check_node;
@@ -574,6 +563,9 @@ pub const SelectState = struct {
             }
         }
 
+        if (self.mode == .multiple and self.max_visible_tags != null) {
+            _ = try view.append(child, cx, self.tags_row.?, view.capture(&self.overflow_label, view.text(.{ .style = styles.overflowText }, "")));
+        }
         self.options = opts;
         self.option_nodes = parts.options;
         self.check_nodes = parts.checks;
@@ -631,21 +623,122 @@ const TextEl = view.Text(TextElProps, []const u8);
 const IconEl = view.Icon(IconElProps);
 
 fn textEl(content: []const u8, size: f32, color: Color, weight: u16) TextEl {
-    return view.text(TextElProps{ .style = .{ .font_size = size, .font_weight = weight, .line_height = 1.2, .color = color } }, content);
+    return view.text(TextElProps{ .style = .{ .font_size = size, .font_weight = weight, .line_height = 1.4, .color = color, .text_overflow = .ellipsis } }, content);
 }
 
 /// Text in trigger: font size/line height from control metrics (line box = font_size *
 /// line_height).
 fn triggerTextEl(content: []const u8, cm: control_shell.ControlMetrics, color: Color) TextEl {
-    return view.text(TextElProps{ .style = .{ .font_size = cm.font_size, .font_weight = 400, .line_height = cm.line_height, .color = color } }, content);
+    return view.text(TextElProps{ .style = .{ .font_size = cm.font_size, .font_weight = 400, .line_height = cm.line_height, .color = color, .text_overflow = .ellipsis } }, content);
 }
 
 fn iconEl(asset: svg_assets.Asset, size: f32, color: Color) IconEl {
-    return view.icon(IconElProps{ .style = .{ .width = .{ .px = size }, .height = .{ .px = size } }, .tint = color }, asset);
+    return view.icon(IconElProps{ .style = .{ .width = .{ .px = size }, .height = .{ .px = size }, .flex_shrink = 0 }, .tint = color }, asset);
 }
 
 fn rowStyle(gap: f32) core.BoxStyle {
     return .{ .direction = .row, .align_items = .center, .gap = gap };
+}
+
+/// Keep the tag row in pick order: selected tags first as picked, then the hidden ones, then the
+/// "+N" label. Moves happen only when the order actually changed.
+fn orderTags(state: *SelectState) void {
+    const row = state.tags_row orelse return;
+    var want: [65]*Node = undefined;
+    var n: usize = 0;
+    var placed: u64 = 0;
+    for (state.selection_order[0..state.selection_len]) |i| {
+        if (i >= state.tag_nodes.len) continue;
+        want[n] = state.tag_nodes[i];
+        n += 1;
+        placed |= @as(u64, 1) << @intCast(i);
+    }
+    for (state.tag_nodes, 0..) |tag_node, i| {
+        if (placed & (@as(u64, 1) << @intCast(i)) != 0) continue;
+        want[n] = tag_node;
+        n += 1;
+    }
+    if (state.overflow_label) |label| {
+        want[n] = label;
+        n += 1;
+    }
+    if (n == row.children.items.len and std.mem.eql(*Node, want[0..n], row.children.items)) return;
+    for (want[0..n]) |node| row.appendChild(state.allocator, node) catch |err| {
+        std.log.warn("[select] reordering tags failed: {s}; tags keep their previous order", .{@errorName(err)});
+        return;
+    };
+}
+
+const tags_fade_size: f32 = 16;
+
+/// Chips keep their natural width; the viewport takes what the trigger leaves and clips them.
+fn tagsViewportStyle(fade_color: Color) core.BoxStyle {
+    return .{
+        .direction = .row,
+        .align_items = .center,
+        .width = .{ .grow = .{ .min = 0 } },
+        .min_width = 0,
+        .overflow_hidden = true,
+        // Edges switch on from the scroll position (syncTagsScroll); both start off.
+        .overflow_fade = .{ .size = tags_fade_size, .color = fade_color, .edges = .{ .top = false, .bottom = false, .left = false, .right = false } },
+    };
+}
+
+fn tagsRowStyle(gap: f32) core.BoxStyle {
+    var style = rowStyle(gap);
+    style.flex_shrink = 0;
+    return style;
+}
+
+fn tagsScrollMax(state: *const SelectState) f32 {
+    const viewport = state.tags_viewport orelse return 0;
+    const row = state.tags_row orelse return 0;
+    return @max(0, row.rectFromWorldOrFallback().w - viewport.rectFromWorldOrFallback().w);
+}
+
+/// Clamp the scroll to the current chips (removing one shrinks the range), place the row and
+/// fade only the edges that hide chips.
+fn syncTagsScroll(state: *SelectState) void {
+    const viewport = state.tags_viewport orelse return;
+    const row = state.tags_row orelse return;
+    const max = tagsScrollMax(state);
+    state.tags_scroll_x = std.math.clamp(state.tags_scroll_x, 0, max);
+    if (row.style.translate_x != -state.tags_scroll_x) {
+        row.setTranslateX(-state.tags_scroll_x);
+        row.markRenderDirty();
+    }
+    const ext = viewport.style.ensureExtPanic(state.cx.allocator);
+    const fade = if (ext.overflow_fade) |*f| f else return;
+    // A solid field covers the hidden chips with its own paint; a translucent one keeps the hard
+    // clip, as painting its tint again would leave a darker seam (same rule as Input).
+    const background = state.trigger.getBackground();
+    const can_fade = background.a == 255;
+    const left = can_fade and state.tags_scroll_x > 0.5;
+    const right = can_fade and state.tags_scroll_x < max - 0.5;
+    if (fade.edges.left == left and fade.edges.right == right and fade.color != null and Color.eql(fade.color.?, background)) return;
+    fade.edges.left = left;
+    fade.edges.right = right;
+    fade.color = background;
+    viewport.markRenderDirty();
+}
+
+fn tagsViewportBeforeRender(node: *Node) void {
+    const state: *SelectState = @ptrCast(@alignCast(node.behavior.events.event_context orelse return));
+    syncTagsScroll(state);
+}
+
+/// Horizontal trackpad swipes (and shift+wheel) scroll the chips sideways. Vertical scrolls and
+/// scrolls without overflow pass on, so the page keeps scrolling over the trigger.
+fn tagsViewportScroll(scroll: @import("../../events.zig").ScrollEvent, context: ?*anyopaque) EventResult {
+    const state: *SelectState = @ptrCast(@alignCast(context orelse return .ignored));
+    if (@abs(scroll.dy) > @abs(scroll.dx)) return .ignored;
+    const max = tagsScrollMax(state);
+    if (max <= 0) return .ignored;
+    const next = std.math.clamp(state.tags_scroll_x - scroll.dx, 0, max);
+    if (next == state.tags_scroll_x) return .ignored;
+    state.tags_scroll_x = next;
+    syncTagsScroll(state);
+    return .handled;
 }
 
 fn selectedIndex(state: *const SelectState) ?usize {
@@ -699,18 +792,48 @@ fn syncSelection(state: *SelectState) void {
         }
         syncClearAffordance(state);
     } else {
-        for (state.tag_nodes, 0..) |tag_node, i| tag_node.setDisplay(if (state.isSelected(i)) .flex else .none);
+        const selected_count = state.selection_len;
+        const visible_limit = state.max_visible_tags orelse state.tag_nodes.len;
+        for (state.tag_nodes) |tag_node| tag_node.setDisplay(.none);
+        for (state.selection_order[0..state.selection_len], 0..) |i, rank| {
+            if (i < state.tag_nodes.len and rank < visible_limit) state.tag_nodes[i].setDisplay(.flex);
+        }
+        orderTags(state);
+        if (state.overflow_label) |label| {
+            const hidden = selected_count - @min(selected_count, state.max_visible_tags.?);
+            var buf: [32]u8 = undefined;
+            label.setTextContent(state.allocator, std.fmt.bufPrint(&buf, "+{d}", .{hidden}) catch "") catch {};
+            label.setDisplay(if (hidden > 0) .flex else .none);
+        }
+        if (state.footer_label) |label| {
+            var buf: [64]u8 = undefined;
+            label.setTextContent(state.allocator, std.fmt.bufPrint(&buf, "{d} of {d} selected", .{ selected_count, state.options.len }) catch "") catch {};
+        }
     }
 
     for (state.option_nodes, state.check_nodes, 0..) |option_node, check_node, i| {
         const selected = state.isSelected(i);
         const highlighted = state.highlighted_index != null and state.highlighted_index.? == i;
-        option_node.setBackgroundRaw(if (highlighted) colors.hover else Color.TRANSPARENT);
+        const row_style = @import("../combo_box/styles.zig").optionStyle(state.tokens, selected and state.mode == .single).resolve(.{
+            .is_selected = selected and state.mode == .single,
+            .is_hovered = highlighted,
+            .is_disabled = state.options[i].disabled,
+        });
+        option_node.setBackgroundRaw(row_style.background.?);
+        const content = option_node.children.items[if (state.mode == .multiple) 1 else 0];
+        const label = content.children.items[content.children.items.len - 1];
+        if (label.getText()) |old| {
+            var text = old;
+            text.color = row_style.text_color.?;
+            label.setText(text);
+        }
+        if (state.mode == .single) _ = check_node.setTint(state.tokens.tokens.color.selection_fg);
         if (state.mode == .single) {
             check_node.setOpacityRaw(if (selected) 1 else 0);
         } else {
-            check_node.setBackgroundRaw(if (selected) colors.primary else colors.bg);
-            check_node.style.border.width = if (selected) 0 else 1.5;
+            const check_visual = styles.checkboxStyle(state.tokens).resolve(.{ .is_selected = selected, .is_disabled = state.options[i].disabled });
+            check_node.setBackgroundRaw(check_visual.background.?);
+            check_node.setBorderColor(check_visual.border_color.?);
             if (check_node.children.items.len > 0) check_node.children.items[0].setOpacityRaw(if (selected) 1 else 0);
         }
         option_node.markRenderDirty();
@@ -730,9 +853,21 @@ fn setAccessibleExpanded(raw: *anyopaque, expanded: bool) bool {
     return landed == expanded;
 }
 
+fn clearAllSelected(state: *SelectState) void {
+    if (state.shown_disabled) return;
+    const changed = state.on_values_change;
+    const landed = state.values.?.commit(&.{}) orelse return;
+    if (changed) |h| h.call(landed);
+}
+
 fn syncOpen(state: *SelectState) void {
     const open = state.shown_open;
-    state.trigger.setBorderColor(if (open) state.colors.primary else state.colors.border);
+    // Frame colors are the trigger shell's :hover / :expanded / :disabled.
+    if (state.trigger_label) |label| if (label.getText()) |old| {
+        var text = old;
+        if (state.shown_disabled) text.color = state.tokens.tokens.color.fg_disabled;
+        label.setText(text);
+    };
     // One downward chevron rotates into the open state. Keeping a single icon
     // avoids the cross-fade flicker caused by swapping up/down SVG nodes.
     state.chevron_down.setRotate(state.allocator, if (open) std.math.pi else 0);
@@ -742,6 +877,7 @@ fn syncOpen(state: *SelectState) void {
 }
 
 fn applyFilter(state: *SelectState) void {
+    state.filter_reset_pending = false;
     const query = state.query_buf[0..state.query_len];
     for (state.options, state.option_nodes) |option, node| {
         var matches = query.len == 0;
@@ -762,11 +898,17 @@ fn applyFilter(state: *SelectState) void {
 
 /// Clear search box and filter (external write doesn't trigger on_change)
 fn clearSearch(state: *SelectState) void {
+    if (state.query_text == null) return;
+    clearSearchText(state);
+    applyFilter(state);
+}
+
+/// Clear the search box and query, leaving the rows as filtered (a closing panel).
+fn clearSearchText(state: *SelectState) void {
     const query_text = state.query_text orelse return;
     query_text.set("");
     state.shown_search_label = null;
     state.setQuery("");
-    applyFilter(state);
 }
 
 /// Select/check item at index: propose only
@@ -814,11 +956,13 @@ fn triggerEvent(event: Event, context: ?*anyopaque) EventResult {
         },
         .mouse_enter => {
             state.is_trigger_hovered = true;
+            syncOpen(state);
             syncClearAffordance(state);
             return .handled;
         },
         .mouse_leave => {
             state.is_trigger_hovered = false;
+            syncOpen(state);
             syncClearAffordance(state);
             return .handled;
         },
@@ -866,13 +1010,7 @@ fn setAccessibleItemSelection(raw: *anyopaque, operation: core.A11yProps.ItemSel
     }
     const b = state.values orelse return false;
     var buf: [64][]const u8 = undefined;
-    var n: usize = 0;
-    for (state.options, 0..) |o, i| {
-        if (i < 64 and (next & (@as(u64, 1) << @intCast(i))) != 0) {
-            buf[n] = o.value;
-            n += 1;
-        }
-    }
+    const n = state.valuesForMask(next, &buf);
     const on_change = state.on_values_change;
     const landed = b.commit(buf[0..n]) orelse return false;
     var ok = landed.len == n;
@@ -999,6 +1137,7 @@ fn buildTag(state: *SelectState, scope: *Scope, option: SelectOption, ctx: *Item
         .direction = .row,
         .align_items = .center,
         .gap = m.tag_gap,
+        .height = .{ .px = m.tag_height },
         .padding = m.tag_padding,
         .background = colors.inset,
         .corner_radius = m.tag_radius,
@@ -1038,16 +1177,9 @@ fn mountSelect(props: SelectProps, scope: *Scope, cx: *Cx) !SelectResult {
     // Trigger geometry all from control metrics (same source as Button/Input/DatePicker);
     // outer frame height = padding_y * 2 + line height fitted.
     const shell_size: control_shell.ControlSize = props.size;
-    const cm = control_shell.metrics(cx.tokens, shell_size);
-    const trigger_padding = core.Padding{
-        .top = cm.padding_y,
-        .right = cm.padding_h,
-        .bottom = cm.padding_y,
-        .left = cm.padding_leading_icon,
-    };
+    const cm = @import("../input/styles.zig").fieldMetrics(cx.tokens, shell_size);
     const trigger_radius: f32 = cm.radius;
     const trigger_icon_size: f32 = cm.icon_size;
-    const shell_gap: f32 = cm.gap;
     const disabled0 = props.disabled.peek();
 
     const value: ?reactive.Bound(?[]const u8) = if (props.mode == .single) try reactive.resolveModel(?[]const u8, my_scope, props.value) else null;
@@ -1072,8 +1204,8 @@ fn mountSelect(props: SelectProps, scope: *Scope, cx: *Cx) !SelectResult {
         .trigger = .manual,
         .offset = .{ .static = 4 },
         .flip = true,
-        .width = props.width,
-        .match_trigger_width = true,
+        .width = if (props.panel_width == .trigger) props.width else null,
+        .match_trigger_width = props.panel_width == .trigger,
         .constrain_width_to_viewport = true,
         .max_height = props.max_dropdown_height,
         // Anchor dropdown: 160ms fade + 0.98 scale + 6px slide-in to anchor (follows direction on
@@ -1107,6 +1239,7 @@ fn mountSelect(props: SelectProps, scope: *Scope, cx: *Cx) !SelectResult {
         .colors = colors,
         .tokens = cx.tokens,
         .shell_size = shell_size,
+        .max_visible_tags = props.max_visible_tags,
         .value = value,
         .values = values,
         .open = open,
@@ -1145,28 +1278,45 @@ fn mountSelect(props: SelectProps, scope: *Scope, cx: *Cx) !SelectResult {
     const Append = struct { comp: *Node = undefined, chevrons: *Node = undefined, down: *Node = undefined, up: *Node = undefined, clear: ?*Node = null };
     var append: Append = .{};
     var input_result: ?input_mod.InputResult = null;
-    var trigger_shell: control_shell.ControlShellResult = undefined;
-    try view.mount(my_scope, cx, pop.trigger, view.capture(&trigger_shell, control_shell.ControlShell(.{
+    var trigger_shell: core.ViewParts = undefined;
+    // The trigger is a ControlShell(.field): hover / expanded / disabled frame colors and the
+    // cursor are its declarative states; Select adds its geometry as an overlay. The focus ring
+    // stays on the popover trigger (the focus target).
+    try view.mount(my_scope, cx, pop.trigger, view.attrs(.{ .style = view.styleBy(styles.TriggerFrame{
         .size = shell_size,
+        .width = props.width,
+        .multiple = props.mode == .multiple,
+        .tag_height = m.tag_height,
+    }, styles.triggerFrame) }, view.with(control_shell.ControlShell(.{
         .variant = .field,
-        .disabled = false,
-        .style = .{
-            .width = .{ .px = props.width },
-            .height = .{ .fit = .{} },
-            .padding = trigger_padding,
-            .background = colors.bg,
-            .border = .{ .width = 1, .color = colors.border, .radius = trigger_radius },
-            .corner_radius = trigger_radius,
-            .gap = shell_gap,
-            .cursor = .pointer,
-        },
-        .interactive = false,
-        .focus_ring = false,
+        .size = shell_size,
+        .disabled = props.disabled,
+        .expanded = open.read,
         .cursor = .pointer,
-    }, .{
+        .disabled_cursor = .default,
+        .icon_style = core.BoxStyle{ .min_height = cm.lineHeightPx() },
+        .append_style = core.BoxStyle{ .min_height = cm.lineHeightPx() },
+        .content_style = core.BoxStyle{
+            .min_height = cm.lineHeightPx(),
+            .width = .{ .grow = .{ .min = 0 } },
+            .flex_shrink = 1,
+            .overflow_hidden = true,
+            .min_width = 0,
+        },
+    }), .{}).capture(&trigger_shell).slots(.{
         .icon = if (leading_asset) |asset| view.capture(&state.leading_icon_node, iconEl(asset, trigger_icon_size, colors.text_tertiary)) else null,
-        .content = .{
-            if (props.mode == .multiple) view.capture(&state.tags_row, view.row(.{ .style = rowStyle(if (props.size == .xs) 3 else 4) }, {})) else null,
+        // Select's own content row fills the shell's content slot (its `.content_slot` part).
+        .content = view.capture(&state.content_slot, view.row(.{ .style = core.BoxStyle{
+            .width = .{ .grow = .{ .min = 0 } },
+            .height = .{ .fit = .{} },
+            .flex_shrink = 1,
+            .min_width = 0,
+            .align_items = .center,
+            .gap = if (props.size == .xs) 3 else if (props.mode == .multiple) 4 else 8,
+        } }, .{
+            if (props.mode == .multiple) view.capture(&state.tags_viewport, view.row(.{ .style = tagsViewportStyle(colors.bg) }, .{
+                view.capture(&state.tags_row, view.row(.{ .style = tagsRowStyle(if (props.size == .xs) 3 else 4) }, {})),
+            })) else null,
             if (props.searchable) view.capture(&input_result, input_mod.Input(.{
                 .placeholder = if (props.mode == .single) props.placeholder else Source([]const u8){ .value = "Search..." },
                 .placeholder_color = colors.text_tertiary,
@@ -1180,17 +1330,10 @@ fn mountSelect(props: SelectProps, scope: *Scope, cx: *Cx) !SelectResult {
             // text valid only this call);
             // tag fills remaining content width
             if (!props.searchable and props.mode == .single)
-                view.capture(&state.trigger_label, view.attrs(.{ .style = core.BoxStyle{ .width = .{ .grow = .{} } } }, triggerTextEl("", cm, colors.text_tertiary)))
+                view.capture(&state.trigger_label, view.attrs(.{ .style = core.BoxStyle{ .width = .{ .grow = .{} }, .min_width = 0 } }, triggerTextEl("", cm, colors.text_tertiary)))
             else
                 null,
-        },
-        .content_style = core.BoxStyle{
-            .width = .{ .grow = .{ .min = 0 } },
-            .flex_shrink = 1,
-            .gap = if (props.size == .xs) 3 else if (props.mode == .multiple) 4 else 8,
-            .overflow_hidden = true,
-            .min_width = 0,
-        },
+        })),
         .append = view.capture(&append.comp, view.row(.{ .style = core.BoxStyle{
             .width = icon_px,
             .height = icon_px,
@@ -1228,18 +1371,23 @@ fn mountSelect(props: SelectProps, scope: *Scope, cx: *Cx) !SelectResult {
             }))) else null,
         })),
     })));
-    const shell = trigger_shell.node;
+    const shell = trigger_shell.root.?;
     state.trigger = shell;
-    state.content_slot = trigger_shell.content_slot.?;
-    state.append_slot = trigger_shell.append_slot.?;
+    // The shell's append slot box (it hosts the append comp).
+    state.append_slot = append.comp.parent.?;
     if (input_result) |ir| {
         state.input_state = ir.state;
         state.query_text = ir.value;
         state.input_node = ir.node;
     }
     state.append_comp = append.comp;
+    if (state.tags_viewport) |viewport| {
+        viewport.behavior.events.event_context = @ptrCast(state);
+        viewport.behavior.events.on_scroll = tagsViewportScroll;
+        viewport.meta.per_frame.hooks.before_render.main = tagsViewportBeforeRender;
+    }
     if (append.clear) |clear| {
-        clear.applyTransition(allocator, &comptime recipe_mod.transition("opacity 160ms ease-out"));
+        try clear.applyTransition(allocator, &comptime recipe_mod.transition("opacity 160ms ease-out"));
         clear.snapTransition(allocator, .opacity, 0);
         state.clear_button = clear;
     }
@@ -1249,10 +1397,14 @@ fn mountSelect(props: SelectProps, scope: *Scope, cx: *Cx) !SelectResult {
     state.chevron_down = chevron_down;
     state.chevron_up = chevron_up;
     state.chevron_slot = chevron_stack;
-    chevron_stack.applyTransition(allocator, &comptime recipe_mod.transition("opacity 160ms ease-out"));
+    try chevron_stack.applyTransition(allocator, &comptime recipe_mod.transition("opacity 160ms ease-out"));
     chevron_stack.snapTransition(allocator, .opacity, 1);
-    chevron_down.applyTransition(allocator, &comptime recipe_mod.transition("rotate 180ms ease-in-out"));
-    chevron_down.snapTransition(allocator, .rotate, 0);
+    try chevron_down.applyTransition(allocator, &comptime recipe_mod.transition("rotate 180ms ease-in-out"));
+    // rotate lives in the ext block: reserve it here, snapTransition would panic on OOM
+    _ = try chevron_down.style.ensureExtFallible(allocator);
+    // A select mounted open shows its open state at once, like its popover: the chevron starts
+    // turned instead of rotating in from 0.
+    chevron_down.snapTransition(allocator, .rotate, if (open.read.peek()) std.math.pi else 0);
 
     shell.behavior.events.event_context = @ptrCast(state);
     shell.behavior.events.on_event = triggerEvent;
@@ -1267,21 +1419,33 @@ fn mountSelect(props: SelectProps, scope: *Scope, cx: *Cx) !SelectResult {
         .expansion = .{ .context = @ptrCast(state), .set = setAccessibleExpanded },
     };
     state.applyDisabled(disabled0);
+    try hooks.useFocusRing(my_scope, cx, pop.trigger, .{ .width = cx.tokens.tokens.border_width.focus, .offset = cx.tokens.tokens.size.focus_offset });
 
     pop.content.style.direction = .column;
-    pop.content.style.gap = 2;
+    pop.content.style.gap = 0;
     pop.content.style.padding = core.Padding.all(m.panel_padding);
     pop.content.setBackgroundRaw(colors.panel);
-    pop.content.style.border = .{ .width = 1, .color = colors.border, .radius = m.panel_radius };
+    pop.content.style.border = .{ .overlay = true, .width = 1, .color = cx.tokens.tokens.color.border, .radius = m.panel_radius };
     const panel_ext = try pop.content.style.ensureExtFallible(allocator);
     panel_ext.corner_radius = .{ .all = m.panel_radius };
-    panel_ext.setShadow(.{ .color = Color.rgba(0, 0, 0, 18), .blur = 12, .offset_y = 4 });
+    panel_ext.setShadow(cx.tokens.tokens.shadow.md);
     panel_ext.hit_shape = .{ .rounded_rect = m.panel_radius };
     panel_ext.clip_shape = .{ .rounded_rect = m.panel_radius };
     pop.content.behavior.interaction.a11y = .{ .role = .listbox, .multiselectable = props.mode == .multiple };
 
+    var option_container = pop.content;
+    if (props.mode == .multiple and props.selection_footer) {
+        option_container = try core.adoptChild(cx, allocator, pop.content, try core.box(cx, .{ .width = .{ .grow = .{} }, .height = .{ .fit = .{} }, .direction = .column }, .{}));
+        const footer = try view.append(pop.scope, cx, pop.content, view.row(.{ .style = styles.footerStyle }, .{
+            view.capture(&state.footer_label, view.text(.{ .style = styles.footerText }, "")),
+            button_mod.Button(.{ .label = "Clear", .variant = .link, .size = .xs, .on_click = cx.on(SelectState, state, clearAllSelected) }),
+        }));
+        _ = footer;
+    }
     // Option rows write content (portal): rebuild and view effect belong to Popover scope
-    try bind_mod.rebuildOn(cx, pop.scope, options, pop.content, state, SelectState.optionsKey, SelectState.buildOptions);
+    // Rebuilt with the options and with the theme (rows and tags paint theme colors).
+    const options_view = try pop.scope.createMemo(SelectState.OptionsView, SelectState.OptionsViewSources{ .options = options, .theme = try cx.themeSignal() }, SelectState.OptionsViewSources.compute);
+    try bind_mod.rebuildOn(cx, pop.scope, options_view, option_container, state, SelectState.optionsViewKey, SelectState.buildOptionsView);
     try pop.scope.createEffect(state, SelectState.viewEffect);
     state.hold_initial_search_label = false;
     return .{
@@ -1459,6 +1623,31 @@ test "Select: multiple selection toggles independently; tags follow the values" 
     try testing.expectEqual(@as(usize, 0), result.values.?.peek().len);
 }
 
+test "Select(multiple): values and tags follow pick order, not option order" {
+    const t = try T.init();
+    defer t.deinit();
+    const result = try t.mount(.{ .options = &three_opts, .mode = .multiple });
+    const st = stateOf(result);
+    commit(st, 2);
+    commit(st, 0);
+    commit(st, 1);
+    const picked = result.values.?.peek();
+    try testing.expectEqual(@as(usize, 3), picked.len);
+    try testing.expectEqualStrings("three", picked[0]);
+    try testing.expectEqualStrings("one", picked[1]);
+    try testing.expectEqualStrings("two", picked[2]);
+    const row = st.tags_row.?.children.items;
+    try testing.expect(row[0] == st.tag_nodes[2] and row[1] == st.tag_nodes[0] and row[2] == st.tag_nodes[1]);
+    // Unpicking the middle one keeps the others in place; picking it again appends it.
+    commit(st, 0);
+    commit(st, 0);
+    const again = result.values.?.peek();
+    try testing.expectEqualStrings("three", again[0]);
+    try testing.expectEqualStrings("two", again[1]);
+    try testing.expectEqualStrings("one", again[2]);
+    try testing.expect(st.tags_row.?.children.items[2] == st.tag_nodes[0]);
+}
+
 test "Select: bound value —— 外部写入刷新标签与勾选；不在选项里的值不显示也不回写" {
     const t = try T.init();
     defer t.deinit();
@@ -1472,6 +1661,46 @@ test "Select: bound value —— 外部写入刷新标签与勾选；不在选�
     v.set("nope");
     try testing.expectEqualStrings("Select an option...", labelText(st));
     try testing.expectEqualStrings("nope", v.peek().?);
+}
+
+test "Select: mounted open shows the chevron turned; opening later rotates it in" {
+    const t = try T.init();
+    defer t.deinit();
+    const open_result = try t.mount(.{ .options = &two_opts, .open = true });
+    const open_st = stateOf(open_result);
+    try testing.expect(open_st.shown_open);
+    const turned = open_st.chevron_down.frame_state.frame_local.runtime.transitions.?.find(.rotate).?;
+    try testing.expect(!turned.active);
+    try testing.expectApproxEqAbs(@as(f32, std.math.pi), turned.from_value, 1e-4);
+    try testing.expectApproxEqAbs(@as(f32, std.math.pi), open_st.chevron_down.style.rotate(), 1e-4);
+
+    const closed_result = try t.mount(.{ .options = &two_opts });
+    const closed_st = stateOf(closed_result);
+    _ = triggerEvent(.{ .click = .{ .x = 0, .y = 0 } }, @ptrCast(closed_st));
+    try testing.expect(closed_st.shown_open);
+    const rotating = closed_st.chevron_down.frame_state.frame_local.runtime.transitions.?.find(.rotate).?;
+    try testing.expect(rotating.active);
+    try testing.expectApproxEqAbs(@as(f32, 0), rotating.from_value, 1e-4);
+    try testing.expectApproxEqAbs(@as(f32, std.math.pi), rotating.to_value, 1e-4);
+}
+
+test "Select: a closing searchable panel keeps its filtered rows until the next open" {
+    const t = try T.init();
+    defer t.deinit();
+    const result = try t.mount(.{ .options = &two_opts, .searchable = true });
+    const st = stateOf(result);
+    st.proposeOpen(true);
+    onSearchChanged(st, "2");
+    try testing.expectEqual(core.Display.none, st.option_nodes[0].style.display);
+    try testing.expectEqual(core.Display.flex, st.option_nodes[1].style.display);
+    st.proposeOpen(false);
+    try testing.expect(!st.shown_open);
+    // The draft is discarded, the fading panel still shows "Option 2" only.
+    try testing.expectEqual(@as(usize, 0), st.query_len);
+    try testing.expectEqual(core.Display.none, st.option_nodes[0].style.display);
+    st.proposeOpen(true);
+    try testing.expectEqual(core.Display.flex, st.option_nodes[0].style.display);
+    try testing.expectEqual(core.Display.flex, st.option_nodes[1].style.display);
 }
 
 test "Select: ui.split 拒绝时显示不动、on_change 不调；open 也走提议" {
@@ -1768,6 +1997,37 @@ test "select(dynamic placeholder): mount 在任意分配点失败时不泄漏（
     }.m);
 }
 
+// Reference-checked OOM sweep (see oom_sweep.zig): a mount that reports success must look exactly
+// like the uninjected mount; `check` also pins the states the reference was given.
+test "select(value+disabled): mount 成功即外观完整，任意分配点失败不假成功（sweep）" {
+    const sw = @import("../oom_sweep.zig");
+    try sw.sweepMountVerified("select(value+disabled)", struct {
+        fn m(scope: *sw.Scope, cx: *sw.Cx) anyerror!?*sw.Node {
+            const value = try scope.createSignal(?[]const u8, "two");
+            const disabled = try scope.createSignal(bool, true);
+            return (try Select(.{ .options = &two_opts, .value = value, .disabled = disabled, .clearable = true }).mount(scope, cx)).wrapper;
+        }
+    }.m, struct {
+        fn find(n: *Node, comptime pred: fn (*Node) bool) bool {
+            if (pred(n)) return true;
+            for (n.children.items) |c| if (find(c, pred)) return true;
+            return false;
+        }
+        fn disabledFrame(n: *Node) bool {
+            return n.style.border.width > 0 and Color.eql(core.theme.dark.tokens.color.disabled_bg, n.getBackground());
+        }
+        fn selectedLabel(n: *Node) bool {
+            const t = n.getText() orelse return false;
+            return std.mem.eql(u8, t.content, "Option 2");
+        }
+        fn check(root: *Node) anyerror!void {
+            // the disabled frame and the selected option's label, both from sources at mount
+            try std.testing.expect(find(root, disabledFrame));
+            try std.testing.expect(find(root, selectedLabel));
+        }
+    }.check);
+}
+
 test "select(clearable): mount 在任意分配点失败时不泄漏（sweep）" {
     const sw = @import("../oom_sweep.zig");
     try sw.sweepMount("select(clearable)", struct {
@@ -1787,4 +2047,40 @@ test "select(multiple, searchable, dynamic): mount 在任意分配点失败时�
             return (try Select(.{ .options = opts, .mode = .multiple, .values = vals, .searchable = true, .disabled = d }).mount(scope, cx)).wrapper;
         }
     }.m);
+}
+
+test "Select multi overflow and footer follow selection across option rebuild and Clear" {
+    const t = try T.init();
+    defer t.deinit();
+    const options = try t.scope.createSignal([]const SelectOption, &three_opts);
+    const disabled = try t.scope.createSignal(bool, false);
+    const result = try t.mount(.{ .options = options, .mode = .multiple, .values = &[_][]const u8{ "one", "two", "three" }, .max_visible_tags = 1, .selection_footer = true, .disabled = disabled });
+    const state = stateOf(result);
+    try testing.expectEqualStrings("+2", state.overflow_label.?.getText().?.content);
+    try testing.expectEqual(core.Display.none, state.tag_nodes[1].style.display);
+    try testing.expectEqualStrings("3 of 3 selected", state.footer_label.?.getText().?.content);
+    options.set(&two_opts);
+    try testing.expectEqualStrings("+1", state.overflow_label.?.getText().?.content);
+    try testing.expectEqualStrings("2 of 2 selected", state.footer_label.?.getText().?.content);
+    disabled.set(true);
+    clearAllSelected(state);
+    try testing.expectEqual(@as(usize, 3), result.values.?.peek().len);
+    disabled.set(false);
+    clearAllSelected(state);
+    try testing.expectEqual(@as(usize, 0), result.values.?.peek().len);
+    try testing.expectEqual(core.Display.none, state.overflow_label.?.style.display);
+    try testing.expectEqualStrings("0 of 2 selected", state.footer_label.?.getText().?.content);
+}
+
+test "review regression 9: multi-select checkbox shares the thin border token" {
+    var t = try T.init();
+    defer t.deinit();
+    var custom = t.cx.tokens.*;
+    custom.tokens.border_width.thin = 3;
+    t.cx.setTheme(&custom);
+    const result = try t.mount(.{ .options = &three_opts, .mode = .multiple });
+    const st = stateOf(result);
+    for (st.option_nodes) |row| {
+        try testing.expectEqual(custom.tokens.border_width.thin, row.children.items[0].style.border.width);
+    }
 }

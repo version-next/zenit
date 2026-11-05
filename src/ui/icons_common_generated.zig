@@ -65,6 +65,39 @@ pub const check = blk: {
     };
     break :blk Asset{ .svg_data = @embedFile("icons_common/check.svg"), .default_width = 24, .default_height = 24, .icon_id = 1, .reps = &zi_reps };
 };
+pub const checkbox_check = blk: {
+    const s0_c0_pts = [_]icon_ir.Point{
+        .{ .x = 2.5, .y = 6.25 },
+        .{ .x = 4.85, .y = 8.6 },
+        .{ .x = 9.5, .y = 3.6 },
+    };
+    const s0_contours = [_]icon_ir.Contour{
+        .{ .points = &s0_c0_pts, .closed = false },
+    };
+    const zi_shapes = [_]icon_ir.Shape{
+        .{ .contours = &s0_contours, .fill = false, .stroke_width = 2, .fill_rule = .nonzero },
+    };
+    const zi_reps = [_]icon_ir.Rep{
+        .{ .size = 24, .view_min_x = 0, .view_min_y = 0, .view_width = 12, .view_height = 12, .shapes = &zi_shapes },
+    };
+    break :blk Asset{ .svg_data = @embedFile("icons_common/checkbox_check.svg"), .default_width = 12, .default_height = 12, .icon_id = 2, .reps = &zi_reps };
+};
+pub const checkbox_mixed = blk: {
+    const s0_c0_pts = [_]icon_ir.Point{
+        .{ .x = 3, .y = 6 },
+        .{ .x = 9, .y = 6 },
+    };
+    const s0_contours = [_]icon_ir.Contour{
+        .{ .points = &s0_c0_pts, .closed = false },
+    };
+    const zi_shapes = [_]icon_ir.Shape{
+        .{ .contours = &s0_contours, .fill = false, .stroke_width = 2, .fill_rule = .nonzero },
+    };
+    const zi_reps = [_]icon_ir.Rep{
+        .{ .size = 24, .view_min_x = 0, .view_min_y = 0, .view_width = 12, .view_height = 12, .shapes = &zi_shapes },
+    };
+    break :blk Asset{ .svg_data = @embedFile("icons_common/checkbox_mixed.svg"), .default_width = 12, .default_height = 12, .icon_id = 3, .reps = &zi_reps };
+};
 pub const chevron_down = blk: {
     const s0_c0_pts = [_]icon_ir.Point{
         .{ .x = 6, .y = 9 },
@@ -80,7 +113,7 @@ pub const chevron_down = blk: {
     const zi_reps = [_]icon_ir.Rep{
         .{ .size = 24, .view_min_x = 0, .view_min_y = 0, .view_width = 24, .view_height = 24, .shapes = &zi_shapes },
     };
-    break :blk Asset{ .svg_data = @embedFile("icons_common/chevron_down.svg"), .default_width = 24, .default_height = 24, .icon_id = 2, .reps = &zi_reps };
+    break :blk Asset{ .svg_data = @embedFile("icons_common/chevron_down.svg"), .default_width = 24, .default_height = 24, .icon_id = 4, .reps = &zi_reps };
 };
 pub const chevron_left = blk: {
     const s0_c0_pts = [_]icon_ir.Point{
@@ -97,7 +130,7 @@ pub const chevron_left = blk: {
     const zi_reps = [_]icon_ir.Rep{
         .{ .size = 24, .view_min_x = 0, .view_min_y = 0, .view_width = 24, .view_height = 24, .shapes = &zi_shapes },
     };
-    break :blk Asset{ .svg_data = @embedFile("icons_common/chevron_left.svg"), .default_width = 24, .default_height = 24, .icon_id = 3, .reps = &zi_reps };
+    break :blk Asset{ .svg_data = @embedFile("icons_common/chevron_left.svg"), .default_width = 24, .default_height = 24, .icon_id = 5, .reps = &zi_reps };
 };
 pub const chevron_right = blk: {
     const s0_c0_pts = [_]icon_ir.Point{
@@ -114,7 +147,7 @@ pub const chevron_right = blk: {
     const zi_reps = [_]icon_ir.Rep{
         .{ .size = 24, .view_min_x = 0, .view_min_y = 0, .view_width = 24, .view_height = 24, .shapes = &zi_shapes },
     };
-    break :blk Asset{ .svg_data = @embedFile("icons_common/chevron_right.svg"), .default_width = 24, .default_height = 24, .icon_id = 4, .reps = &zi_reps };
+    break :blk Asset{ .svg_data = @embedFile("icons_common/chevron_right.svg"), .default_width = 24, .default_height = 24, .icon_id = 6, .reps = &zi_reps };
 };
 pub const chevron_up = blk: {
     const s0_c0_pts = [_]icon_ir.Point{
@@ -131,7 +164,7 @@ pub const chevron_up = blk: {
     const zi_reps = [_]icon_ir.Rep{
         .{ .size = 24, .view_min_x = 0, .view_min_y = 0, .view_width = 24, .view_height = 24, .shapes = &zi_shapes },
     };
-    break :blk Asset{ .svg_data = @embedFile("icons_common/chevron_up.svg"), .default_width = 24, .default_height = 24, .icon_id = 5, .reps = &zi_reps };
+    break :blk Asset{ .svg_data = @embedFile("icons_common/chevron_up.svg"), .default_width = 24, .default_height = 24, .icon_id = 7, .reps = &zi_reps };
 };
 pub const code = blk: {
     const s0_c0_pts = [_]icon_ir.Point{
@@ -157,7 +190,7 @@ pub const code = blk: {
     const zi_reps = [_]icon_ir.Rep{
         .{ .size = 24, .view_min_x = 0, .view_min_y = 0, .view_width = 24, .view_height = 24, .shapes = &zi_shapes },
     };
-    break :blk Asset{ .svg_data = @embedFile("icons_common/code.svg"), .default_width = 24, .default_height = 24, .icon_id = 6, .reps = &zi_reps };
+    break :blk Asset{ .svg_data = @embedFile("icons_common/code.svg"), .default_width = 24, .default_height = 24, .icon_id = 8, .reps = &zi_reps };
 };
 pub const file_text = blk: {
     const s0_c0_pts = [_]icon_ir.Point{
@@ -233,7 +266,7 @@ pub const file_text = blk: {
     const zi_reps = [_]icon_ir.Rep{
         .{ .size = 24, .view_min_x = 0, .view_min_y = 0, .view_width = 24, .view_height = 24, .shapes = &zi_shapes },
     };
-    break :blk Asset{ .svg_data = @embedFile("icons_common/file_text.svg"), .default_width = 24, .default_height = 24, .icon_id = 7, .reps = &zi_reps };
+    break :blk Asset{ .svg_data = @embedFile("icons_common/file_text.svg"), .default_width = 24, .default_height = 24, .icon_id = 9, .reps = &zi_reps };
 };
 pub const folder = blk: {
     const s0_c0_pts = [_]icon_ir.Point{
@@ -277,7 +310,7 @@ pub const folder = blk: {
     const zi_reps = [_]icon_ir.Rep{
         .{ .size = 24, .view_min_x = 0, .view_min_y = 0, .view_width = 24, .view_height = 24, .shapes = &zi_shapes },
     };
-    break :blk Asset{ .svg_data = @embedFile("icons_common/folder.svg"), .default_width = 24, .default_height = 24, .icon_id = 8, .reps = &zi_reps };
+    break :blk Asset{ .svg_data = @embedFile("icons_common/folder.svg"), .default_width = 24, .default_height = 24, .icon_id = 10, .reps = &zi_reps };
 };
 pub const folder_open = blk: {
     const s0_c0_pts = [_]icon_ir.Point{
@@ -334,7 +367,7 @@ pub const folder_open = blk: {
     const zi_reps = [_]icon_ir.Rep{
         .{ .size = 24, .view_min_x = 0, .view_min_y = 0, .view_width = 24, .view_height = 24, .shapes = &zi_shapes },
     };
-    break :blk Asset{ .svg_data = @embedFile("icons_common/folder_open.svg"), .default_width = 24, .default_height = 24, .icon_id = 9, .reps = &zi_reps };
+    break :blk Asset{ .svg_data = @embedFile("icons_common/folder_open.svg"), .default_width = 24, .default_height = 24, .icon_id = 11, .reps = &zi_reps };
 };
 pub const link = blk: {
     const s0_c0_pts = [_]icon_ir.Point{
@@ -386,7 +419,7 @@ pub const link = blk: {
     const zi_reps = [_]icon_ir.Rep{
         .{ .size = 24, .view_min_x = 0, .view_min_y = 0, .view_width = 24, .view_height = 24, .shapes = &zi_shapes },
     };
-    break :blk Asset{ .svg_data = @embedFile("icons_common/link.svg"), .default_width = 24, .default_height = 24, .icon_id = 10, .reps = &zi_reps };
+    break :blk Asset{ .svg_data = @embedFile("icons_common/link.svg"), .default_width = 24, .default_height = 24, .icon_id = 12, .reps = &zi_reps };
 };
 pub const mark = blk: {
     const s0_c0_pts = [_]icon_ir.Point{
@@ -496,7 +529,7 @@ pub const mark = blk: {
     const zi_reps = [_]icon_ir.Rep{
         .{ .size = 24, .view_min_x = 0, .view_min_y = 0, .view_width = 24, .view_height = 24, .shapes = &zi_shapes },
     };
-    break :blk Asset{ .svg_data = @embedFile("icons_common/mark.svg"), .default_width = 24, .default_height = 24, .icon_id = 11, .reps = &zi_reps };
+    break :blk Asset{ .svg_data = @embedFile("icons_common/mark.svg"), .default_width = 24, .default_height = 24, .icon_id = 13, .reps = &zi_reps };
 };
 pub const plus = blk: {
     const s0_c0_pts = [_]icon_ir.Point{
@@ -520,7 +553,7 @@ pub const plus = blk: {
     const zi_reps = [_]icon_ir.Rep{
         .{ .size = 24, .view_min_x = 0, .view_min_y = 0, .view_width = 24, .view_height = 24, .shapes = &zi_shapes },
     };
-    break :blk Asset{ .svg_data = @embedFile("icons_common/plus.svg"), .default_width = 24, .default_height = 24, .icon_id = 12, .reps = &zi_reps };
+    break :blk Asset{ .svg_data = @embedFile("icons_common/plus.svg"), .default_width = 24, .default_height = 24, .icon_id = 14, .reps = &zi_reps };
 };
 pub const scan = blk: {
     const s0_c0_pts = [_]icon_ir.Point{
@@ -580,7 +613,7 @@ pub const scan = blk: {
     const zi_reps = [_]icon_ir.Rep{
         .{ .size = 24, .view_min_x = 0, .view_min_y = 0, .view_width = 24, .view_height = 24, .shapes = &zi_shapes },
     };
-    break :blk Asset{ .svg_data = @embedFile("icons_common/scan.svg"), .default_width = 24, .default_height = 24, .icon_id = 13, .reps = &zi_reps };
+    break :blk Asset{ .svg_data = @embedFile("icons_common/scan.svg"), .default_width = 24, .default_height = 24, .icon_id = 15, .reps = &zi_reps };
 };
 pub const search = blk: {
     const s0_c0_pts = [_]icon_ir.Point{
@@ -666,7 +699,7 @@ pub const search = blk: {
     const zi_reps = [_]icon_ir.Rep{
         .{ .size = 24, .view_min_x = 0, .view_min_y = 0, .view_width = 24, .view_height = 24, .shapes = &zi_shapes },
     };
-    break :blk Asset{ .svg_data = @embedFile("icons_common/search.svg"), .default_width = 24, .default_height = 24, .icon_id = 14, .reps = &zi_reps };
+    break :blk Asset{ .svg_data = @embedFile("icons_common/search.svg"), .default_width = 24, .default_height = 24, .icon_id = 16, .reps = &zi_reps };
 };
 pub const star = blk: {
     const s0_c0_pts = [_]icon_ir.Point{
@@ -740,7 +773,7 @@ pub const star = blk: {
     const zi_reps = [_]icon_ir.Rep{
         .{ .size = 24, .view_min_x = 0, .view_min_y = 0, .view_width = 24, .view_height = 24, .shapes = &zi_shapes },
     };
-    break :blk Asset{ .svg_data = @embedFile("icons_common/star.svg"), .default_width = 24, .default_height = 24, .icon_id = 15, .reps = &zi_reps };
+    break :blk Asset{ .svg_data = @embedFile("icons_common/star.svg"), .default_width = 24, .default_height = 24, .icon_id = 17, .reps = &zi_reps };
 };
 pub const star_filled = blk: {
     const s0_c0_pts = [_]icon_ir.Point{
@@ -814,7 +847,7 @@ pub const star_filled = blk: {
     const zi_reps = [_]icon_ir.Rep{
         .{ .size = 24, .view_min_x = 0, .view_min_y = 0, .view_width = 24, .view_height = 24, .shapes = &zi_shapes },
     };
-    break :blk Asset{ .svg_data = @embedFile("icons_common/star_filled.svg"), .default_width = 24, .default_height = 24, .icon_id = 16, .reps = &zi_reps };
+    break :blk Asset{ .svg_data = @embedFile("icons_common/star_filled.svg"), .default_width = 24, .default_height = 24, .icon_id = 18, .reps = &zi_reps };
 };
 pub const x_close = blk: {
     const s0_c0_pts = [_]icon_ir.Point{
@@ -838,7 +871,7 @@ pub const x_close = blk: {
     const zi_reps = [_]icon_ir.Rep{
         .{ .size = 24, .view_min_x = 0, .view_min_y = 0, .view_width = 24, .view_height = 24, .shapes = &zi_shapes },
     };
-    break :blk Asset{ .svg_data = @embedFile("icons_common/x_close.svg"), .default_width = 24, .default_height = 24, .icon_id = 17, .reps = &zi_reps };
+    break :blk Asset{ .svg_data = @embedFile("icons_common/x_close.svg"), .default_width = 24, .default_height = 24, .icon_id = 19, .reps = &zi_reps };
 };
 pub const Entry = struct {
     name: []const u8,
@@ -848,6 +881,8 @@ pub const Entry = struct {
 pub const all = [_]Entry{
     .{ .name = "calendar", .asset = calendar },
     .{ .name = "check", .asset = check },
+    .{ .name = "checkbox_check", .asset = checkbox_check },
+    .{ .name = "checkbox_mixed", .asset = checkbox_mixed },
     .{ .name = "chevron_down", .asset = chevron_down },
     .{ .name = "chevron_left", .asset = chevron_left },
     .{ .name = "chevron_right", .asset = chevron_right },

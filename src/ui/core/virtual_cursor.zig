@@ -9,7 +9,7 @@ const std = @import("std");
 var hidden_env_cache: ?bool = null;
 fn hiddenByEnv() bool {
     if (hidden_env_cache) |v| return v;
-    const v = @import("zenit_environment").has("ZENIT_E2E_HIDE_VIRTUAL_CURSOR");
+    const v = @import("zenit_environment").flag("ZENIT_E2E_HIDE_VIRTUAL_CURSOR");
     hidden_env_cache = v;
     return v;
 }

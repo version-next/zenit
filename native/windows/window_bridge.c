@@ -245,8 +245,10 @@ typedef struct ZenitWindow {
     unsigned key_read, key_write;
     struct { int code, down, x, y; uint32_t modifiers; uint64_t serial; } buttons[128];
     unsigned button_read, button_write;
-    struct { int x, y, dx, dy; uint32_t modifiers; uint64_t serial; } moves[128];
+    /* left: WM_MOUSELEAVE marker (pointer left the client area), never coalesced. */
+    struct { int x, y, dx, dy; uint32_t modifiers; uint64_t serial; int left; } moves[128];
     unsigned move_read, move_write;
+    int leave_tracked; /* TrackMouseEvent(TME_LEAVE) armed for the client area */
     struct { float x, y, dx, dy; uint32_t modifiers; uint64_t serial; } wheels[128];
     unsigned wheel_read, wheel_write;
     struct { char bytes[4]; int length; uint64_t serial; } text[128];
@@ -361,7 +363,7 @@ static void push_move(ZenitWindow *win, int x, int y, WPARAM flags) {
     win->mouse_x = x;
     win->mouse_y = y;
     unsigned previous = (win->move_write + 127) % 128;
-    if (win->move_read != win->move_write &&
+    if (win->move_read != win->move_write && !win->moves[previous].left &&
         win->moves[previous].serial == win->next_input_serial && win->moves[previous].modifiers == mods) {
         win->moves[previous].x = x;
         win->moves[previous].y = y;
@@ -380,6 +382,21 @@ static void push_move(ZenitWindow *win, int x, int y, WPARAM flags) {
     win->moves[win->move_write].dy = dy;
     win->moves[win->move_write].modifiers = mods;
     win->moves[win->move_write].serial = ++win->next_input_serial;
+    win->moves[win->move_write].left = 0;
+    win->move_write = next;
+}
+
+/* WM_MOUSELEAVE: ordered after the moves before it; the next move re-arms tracking. */
+static void push_leave(ZenitWindow *win) {
+    unsigned next = queue_next(win->move_write);
+    if (next == win->move_read) win->move_read = queue_next(win->move_read);
+    win->moves[win->move_write].x = win->mouse_x;
+    win->moves[win->move_write].y = win->mouse_y;
+    win->moves[win->move_write].dx = 0;
+    win->moves[win->move_write].dy = 0;
+    win->moves[win->move_write].modifiers = modifiers();
+    win->moves[win->move_write].serial = ++win->next_input_serial;
+    win->moves[win->move_write].left = 1;
     win->move_write = next;
 }
 
@@ -1242,7 +1259,17 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
             }
             return DefWindowProcW(hwnd, message, wparam, lparam);
         case WM_MOUSEMOVE:
+            /* Client-area leave notification (moving onto the app-drawn caption, another
+               window or off the window), so the runtime stops trusting the last position. */
+            if (!win->leave_tracked) {
+                TRACKMOUSEEVENT track={sizeof(track),TME_LEAVE,hwnd,0};
+                if (TrackMouseEvent(&track)) win->leave_tracked=1;
+            }
             push_move(win, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam), wparam);
+            return 0;
+        case WM_MOUSELEAVE:
+            win->leave_tracked=0;
+            push_leave(win);
             return 0;
         case WM_SIZE:
             // Present the new extent before DWM composes it. Otherwise resize,
@@ -1561,7 +1588,13 @@ void zenit_windows_show(ZenitWindow *win) {
         if (win->cloaked && !SetTimer(win->hwnd, ZENIT_REVEAL_TIMER, ZENIT_REVEAL_TIMEOUT_MS, NULL))
             set_cloak(win, 0);
     }
-    ShowWindow(win->hwnd, show_without_activation() ? SW_SHOWNOACTIVATE : SW_SHOW);
+    const int show = show_without_activation() ? SW_SHOWNOACTIVATE : SW_SHOW;
+    ShowWindow(win->hwnd, show);
+    // The first ShowWindow in a process takes the launcher's STARTUPINFO show
+    // state instead: a child spawned with SW_HIDE (Node/Bun windowsHide, used
+    // to hide a console) would keep its first window hidden for good. Only a
+    // still-hidden window is shown again; a launcher's minimize stands.
+    if (!IsWindowVisible(win->hwnd)) ShowWindow(win->hwnd, show);
     UpdateWindow(win->hwnd);
 }
 
@@ -1769,6 +1802,34 @@ void zenit_windows_pump_timeout(uint32_t timeout_ms) {
         dispatch_native_message(&msg);
     }
 }
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+/* Like zenit_windows_pump_timeout, but the deadline is honoured to well under
+ * a millisecond: a plain wait timeout rounds up to the system timer tick
+ * (15.6 ms by default), so a 16 ms timeout sleeps ~31 ms. Used where the loop
+ * must wake when timed input is due, as a real input message would wake it. */
+void zenit_windows_pump_timeout_precise(uint32_t timeout_us) {
+    static HANDLE timer;
+    if (!timer) timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    LARGE_INTEGER due;
+    due.QuadPart = -(LONGLONG)timeout_us * 10;
+    if (!timer || !timeout_us || !SetWaitableTimerEx(timer, &due, 0, NULL, NULL, NULL, 0)) {
+        zenit_windows_pump_timeout(timeout_us ? (timeout_us + 999) / 1000 : 0);
+        return;
+    }
+    HANDLE handles[2];
+    DWORD count = 0;
+    HANDLE event = zenit_wake_event();
+    if (event) handles[count++] = event;
+    handles[count++] = timer;
+    MsgWaitForMultipleObjectsEx(count, handles, (timeout_us + 999) / 1000 + 16, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    CancelWaitableTimer(timer);
+    MSG msg;
+    while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+        dispatch_native_message(&msg);
+    }
+}
 int zenit_windows_begin_close(ZenitWindow *win) {
     if (!win || !win->alive) return 1;
     DestroyWindow(win->hwnd);
@@ -1904,8 +1965,9 @@ void zenit_windows_mouse(ZenitWindow *win, float *x, float *y) {
     *x = win ? (float)win->mouse_x / scale : 0;
     *y = win ? (float)win->mouse_y / scale : 0;
 }
-int zenit_windows_move(ZenitWindow *win, float *x, float *y, float *dx, float *dy, uint32_t *mods, uint64_t *serial) {
+int zenit_windows_move(ZenitWindow *win, float *x, float *y, float *dx, float *dy, uint32_t *mods, uint64_t *serial, int *left) {
     if (!win || win->move_read == win->move_write) return 0;
+    *left = win->moves[win->move_read].left;
     float scale = window_scale(win);
     unsigned index = win->move_read;
     *x = (float)win->moves[index].x / scale;
@@ -2096,6 +2158,14 @@ int zenit_windows_contract_key(HWND hwnd, uint16_t key, uint32_t mods, int press
     return 1;
 }
 /* Gallery-only queue injection: no SetCapture/SetFocus or desktop input. */
+int zenit_windows_contract_move(HWND hwnd, uintptr_t flags, intptr_t point) {
+    ZenitWindow *win = window_owner(hwnd);
+    if (!win || GetWindowThreadProcessId(hwnd, NULL) != GetCurrentThreadId()) return 0;
+    /* Use the same queue/coalescer as WM_MOUSEMOVE without arming OS hover
+       tracking for an injected position unrelated to the real desktop cursor. */
+    push_move(win, GET_X_LPARAM(point), GET_Y_LPARAM(point), (WPARAM)flags);
+    return 1;
+}
 int zenit_windows_contract_press(HWND hwnd, int button, int x, int y) {
     ZenitWindow *win = window_owner(hwnd);
     if (!win || button < 0 || button >= 3) return 0;
@@ -2391,4 +2461,46 @@ int zenit_win_chrome_action(void *owner, int action, int value) {
     }
     default: return 0;
     }
+}
+
+// Persist points, never the HWND or an HMONITOR address. Device name hash is
+// stable across process generations; disconnected monitors fall back to nearest.
+static uint32_t zenit_monitor_key(const WCHAR *s) {
+    uint32_t h = 2166136261u;
+    for (; *s; ++s) h = (h ^ (uint32_t)*s) * 16777619u;
+    return h;
+}
+typedef struct { uint64_t key; HMONITOR found; } ZenitMonitorLookup;
+static BOOL CALLBACK zenit_find_monitor(HMONITOR monitor, HDC dc, LPRECT rect, LPARAM param) {
+    (void)dc; (void)rect;
+    ZenitMonitorLookup *lookup = (ZenitMonitorLookup *)param;
+    MONITORINFOEXW info = {0}; info.cbSize = sizeof(info);
+    if (GetMonitorInfoW(monitor, (MONITORINFO *)&info) && zenit_monitor_key(info.szDevice) == lookup->key) {
+        lookup->found = monitor; return FALSE;
+    }
+    return TRUE;
+}
+int zenit_windows_logical_geometry(ZenitWindow *win, uint64_t screen, double out[9]) {
+    if (!win || !win->hwnd) return 0;
+    RECT f; if (!GetWindowRect(win->hwnd, &f)) return 0;
+    ZenitMonitorLookup lookup = { screen, NULL };
+    if (screen) EnumDisplayMonitors(NULL, NULL, zenit_find_monitor, (LPARAM)&lookup);
+    HMONITOR monitor = lookup.found ? lookup.found : MonitorFromWindow(win->hwnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFOEXW info = {0}; info.cbSize = sizeof(info);
+    if (!GetMonitorInfoW(monitor, (MONITORINFO *)&info)) return 0;
+    double scale = GetDpiForWindow(win->hwnd) / 96.0;
+    if (scale <= 0) scale = 1;
+    out[0] = f.left / scale; out[1] = f.top / scale;
+    out[2] = (f.right-f.left) / scale; out[3] = (f.bottom-f.top) / scale;
+    out[4] = info.rcWork.left / scale; out[5] = info.rcWork.top / scale;
+    out[6] = (info.rcWork.right-info.rcWork.left) / scale;
+    out[7] = (info.rcWork.bottom-info.rcWork.top) / scale;
+    out[8] = zenit_monitor_key(info.szDevice); return 1;
+}
+void zenit_windows_restore_logical_frame(ZenitWindow *win, const double f[4]) {
+    if (!win || !win->hwnd) return;
+    double scale = GetDpiForWindow(win->hwnd) / 96.0;
+    if (scale <= 0) scale = 1;
+    SetWindowPos(win->hwnd, NULL, (int)(f[0]*scale), (int)(f[1]*scale),
+        (int)(f[2]*scale), (int)(f[3]*scale), SWP_NOZORDER | SWP_NOACTIVATE);
 }

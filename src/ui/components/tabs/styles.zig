@@ -44,6 +44,7 @@ pub const TabsSlotRecipe = recipe_mod.slotRecipe(struct {
     /// Size/variant-agnostic static component styles.
     pub fn base(t: *const theme.ThemeTokens) Slots {
         return .{
+            .tab = .{ .hover = .{ .background = inkOverlay(t, .hover) }, .active = .{ .background = inkOverlay(t, .pressed) }, .disabled = .{ .text_color = t.tokens.color.fg_disabled } },
             .badge = .{ .base = .{
                 .height = .{ .px = 16 },
                 .background = t.tokens.color.accent,
@@ -74,46 +75,52 @@ pub const TabsSlotRecipe = recipe_mod.slotRecipe(struct {
                         .root = .{},
                         .tab = .{ .base = .{
                             .text_color = t.tokens.color.fg_secondary,
-                            .font_weight = 500,
+                            .font_weight = 400,
                         }, .selected = .{
                             .text_color = t.tokens.color.fg_primary,
-                            .font_weight = 600,
+                            .font_weight = 500,
                         }, .hover = .{ .text_color = t.tokens.color.fg_primary } },
-                        // 2px accent bar (height fixed, width/horizontal offset track active tab
+                        // 2px primary-ink bar (height fixed, width/horizontal offset track active tab
                         // each frame).
                         .highlight = .{ .base = .{
                             .height = .{ .px = 2 },
-                            .background = t.tokens.color.accent,
+                            .background = t.tokens.color.fg_primary,
                         } },
                     },
                     .pill => .{
                         .root = .{ .base = .{
-                            .background = t.tokens.color.bg_secondary,
+                            .background = t.tokens.color.bg_active,
                         } },
                         .tab = .{ .base = .{
                             .text_color = t.tokens.color.fg_secondary,
-                            .font_weight = 500,
+                            .font_weight = 400,
                         }, .selected = .{
                             .text_color = t.tokens.color.fg_primary,
-                            .font_weight = 600,
+                            .font_weight = 500,
                         } },
                         // White slider + precise shadow.
                         .highlight = .{ .base = .{
                             .background = t.tokens.color.bg_primary,
-                            .shadow = .{ .color = Color.rgba(0, 0, 0, 15), .blur = 2, .offset_x = 0, .offset_y = 1 },
+                            .shadow = .{ .color = t.tokens.shadow.sm.color, .blur = 3, .offset_y = 1 },
                         } },
                     },
                     .tab => .{
-                        .root = .{},
+                        .root = .{ .base = .{ .border_overlay = true, .background = t.tokens.color.bg_secondary, .border_bottom_width = 1, .border_color = t.tokens.color.border } },
                         .tab = .{ .base = .{
                             .text_color = t.tokens.color.fg_secondary,
-                            .font_weight = 500,
+                            .font_weight = 400,
                         }, .selected = .{
-                            .text_color = t.tokens.color.accent,
-                            .font_weight = 600,
+                            .text_color = t.tokens.color.fg_primary,
+                            .font_weight = 500,
                         } },
                         .highlight = .{ .base = .{
-                            .background = t.tokens.color.accent_subtle,
+                            .border_overlay = true,
+                            .background = t.tokens.color.bg_primary,
+                            .border_top_width = 1,
+                            .border_left_width = 1,
+                            .border_right_width = 1,
+                            .border_color = t.tokens.color.border,
+                            .corner_radii = .{ .each = .{ 6, 6, 0, 0 } },
                         } },
                     },
                 };
@@ -124,8 +131,9 @@ pub const TabsSlotRecipe = recipe_mod.slotRecipe(struct {
     /// Cross-dimension geometry: all padding/radius/gap/font_size from variant x size combinations
     /// here. Produce only geometry fields, never touch background (see recipe.zig derived
     /// contract).
-    pub fn derived(v: Variants, _: *const theme.ThemeTokens) Slots {
+    pub fn derived(v: Variants, t: *const theme.ThemeTokens) Slots {
         const item_geo = StyleOverride{
+            .height = .{ .px = itemHeight(v.variant, v.size) },
             .padding = itemPadding(v.variant, v.size),
             .gap = itemGap(v.variant, v.size),
             .font_size = tabFontSize(v.size),
@@ -133,17 +141,43 @@ pub const TabsSlotRecipe = recipe_mod.slotRecipe(struct {
         return .{
             .root = .{ .base = .{
                 .padding = rootPadding(v.variant, v.size),
-                .corner_radius = rootCornerRadius(v.variant, v.size),
+                .corner_radius = if (v.variant == .pill) t.tokens.radius.xl else 0,
                 .gap = rootGap(v.variant, v.size),
             } },
-            // Selected condition doesn't change geometry, one base suffices.
-            .tab = .{ .base = item_geo },
+            // Selected condition doesn't change geometry, one base suffices. The hover /
+            // pressed fill takes the selected slider's shape (pill: control radius; tab:
+            // its rounded top corners); the underline bar runs along a square bottom edge.
+            .tab = .{ .base = item_geo.merge(switch (v.variant) {
+                .underline => StyleOverride{},
+                .pill => StyleOverride{ .corner_radius = t.tokens.radius.control },
+                .tab => StyleOverride{ .corner_radii = .{ .each = .{ 6, 6, 0, 0 } } },
+            }) },
             .highlight = .{ .base = .{
-                .corner_radius = highlightRadius(v.variant, v.size),
+                .corner_radius = if (v.variant == .tab) null else if (v.variant == .pill) t.tokens.radius.control else 0,
             } },
         };
     }
 });
+
+/// Hover / pressed fill of a tab: the primary text colour as a translucent ink over
+/// whatever the tab sits on (white page, the pill or tab track, the selected slider),
+/// so one fill reads the same on every variant and keeps the surface's hue. An opaque
+/// fill cannot: bg_hover (a blue-tinted grey) was a 0.75 OKLab ΔE step on the
+/// #f4f4f7 track, below a visible difference, and the pressed fill was lighter than
+/// hover there. Alphas give ΔE ≈ 3.6–3.9 (hover) and 6.5–7 (pressed) on both the
+/// primary and secondary backgrounds of either scheme; lightening a dark surface reads
+/// stronger than darkening a light one, so a light ink (dark scheme) uses less.
+pub const InkState = enum { hover, pressed };
+
+pub fn inkOverlay(t: *const theme.ThemeTokens, state: InkState) Color {
+    const ink = t.tokens.color.fg_primary;
+    const light_ink = @as(u32, ink.r) + ink.g + ink.b > 3 * 128;
+    const alpha: u8 = switch (state) {
+        .hover => if (light_ink) 10 else 14,
+        .pressed => if (light_ink) 18 else 26,
+    };
+    return ink.withAlpha(alpha);
+}
 
 // Tabs independent spec table, 4 sizes (xs/sm/md/lg).
 //
@@ -166,7 +200,7 @@ pub fn underlineItemPadding(size: TabsSize) Padding {
     return switch (size) {
         .xs => Padding.symmetric(3.5, 6),
         .sm => Padding.symmetric(5.5, 8),
-        .md => Padding.symmetric(8, 10),
+        .md => Padding.symmetric(0, 12),
         .lg => Padding.symmetric(11.5, 14),
     };
 }
@@ -177,7 +211,7 @@ pub fn pillOuterPadding(size: TabsSize) f32 {
     return switch (size) {
         .xs => 2,
         .sm => 2,
-        .md => 3,
+        .md => 2,
         .lg => 4,
     };
 }
@@ -186,7 +220,7 @@ pub fn pillOuterRadius(size: TabsSize) f32 {
     return switch (size) {
         .xs => 5,
         .sm => 7,
-        .md => 9,
+        .md => 8,
         .lg => 12,
     };
 }
@@ -195,7 +229,7 @@ pub fn pillInnerPadding(size: TabsSize) Padding {
     return switch (size) {
         .xs => Padding.symmetric(1.5, 6),
         .sm => Padding.symmetric(3.5, 6),
-        .md => Padding.symmetric(5, 10),
+        .md => Padding.symmetric(0, 12),
         .lg => Padding.symmetric(7.5, 14),
     };
 }
@@ -215,7 +249,7 @@ pub fn tabItemPadding(size: TabsSize) Padding {
     return switch (size) {
         .xs => Padding.symmetric(3.5, 6),
         .sm => Padding.symmetric(5.5, 8),
-        .md => Padding.symmetric(8, 10),
+        .md => Padding.symmetric(0, 12),
         .lg => Padding.symmetric(11, 14),
     };
 }
@@ -257,22 +291,14 @@ pub fn rootPadding(variant: TabsVariant, size: TabsSize) Padding {
     };
 }
 
-pub fn rootCornerRadius(variant: TabsVariant, size: TabsSize) f32 {
-    return switch (variant) {
-        .underline => 0,
-        .pill => pillOuterRadius(size),
-        .tab => 0,
-    };
-}
-
 pub fn rootGap(variant: TabsVariant, size: TabsSize) f32 {
     return switch (variant) {
         .underline => 0,
-        .pill => 2,
+        .pill => 1,
         .tab => switch (size) {
             .xs => 2,
             .sm => 2,
-            .md => 4,
+            .md => 0,
             .lg => 4,
         },
     };
@@ -300,11 +326,12 @@ pub fn itemGap(variant: TabsVariant, size: TabsSize) f32 {
     };
 }
 
-/// highlight_box corner radius.
-pub fn highlightRadius(variant: TabsVariant, size: TabsSize) f32 {
-    return switch (variant) {
-        .underline => 2,
-        .pill => pillInnerRadius(size),
-        .tab => tabCornerRadius(size),
+// cokFx: default underline 30px, segmented/document 28px.
+pub fn itemHeight(variant: TabsVariant, size: TabsSize) f32 {
+    return switch (size) {
+        .xs => 20,
+        .sm => 24,
+        .md => if (variant == .underline) 30 else 28,
+        .lg => 40,
     };
 }

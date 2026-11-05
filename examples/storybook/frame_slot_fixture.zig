@@ -46,7 +46,7 @@ fn probe(app: *zenit_app.App, out: []u8) ![]const u8 {
     // third permit is the only available one for failed C and its retry D.
     try draw(app, node, ui.Color.rgba(255, 0, 0, 255));
     const a_slot = renderer.sdf_renderer.current_buffer;
-    var source = &renderer.sdf_renderer.instance_buffers[a_slot];
+    var source = &(renderer.sdf_renderer.instance_buffers.buffers[a_slot] orelse return error.NoInstances);
     const bytes = renderer.sdf_renderer.buffer_write_offset * @sizeOf(@TypeOf(renderer.sdf_renderer.instances.items[0]));
     if (bytes == 0) return error.NoInstances;
     const expected = try app.allocator.dupe(u8, try source.getMappedRange(0, bytes));

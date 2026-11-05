@@ -101,7 +101,11 @@ pub const FenwickTree = struct {
             sum += self.tree[pos];
             pos -= lowbit(pos);
         }
-        return @intCast(std.math.clamp(sum, 0, std.math.maxInt(u32)));
+        // Keep the u32 saturation boundaries explicit before narrowing. The
+        // optimized aggregate module must preserve the full 0xffffffff value.
+        if (sum <= 0) return 0;
+        if (sum >= std.math.maxInt(u32)) return std.math.maxInt(u32);
+        return @intCast(sum);
     }
 
     /// Total sum
@@ -237,10 +241,19 @@ test "public operations safely handle invalid indices and full u32 values" {
     ft.set(99, 2);
     try std.testing.expectEqual(@as(u32, 1), ft.prefixSum(99));
 
-    ft.set(0, std.math.maxInt(u32));
-    try std.testing.expectEqual(std.math.maxInt(u32), ft.total());
+    const maximum: u32 = std.math.maxInt(u32);
+    ft.set(0, maximum);
+    try std.testing.expectEqual(maximum, ft.values[0]);
+    try std.testing.expectEqual(@as(i64, maximum), ft.tree[1]);
+    try std.testing.expectEqual(maximum, ft.total());
     ft.update(0, 1); // rejected instead of wrapping
-    try std.testing.expectEqual(std.math.maxInt(u32), ft.total());
+    try std.testing.expectEqual(maximum, ft.values[0]);
+    try std.testing.expectEqual(@as(i64, maximum), ft.tree[1]);
+    try std.testing.expectEqual(maximum, ft.total());
+    var saturated = try FenwickTree.buildFrom(alloc, &.{ maximum, maximum });
+    defer saturated.deinit();
+    try std.testing.expectEqual(maximum, saturated.total());
+    try std.testing.expectEqual(maximum, saturated.prefixSum(std.math.maxInt(usize)));
 }
 
 test "find walk-down" {

@@ -5,15 +5,18 @@
 struct Uniforms {
     float2 viewport_size; float scale_factor; uint clip_shape_kind;
     float4 clip_rect;
-    float clip_radius; uint clip_fill_rule; uint clip_point_count; uint clip_contour_count;
+    float4 clip_radii; // TL, TR, BR, BL (logical px)
+    uint clip_fill_rule; uint clip_point_count; uint clip_contour_count; uint clip_pad;
     uint4 clip_polygon_end_points[2]; float4 clip_polygon_points[16];
 };
 cbuffer ImageParams : register(b0, space0) { Uniforms uniforms; };
 cbuffer ZenitDrawInfo : register(b0, space4) { uint first_vertex; uint first_instance; uint2 reserved; };
 struct ImageInstanceData {
     float4 rect; float4 uv_rect; float4 tint_color; float4 transform_linear;
-    float2 transform_translation; float corner_radius; float opacity;
-    float source_premultiplied; float3 rect_clip_padding; float4 rect_clip;
+    float4 corner_radii; // TL, TR, BR, BL (logical px; a rounded layer's mask)
+    float2 transform_translation; float opacity; float source_premultiplied;
+    float4 sampling; // xy = max sampled UV (unused here), zw = padding
+    float4 rect_clip;
 };
 StructuredBuffer<ImageInstanceData> instances : register(t1, space0);
 Texture2D<float4> image_texture : register(t0, space1);
@@ -22,13 +25,21 @@ struct ImageVertexOutput {
     float4 position : SV_Position; float2 uv : TEXCOORD0; float2 local_pos : TEXCOORD1;
     float2 size : TEXCOORD2; float2 screen_pos : TEXCOORD3; float4 rect_clip : TEXCOORD4;
     nointerpolation float4 tint_color : TEXCOORD5;
-    nointerpolation float3 material : TEXCOORD6; // radius, opacity, premultiplied source
+    nointerpolation float2 material : TEXCOORD6; // opacity, premultiplied source
+    nointerpolation float4 corner_radii : TEXCOORD7; // TL, TR, BR, BL (logical px)
 };
 uint get_clip_end(Uniforms data, uint i) { return data.clip_polygon_end_points[i / 4][i % 4]; }
 float2 get_clip_point(Uniforms data, uint i) { float4 pair = data.clip_polygon_points[i / 2]; return i % 2 == 0 ? pair.xy : pair.zw; }
 float sdf_rounded_rect_image(float2 p, float2 size, float radius) {
     float2 d = abs(p) - size + radius;
     return min(max(d.x, d.y), 0.0) + length(max(d, float2(0,0))) - radius;
+}
+
+/// Overflow clip with per-corner radii (TL, TR, BR, BL): the quadrant picks the corner, so a
+/// uniform radius evaluates exactly as the single-radius distance.
+float sdf_rounded_rect_corners_image(float2 p, float2 size, float4 radii) {
+    const float r = (p.x < 0.0) ? ((p.y < 0.0) ? radii.x : radii.w) : ((p.y < 0.0) ? radii.y : radii.z);
+    return sdf_rounded_rect_image(p, size, r);
 }
 
 float sdf_ellipse_image(float2 p, float2 radius_xy) {
@@ -115,8 +126,8 @@ float shape_clip_alpha(float2 screen_pos, Uniforms uniforms) {
     const float2 clip_size = uniforms.clip_rect.zw * uniforms.scale_factor * 0.5;
     float clip_sdf = 1.0;
     if (uniforms.clip_shape_kind == 1u) {
-        const float clip_radius = uniforms.clip_radius * uniforms.scale_factor;
-        clip_sdf = sdf_rounded_rect_image(screen_pos - clip_center, clip_size, clip_radius);
+        const float4 clip_radii = uniforms.clip_radii * uniforms.scale_factor;
+        clip_sdf = sdf_rounded_rect_corners_image(screen_pos - clip_center, clip_size, clip_radii);
     } else if (uniforms.clip_shape_kind == 2u) {
         clip_sdf = sdf_ellipse_image(screen_pos - clip_center, clip_size);
     } else if (uniforms.clip_shape_kind == 3u) {
@@ -202,7 +213,8 @@ ImageVertexOutput image_vertex_main(uint vertex_id : SV_VertexID, uint instance_
     // Per-instance properties are constant across the quad. Fetch once per
     // vertex instead of re-reading structured storage for every sampled pixel.
     result.tint_color = inst.tint_color;
-    result.material = float3(inst.corner_radius, inst.opacity, inst.source_premultiplied);
+    result.material = float2(inst.opacity, inst.source_premultiplied);
+    result.corner_radii = inst.corner_radii;
 
     return result;
 }
@@ -214,7 +226,7 @@ ImageVertexOutput image_vertex_main(uint vertex_id : SV_VertexID, uint instance_
 float4 image_fragment_impl(ImageVertexOutput input, bool unmasked) {
     Uniforms clip_uniforms = uniforms;
     if (unmasked) clip_uniforms.clip_shape_kind = 0u;
-    const float corner_radius = input.material.x * uniforms.scale_factor;
+    const float4 corner_radii = input.corner_radii * uniforms.scale_factor;
 
     // Sample texture
     float4 color = image_texture.Sample(image_sampler, input.uv);
@@ -225,16 +237,16 @@ float4 image_fragment_impl(ImageVertexOutput input, bool unmasked) {
     float coverage = 1.0;
 
     // Corner clip
-    if (corner_radius > 0.0) {
-        float sdf = sdf_rounded_rect_image(input.local_pos, input.size, corner_radius);
+    if (any(corner_radii > 0.0)) {
+        float sdf = sdf_rounded_rect_corners_image(input.local_pos, input.size, corner_radii);
         float aa = (abs(ddx_fine(sdf)) + abs(ddy_fine(sdf))) * 0.5;
         coverage *= smoothstep(aa, -aa, sdf);
     }
 
     coverage *= clip_alpha(input.screen_pos, input.rect_clip, clip_uniforms);
-    coverage *= input.material.y;
+    coverage *= input.material.x;
 
-    if (input.material.z > 0.5) {
+    if (input.material.y > 0.5) {
         color *= coverage;
     } else {
         color.a *= coverage;

@@ -16,6 +16,13 @@ pub const Modifiers = packed struct {
     _padding: u4 = 0,
 };
 
+/// A reserved key chord: platform keycode (macOS virtual keycode, the same
+/// numbering as `ui.events.KeyCode`) plus exact modifiers.
+pub const ReservedChord = struct {
+    keycode: u16,
+    modifiers: Modifiers = .{},
+};
+
 pub const MouseButton = enum(u8) {
     left,
     right,
@@ -47,6 +54,9 @@ pub const MouseWheel = struct {
 pub const Event = union(enum) {
     quit: void,
     frame_requested: void,
+    /// The user reopened the running application (macOS Dock click, launching it again) while
+    /// none of its windows was visible. Raised only while an App handles it (`on_reopen`).
+    app_reopen: void,
     /// Custom menu commands are captured together with the key window that
     /// owned the command context at click/keyboard-equivalent time.  A zero
     /// id is reserved for backends that do not have a native window target;
@@ -81,6 +91,14 @@ pub const Event = union(enum) {
         dx: f32 = 0,
         dy: f32 = 0,
         modifiers: Modifiers = .{},
+    },
+    /// The pointer is no longer over the window's visible content: it left the window, or another
+    /// window now covers it (macOS content tracking-area exit / window server top window,
+    /// Windows WM_MOUSELEAVE, Wayland wl_pointer.leave). The last mouse_move position no longer
+    /// describes the pointer until the next pointer event. Activation plays no part: every
+    /// backend keeps reporting hover motion and leaves for inactive windows.
+    pointer_left: struct {
+        window_id: WindowId,
     },
     mouse_button: struct {
         window_id: WindowId,
@@ -174,6 +192,7 @@ pub const Event = union(enum) {
             .window_focused => |e| e.window_id,
             .window_close_requested => |e| e.window_id,
             .mouse_move => |e| e.window_id,
+            .pointer_left => |e| e.window_id,
             .mouse_button => |e| e.window_id,
             .mouse_wheel => |e| e.window_id,
             .magnify => |e| e.window_id,
@@ -184,7 +203,7 @@ pub const Event = union(enum) {
             .ime_commit => |e| e.window_id,
             .ime_delete_surrounding => |e| e.window_id,
             .menu_command => |e| if (e.window_id == 0) null else e.window_id,
-            .quit, .frame_requested, .system_theme_changed => null,
+            .quit, .frame_requested, .app_reopen, .system_theme_changed => null,
         };
     }
 };

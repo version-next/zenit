@@ -25,6 +25,7 @@ const Uniforms = extern struct {
     valid_uv: [4]f32 = .{ 0.5 / 8.0, 0.5 / 8.0, 5.5 / 8.0, 4.5 / 8.0 },
 };
 const GlassUniforms = @import("render").GlassUniforms;
+const tab_lens_field = @import("render").tab_lens_field;
 comptime {
     // The legacy-surface parameters below are the leading fields of the
     // production uniform block; everything after them keeps its default.
@@ -60,7 +61,7 @@ fn texture(context: *r.Context, color: [4]u8, padded: bool) !r.Texture {
     try result.writeRegion(0, 0, 0, 8, 8, &bytes, 32);
     return result;
 }
-fn render(context: *r.Context, pipeline: *const d12.RenderPipeline, target: *const r.Texture, blur: *const r.Texture, sharp: *const r.Texture, sampler: *const d12.Sampler, uniform: Uniforms, output: *[256]u8) !void {
+fn render(context: *r.Context, pipeline: *const d12.RenderPipeline, target: *const r.Texture, blur: *const r.Texture, sharp: *const r.Texture, sampler: *const d12.Sampler, field: *const d12.Buffer, uniform: Uniforms, output: *[256]u8) !void {
     var queue = c.Queue.init(context);
     defer queue.deinit();
     var encoder = try c.CommandEncoder.init(&queue);
@@ -79,6 +80,8 @@ fn render(context: *r.Context, pipeline: *const d12.RenderPipeline, target: *con
     pass.setFragmentTexture(3, blur);
     pass.setFragmentTexture(4, blur);
     pass.setFragmentSampler(0, sampler);
+    // The tab lens's field table (fragment buffer 1), as backdrop_blur binds it.
+    pass.setFragmentBuffer(tab_lens_field.slot, field, 0);
     try pass.drawChecked(3, 1, 0, 0);
     pass.end();
     var command = try encoder.finish();
@@ -130,6 +133,9 @@ pub fn run() !void {
     defer pipeline.deinit();
     var sampler = try device.createSampler(a, .{});
     defer sampler.destroy();
+    var field = try context.createBuffer(a, .{ .size = tab_lens_field.bytes.len, .usage = .{ .vertex = true, .map_write = true } });
+    defer field.destroy();
+    @memcpy(try field.getMappedRange(0, tab_lens_field.bytes.len), tab_lens_field.bytes);
     var blur_padded = try texture(context, .{ 32, 64, 96, 128 }, true);
     defer blur_padded.destroy();
     var blur_full = try texture(context, .{ 32, 64, 96, 128 }, false);
@@ -147,7 +153,7 @@ pub fn run() !void {
     for ([_]f32{ 1, 2 }) |scale| for ([_]f32{ 0, 0.5, 1 }) |blur_level| for (0..5) |direction| for ([_]f32{ 0, 0.4, 1 }) |strength| for (0..2) |sharp_present| {
         var uniform = Uniforms{ .rect_size = .{ 8 / scale, 8 / scale }, .scale = scale, .radius = 1.3 / scale, .edge = .{ @floatFromInt(direction), 0, strength, 2 } };
         uniform.specular[3] = blur_level;
-        try render(context, &pipeline, &target, &blur_padded, if (sharp_present == 0) &transparent else &sharp, &sampler, uniform, &output);
+        try render(context, &pipeline, &target, &blur_padded, if (sharp_present == 0) &transparent else &sharp, &sampler, &field, uniform, &output);
         for (0..8) |y| for (0..8) |x| {
             const u = (@as(f64, @floatFromInt(x)) + 0.5) / 8;
             const v = (@as(f64, @floatFromInt(y)) + 0.5) / 8;
@@ -187,8 +193,8 @@ pub fn run() !void {
         var uniform = Uniforms{ .rect_size = .{ 8 / scale, 8 / scale }, .scale = scale, .radius = 1.3 / scale, .intensity = 1.4 };
         uniform.top[0] = @floatFromInt(top);
         uniform.bottom[0] = @floatFromInt(bottom);
-        try render(context, &pipeline, &target, &blur_padded, &sharp, &sampler, uniform, &padded);
-        try render(context, &pipeline, &target, &blur_full, &sharp_full, &sampler, uniform, &output);
+        try render(context, &pipeline, &target, &blur_padded, &sharp, &sampler, &field, uniform, &padded);
+        try render(context, &pipeline, &target, &blur_full, &sharp_full, &sampler, &field, uniform, &output);
         try checkMask(&output);
         for (0..64) |i| {
             const pixel = output[i * 4 ..][0..4];
@@ -201,7 +207,7 @@ pub fn run() !void {
             var neutral = uniform;
             neutral.intensity = 0;
             var baseline: [256]u8 = undefined;
-            try render(context, &pipeline, &target, &blur_full, &sharp_full, &sampler, neutral, &baseline);
+            try render(context, &pipeline, &target, &blur_full, &sharp_full, &sampler, &field, neutral, &baseline);
             changed = !std.mem.eql(u8, &baseline, &output);
         }
         optical_pairs += 1;

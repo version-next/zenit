@@ -1,8 +1,10 @@
 //! Switch view. Styles in styles.yss (SwitchParts), tests in mod.zig.
 const ui = @import("../../ui.zig");
 const S = @import("styles.yss");
+const mod = @import("mod.zig");
+const SwitchSize = mod.SwitchSize;
 
-/// Switch: W.Switch(.{ .label = "Wi-Fi", .checked = wifi }).
+/// Switch: W.Switch(.{ .label = "Wi-Fi", .checked = wifi }); `.size = .sm` for dense rows.
 /// checked is controlled value: pass bool = component self-holds, pass signal = interaction writes
 /// directly, ui.split = parent decides;
 /// on_change only reports settled value. Disabled suppresses click / space / enter, exits Tab
@@ -10,6 +12,7 @@ const S = @import("styles.yss");
 pub fn Switch(
     checked: Model(bool) = false,
     label: Text = "",
+    size: SwitchSize = .md,
     disabled: bool = false,
     focusRing: ui.FocusRingConfig = .{},
     onChange: ?Handler(bool) = null,
@@ -24,8 +27,8 @@ pub fn Switch(
             a11y={.{ .role = .switch_role, .checked = checked, .disabled = disabled, .label = label }}
             onClick={if (!disabled) checked = !checked}
         >
-            <box style={S.SwitchParts.slot(.track, .{ .checked = checked })}>
-                <box style={S.SwitchParts.slot(.thumb, .{ .checked = checked })} />
+            <box style={S.SwitchParts.slot(.track, .{ .checked = checked, .size = size, .disabled = disabled })}>
+                <box style={S.SwitchParts.slot(.thumb, .{ .checked = checked, .size = size, .disabled = disabled })} />
             </box>
             {if (label.len != 0) <text style={S.SwitchParts.slot(.label, .{ .checked = checked, .disabled = disabled })}>{label}</text>}
         </row>

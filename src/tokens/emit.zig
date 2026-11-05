@@ -147,5 +147,41 @@ const Emitter = struct {
             try e.fmt(".{{ .path = \"{s}\", .source = \"{s}\", .pointer = \"{s}\" }},\n", .{ tok.path, tok.source_path, tok.pointer });
         }
         try e.put("};\n");
+        // A generic adapter keeps the generated provider independent of the parser's
+        // module identity. It is only instantiated by the dev preview bridge.
+        try e.fmt("pub fn previewValues(doc: anytype) error{{TokenShape, TokenDuration}}![{d}]Values {{\n", .{e.doc.modes.len});
+        try e.fmt("if (doc.tokens.len != {d} or doc.modes.len != {d}) return error.TokenShape;\n", .{ e.doc.tokens.len, e.doc.modes.len });
+        try e.put("const std = @import(\"std\");\n");
+        if (e.doc.tokens.len == 0 and e.doc.modes.len == 0) try e.put("_ = std;\n");
+        for (e.doc.tokens, 0..) |tok, i| {
+            try e.fmt("if (!std.mem.eql(u8, doc.tokens[{d}].path, \"{s}\") or !std.mem.eql(u8, doc.tokens[{d}].source_path, \"{s}\") or doc.tokens[{d}].category != .{s}) return error.TokenShape;\n", .{ i, tok.path, i, tok.source_path, i, @tagName(tok.category) });
+        }
+        try e.fmt("var out: [{d}]Values = undefined;\n", .{e.doc.modes.len});
+        for (e.doc.modes, 0..) |mode, mi| {
+            try e.fmt("if (!std.mem.eql(u8, doc.modes[{d}].name, \"{s}\") or doc.modes[{d}].scheme != .{s} or doc.modes[{d}].fallback != ", .{ mi, mode.name, mi, @tagName(mode.scheme), mi });
+            if (mode.fallback) |f| try e.fmt("@as(?usize, {d})", .{f}) else try e.put("null");
+            try e.put(") return error.TokenShape;\n");
+            try e.fmt("out[{d}] = modes.", .{mi});
+            try e.id(mode.name);
+            try e.put(";\n");
+            for (e.doc.tokens, 0..) |tok, ti| {
+                try e.fmt("out[{d}].tokens", .{mi});
+                try e.fieldPath(tok.path);
+                const tag = switch (tok.category) {
+                    .color => "color",
+                    .shadow => "shadow",
+                    .typography => "typography",
+                    .font_weight => "weight",
+                    else => "number",
+                };
+                try e.fmt(" = doc.modes[{d}].values[{d}].{s};\n", .{ mi, ti, tag });
+                if (tok.category == .duration) {
+                    try e.fmt("if (doc.modes[{d}].values[{d}].number != ", .{ mi, ti });
+                    try e.literal(e.doc.modes[mi].values[ti]);
+                    try e.put(") return error.TokenDuration;\n");
+                }
+            }
+        }
+        try e.put("return out;\n}\n");
     }
 };

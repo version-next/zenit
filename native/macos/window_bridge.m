@@ -1,5 +1,6 @@
 #include "../window_chrome.h"
 #import <Cocoa/Cocoa.h>
+#include "clipboard_pasteboard.h"
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <QuartzCore/CATransaction.h>
@@ -13,6 +14,13 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <malloc/malloc.h>
+#include <sys/mman.h>
+#include <pthread.h>
+#include <mach/vm_page_size.h>
+#include <dlfcn.h>
+#include <os/lock.h>
+#import <ImageIO/ImageIO.h>
+static void zenitDebugScheduleWindowCaptures(NSWindow *window);
 #include <string.h>
 #include "pooled_present.inc"
 #include "missing_pools_cursor.h"
@@ -49,6 +57,31 @@ static void zenitTrackMetalLayer(CAMetalLayer *layer,BOOL header) {
     if(header) {if(!g_header_layers) g_header_layers=[NSHashTable weakObjectsHashTable];[g_header_layers addObject:layer];}
     else {if(!g_body_layers) g_body_layers=[NSHashTable weakObjectsHashTable];[g_body_layers addObject:layer];}
 }
+/// Idle trim: hand free malloc pages in every zone back to the system so the
+/// footprint reflects live data after a burst of frame-time allocations.
+// Stack pages the calling thread dirtied in deep calls (layout recursion)
+// below the current frame hold dead data. Mark them reusable, as malloc does
+// for free pages: they leave the footprint and are faulted back on demand.
+static void zenitReleaseIdleStack(void) {
+    const uintptr_t page = (uintptr_t)vm_page_size;
+    pthread_t self = pthread_self();
+    const uintptr_t top = (uintptr_t)pthread_get_stackaddr_np(self);
+    const uintptr_t size = (uintptr_t)pthread_get_stacksize_np(self);
+    volatile char marker = 0;
+    const uintptr_t sp = (uintptr_t)&marker;
+    if (size == 0 || sp > top || sp < top - size) return;
+    // Keep a margin for this call chain and signal delivery; skip the guard page.
+    const uintptr_t end = (sp - 256 * 1024) & ~(page - 1);
+    const uintptr_t start = ((top - size) + 2 * page) & ~(page - 1);
+    if (end <= start || sp < 256 * 1024) return;
+    (void)madvise((void *)start, end - start, MADV_FREE_REUSABLE);
+}
+
+void zenit_memory_idle_relief(void) {
+    malloc_zone_pressure_relief(NULL, 0);
+    zenitReleaseIdleStack();
+}
+
 void zenit_memory_loop_begin(void) {
     if(g_memory_loop_seen) {
         g_last_loop_updates=g_header_updates-g_loop_updates;g_last_loop_work=g_header_work_updates-g_loop_work;
@@ -169,10 +202,19 @@ static NSPoint zenitLogicalScreenPoint(WindowWrapper *owner,NSPoint screen);
 static BOOL zenitLogicalHeaderHidden(WindowWrapper *owner,CGFloat y,CGFloat height);
 static BOOL windowCanAcceptPointerInput(WindowWrapper *wrapper);
 static BOOL viewCanPresentCursor(NSView *view);
+static void zenitPointerTrackingEvent(NSView *view, BOOL entered);
 static id<MTLDevice> createBestMetalDevice(void);
 static void pumpAppEventsWithTimeout(uint32_t timeout_ms);
 void macos_update_window_mouse(void *window_ptr);
 void macos_post_empty_event(void);
+// macos_post_empty_event's marker. Such an event only ends the pump's wait
+// (display link tick, cross-thread wake); AppKit has nothing to do with it.
+#define ZENIT_WAKE_EVENT_SUBTYPE ((short)0x5a57)
+#define ZENIT_WAKE_EVENT_DATA1 ((NSInteger)0x7a656e6974)
+static BOOL zenitIsWakeEvent(NSEvent *event) {
+    return event.type == NSEventTypeApplicationDefined && event.subtype == ZENIT_WAKE_EVENT_SUBTYPE &&
+        event.data1 == ZENIT_WAKE_EVENT_DATA1 && event.windowNumber == 0;
+}
 void macos_ime_discard(void* window_ptr);
 static BOOL input_debug_enabled(void) {
     const char *v = getenv("ZENIT_INPUT_DEBUG");
@@ -214,6 +256,12 @@ extern int zenit_text_input_range_at_point(uint32_t window_id, float x, float y,
 extern uint64_t zenit_text_input_utf16_for_utf8(uint32_t window_id, uint64_t utf8_offset);
 extern uint64_t zenit_text_input_utf8_for_utf16(uint32_t window_id, uint64_t utf16_offset);
 #define ZENIT_IME_NO_REPLACEMENT ((uint32_t)0xFFFFFFFFu)
+// Reserved key chord modifier mask (macos_set_reserved_key_chords); must
+// match `ReservedChordMask` in src/platform/macos/window.zig.
+#define ZENIT_CHORD_SHIFT   1u
+#define ZENIT_CHORD_CONTROL 2u
+#define ZENIT_CHORD_OPTION  4u
+#define ZENIT_CHORD_COMMAND 8u
 #define ZENIT_TEXT_OFFSET_INVALID ((uint64_t)UINT64_MAX)
 #define ZENIT_MAX_IME_PREEDIT_QUEUE ((NSUInteger)256)
 #define ZENIT_MOUSE_MOVE_SOFT_LIMIT ((NSUInteger)256)
@@ -492,6 +540,11 @@ static NSString * const ZenitInternalDragType = @"dev.zenit.internal-drag";
 @interface MetalView : NSView <NSTextInputClient, NSDraggingSource>
 @property (nonatomic, strong) NSCursor *zenitDesiredCursor;
 @property (nonatomic, strong) NSTrackingArea *zenitCursorTrackingArea;
+// Hover presence: is the pointer over this view's visible part (window server truth, so another
+// window covering it counts as an exit)? activeAlways like AppKit's own hover controls
+// (NSButton showsBorderOnlyWhileMouseInside, the window's title-bar buttons): hover keeps
+// tracking in inactive windows. Measured: tools/macos_hover_probe.swift.
+@property (nonatomic, strong) NSTrackingArea *zenitPointerTrackingArea;
 - (void)presentDesiredCursor;
 @property (nonatomic, strong) CAMetalLayer *metalLayer;
 @property (nonatomic, strong) id<MTLDevice> device;
@@ -500,12 +553,17 @@ static NSString * const ZenitInternalDragType = @"dev.zenit.internal-drag";
 @property (nonatomic, strong) NSTextInputContext *zenitInputContext;
 @property (nonatomic, assign) RenderCallback renderCallback;
 @property (nonatomic, assign) void* renderContext;
+// Live-resize ticker; NULL uses renderCallback. Separate so the host can tell
+// a setFrameSize: frame (mandatory) from a ticker frame (per-period only).
+@property (nonatomic, assign) RenderCallback tickCallback;
+@property (nonatomic, assign) void* tickContext;
 // During live resize AppKit runs in own tracking loop, app main
 // loop doesn't; only setFrameSize: triggers render, drag pause leaves
 // no frame - all animations freeze. Ticker runs on
 // NSRunLoopCommonModes (includes tracking) to drive render; Zig gates
 // on wantsFrame, static content doesn't redraw.
 @property (nonatomic, strong) NSTimer *liveResizeTicker;
+@property (nonatomic, assign) uint64_t liveResizeGeneration;
 - (void)renderFinalResize;
 @property (nonatomic, strong) NSMutableAttributedString *markedTextStorage;
 @property (nonatomic, assign) BOOL discardingMarkedText;
@@ -532,6 +590,7 @@ static NSString * const ZenitInternalDragType = @"dev.zenit.internal-drag";
 - (id)zenitA11yElementForHandle:(ZenitAXHandle)handle;
 @end
 
+static BOOL zenitTakePendingWindowDrag(NSWindow *window, NSEvent *event);
 @implementation MetalView
 - (void)dealloc { atomic_fetch_sub_explicit(&g_live_metal_views,1,memory_order_relaxed); }
 
@@ -616,14 +675,29 @@ static NSString * const ZenitInternalDragType = @"dev.zenit.internal-drag";
         CGSize drawableSize = frameRect.size;
         CGFloat scale = currentScreenScale(nil);
         layer.contentsScale=scale;
-        drawableSize.width *= scale;
-        drawableSize.height *= scale;
+        // Truncated like setFrameSize: and macos_get_drawable_size, so the first frames agree.
+        drawableSize.width = (CGFloat)(int)(drawableSize.width * scale);
+        drawableSize.height = (CGFloat)(int)(drawableSize.height * scale);
         layer.drawableSize = drawableSize;
+        // Until a frame of the new size is presented, CA shows the previous
+        // one. Pin it to the top-left (zenit lays out from there) instead of
+        // the default kCAGravityResize stretch, and fill whatever the old frame
+        // no longer covers with the content background: the layer is opaque,
+        // so uncovered pixels are otherwise undefined (black on most GPUs).
+        // backgroundColor follows the renderer clear color via
+        // macos_set_surface_background.
+        layer.contentsGravity = kCAGravityTopLeft;
+        layer.backgroundColor = CGColorGetConstantColor(kCGColorWhite);
 
         self.layer = layer;
+        // Layer-backed view: AppKit owns contentsGravity and derives it from
+        // this placement (mapping top/bottom for the layer's flippedness).
+        self.layerContentsPlacement = NSViewLayerContentsPlacementTopLeft;
         self.metalLayer = layer;
         self.renderCallback = NULL;
         self.renderContext = NULL;
+        self.tickCallback = NULL;
+        self.tickContext = NULL;
         self.markedTextStorage = [[NSMutableAttributedString alloc] initWithString:@""];
         self.markedTextSelectedRange = NSMakeRange(0, 0);
         self.markedDocumentRange = NSMakeRange(NSNotFound, 0);
@@ -645,11 +719,13 @@ static NSString * const ZenitInternalDragType = @"dev.zenit.internal-drag";
               newSize.width, newSize.height);
     }
 
-    // Update Metal layer size
+    // Update Metal layer size. Truncate exactly like macos_get_drawable_size:
+    // the presentation size check compares the drawable with that value, and
+    // a fractional drawableSize here would disagree with it by a pixel.
     CGSize drawableSize = self.bounds.size;
     CGFloat scale = currentScreenScale(self.window);
-    drawableSize.width *= scale;
-    drawableSize.height *= scale;
+    drawableSize.width = (CGFloat)(int)(drawableSize.width * scale);
+    drawableSize.height = (CGFloat)(int)(drawableSize.height * scale);
     self.metalLayer.contentsScale=scale;
     if (!CGSizeEqualToSize(self.metalLayer.drawableSize,drawableSize))
         self.metalLayer.drawableSize = drawableSize;
@@ -673,6 +749,7 @@ static NSString * const ZenitInternalDragType = @"dev.zenit.internal-drag";
 
 - (void)viewWillStartLiveResize {
     [super viewWillStartLiveResize];
+    self.liveResizeGeneration++;
     // Critical: enable sync present during resize, prevent
     // CoreAnimation from stretching old frame
     self.metalLayer.presentsWithTransaction = YES;
@@ -690,7 +767,8 @@ static NSString * const ZenitInternalDragType = @"dev.zenit.internal-drag";
             [timer invalidate];
             return;
         }
-        if (strongSelf.renderCallback != NULL) strongSelf.renderCallback(strongSelf.renderContext);
+        if (strongSelf.tickCallback != NULL) strongSelf.tickCallback(strongSelf.tickContext);
+        else if (strongSelf.renderCallback != NULL) strongSelf.renderCallback(strongSelf.renderContext);
     }];
     [[NSRunLoop currentRunLoop] addTimer:ticker forMode:NSRunLoopCommonModes];
     self.liveResizeTicker = ticker;
@@ -698,16 +776,18 @@ static NSString * const ZenitInternalDragType = @"dev.zenit.internal-drag";
 
 - (void)viewDidEndLiveResize {
     [super viewDidEndLiveResize];
+    uint64_t generation = ++self.liveResizeGeneration;
     [self.liveResizeTicker invalidate];
     self.liveResizeTicker = nil;
 
-    // Restore async present (one-frame delayed, ensures final frame
-    // syncs). Use weak reference to avoid block accessing released object
-    // after close.
+    // Restore async present after the final frame. A new resize can start
+    // before this main-queue completion drains; its transaction belongs to
+    // the newer generation and must not be reset by this old completion.
+    // Keep a weak reference so closing the window remains safe.
     __weak MetalView *weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
         MetalView *strongSelf = weakSelf;
-        if (strongSelf) {
+        if (strongSelf && strongSelf.liveResizeGeneration == generation) {
             strongSelf.metalLayer.presentsWithTransaction = NO;
 
             // setFrameSize: callback in AppKit live-resize tracking loop.
@@ -736,6 +816,26 @@ static NSString * const ZenitInternalDragType = @"dev.zenit.internal-drag";
         options:NSTrackingCursorUpdate | NSTrackingInVisibleRect | NSTrackingActiveInActiveApp
         owner:self userInfo:nil];
     [self addTrackingArea:self.zenitCursorTrackingArea];
+    // No NSTrackingEnabledDuringMouseDrag: a button sequence owns the pointer; its release
+    // re-evaluates presence (zenitApplyPointerPresence). Reinstalling over the pointer makes
+    // AppKit send mouseEntered again; a reinstall that leaves the pointer outside sends nothing,
+    // which the pump-boundary sample catches.
+    if (self.zenitPointerTrackingArea) [self removeTrackingArea:self.zenitPointerTrackingArea];
+    self.zenitPointerTrackingArea = [[NSTrackingArea alloc]
+        initWithRect:NSZeroRect
+        options:NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved | NSTrackingActiveAlways | NSTrackingInVisibleRect
+        owner:self userInfo:nil];
+    [self addTrackingArea:self.zenitPointerTrackingArea];
+}
+
+- (void)mouseEntered:(NSEvent *)event {
+    if (event.trackingArea == self.zenitPointerTrackingArea) zenitPointerTrackingEvent(self, YES);
+    else [super mouseEntered:event];
+}
+
+- (void)mouseExited:(NSEvent *)event {
+    if (event.trackingArea == self.zenitPointerTrackingArea) zenitPointerTrackingEvent(self, NO);
+    else [super mouseExited:event];
 }
 
 - (void)viewDidMoveToWindow {
@@ -785,6 +885,17 @@ static NSString * const ZenitInternalDragType = @"dev.zenit.internal-drag";
 // unselectable. Handled by titlebarDragHeight +
 // titlebarHitCallback: calls Zig for real hit-test, events on control
 // normal, space-only drags window.
+- (void)mouseDown:(NSEvent *)event {
+    // AppKit hit-tests the window's resize border before routing a press to
+    // the content view. Starting the drag here instead of in the pump keeps a
+    // corner resize from also moving the window.
+    if (zenitTakePendingWindowDrag(self.window, event)) {
+        [self.window performWindowDragWithEvent:event];
+        return;
+    }
+    [super mouseDown:event];
+}
+
 - (BOOL)mouseDownCanMoveWindow {
     return NO;
 }
@@ -2801,6 +2912,10 @@ typedef struct {
     float dx;
     float dy;
     uint32_t modifiers;
+    // Presence marker in the ordered motion stream: the pointer is no longer over this window's
+    // visible content (x/y repeat the last position). The SDK reports it as `pointer_left`.
+    // Never coalesced with a move.
+    uint8_t left;
 } MouseMovePacket;
 
 typedef struct {
@@ -2913,6 +3028,25 @@ typedef struct {
     _Atomic(uint64_t) displayTickSequence;
     _Atomic(uint64_t) displayTickCallbackHostTime;
     _Atomic(uint64_t) displayTickTargetHostTime;
+    // -[NSWindow isZoomed] recomputes the standard frame through the window
+    // server on every call (~60-80 us); the chrome state reads it on every
+    // loop iteration. The answer is a function of the inputs below, so it is
+    // recomputed only when one of them changed (see zenitWindowIsZoomed).
+    BOOL zoomCacheValid;
+    BOOL zoomCached;
+    // onActiveSpace is a window-server round trip; see zenitWindowOnActiveSpace.
+    BOOL spaceCacheValid;
+    BOOL spaceCached;
+    uint64_t spaceCacheScreenEpoch;
+    NSUInteger spaceCacheOcclusion;
+    NSUInteger spaceCacheGeneration;
+    uint32_t zoomCacheGeneration;
+    NSWindowStyleMask zoomCacheStyle;
+    uint64_t zoomCacheScreenEpoch;
+    NSRect zoomCacheFrame;
+    NSSize zoomCacheMinSize;
+    NSSize zoomCacheMaxSize;
+    __unsafe_unretained NSScreen *zoomCacheScreen;
 }
 @property (nonatomic, strong) NSWindow *window;
 @property (nonatomic, strong) MetalView *metalView;
@@ -2924,6 +3058,11 @@ typedef struct {
 // animation's retention boundary.
 @property (nonatomic) BOOL closeCommitted;
 @property (nonatomic) BOOL nativeCloseStarted;
+// A delayed resign callback belongs to one transition, not to the window forever.
+@property (nonatomic) NSUInteger keyTransitionGeneration;
+/// Bumped on every NSWindowDidChangeOcclusionStateNotification; the runtime
+/// re-reads occlusion only when it changes.
+@property (nonatomic) NSUInteger occlusionGeneration;
 @property (nonatomic) BOOL nativeCloseObserved;
 @property (nonatomic) BOOL nativeCloseRetentionElapsed;
 @property (nonatomic) BOOL nativeCloseCompleted;
@@ -2960,6 +3099,10 @@ typedef struct {
 // NSTextInputContext; raw keyDown/keyUp packets remain enabled for every UI.
 @property (nonatomic) BOOL textInputEnabled;
 @property (nonatomic) BOOL keyboardIsolated;
+// Reserved key chords (macos_set_reserved_key_chords): packed uint32
+// entries `keycode | (chord modifier mask << 16)`. Replaced as a whole
+// (immutable NSData) under g_reserved_chord_lock; read by the pump.
+@property (nonatomic, strong) NSData *reservedKeyChords;
 // Source bound at the last AppKit responder activation. InputMethodKit can
 // otherwise expose a new source ID while continuing to emit literal ASCII.
 @property (nonatomic, copy) NSString *lastKeyboardInputSource;
@@ -2978,12 +3121,19 @@ typedef struct {
 // scroll wheel state
 @property (nonatomic, strong) NSMutableArray<NSValue *> *scrollEventQueue;
 @property (nonatomic, strong) NSMutableArray<NSValue *> *magnifyEventQueue;
-// Inspector pick mode: accept mouse move even when not key window
-// (for cross-window hover)
+// Inspector pick mode: let a non-key window present its cursor. Hover motion itself follows
+// pointerOverContent in every window (active or not), like AppKit's activeAlways hover.
 @property (nonatomic) BOOL acceptsMouseMovedWhileInactive;
+// The pointer is over this window's visible content (zenitApplyPointerPresence). Moves are
+// delivered as hover positions only while it holds (or while a button sequence owns the pointer).
+@property (nonatomic) BOOL pointerOverContent;
 // custom titlebar drag height (logical px from window top). >0
 // mouseDown in this area triggers performWindowDragWithEvent
 @property (nonatomic) float titlebarDragHeight;
+// Press that hit a client drag region. The pump hands it to AppKit first; the
+// window drag starts only if AppKit routes it to the content view, so presses
+// on the native resize border stay resizes (see MetalView mouseDown:).
+@property (nonatomic, strong) NSEvent *pendingWindowDragEvent;
 // titlebar right exclude width (logical px). For titlebar right
 // action buttons to receive click without performWindowDragWithEvent.
 @property (nonatomic) float titlebarDragRightInset;
@@ -3188,7 +3338,15 @@ static void zenitInstallFullscreenTrace(void) {
     if (!titlebarView) return;
 
     self.applyingTrafficLightsInset=YES;
-    [CATransaction begin];[CATransaction setDisableActions:YES];
+    // The chrome poll calls this on every loop iteration. Open the
+    // transaction only for an actual frame change: an empty explicit commit
+    // still costs a render-server round trip each time.
+    __block BOOL transactionOpen=NO;
+    void (^beginChange)(void)=^{
+        if(transactionOpen) return;
+        transactionOpen=YES;
+        [CATransaction begin];[CATransaction setDisableActions:YES];
+    };
     @try {
         [self observeTrafficLights];
         CGFloat button_size = closeButton.frame.size.height;
@@ -3212,6 +3370,7 @@ static void zenitInstallFullscreenTrace(void) {
                 CGFloat delta = needed_h - cf.size.height;
                 cf.origin.y -= delta;
                 cf.size.height = needed_h;
+                beginChange();
                 containerView.frame = cf;
                 // titlebarView itself fills container or buttons drop out bounds
                 NSRect tf = titlebarView.frame;
@@ -3231,10 +3390,14 @@ static void zenitInstallFullscreenTrace(void) {
             NSRect f = buttons[i].frame;
             f.origin.x = inset_x + i * 20;
             f.origin.y = button_y;
-            if (!NSEqualRects(buttons[i].frame, f)) buttons[i].frame = f;
+            if (!NSEqualRects(buttons[i].frame, f)) {
+                beginChange();
+                buttons[i].frame = f;
+            }
         }
     } @finally {
-        [CATransaction commit];self.applyingTrafficLightsInset=NO;
+        if(transactionOpen) [CATransaction commit];
+        self.applyingTrafficLightsInset=NO;
     }
 }
 
@@ -3386,6 +3549,7 @@ static void zenitInstallFullscreenTrace(void) {
 }
 
 - (void)windowDidBecomeKey:(NSNotification *)notification {
+    self.keyTransitionGeneration++;
     // makeFirstResponder is the supported activation boundary. AppKit owns the
     // corresponding NSTextInputContext activate/deactivate calls.
     if (self.metalView && self.window.firstResponder != self.metalView) {
@@ -3393,7 +3557,15 @@ static void zenitInstallFullscreenTrace(void) {
     }
 }
 
+- (void)windowDidChangeOcclusionState:(NSNotification *)notification {
+    self.occlusionGeneration++;
+    // Wake the pump: an idle runtime must release (or restore) frame
+    // resources without waiting for another event.
+    macos_post_empty_event();
+}
+
 - (void)windowDidResignKey:(NSNotification *)notification {
+    NSUInteger generation=++self.keyTransitionGeneration;
     if (!self.resignKeyCallback) return;
     // who got key? decides float close:
     // - New key window is our owner (or any other window of this process): the
@@ -3410,14 +3582,13 @@ static void zenitInstallFullscreenTrace(void) {
         if (!strongWrapper) return;
         void (*cb)(void*, int) = strongWrapper.resignKeyCallback;
         void *ctx = strongWrapper.resignKeyContext;
-        if (!cb || !ctx || strongWrapper.nativeCloseStarted) return;
-        NSWindow *owner = strongWrapper.ownerWindow;
+        if (!cb || !ctx || strongWrapper.nativeCloseStarted ||
+            generation != strongWrapper.keyTransitionGeneration) return;
         NSWindow *newKey = [NSApp keyWindow];
         int is_owner = 0;
-        if (newKey != nil) {
-            // any process window counts back to app; owner clearer.
-            is_owner = (owner != nil && newKey == owner) ? 1 : ([NSApp isActive] ? 1 : 0);
-        }
+        // AppKit can retain keyWindow while deactivating. An owner match is
+        // not evidence that the application still owns desktop focus.
+        if ([NSApp isActive] && newKey != nil && newKey != strongWrapper.window) is_owner=1;
         cb(ctx, is_owner);
     });
 }
@@ -3587,7 +3758,7 @@ static void registerWindowWrapper(NSWindow *window, WindowWrapper *wrapper) {
 }
 
 static void unregisterWindowWrapper(NSWindow *window) {
-    if (zenitBackgroundE2E() && g_requested_key_window == window.windowNumber) {
+    if (g_requested_key_window == window.windowNumber) {
         g_requested_key_window = 0;
     }
     if (g_window_registry) {
@@ -3762,12 +3933,73 @@ static void* macos_create_window_internal(int width, int height, const char* tit
 
         NSLog(@"[macos_create_window] Window created: %dx%d inputContext=%@ inputSource=%@",
               width, height, ic, ic ? [ic selectedKeyboardInputSource] : @"(nil)");
+        zenitDebugScheduleWindowCaptures(window);
 
         return (__bridge_retained void*)wrapper;
     }
 }
 
+static BOOL zenitWriteWindowImage(NSWindow *window, NSString *path) {
+    typedef CGImageRef (*CaptureFn)(CGRect, CGWindowListOption, CGWindowID, CGWindowImageOption);
+    CaptureFn capture = (CaptureFn)dlsym(RTLD_DEFAULT, "CGWindowListCreateImage");
+    if (!capture || !window) return NO;
+    [CATransaction flush];
+    CGImageRef image = capture(CGRectNull, kCGWindowListOptionIncludingWindow, (CGWindowID)window.windowNumber,
+                               kCGWindowImageBoundsIgnoreFraming | kCGWindowImageBestResolution);
+    if (!image) return NO;
+    BOOL ok = NO;
+    CGImageDestinationRef output = CGImageDestinationCreateWithURL((__bridge CFURLRef)[NSURL fileURLWithPath:path], CFSTR("public.png"), 1, NULL);
+    if (output) {
+        CGImageDestinationAddImage(output, image, NULL);
+        ok = CGImageDestinationFinalize(output);
+        CFRelease(output);
+    }
+    CGImageRelease(image);
+    return ok;
+}
+
+// Test harness: WindowServer image of the key window, native layers (sprites,
+// caret patches) included. An app may capture its own windows without
+// screen-recording permission. 1 = written.
+int macos_capture_composited_key_window(const char *path) {
+    @autoreleasepool {
+        NSWindow *window = NSApp.keyWindow ?: NSApp.mainWindow ?: NSApp.windows.firstObject;
+        return zenitWriteWindowImage(window, [NSString stringWithUTF8String:path]) ? 1 : 0;
+    }
+}
+
+// ZENIT_DEBUG_WINDOW_CAPTURE=<prefix>: write the WindowServer image of this
+// window (native layers included) to <prefix>-<n>.png at 2, 3 and 4 seconds
+// (or the times in ZENIT_DEBUG_WINDOW_CAPTURE_AT).
+// An app may capture its own windows without screen-recording permission.
+static void zenitDebugScheduleWindowCaptures(NSWindow *window) {
+    const char *prefix = getenv("ZENIT_DEBUG_WINDOW_CAPTURE");
+    if (!prefix) return;
+    NSString *base = [NSString stringWithUTF8String:prefix];
+    __weak NSWindow *weakWindow = window;
+    // ZENIT_DEBUG_WINDOW_CAPTURE_AT=<s,s,...> overrides the capture times.
+    const char *at = getenv("ZENIT_DEBUG_WINDOW_CAPTURE_AT");
+    NSArray<NSString *> *times = at ? [[NSString stringWithUTF8String:at] componentsSeparatedByString:@","] : @[@"2", @"3", @"4"];
+    for (int n = 0; n < (int)times.count; n++) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(times[n].doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            NSWindow *target = weakWindow;
+            if (!target) return;
+            zenitWriteWindowImage(target, [NSString stringWithFormat:@"%@-%d.png", base, n]);
+            NSLog(@"[debug-capture] %@-%d.png", base, n);
+        });
+    }
+}
+
 // public entry: standard window (with titlebar + traffic light)
+static BOOL zenitTakePendingWindowDrag(NSWindow *window, NSEvent *event) {
+    id delegate = window.delegate;
+    if (![delegate isKindOfClass:WindowWrapper.class]) return NO;
+    WindowWrapper *wrapper = delegate;
+    if (wrapper.pendingWindowDragEvent != event) return NO;
+    wrapper.pendingWindowDragEvent = nil;
+    return YES;
+}
+
 void* macos_create_window(int width, int height, const char* title) {
     NSWindowStyleMask styleMask = NSWindowStyleMaskTitled |
                                   NSWindowStyleMaskClosable |
@@ -3793,14 +4025,30 @@ static NSWindow *macos_find_window_by_number(NSInteger number) {
 void macos_make_key_window(void* window_ptr) {
     @autoreleasepool {
         WindowWrapper *wrapper = (__bridge WindowWrapper*)window_ptr;
-        if (wrapper && wrapper.window) {
+        if (wrapper && wrapper.window && !wrapper.nativeCloseStarted &&
+            (zenitBackgroundE2E() || [NSApp isActive])) {
             g_requested_key_window = [wrapper.window windowNumber];
-            if (![NSApp isActive]) {
-                zenitActivateApplication();
-            }
             zenitPresentWindow(wrapper.window);
         }
     }
+}
+
+// Explicit user/programmatic activation is separate from deferred make-key
+// retries and close handoff. Only this API may activate this application.
+void macos_activate_window(void* window_ptr) {
+    @autoreleasepool {
+        WindowWrapper *wrapper=(__bridge WindowWrapper *)window_ptr;
+        if (!wrapper || !wrapper.window || wrapper.nativeCloseStarted) return;
+        if (![NSApp isActive]) zenitActivateApplication();
+        zenitPresentWindow(wrapper.window);
+    }
+}
+
+void macos_restore_key_window(void* window_ptr) {
+    // AppKit normally promotes the next window itself. Do not overwrite that
+    // choice, and never activate the app after an asynchronous close finishes.
+    if (!zenitBackgroundE2E() && (![NSApp isActive] || [NSApp keyWindow] != nil)) return;
+    macos_make_key_window(window_ptr);
 }
 
 // Child attached to parent: z follows parent, fronts/minimizes with
@@ -3932,6 +4180,31 @@ void macos_set_render_callback(void* window_ptr, RenderCallback callback, void* 
         WindowWrapper *wrapper = (__bridge WindowWrapper*)window_ptr;
         wrapper.metalView.renderCallback = callback;
         wrapper.metalView.renderContext = ctx;
+    }
+}
+
+void macos_set_live_resize_tick_callback(void* window_ptr, RenderCallback callback, void* ctx) {
+    @autoreleasepool {
+        WindowWrapper *wrapper = (__bridge WindowWrapper*)window_ptr;
+        wrapper.metalView.tickCallback = callback;
+        wrapper.metalView.tickContext = ctx;
+    }
+}
+
+// Color CA shows where no presented frame covers the layer (the strip a live
+// resize exposes before the new-size frame lands). Matches the clear color.
+void macos_set_surface_background(void* view_ptr, float r, float g, float b, float a) {
+    @autoreleasepool {
+        MetalView *view = (__bridge MetalView*)view_ptr;
+        CGColorSpaceRef srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        const CGFloat components[4] = {r, g, b, a};
+        CGColorRef color = CGColorCreate(srgb, components);
+        CGColorSpaceRelease(srgb);
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        view.metalLayer.backgroundColor = color;
+        [CATransaction commit];
+        CGColorRelease(color);
     }
 }
 
@@ -4323,6 +4596,60 @@ void macos_set_ime_cursor_rect(void* window_ptr, float x, float y, float width, 
     }
 }
 
+// ---------------------------------------------------------------------------
+// Reserved key chords
+//
+// A focused text control normally lets the input method see every keyDown
+// (`[NSTextInputContext handleEvent:]`). For Option chords that means the
+// IME also *types* (US layout: ⌥] = ‘, ⌥[ = “, ⌥\ = «) in the same
+// keystroke. An app that binds such a chord to a command for a while (an
+// editor cycling inline suggestions) reserves it: the pump still enqueues
+// the raw key packet for Zig, but skips handleEvent, so no insertText /
+// marked text comes from that keystroke. Matching is exact on keycode and
+// the Shift/Control/Option/Command flags (Caps Lock, Fn, numeric pad
+// ignored). An active composition (marked text) always wins: the key goes
+// to the input method. Thread-safe: the table is an immutable snapshot
+// swapped under a lock; the pump reads the current snapshot per key.
+// ---------------------------------------------------------------------------
+
+static os_unfair_lock g_reserved_chord_lock = OS_UNFAIR_LOCK_INIT;
+enum { ZENIT_MAX_RESERVED_CHORDS = 32 };
+
+static uint32_t zenitChordModifierMask(NSEventModifierFlags flags) {
+    uint32_t m = 0;
+    if (flags & NSEventModifierFlagShift) m |= ZENIT_CHORD_SHIFT;
+    if (flags & NSEventModifierFlagControl) m |= ZENIT_CHORD_CONTROL;
+    if (flags & NSEventModifierFlagOption) m |= ZENIT_CHORD_OPTION;
+    if (flags & NSEventModifierFlagCommand) m |= ZENIT_CHORD_COMMAND;
+    return m;
+}
+
+void macos_set_reserved_key_chords(void *window_ptr, const uint32_t *chords, uint32_t count) {
+    WindowWrapper *wrapper = (__bridge WindowWrapper *)window_ptr;
+    if (!wrapper) return;
+    if (count > ZENIT_MAX_RESERVED_CHORDS) count = ZENIT_MAX_RESERVED_CHORDS;
+    NSData *table = (count > 0 && chords) ? [NSData dataWithBytes:chords length:count * sizeof(uint32_t)] : nil;
+    os_unfair_lock_lock(&g_reserved_chord_lock);
+    wrapper.reservedKeyChords = table;
+    os_unfair_lock_unlock(&g_reserved_chord_lock);
+}
+
+static BOOL zenitKeyChordIsReserved(WindowWrapper *target, NSEvent *event) {
+    if (!target || event.type != NSEventTypeKeyDown) return NO;
+    if (target.metalView && [target.metalView hasMarkedText]) return NO;
+    os_unfair_lock_lock(&g_reserved_chord_lock);
+    NSData *table = target.reservedKeyChords;
+    os_unfair_lock_unlock(&g_reserved_chord_lock);
+    if (table.length == 0) return NO;
+    const uint32_t want = (uint32_t)event.keyCode | (zenitChordModifierMask(event.modifierFlags) << 16);
+    const uint32_t *entries = (const uint32_t *)table.bytes;
+    const NSUInteger n = table.length / sizeof(uint32_t);
+    for (NSUInteger i = 0; i < n; i++) {
+        if (entries[i] == want) return YES;
+    }
+    return NO;
+}
+
 // Set by the test-enabled runtime before it pumps this window's input.
 void macos_set_keyboard_isolated(void *window_ptr, int isolated) {
     WindowWrapper *wrapper = (__bridge WindowWrapper *)window_ptr;
@@ -4388,7 +4715,9 @@ int macos_is_live_resize(void* window_ptr) {
     }
 }
 
+static BOOL zenitWindowOnActiveSpace(WindowWrapper *w);
 #include "caret_patch_flip.inc"
+#include "compositor_sprites.inc"
 
 // get Metal Layer
 void* macos_get_metal_layer(void* view_ptr) {
@@ -4414,6 +4743,10 @@ static BOOL g_app_should_quit = NO;
 // Set to YES when the app switches from background to foreground; the Zig side
 // consumes it and resets it, triggering a redraw of all windows.
 static BOOL g_app_became_active = NO;
+// Number of App windows with an `on_reopen` callback; while nonzero a reopen
+// with no visible window sets g_app_reopen_requested for the Zig side.
+static int g_app_reopen_handlers = 0;
+static BOOL g_app_reopen_requested = NO;
 
 // ==== Global menu action queue; menu action enum (1-1 with Zig
 // MenuAction) ====
@@ -4491,23 +4824,168 @@ static WindowWrapper* targetWrapperForEvent(NSEvent *event, WindowWrapper *fallb
     return fallback;
 }
 
+// ==== Pointer presence (hover liveness) ====
+//
+// Hover follows the pointer only while it is over this window's VISIBLE content. Window
+// activation does not matter (AppKit's hover controls use NSTrackingActiveAlways and keep hovering
+// in background windows); another window covering the pointer does (the window server sends
+// mouseExited ~6-9 ms after a window is ordered over a stationary cursor and mouseEntered ~6 ms
+// after it moves away; tools/macos_hover_probe.swift, docs/UI_FRAMEWORK_CORE.md). A position
+// alone cannot tell: `mouseLocationOutsideOfEventStream` keeps reporting the in-content point
+// while another application's window covers it.
+//
+// Truth is the window server's: the top window at the pointer (`windowNumberAtPoint`, which
+// agrees with tracking areas, e.g. both ignore click-through windows) and the content's visible
+// rect. Transitions come from the content tracking area (stationary pointer: covering, uncovering,
+// window or content moved), real moves, the end of a button sequence and the pump-boundary
+// sample. The ordered motion stream carries them: a leave marker becomes the SDK `pointer_left`;
+// regaining presence without motion queues the current position as a move.
+typedef enum {
+    ZenitPresenceEntered,  // content tracking area mouseEntered
+    ZenitPresenceExited,   // content tracking area mouseExited
+    ZenitPresenceMove,     // a real mouse-moved event
+    ZenitPresenceSample,   // pump boundary, no event: may only end presence (see below)
+    ZenitPresenceRelease,  // the last held button was released
+} ZenitPresenceCause;
+
+typedef enum {
+    ZenitPresenceUnchanged,
+    ZenitPresenceBecameOver,
+    ZenitPresenceBecameAway,
+} ZenitPresenceTransition;
+
+/// Pure rule (native/macos/tests/pointer_presence_test.m). `pointerOverNow` is the window-server
+/// answer at the time of `cause`.
+/// - While a button is held the sequence owns the pointer (capture/drag); presence is frozen and
+///   re-evaluated on release, like tracking areas without NSTrackingEnabledDuringMouseDrag.
+/// - Tracking events, real moves and the release set presence to the window server's answer.
+/// - The pump-boundary sample only ends presence: right after a window is ordered over or away,
+///   `windowNumberAtPoint` can still name the old top window for a moment (measured: still "ours"
+///   at the exit of a window moving away), so a sample never re-enters; mouseEntered or the next
+///   move does.
+static ZenitPresenceTransition zenitPresenceStep(BOOL *over, ZenitPresenceCause cause, BOOL pointerOverNow, BOOL buttonsHeld) {
+    if (buttonsHeld) return ZenitPresenceUnchanged;
+    const BOOL next = cause == ZenitPresenceSample ? (*over && pointerOverNow) : pointerOverNow;
+    if (next == *over) return ZenitPresenceUnchanged;
+    *over = next;
+    return next ? ZenitPresenceBecameOver : ZenitPresenceBecameAway;
+}
+
+// Tests replace the window-server query (the real one depends on the user's cursor).
+static BOOL (*g_zenit_pointer_over_override)(WindowWrapper *w, NSPoint screen) = NULL;
+
+static BOOL zenitPointerOverContentAt(WindowWrapper *w, NSPoint screen) {
+    if (g_zenit_pointer_over_override) return g_zenit_pointer_over_override(w, screen);
+    NSWindow *window = w.window;
+    MetalView *view = w.metalView;
+    if (!window || !view || !window.isVisible || window.isMiniaturized || view.hiddenOrHasHiddenAncestor) return NO;
+    const NSInteger top = [NSWindow windowNumberAtPoint:screen belowWindowWithWindowNumber:0];
+    ZenitFullscreenHeaderHost *host = w.fullscreenHeader;
+    if (host.active && host.header.window && zenitHeaderVisible(host.header)) {
+        NSPoint p = [host.header convertPoint:[host.header.window convertPointFromScreen:screen] fromView:nil];
+        if (NSPointInRect(p, host.header.visibleRect)) return top == host.header.window.windowNumber;
+    }
+    NSPoint p = [view convertPoint:[window convertPointFromScreen:screen] fromView:nil];
+    return NSPointInRect(p, view.visibleRect) && top == window.windowNumber;
+}
+
+static void enqueueMovePacket(WindowWrapper *target, MouseMovePacket packet) {
+    if (!target.mouseMoveQueue) target.mouseMoveQueue = [NSMutableArray array];
+    [target.mouseMoveQueue addObject:[NSValue valueWithBytes:&packet objCType:@encode(MouseMovePacket)]];
+}
+
+static void zenitEnqueuePointerLeave(WindowWrapper *w) {
+    MouseMovePacket packet = {0};
+    packet.sequence = nextInputEventSequence();
+    packet.x = (float)w.mouseLocation.x;
+    packet.y = (float)w.mouseLocation.y;
+    packet.modifiers = (uint32_t)NSEvent.modifierFlags;
+    packet.left = 1;
+    enqueueMovePacket(w, packet);
+    if (input_debug_enabled()) NSLog(@"[bridge-input] pointer left content window=%ld", (long)w.window.windowNumber);
+}
+
+// Presence regained without motion (uncovered, window or content moved under a resting pointer):
+// the current position is a hover position again.
+static void zenitEnqueuePointerAt(WindowWrapper *w, NSPoint screen) {
+    const NSPoint p = zenitLogicalScreenPoint(w, screen);
+    MouseMovePacket packet = {0};
+    packet.sequence = nextInputEventSequence();
+    packet.x = (float)p.x;
+    packet.y = (float)p.y;
+    packet.dx = packet.x - (float)w.mouseLocation.x;
+    packet.dy = packet.y - (float)w.mouseLocation.y;
+    packet.modifiers = (uint32_t)NSEvent.modifierFlags;
+    enqueueMovePacket(w, packet);
+    w.mouseLocation = NSMakePoint(packet.x, packet.y);
+    if (input_debug_enabled()) NSLog(@"[bridge-input] pointer over content window=%ld x=%.1f y=%.1f", (long)w.window.windowNumber, packet.x, packet.y);
+}
+
+static BOOL zenitButtonsHeld(WindowWrapper *w) {
+    return w.leftButtonPressed || w.rightButtonPressed || w.middleButtonPressed;
+}
+
+static ZenitPresenceTransition zenitApplyPointerPresence(WindowWrapper *w, ZenitPresenceCause cause, NSPoint screen) {
+    if (!w) return ZenitPresenceUnchanged;
+    BOOL over = w.pointerOverContent;
+    const BOOL held = zenitButtonsHeld(w);
+    // The window-server query is a synchronous round trip. Skip it where zenitPresenceStep cannot
+    // use its answer: a held button freezes presence, and a sample only ends presence that exists.
+    if (held || (cause == ZenitPresenceSample && !over)) return ZenitPresenceUnchanged;
+    const ZenitPresenceTransition t = zenitPresenceStep(&over, cause, zenitPointerOverContentAt(w, screen), held);
+    w.pointerOverContent = over;
+    if (t == ZenitPresenceBecameAway) zenitEnqueuePointerLeave(w);
+    // A real move carries its own position.
+    else if (t == ZenitPresenceBecameOver && cause != ZenitPresenceMove) zenitEnqueuePointerAt(w, screen);
+    return t;
+}
+
+static void zenitPointerTrackingEvent(NSView *view, BOOL entered) {
+    WindowWrapper *w = wrapperForWindow(view.window);
+    if (!w || (NSView *)w.metalView != view) return;
+    // The window server's current answer, not the event's: AppKit may deliver an exit for a
+    // reinstalled area while the pointer is still over the content.
+    zenitApplyPointerPresence(w, entered ? ZenitPresenceEntered : ZenitPresenceExited, NSEvent.mouseLocation);
+}
+
+// Pump boundary without a pointer event: end presence the window server no longer reports (a
+// reinstalled tracking area that now excludes the pointer, a missed exit), and refresh the
+// position of a resting pointer whose window or content moved.
+static void zenitSyncPointerAtPumpBoundary(WindowWrapper *w) {
+    if (!w.window) return;
+    if (zenitButtonsHeld(w)) {
+        // A button sequence keeps its event-fed position (dragged events; the window can stop
+        // being key mid-drag). Inspector pick windows never keep button state while not key.
+        if (!windowCanAcceptPointerInput(w) && w.acceptsMouseMovedWhileInactive && NSApp.isActive) {
+            w.leftButtonPressed = NO;
+            w.rightButtonPressed = NO;
+            w.middleButtonPressed = NO;
+        }
+        return;
+    }
+    const NSPoint screen = NSEvent.mouseLocation;
+    zenitApplyPointerPresence(w, ZenitPresenceSample, screen);
+    if (w.pointerOverContent) w.mouseLocation = zenitLogicalScreenPoint(w, screen);
+}
+
 // Queue native mouse motion with its exact position/flags. The soft limit is
 // deliberately not a hard cap: once pressure is high we may combine only two
 // adjacent move packets. A key/button/text/gesture sequence between them makes
 // the sequence numbers non-adjacent, so that semantic boundary is preserved.
 static void enqueueMouseMove(WindowWrapper *target, NSEvent *event) {
     if (!target || !event) return;
-    const BOOL dragging = target.leftButtonPressed ||
-                          target.rightButtonPressed ||
-                          target.middleButtonPressed;
-    const BOOL inactiveHover = target.acceptsMouseMovedWhileInactive &&
-                               target.window && [NSApp isActive] &&
-                               (target.window.occlusionState & NSWindowOcclusionStateVisible) != 0;
-    if (!windowCanAcceptPointerInput(target) && !dragging && !inactiveHover) return;
-    NSRect contentFrame = [target.window.contentView frame];
+    const BOOL dragging = zenitButtonsHeld(target);
+    if (!dragging) {
+        // Hover motion: only while the pointer is over this window's visible content, in any
+        // window state (inactive windows keep hover, like AppKit's activeAlways hover controls).
+        // Moving onto another window over our content ends presence here, before the exit.
+        const NSPoint screen = event.window ? [event.window convertPointToScreen:event.locationInWindow] : event.locationInWindow;
+        zenitApplyPointerPresence(target, ZenitPresenceMove, screen);
+        if (!target.pointerOverContent) return;
+    }
     NSPoint loc = zenitLogicalEventPoint(target,event);
 
-    MouseMovePacket packet;
+    MouseMovePacket packet = {0};
     packet.sequence = nextInputEventSequence();
     packet.x = (float)loc.x;
     packet.y = (float)loc.y;
@@ -4523,7 +5001,7 @@ static void enqueueMouseMove(WindowWrapper *target, NSEvent *event) {
         NSValue *tailValue = target.mouseMoveQueue.lastObject;
         MouseMovePacket tail;
         [tailValue getValue:&tail];
-        if (tail.sequence != ULLONG_MAX && tail.sequence + 1 == packet.sequence) {
+        if (!tail.left && tail.sequence != ULLONG_MAX && tail.sequence + 1 == packet.sequence) {
             packet.dx += tail.dx;
             packet.dy += tail.dy;
             [target.mouseMoveQueue removeLastObject];
@@ -4534,7 +5012,7 @@ static void enqueueMouseMove(WindowWrapper *target, NSEvent *event) {
             }
         }
     }
-    [target.mouseMoveQueue addObject:[NSValue valueWithBytes:&packet objCType:@encode(MouseMovePacket)]];
+    enqueueMovePacket(target, packet);
     target.mouseLocation = NSMakePoint(packet.x, packet.y);
 }
 
@@ -4554,6 +5032,12 @@ static void enqueueMouseButton(WindowWrapper *target, int button, BOOL pressed, 
         target.mouseButtonQueue = [NSMutableArray array];
     }
     [target.mouseButtonQueue addObject:[NSValue valueWithBytes:&packet objCType:@encode(MouseButtonPacket)]];
+    // The sequence that owned the pointer ended: hover presence is the window server's answer
+    // again (released over another window or outside: pointer_left right after the release).
+    if (!pressed && !zenitButtonsHeld(target)) {
+        const NSPoint screen = event.window ? [event.window convertPointToScreen:event.locationInWindow] : NSEvent.mouseLocation;
+        zenitApplyPointerPresence(target, ZenitPresenceRelease, screen);
+    }
     if (input_debug_enabled()) {
         NSString *title = target.window.title ?: @"<untitled>";
         NSLog(@"[bridge-input] mouse_button target=\"%@\" btn=%d pressed=%d x=%.1f y=%.1f eventWindow=%@",
@@ -4830,7 +5314,7 @@ int macos_poll_events(void* window_ptr) {
                         NSPoint p=[target.window.contentView convertPoint:event.locationInWindow fromView:nil];
                         float y=(float)(target.window.contentView.bounds.size.height-p.y);
                         if (!chromePointInNativeButton(target,p) && target.chromeHitCallback(target.chromeHitContext,(float)p.x,y)==2 && !(target.window.styleMask & NSWindowStyleMaskFullScreen)) {
-                            [target.window performWindowDragWithEvent:event];
+                            target.pendingWindowDragEvent = event;
                             break;
                         }
                     }
@@ -4854,7 +5338,7 @@ int macos_poll_events(void* window_ptr) {
                                     on_control = target.titlebarHitCallback(target.titlebarHitContext, x, y_from_top);
                                 }
                                 if (!on_control) {
-                                    [target.window performWindowDragWithEvent:event];
+                                    target.pendingWindowDragEvent = event;
                                     break;
                                 }
                             }
@@ -4948,6 +5432,7 @@ int macos_poll_events(void* window_ptr) {
             }
 
             [NSApp sendEvent:event];
+            target.pendingWindowDragEvent = nil;
             if (event.type == NSEventTypeMouseMoved || event.type == NSEventTypeLeftMouseDragged || event.type == NSEventTypeRightMouseDragged || event.type == NSEventTypeOtherMouseDragged) {
                 // AppKit can reset the cursor on non-key hover or crossing the
                 // host boundary while the logical shape is unchanged.
@@ -4963,42 +5448,8 @@ int macos_poll_events(void* window_ptr) {
         // sync-stalls InputMethodKit, unusable; updateWindows equivalent.
         [NSApp updateWindows];
 
-        // update mouse position only current interactive window, avoid
-        // background/occluded hover. Exception: acceptsMouseMovedWhileInactive
-        // (inspector pick), update non-key (cross-window hover). Note: drag
-        // mouseLocation already by event, use directly, don't query
-        // mouseLocationOutsideOfEventStream (may stale during drag).
-        BOOL canAccept = windowCanAcceptPointerInput(wrapper);
-        BOOL inactiveHover = !canAccept && wrapper.acceptsMouseMovedWhileInactive
-                             && wrapper.window && [NSApp isActive];
-        BOOL isDragging = wrapper.leftButtonPressed || wrapper.rightButtonPressed || wrapper.middleButtonPressed;
-        if (canAccept || inactiveHover) {
-            if (!isDragging) {
-                // non-drag use system API query real-time (support hover without
-                // events)
-                NSPoint mouseInWindow = [wrapper.window mouseLocationOutsideOfEventStream];
-                NSRect contentFrame = [wrapper.window.contentView frame];
-                wrapper.mouseLocation = NSMakePoint(mouseInWindow.x,
-                                                    contentFrame.size.height - mouseInWindow.y);
-                if(wrapper.fullscreenHeader.active) wrapper.mouseLocation=zenitLogicalScreenPoint(wrapper,NSEvent.mouseLocation);
-            }
-            // drag mouseLocation already by LeftMouseDragged, unchanged
-            if (inactiveHover) {
-                // non-key window don't track button (avoid mis-trigger)
-                wrapper.leftButtonPressed = NO;
-                wrapper.rightButtonPressed = NO;
-                wrapper.middleButtonPressed = NO;
-            }
-        } else {
-            // drag (button down) retain position/button, don't zero. isKeyWindow
-            // may be NO during drag, handle drag events anyway.
-            if (!isDragging) {
-                wrapper.mouseLocation = NSMakePoint(-1, -1);
-                wrapper.leftButtonPressed = NO;
-                wrapper.rightButtonPressed = NO;
-                wrapper.middleButtonPressed = NO;
-            }
-        }
+        // Hover position and presence at the pump boundary (every window, active or not).
+        zenitSyncPointerAtPumpBoundary(wrapper);
 
         // check window destroyed
         if (!wrapper.window) {
@@ -5079,9 +5530,11 @@ void macos_get_mouse_position(void* window_ptr, float* x, float* y) {
 }
 
 // get native mouse moved/dragged (queue, consume one each).
+// `left` (nullable): 1 for a presence marker (the pointer left the visible content); x/y repeat
+// the last position.
 int macos_get_mouse_move_event(void* window_ptr, float* x, float* y,
                                float* dx, float* dy, uint32_t* modifiers,
-                               unsigned long long* sequence) {
+                               unsigned long long* sequence, int* left) {
     @autoreleasepool {
         WindowWrapper *wrapper = (__bridge WindowWrapper*)window_ptr;
         if (wrapper.mouseMoveQueue.count > 0) {
@@ -5095,6 +5548,7 @@ int macos_get_mouse_move_event(void* window_ptr, float* x, float* y,
             *dy = packet.dy;
             *modifiers = packet.modifiers;
             if (sequence) *sequence = packet.sequence;
+            if (left) *left = packet.left ? 1 : 0;
             return 1;
         }
         *x = 0;
@@ -5103,6 +5557,7 @@ int macos_get_mouse_move_event(void* window_ptr, float* x, float* y,
         *dy = 0;
         *modifiers = 0;
         if (sequence) *sequence = 0;
+        if (left) *left = 0;
         return 0;
     }
 }
@@ -5682,13 +6137,13 @@ int macos_should_close(void* window_ptr) {
 void macos_update_mouse_position(void* window_ptr) {
     @autoreleasepool {
         WindowWrapper *wrapper = (__bridge WindowWrapper*)window_ptr;
-        if (!wrapper.window) return;
-        NSPoint mouseInWindow = [wrapper.window mouseLocationOutsideOfEventStream];
-        NSRect contentFrame = [wrapper.window.contentView frame];
-        wrapper.mouseLocation = NSMakePoint(mouseInWindow.x,
-                                            contentFrame.size.height - mouseInWindow.y);
-                if(wrapper.fullscreenHeader.active) wrapper.mouseLocation=zenitLogicalScreenPoint(wrapper,NSEvent.mouseLocation);
+        zenitSyncPointerAtPumpBoundary(wrapper);
     }
+}
+
+unsigned long macos_window_occlusion_generation(void* window_ptr) {
+    WindowWrapper *wrapper = (__bridge WindowWrapper*)window_ptr;
+    return wrapper ? (unsigned long)wrapper.occlusionGeneration : 0;
 }
 
 // check window needs GPU present (visible and not fully occluded)
@@ -5987,6 +6442,8 @@ static void pumpAppEventsWithTimeout(uint32_t timeout_ms) {
         }
         if (zenitHasPendingMenuCommands()) return;
         BOOL shouldBlockForFirstEvent = timeout_ms != 0;
+        // Whether this pump dequeued our wake event and nothing else.
+        BOOL wakeOnly = NO;
         for (NSUInteger batch = 0; batch < 256; batch++) {
             // check any window in live resize
             NSString *mode = NSDefaultRunLoopMode;
@@ -6018,6 +6475,14 @@ static void pumpAppEventsWithTimeout(uint32_t timeout_ms) {
             shouldBlockForFirstEvent = NO;
             if (event.type == NSEventTypeApplicationDefined) {
                 atomic_store(&g_display_link_wake_pending, false);
+            }
+            // Our own wake: the wait is over, nothing to deliver. Dispatching
+            // it through sendEvent: opened an implicit CA transaction (one
+            // render-server commit per display tick) and updateWindows posted
+            // per-window notifications, once per loop wake.
+            if (zenitIsWakeEvent(event)) {
+                wakeOnly = batch == 0;
+                break;
             }
 
             // find fallback wrapper (key window or first)
@@ -6130,7 +6595,9 @@ static void pumpAppEventsWithTimeout(uint32_t timeout_ms) {
                                   [NSTextInputContext currentInputContext] == ic,
                                   [NSApp isActive]);
                         }
-                        [ic handleEvent:event];
+                        // A reserved chord reaches Zig as a key only: the
+                        // input method must not also type its character.
+                        if (!zenitKeyChordIsReserved(target, event)) [ic handleEvent:event];
                     }
                 }
                 [NSApp updateWindows];
@@ -6144,7 +6611,7 @@ static void pumpAppEventsWithTimeout(uint32_t timeout_ms) {
                         NSPoint p=[target.window.contentView convertPoint:event.locationInWindow fromView:nil];
                         float y=(float)(target.window.contentView.bounds.size.height-p.y);
                         if (!chromePointInNativeButton(target,p) && target.chromeHitCallback(target.chromeHitContext,(float)p.x,y)==2 && !(target.window.styleMask & NSWindowStyleMaskFullScreen)) {
-                            [target.window performWindowDragWithEvent:event];
+                            target.pendingWindowDragEvent = event;
                             break;
                         }
                     }
@@ -6163,7 +6630,7 @@ static void pumpAppEventsWithTimeout(uint32_t timeout_ms) {
                                     on_control = target.titlebarHitCallback(target.titlebarHitContext, x, y_from_top);
                                 }
                                 if (!on_control) {
-                                    [target.window performWindowDragWithEvent:event];
+                                    target.pendingWindowDragEvent = event;
                                     break;
                                 }
                             }
@@ -6255,6 +6722,7 @@ static void pumpAppEventsWithTimeout(uint32_t timeout_ms) {
             }
 
             [NSApp sendEvent:event];
+            target.pendingWindowDragEvent = nil;
             [NSApp updateWindows];
             if (event.type == NSEventTypeMouseMoved || event.type == NSEventTypeLeftMouseDragged || event.type == NSEventTypeRightMouseDragged || event.type == NSEventTypeOtherMouseDragged) {
                 [target.metalView presentDesiredCursor];
@@ -6263,8 +6731,10 @@ static void pumpAppEventsWithTimeout(uint32_t timeout_ms) {
         }
 
         // same as macos_poll_events: fill updateWindows, else
-        // NSTextInputContext activation/per-context IM doesn't work.
-        [NSApp updateWindows];
+        // NSTextInputContext activation/per-context IM doesn't work. A pump
+        // that only ended its wait on our wake delivered nothing to update;
+        // AppKit still runs updateWindows itself for windows it marked.
+        if (!wakeOnly) [NSApp updateWindows];
 
         // Non-blocking pump (timeout 0: wants frame / test_mode).
         // nextEventMatchingMask with distantPast only fetches; the run loop never runs, so
@@ -6316,6 +6786,20 @@ int macos_consume_app_became_active(void) {
     return 0;
 }
 
+void macos_set_app_reopen_handled(int handled) {
+    g_app_reopen_handlers += handled ? 1 : -1;
+    if (g_app_reopen_handlers < 0) g_app_reopen_handlers = 0;
+}
+
+// consume 'app reopened with no visible window' flag: return 1 and reset to NO
+int macos_consume_app_reopen(void) {
+    if (g_app_reopen_requested) {
+        g_app_reopen_requested = NO;
+        return 1;
+    }
+    return 0;
+}
+
 // query current system is dark mode. each pump called by
 // collectGlobalEvents, may also called outside main pool,
 // effectiveAppearance returns autoreleased NSCompositeAppearance - has
@@ -6351,34 +6835,7 @@ void macos_reset_window_should_close(void *window_ptr) {
 void macos_update_window_mouse(void *window_ptr) {
     @autoreleasepool {
         WindowWrapper *wrapper = (__bridge WindowWrapper*)window_ptr;
-        if (!wrapper.window) return;
-
-        BOOL canAccept = windowCanAcceptPointerInput(wrapper);
-        BOOL inactiveHover = !canAccept && wrapper.acceptsMouseMovedWhileInactive
-                             && wrapper.window && [NSApp isActive];
-        BOOL isDragging = wrapper.leftButtonPressed || wrapper.rightButtonPressed || wrapper.middleButtonPressed;
-
-        if (canAccept || inactiveHover) {
-            if (!isDragging) {
-                NSPoint mouseInWindow = [wrapper.window mouseLocationOutsideOfEventStream];
-                NSRect contentFrame = [wrapper.window.contentView frame];
-                wrapper.mouseLocation = NSMakePoint(mouseInWindow.x,
-                                                    contentFrame.size.height - mouseInWindow.y);
-                if(wrapper.fullscreenHeader.active) wrapper.mouseLocation=zenitLogicalScreenPoint(wrapper,NSEvent.mouseLocation);
-            }
-            if (inactiveHover) {
-                wrapper.leftButtonPressed = NO;
-                wrapper.rightButtonPressed = NO;
-                wrapper.middleButtonPressed = NO;
-            }
-        } else {
-            if (!isDragging) {
-                wrapper.mouseLocation = NSMakePoint(-1, -1);
-                wrapper.leftButtonPressed = NO;
-                wrapper.rightButtonPressed = NO;
-                wrapper.middleButtonPressed = NO;
-            }
-        }
+        zenitSyncPointerAtPumpBoundary(wrapper);
     }
 }
 
@@ -6447,6 +6904,17 @@ static NSMutableArray<NSString *> *g_pending_open_files = nil;
 static NSMutableDictionary<NSNumber *, NSMenu *> *zenitMenuById;
 
 @implementation ZenitAppDelegate
+
+- (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)flag {
+    (void)sender;
+    // Dock click / opening the running app again while no window is visible
+    // (e.g. one hidden on close): an App with `on_reopen` handles it on the
+    // next pump. Without one, AppKit's default reopen behavior applies.
+    if (flag || g_app_reopen_handlers == 0) return YES;
+    g_app_reopen_requested = YES;
+    macos_post_empty_event();
+    return NO;
+}
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     // setMenuModel may be called before finishLaunching (zenitMenuById
@@ -6874,7 +7342,7 @@ int macos_clipboard_set_text(const char* text, int len) {
                                                  length:(NSUInteger)len
                                                encoding:NSUTF8StringEncoding];
         if (!str) return -1;
-        NSPasteboard *pb = [NSPasteboard generalPasteboard];
+        NSPasteboard *pb = zenitClipboardPasteboard();
         [pb clearContents];
         return [pb setString:str forType:NSPasteboardTypeString] ? 1 : 0;
     }
@@ -6904,14 +7372,14 @@ static int zenit_clipboard_copy_string(NSString *str, char *buffer, int buffer_s
 
 int macos_clipboard_get_text(char* buffer, int buffer_size) {
     @autoreleasepool {
-        NSString *str = [[NSPasteboard generalPasteboard] stringForType:NSPasteboardTypeString];
+        NSString *str = [zenitClipboardPasteboard() stringForType:NSPasteboardTypeString];
         return zenit_clipboard_copy_string(str, buffer, buffer_size);
     }
 }
 
 int macos_clipboard_get_text_len(void) {
     @autoreleasepool {
-        NSString *str = [[NSPasteboard generalPasteboard] stringForType:NSPasteboardTypeString];
+        NSString *str = [zenitClipboardPasteboard() stringForType:NSPasteboardTypeString];
         return zenit_clipboard_string_len(str);
     }
 }
@@ -6940,7 +7408,7 @@ int macos_clipboard_set_rich_text(const char* text, int text_len, const char* ht
         NSPasteboardItem *item = [[NSPasteboardItem alloc] init];
         if (![item setString:str forType:NSPasteboardTypeString]) return 0;
         if (htmlStr && ![item setString:htmlStr forType:NSPasteboardTypeHTML]) return 0;
-        NSPasteboard *pb = [NSPasteboard generalPasteboard];
+        NSPasteboard *pb = zenitClipboardPasteboard();
         [pb clearContents];
         return [pb writeObjects:@[ item ]] ? 1 : 0;
     }
@@ -6949,14 +7417,14 @@ int macos_clipboard_set_rich_text(const char* text, int text_len, const char* ht
 // Same empty/error/full-read contract as the plain-text representation.
 int macos_clipboard_get_html_len(void) {
     @autoreleasepool {
-        NSString *str = [[NSPasteboard generalPasteboard] stringForType:NSPasteboardTypeHTML];
+        NSString *str = [zenitClipboardPasteboard() stringForType:NSPasteboardTypeHTML];
         return zenit_clipboard_string_len(str);
     }
 }
 
 int macos_clipboard_get_html(char* buffer, int buffer_size) {
     @autoreleasepool {
-        NSString *str = [[NSPasteboard generalPasteboard] stringForType:NSPasteboardTypeHTML];
+        NSString *str = [zenitClipboardPasteboard() stringForType:NSPasteboardTypeHTML];
         return zenit_clipboard_copy_string(str, buffer, buffer_size);
     }
 }
@@ -7416,8 +7884,8 @@ void macos_post_empty_event(void) {
                                            timestamp:0
                                         windowNumber:0
                                              context:nil
-                                             subtype:0
-                                               data1:0
+                                             subtype:ZENIT_WAKE_EVENT_SUBTYPE
+                                               data1:ZENIT_WAKE_EVENT_DATA1
                                                data2:0];
         [NSApp postEvent:event atStart:NO];
     }
@@ -7608,13 +8076,72 @@ void macos_chrome_hit(void *owner, int (*hit)(void*,float,float), void *context)
         w.chromeHitCallback=hit; w.chromeHitContext=hit?context:NULL;
     }
 }
+// isZoomed compares the frame with the standard (zoomed) frame, which AppKit
+// derives from the window's screen (its visible frame: menu bar, Dock, the
+// space), the size limits and the style. Reading the visible frame is itself
+// the expensive window-server query, so screen-side changes are observed
+// instead: they bump this epoch. Window-state notifications bump
+// chromeStateGeneration as well.
+static uint64_t g_zenit_screen_epoch = 1;
+static void zenitObserveScreenEpoch(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        void (^bump)(NSNotification *) = ^(NSNotification *note) { (void)note; g_zenit_screen_epoch++; };
+        [NSNotificationCenter.defaultCenter addObserverForName:NSApplicationDidChangeScreenParametersNotification
+                                                        object:nil queue:nil usingBlock:bump];
+        [NSWorkspace.sharedWorkspace.notificationCenter addObserverForName:NSWorkspaceActiveSpaceDidChangeNotification
+                                                                    object:nil queue:nil usingBlock:bump];
+    });
+}
+// -[NSWindow isOnActiveSpace] asks the window server synchronously (a mach
+// round trip, several ms while the server is busy), and the caret host reads
+// it for every window on every loop iteration. It changes only when the
+// active space changes (screen epoch), when the window leaves or reaches the
+// visible space (its occlusion changes) or with its chrome state.
+static BOOL zenitWindowOnActiveSpace(WindowWrapper *w) {
+    zenitObserveScreenEpoch();
+    if (w->spaceCacheValid && w->spaceCacheScreenEpoch == g_zenit_screen_epoch &&
+        w->spaceCacheOcclusion == w.occlusionGeneration && w->spaceCacheGeneration == w.chromeStateGeneration)
+        return w->spaceCached;
+    w->spaceCached = w.window.onActiveSpace;
+    w->spaceCacheValid = YES;
+    w->spaceCacheScreenEpoch = g_zenit_screen_epoch;
+    w->spaceCacheOcclusion = w.occlusionGeneration;
+    w->spaceCacheGeneration = w.chromeStateGeneration;
+    return w->spaceCached;
+}
+
+static BOOL zenitWindowIsZoomed(WindowWrapper *w) {
+    zenitObserveScreenEpoch();
+    NSWindow *window = w.window;
+    NSScreen *screen = window.screen;
+    const NSRect frame = window.frame;
+    const NSSize minSize = window.minSize, maxSize = window.maxSize;
+    const NSWindowStyleMask style = window.styleMask;
+    if (w->zoomCacheValid && w->zoomCacheGeneration == w.chromeStateGeneration && w->zoomCacheScreen == screen &&
+        w->zoomCacheScreenEpoch == g_zenit_screen_epoch && w->zoomCacheStyle == style &&
+        NSEqualRects(w->zoomCacheFrame, frame) && NSEqualSizes(w->zoomCacheMinSize, minSize) &&
+        NSEqualSizes(w->zoomCacheMaxSize, maxSize))
+        return w->zoomCached;
+    w->zoomCached = window.isZoomed;
+    w->zoomCacheValid = YES;
+    w->zoomCacheGeneration = w.chromeStateGeneration;
+    w->zoomCacheScreen = screen;
+    w->zoomCacheScreenEpoch = g_zenit_screen_epoch;
+    w->zoomCacheStyle = style;
+    w->zoomCacheFrame = frame;
+    w->zoomCacheMinSize = minSize;
+    w->zoomCacheMaxSize = maxSize;
+    return w->zoomCached;
+}
+
 void macos_chrome_state(void *owner, ZenitChromeState *out) {
     @autoreleasepool {
         memset(out,0,sizeof(*out)); WindowWrapper *w=(__bridge WindowWrapper*)owner;
         out->appearance=1;out->button_layout[3]=1;out->button_layout[4]=2;out->button_layout[5]=3;
         if (!w.window) return;
         out->state_generation=w.chromeStateGeneration;
-        out->flags=(w.window.isZoomed?1:0)|((w.window.styleMask & NSWindowStyleMaskFullScreen)?2:0)|(w.window.isKeyWindow?4:0)|(w.chromeFullscreenTransition?8:0);
+        out->flags=(zenitWindowIsZoomed(w)?1:0)|((w.window.styleMask & NSWindowStyleMaskFullScreen)?2:0)|(w.window.isKeyWindow?4:0)|(w.chromeFullscreenTransition?8:0);
         out->flags |= 16;
         out->capabilities=63; /* Native resizable edges; no explicit manual resize API. */
         if (w.fullscreenHeader.active) out->flags |= 128;
@@ -7666,4 +8193,30 @@ int macos_chrome_action(void *owner, int action, int value) {
         default: return 0;
         }
     }
+}
+
+// Logical desktop geometry. A missing display falls back to the window's current
+// screen; restoring exits minimized state to a visible frame. Fullscreen is never replayed
+// (a new process window starts windowed).
+int macos_window_geometry(void *ptr, uint64_t display, double out[9]) {
+    WindowWrapper *w = (__bridge WindowWrapper *)ptr;
+    if (!w || !w.window) return 0;
+    NSScreen *screen = w.window.screen ?: NSScreen.mainScreen;
+    for (NSScreen *candidate in NSScreen.screens) {
+        if ([candidate.deviceDescription[@"NSScreenNumber"] unsignedLongLongValue] == display) {
+            screen = candidate; break;
+        }
+    }
+    if (!screen) return 0;
+    NSRect f = w.window.frame, v = screen.visibleFrame;
+    out[0] = f.origin.x; out[1] = f.origin.y; out[2] = f.size.width; out[3] = f.size.height;
+    out[4] = v.origin.x; out[5] = v.origin.y; out[6] = v.size.width; out[7] = v.size.height;
+    out[8] = [screen.deviceDescription[@"NSScreenNumber"] unsignedLongLongValue];
+    return 1;
+}
+void macos_restore_window_frame(void *ptr, const double f[4]) {
+    WindowWrapper *w = (__bridge WindowWrapper *)ptr;
+    if (!w || !w.window) return;
+    if (w.window.miniaturized) [w.window deminiaturize:nil];
+    [w.window setFrame:NSMakeRect(f[0], f[1], f[2], f[3]) display:NO];
 }

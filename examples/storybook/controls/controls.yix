@@ -1,0 +1,113 @@
+//! Controls story: pencil "zenit UI native.pen" artboard LKxqO (01 · Controls / states).
+//! Every specimen is a bare ControlShell, the layout + style base Button / Input / Select build
+//! on. Hover / pressed cells pin the state (`pins`), so the colors are the shell's own resolution
+//! at that state; the keyboard-focus row draws useFocusRing's ring on several specimens at once,
+//! which real focus cannot show.
+const ui = @import("ui");
+const W = ui.widgets;
+const S = @import("styles.yss");
+
+const VariantRow = struct { id: u8, variant: W.ControlVariant, label: []const u8 };
+const variant_rows: []const VariantRow = &.{
+    .{ .id = 0, .variant = .base, .label = "Base" },
+    .{ .id = 1, .variant = .primary, .label = "Primary" },
+    .{ .id = 2, .variant = .secondary, .label = "Secondary" },
+    .{ .id = 3, .variant = .ghost, .label = "Ghost" },
+    .{ .id = 4, .variant = .danger, .label = "Danger" },
+    .{ .id = 5, .variant = .link, .label = "Link" },
+    .{ .id = 6, .variant = .field, .label = "Field" },
+};
+
+/// Section with a 1px top rule, title and spec line.
+pub fn Section(title: []const u8 = "", desc: []const u8 = "", children: View) View {
+    return (
+        <col style={S.section}>
+            <text style={S.section_title}>{title}</text>
+            <text style={S.section_desc}>{desc}</text>
+            {children}
+        </col>
+    );
+}
+
+/// One matrix row: the variant at rest (live: hover and press it), pinned hover, pinned pressed,
+/// disabled.
+pub fn StateRow(variant: W.ControlVariant = .secondary, label: []const u8 = "") View {
+    return (
+        <row style={S.row}>
+            <text style={S.variant_name}>{@tagName(variant)}</text>
+            <W.ControlShell variant={variant} style={S.cell} contentStyle={.{ .width = .{ .fit = .{} } }} content={<text style={S.label}>{label}</text>} />
+            <W.ControlShell variant={variant} pins={.{ .hover = true }} style={S.cell} contentStyle={.{ .width = .{ .fit = .{} } }} content={<text style={S.label}>{label}</text>} />
+            <W.ControlShell variant={variant} pins={.{ .hover = true, .active = true }} style={S.cell} contentStyle={.{ .width = .{ .fit = .{} } }} content={<text style={S.label}>{label}</text>} />
+            <W.ControlShell variant={variant} disabled style={S.cell} contentStyle={.{ .width = .{ .fit = .{} } }} content={<text style={S.label}>{label}</text>} />
+        </row>
+    );
+}
+
+pub fn Controls() View {
+    return (
+        <col style={S.root}>
+            <col style={S.header}>
+                <text style={S.eyebrow}>01 / CONTROLS</text>
+                <text style={S.title}>Controls</text>
+                <text style={S.lede}>Consistent geometry and a predictable interaction model.</text>
+            </col>
+
+            <Section title="Sizes" desc="Height 20 / 24 / 32 / 40 · Control radius 4 · Icon 16 · Label 12 / 13">
+                <row testId="story.controls.sizes" style={S.row}>
+                    <W.ControlShell size={.xs} content={<text style={S.label}>xs</text>} />
+                    <W.ControlShell size={.sm} content={<text style={S.label}>sm</text>} />
+                    <W.ControlShell size={.md} content={<text style={S.label}>md</text>} />
+                    <W.ControlShell size={.lg} content={<text style={S.label}>lg</text>} />
+                </row>
+            </Section>
+
+            <Section title="Variants × states" desc="Base is the default · Primary adds color emphasis · Field frames inputs · Default / hover / pressed / disabled">
+                <row style={S.row}>
+                    <box style={S.column_spacer} />
+                    <text style={S.column_head}>Default</text>
+                    <text style={S.column_head}>Hover</text>
+                    <text style={S.column_head}>Pressed</text>
+                    <text style={S.column_head}>Disabled</text>
+                </row>
+                {for (variant_rows) |r| <StateRow variant={r.variant} label={r.label} />}
+            </Section>
+
+            <Section title="Composition" desc="Icon · content · append slots; an absent slot builds nothing · Icon-only is square">
+                <row style={S.row}>
+                    <W.ControlShell variant={.primary} leadingIcon icon={<icon style={S.glyph_on_primary} src={ui.assets.common.plus} />} content={<text style={S.label}>Add item</text>} />
+                    <W.ControlShell content={<text style={S.label}>Options</text>} append={<icon style={S.glyph_muted} src={ui.assets.common.chevron_down} />} />
+                    <W.ControlShell iconOnly icon={<icon style={S.glyph} src={ui.assets.common.plus} />} />
+                    <W.ControlShell variant={.field} leadingIcon style={S.field_cell} icon={<icon style={S.glyph_muted} src={ui.assets.common.search} />} content={<text style={S.placeholder}>Search</text>} />
+                </row>
+            </Section>
+
+            <Section title="Selection controls" desc="Checkbox 16 × 16 / 1 px stroke / radius 4 · Radio 16 / dot 8 · Switch 40 × 22 / thumb 18">
+                <row style={S.selection_row}>
+                    <W.Checkbox label="Default" />
+                    <W.Checkbox label="Selected" checked />
+                    <W.Checkbox label="Mixed" indeterminate />
+                    <W.Checkbox label="Disabled" checked disabled />
+                </row>
+                <row style={S.selection_row}>
+                    <W.Radio label="Default" />
+                    <W.Radio label="Selected" checked />
+                    <W.Radio label="Disabled" checked disabled />
+                </row>
+                <row style={S.selection_row}>
+                    <W.Switch label="Default" />
+                    <W.Switch label="Selected" checked />
+                    <W.Switch label="Disabled" checked disabled />
+                </row>
+            </Section>
+
+            <Section title="Keyboard focus" desc="Focus-visible · 2 px ring + 2 px transparent offset · Follows the control shape · No layout shift">
+                <row style={S.focus_row}>
+                    <box style={S.focus_ring}><W.ControlShell variant={.base} content={<text style={S.label}>Base</text>} /></box>
+                    <box style={S.focus_ring}><W.ControlShell content={<text style={S.label}>Secondary</text>} /></box>
+                    <box style={S.focus_ring}><W.ControlShell variant={.primary} content={<text style={S.label}>Primary</text>} /></box>
+                    <box style={S.focus_ring}><W.ControlShell variant={.field} style={S.field_cell} content={<text style={S.placeholder}>Field</text>} /></box>
+                </row>
+            </Section>
+        </col>
+    );
+}

@@ -113,8 +113,9 @@ test "Tag: sizes" {
     try root.appendChild(std.testing.allocator, sm);
     try root.appendChild(std.testing.allocator, md);
 
+    // COMPONENTS.json Tag / *: 22px default height.
     try std.testing.expectEqual(@as(f32, 22), sm.style.height.px);
-    try std.testing.expectEqual(@as(f32, 26), md.style.height.px);
+    try std.testing.expectEqual(@as(f32, 22), md.style.height.px);
 }
 
 test "Tag: background color is set" {
@@ -135,7 +136,7 @@ test "Tag: background color is set" {
     try std.testing.expect(tag_node.getBackground().a > 0);
     try std.testing.expect(tag_node.style.height.px > 0);
 
-    // Validate background is expected color (accent color computed with lerp).
+    // COMPONENTS.json Tag / accent: dedicated tonal surface.
     try std.testing.expect(tag_node.getBackground().r > 0);
     try std.testing.expect(tag_node.getBackground().g > 0);
     try std.testing.expect(tag_node.getBackground().b > 0);
@@ -198,7 +199,7 @@ test "Tag: dynamic text and color" {
     const text_node = label(tag_node).?;
     try std.testing.expectEqualStrings("Running", text_node.getText().?.content);
     const k = ctx.tokens.tokens.color;
-    try std.testing.expect(Color.eql(tag_node.getBackground(), Color.lerp(k.bg_primary, k.success, 0.25)));
+    try std.testing.expect(Color.eql(tag_node.getBackground(), k.success_tag_bg));
     try std.testing.expect(Color.eql(text_node.getText().?.color, k.success));
 }
 
@@ -224,7 +225,8 @@ test "Tag: recipe follows current theme materials and then color state" {
     var custom = theme.light;
     custom.tokens.font_size.sm = 15;
     custom.tokens.space.space200 = 10;
-    custom.tokens.space.space100 = 7;
+    // COMPONENTS.json Tag / *: 6px gap uses space150.
+    custom.tokens.space.space150 = 7;
     custom.tokens.color.accent = Color.hex(0x123456);
     custom.tokens.color.success = Color.hex(0x456789);
     ctx.setTheme(&custom);

@@ -63,8 +63,14 @@ fn Header(comptime Inner: type) type {
                 node: *core.Node,
                 base: core.Padding,
                 allocator: std.mem.Allocator,
-                fn update(b: @This(), state: chrome.State) void {
+                /// The padding write is the only fallible step and comes first: a failure
+                /// leaves the header as it was (the first run is part of the mount).
+                fn update(b: @This(), state: chrome.State) error{OutOfMemory}!void {
+                    try b.syncPadding(state);
                     b.node.behavior.interaction.window_region = if (state.effective_mode == .custom) .drag else .client;
+                }
+
+                fn syncPadding(b: @This(), state: chrome.State) error{OutOfMemory}!void {
                     // AppKit reports model-space controls while animating
                     // presentation-space snapshots. Keep the completed Header
                     // inset until the native transition commits its geometry.
@@ -79,7 +85,7 @@ fn Header(comptime Inner: type) type {
                         }
                     }
                     if (!std.meta.eql(b.node.style.padding, padding)) {
-                        b.node.setStyleInline(b.allocator, .{ .padding = padding });
+                        try b.node.setStyleInlineFallible(b.allocator, .{ .padding = padding });
                     }
                 }
             };

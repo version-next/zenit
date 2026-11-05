@@ -15,10 +15,11 @@ struct Uniforms {
     float scale_factor; // DPI scale factor
     uint clip_shape_kind;
     float4 clip_rect;
-    float clip_radius;
+    float4 clip_radii; // TL, TR, BR, BL (logical px)
     uint clip_fill_rule;
     uint clip_point_count;
     uint clip_contour_count;
+    uint clip_pad; // keeps the polygon arrays 16-byte aligned (cbuffer register)
     uint clip_polygon_end_points[8];
     float2 clip_polygon_points[32];
 };
@@ -48,6 +49,13 @@ struct VertexOutput {
 float sdf_rounded_rect_text(float2 p, float2 size, float radius) {
     float2 d = abs(p) - size + radius;
     return min(max(d.x, d.y), 0.0) + length(max(d, float2(0.0))) - radius;
+}
+
+/// Overflow clip with per-corner radii (TL, TR, BR, BL): the quadrant picks the corner, so a
+/// uniform radius evaluates exactly as the single-radius distance.
+float sdf_rounded_rect_corners_text(float2 p, float2 size, float4 radii) {
+    const float r = (p.x < 0.0) ? ((p.y < 0.0) ? radii.x : radii.w) : ((p.y < 0.0) ? radii.y : radii.z);
+    return sdf_rounded_rect_text(p, size, r);
 }
 
 float sdf_ellipse_text(float2 p, float2 radius_xy) {
@@ -134,8 +142,8 @@ float shape_clip_alpha_text(float2 screen_pos, constant Uniforms& uniforms) {
     const float2 clip_size = uniforms.clip_rect.zw * uniforms.scale_factor * 0.5;
     float clip_sdf = 1.0;
     if (uniforms.clip_shape_kind == 1u) {
-        const float clip_radius = uniforms.clip_radius * uniforms.scale_factor;
-        clip_sdf = sdf_rounded_rect_text(screen_pos - clip_center, clip_size, clip_radius);
+        const float4 clip_radii = uniforms.clip_radii * uniforms.scale_factor;
+        clip_sdf = sdf_rounded_rect_corners_text(screen_pos - clip_center, clip_size, clip_radii);
     } else if (uniforms.clip_shape_kind == 2u) {
         clip_sdf = sdf_ellipse_text(screen_pos - clip_center, clip_size);
     } else if (uniforms.clip_shape_kind == 3u) {

@@ -17,7 +17,7 @@ comptime {
     if (@sizeOf(Icon) != 64 or @sizeOf(Glyph) != 80 or @offsetOf(Glyph, "snap") != 76) @compileError("Glyph/icon ABI mismatch");
 }
 fn uniformsFor(scale: f32, clip_case: usize) reference.Uniforms {
-    var u = reference.Uniforms{ .scale = scale, .clip_kind = @intCast(@min(clip_case, 3)), .clip_rect = .{ 1 / scale, 1 / scale, 6 / scale, 6 / scale }, .clip_radius = 1.7 / scale, .fill_rule = @intFromBool(clip_case == 4) };
+    var u = reference.Uniforms{ .scale = scale, .clip_kind = @intCast(@min(clip_case, 3)), .clip_rect = .{ 1 / scale, 1 / scale, 6 / scale, 6 / scale }, .clip_radii = .{ @floatCast(reference.clip_radii_px[0] / scale), @floatCast(reference.clip_radii_px[1] / scale), @floatCast(reference.clip_radii_px[2] / scale), @floatCast(reference.clip_radii_px[3] / scale) }, .fill_rule = @intFromBool(clip_case == 4) };
     const points = [_][2]f32{ .{ 0, 0 }, .{ 6, 0 }, .{ 6, 6 }, .{ 0, 6 }, .{ 2, 2 }, .{ 4, 2 }, .{ 4, 4 }, .{ 2, 4 } };
     for (points, 0..) |point, i| u.points[i] = .{ point[0] / scale, point[1] / scale };
     return u;

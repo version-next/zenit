@@ -1,14 +1,16 @@
 /// Button Component
 ///
-/// View in button.yix, styles (ControlShell recipe + override) and paint in styles.yss.
+/// View in button.yix (composed on ControlShell), root style / label tier / glyph / loading ring in
+/// styles.yss.
 ///
 /// Features:
-/// - variant: primary, secondary, ghost, danger, link
-/// - size: xs, sm, md, lg (ControlSize)
-/// - icon: icon button (SVG asset or texture)
-/// - loading: load state (spinning indicator, hide icon, no click)
+/// - variant: base, primary, secondary, ghost, danger, link (the shell's tone)
+/// - size: xs, sm, md, lg (ControlSize); pill
+/// - icon: icon button (SVG asset or texture), icon-only, leading icon (glyph icon fit)
+/// - loading: load state (spinning ring, hide icon, no click)
 /// - disabled: disabled state
-/// - hover / press (held, pointer still inside) swap background, 150ms transition
+/// - hover / press (held, pointer still inside) / focus resolve on the shell's node; label, glyph
+///   and ring follow its foreground (currentColor)
 const std = @import("std");
 const core = @import("../../core.zig");
 const Cx = core.Cx;
@@ -20,6 +22,8 @@ const reactive = @import("../../reactive.zig");
 const svg_assets = @import("../../svg_assets.zig");
 const events = @import("../../events.zig");
 const control_shell = @import("../control_shell/mod.zig");
+const text_render = @import("../../core/render_engine/text_render.zig");
+const shell_styles = @import("../control_shell/_styles.yss.zig");
 
 /// Button variant, alias to ControlVariant (compatible)
 pub const ButtonVariant = control_shell.ControlVariant;
@@ -28,9 +32,11 @@ pub const ButtonVariant = control_shell.ControlVariant;
 pub const ButtonSize = control_shell.ControlSize;
 
 /// Create button: `W.Button(.{ .label = "Save", .disabled = ui.not(dirty), .on_click = cx.on(S, s,
-/// S.save) })`
-pub const Button = @import("_button.yix.zig").Button;
-pub const ButtonProps = @import("_button.yix.zig").ButtonProps;
+/// S.save) })` (button.yix, composed on ControlShell).
+const ui = @import("../../ui.zig");
+const button_view = @import("_button.yix.zig");
+pub const Button = button_view.Button;
+pub const ButtonProps = button_view.ButtonProps;
 /// `Button(...)` return type (independent of arguments), for call sites that name element type
 pub const ButtonBuilder = @TypeOf(Button(.{}));
 
@@ -59,6 +65,17 @@ fn findSpinner(n: *Node) ?*Node {
     return null;
 }
 
+/// Text color as painted (inherited from the shell's foreground unless the text declares one).
+fn paintedText(n: *Node) Color {
+    return text_render.resolveNodeLogicalTextProps(n).?.color;
+}
+
+/// Glyph tint as painted (currentColor resolved).
+fn paintedTint(n: *Node) Color {
+    const ic = n.getIcon().?;
+    return ic.paintTint(if (ic.tint_current_color) n.resolveTextColor() else null);
+}
+
 fn pressAt(cx: *Cx, node: ?*Node) void {
     cx.pressed_node = node;
     cx.notifyPressWatchers();
@@ -78,11 +95,13 @@ test "Button: basic creation" {
 
     try root.appendChild(std.testing.allocator, btn);
 
-    // Text in content slot (no icon: btn -> [content_slot -> text])
-    try std.testing.expectEqual(@as(usize, 1), btn.children.items.len);
-    const content_slot = btn.children.items[0];
+    // ControlShell slots: btn -> [icon slot (hidden: no glyph), content slot -> text]
+    try std.testing.expectEqual(@as(usize, 2), btn.children.items.len);
+    try std.testing.expect(btn.children.items[0].style.display == .none);
+    const content_slot = btn.children.items[1];
     try std.testing.expectEqualStrings("Click Me", content_slot.children.items[0].getText().?.content);
     try std.testing.expectEqualStrings("Button", btn.meta.ownership.meta.component_name.?);
+    try std.testing.expectEqual(core.ElementTag.button, btn.tag);
     try std.testing.expectEqual(core.A11yRole.button, btn.behavior.interaction.a11y.?.role);
     try std.testing.expectEqualStrings("Click Me", btn.behavior.interaction.a11y.?.label.?);
 }
@@ -154,6 +173,17 @@ test "Button: ghost icon-only stays bare (no forced chrome)" {
     try std.testing.expect(btn.style.border.width == 0);
 }
 
+/// The shell's tone at a state (control_shell/styles.yss Tone: the single color source).
+fn toneAt(t: *const core.theme.ThemeTokens, variant: ButtonVariant, state: core.InteractionState) core.StyleOverride {
+    return shell_styles.Tone.resolve(.{ .kind = variant }, t).resolve(state);
+}
+
+/// Settled value of an eased color (transition target while animating).
+fn backgroundTarget(n: *Node) Color {
+    if (n.frame_state.frame_local.runtime.transitions) |slots| if (slots.find(.background)) |slot| if (slot.active) return slot.to_color;
+    return n.getBackground();
+}
+
 test "Button: 悬停 / 按下换底色（按下且指针仍在按钮内），禁用时没有交互态" {
     var ctx = try Cx.init(std.testing.allocator, std.testing.io);
     defer ctx.deinit();
@@ -162,25 +192,27 @@ test "Button: 悬停 / 按下换底色（按下且指针仍在按钮内），禁
     const btn = try Button(.{ .label = "Go", .variant = .secondary }).mount(scope_val, ctx);
     defer ctx.freeNode(btn);
     const t = ctx.tokens;
-    const cs = (control_shell.ControlShellConfig{ .variant = .secondary }).resolvedConditionalStyle(t).bgColors();
-    const bg = struct {
-        fn target(n: *Node) Color {
-            const slot = n.frame_state.frame_local.runtime.transitions.?.find(.background).?;
-            return if (slot.active) slot.to_color else n.getBackground();
-        }
-    }.target;
-    try std.testing.expect(Color.eql(cs.normal, bg(btn)));
+    const rest = toneAt(t, .secondary, .{}).background.?;
+    const hover = toneAt(t, .secondary, .{ .is_hovered = true }).background.?;
+    const pressed = toneAt(t, .secondary, .{ .is_hovered = true, .is_pressed = true }).background.?;
+    try std.testing.expect(!Color.eql(rest, hover) and !Color.eql(hover, pressed));
+    try std.testing.expect(Color.eql(rest, backgroundTarget(btn)));
     btn.behavior.events.on_hover.?.invoke();
-    try std.testing.expect(Color.eql(cs.hover, bg(btn)));
+    try std.testing.expect(Color.eql(hover, backgroundTarget(btn)));
     pressAt(ctx, btn);
-    try std.testing.expect(Color.eql(cs.pressed, bg(btn)));
+    try std.testing.expect(Color.eql(pressed, backgroundTarget(btn)));
     btn.behavior.events.on_leave.?.invoke(); // Press and drag out: back to normal
-    try std.testing.expect(Color.eql(cs.normal, bg(btn)));
+    try std.testing.expect(Color.eql(rest, backgroundTarget(btn)));
     pressAt(ctx, null);
 
     const off = try Button(.{ .label = "Off", .variant = .secondary, .disabled = true }).mount(scope_val, ctx);
     defer ctx.freeNode(off);
-    try std.testing.expect(off.behavior.events.on_hover == null);
+    const disabled_bg = toneAt(t, .secondary, .{ .is_disabled = true }).background.?;
+    try std.testing.expect(Color.eql(disabled_bg, backgroundTarget(off)));
+    if (off.behavior.events.on_hover) |h| h.invoke();
+    pressAt(ctx, off);
+    try std.testing.expect(Color.eql(disabled_bg, backgroundTarget(off)));
+    pressAt(ctx, null);
     try std.testing.expect(!off.behavior.interaction.focusable);
 }
 
@@ -356,6 +388,48 @@ test "Button: mount 在任意分配点失败时不泄漏（sweep）" {
     }.m);
 }
 
+// OOM sweep over the states the style runtime resolves while mounting: variant and disabled from
+// sources (the effect's first run), caller overrides, a glyph, and the caller's overlay layer on
+// the root (v.attrs). A mount that reports success must look exactly like the uninjected mount
+// (oom_sweep's reference check), and the reference itself must carry the states it was given.
+test "button(states+overlay): mount 成功即外观完整，任意分配点失败不假成功（sweep）" {
+    const sw = @import("../oom_sweep.zig");
+    try sw.sweepMountVerified("button(states+overlay)", struct {
+        fn m(scope: *Scope, cx: *Cx) anyerror!?*Node {
+            const view = @import("../../view.zig");
+            const disabled = try scope.createSignal(bool, true);
+            const primary = try scope.createSignal(bool, true);
+            const variant = reactive.map(primary, struct {
+                fn v(on: bool) ButtonVariant {
+                    return if (on) .primary else .ghost;
+                }
+            }.v);
+            return try view.render(scope, cx, view.attrs(.{ .style = core.BoxStyle{ .margin = core.Padding.all(3), .corner_radius = 7 } }, Button(.{
+                .label = "Go",
+                .variant = variant,
+                .disabled = disabled,
+                .icon_asset = svg_assets.common.star,
+                .base_style = .{ .padding = core.Padding.all(5) },
+                .hover_style = core.BoxStyle{ .background = Color.rgba(200, 0, 0, 255) },
+            })));
+        }
+    }.m, struct {
+        fn check(root: *Node) anyerror!void {
+            const t = &core.theme.dark;
+            // disabled primary tone, applied at mount without a transition
+            try std.testing.expect(Color.eql(t.tokens.color.disabled_bg, root.getBackground()));
+            try std.testing.expect(Color.eql(t.tokens.color.fg_disabled, root.style.ext.?.text_color.?));
+            try std.testing.expect(Color.eql(t.tokens.color.fg_disabled, paintedText(findText(root, "Go").?)));
+            try std.testing.expect(root.frame_state.frame_local.runtime.transitions.?.find(.background) != null);
+            // caller overrides and overlay
+            try std.testing.expectEqual(core.Padding.all(5), root.style.padding);
+            try std.testing.expectEqual(core.Padding.all(3), root.style.margin);
+            for (root.style.effectiveRadii()) |r| try std.testing.expectApproxEqAbs(@as(f32, 7), r, 0.001);
+            try std.testing.expect(Color.eql(t.tokens.color.fg_disabled, paintedTint(findTag(root, .image).?)));
+        }
+    }.check);
+}
+
 // ── Signal-first behavior ──
 
 const ButtonFixture = struct {
@@ -469,10 +543,11 @@ test "Button: variant source switches the background and text color" {
         }
     }.target;
     const ghost_bg = bg(btn);
-    const ghost_text = findText(btn, "Bold").?.getText().?.color;
+    const ghost_text = paintedText(findText(btn, "Bold").?);
+    try std.testing.expect(Color.eql(f.cx.tokens.tokens.color.fg_primary, ghost_text));
     active.set(true);
     try std.testing.expect(Color.eql(f.cx.tokens.tokens.color.button_primary_bg, bg(btn)));
-    try std.testing.expect(!Color.eql(ghost_text, findText(btn, "Bold").?.getText().?.color));
+    try std.testing.expect(Color.eql(f.cx.tokens.tokens.color.button_primary_fg, paintedText(findText(btn, "Bold").?)));
     active.set(false);
     try std.testing.expect(Color.eql(ghost_bg, bg(btn)));
 }
@@ -520,4 +595,150 @@ test "Button: static gating installs the caller's handler and context directly" 
     try std.testing.expect(btn.behavior.events.event_context.? == @as(*anyopaque, &ctx_byte));
     pressClick(btn);
     try std.testing.expectEqual(@as(u32, 1), f.clicks);
+}
+
+test "Button: LKxqO size matrix and interaction foregrounds" {
+    var f = try ButtonFixture.init();
+    defer f.deinit();
+    // LKxqO body = 13/500/radius 6; Foundations overrides lg height to 40.
+    inline for (.{ .xs, .sm, .md, .lg }, .{ 20, 24, 32, 40 }) |size, height| {
+        const btn = try f.mount(Button(.{ .label = "Size", .size = size, .variant = .secondary }));
+        f.cx.layout();
+        try std.testing.expectApproxEqAbs(@as(f32, height), btn.rectFromWorldOrFallback().h, 0.01);
+        try std.testing.expectEqual(@as(f32, 6), btn.style.effectiveRadii()[0]);
+        // As laid out and painted: the size tier's own, the tone's weight inherited.
+        try std.testing.expectEqual(@as(f32, 13), firstText(btn).?.resolveTextProps().?.font_size);
+        try std.testing.expectEqual(@as(u16, 500), firstText(btn).?.resolveTextProps().?.font_weight);
+        try std.testing.expect(btn.style.shadow() != null);
+    }
+    const icon_button = try f.mount(Button(.{ .icon_only = true, .variant = .secondary, .icon_asset = svg_assets.common.star }));
+    const leading = try f.mount(Button(.{ .label = "Add", .icon_asset = svg_assets.common.star }));
+    f.cx.layout();
+    // LKxqO composition: icon-only 32×32, leading-icon height 32.
+    try std.testing.expectApproxEqAbs(@as(f32, 32), icon_button.rectFromWorldOrFallback().w, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 32), icon_button.rectFromWorldOrFallback().h, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 32), leading.rectFromWorldOrFallback().h, 0.01);
+    const t = f.cx.tokens;
+    inline for (.{ .link, .danger }) |variant| {
+        const btn = try f.mount(Button(.{ .label = "Tint", .variant = variant, .icon_asset = svg_assets.common.star }));
+        const glyph = findTag(btn, .image).?;
+        const rest_color = if (variant == .link) t.tokens.color.accent else t.tokens.color.fg_inverse;
+        try std.testing.expectEqual(rest_color, paintedText(firstText(btn).?));
+        try std.testing.expectEqual(rest_color, paintedTint(glyph));
+        btn.behavior.events.on_hover.?.invoke();
+        try std.testing.expectEqual(if (variant == .link) t.tokens.color.accent_hover else t.tokens.color.fg_inverse, paintedText(firstText(btn).?));
+        pressAt(f.cx, btn);
+        const pressed_color = if (variant == .link) t.tokens.color.accent_pressed else t.tokens.color.fg_inverse;
+        try std.testing.expectEqual(pressed_color, paintedText(firstText(btn).?));
+        try std.testing.expectEqual(pressed_color, paintedTint(glyph));
+        btn.behavior.events.on_leave.?.invoke();
+        try std.testing.expectEqual(rest_color, paintedText(firstText(btn).?));
+        pressAt(f.cx, null);
+    }
+}
+
+test "Button: base_style 在 tone 的 :hover / :active / :disabled 之下，hover_style / pressed_style 覆盖 tone 同状态；label 跟随根前景" {
+    var f = try ButtonFixture.init();
+    defer f.deinit();
+    const t = f.cx.tokens;
+    const red = Color.rgba(200, 0, 0, 255);
+    const blue = Color.rgba(0, 0, 200, 255);
+    const disabled = try f.scope.createSignal(bool, false);
+    // base_style background / text color only: the tone's hover / pressed / disabled still apply.
+    const btn = try f.mount(Button(.{ .label = "Go", .variant = .secondary, .disabled = disabled, .base_style = .{ .background = red, .text_color = blue, .padding = core.Padding.all(5) } }));
+    f.cx.layout();
+    const label = findText(btn, "Go").?;
+    try std.testing.expect(Color.eql(red, backgroundTarget(btn)));
+    try std.testing.expect(Color.eql(blue, paintedText(label)));
+    try std.testing.expectEqual(core.Padding.all(5), btn.style.padding); // over the shell's geometry
+    btn.behavior.events.on_hover.?.invoke();
+    try std.testing.expect(Color.eql(toneAt(t, .secondary, .{ .is_hovered = true }).background.?, backgroundTarget(btn)));
+    pressAt(f.cx, btn);
+    try std.testing.expect(Color.eql(toneAt(t, .secondary, .{ .is_hovered = true, .is_pressed = true }).background.?, backgroundTarget(btn)));
+    pressAt(f.cx, null);
+    btn.behavior.events.on_leave.?.invoke();
+    disabled.set(true);
+    try std.testing.expect(Color.eql(toneAt(t, .secondary, .{ .is_disabled = true }).background.?, backgroundTarget(btn)));
+    try std.testing.expect(Color.eql(t.tokens.color.fg_disabled, paintedText(label)));
+
+    // hover_style / pressed_style win over the tone at their state.
+    const custom = try f.mount(Button(.{ .label = "Hi", .variant = .secondary, .hover_style = core.BoxStyle{ .background = red, .text_color = red }, .pressed_style = core.BoxStyle{ .background = blue } }));
+    const hi = findText(custom, "Hi").?;
+    custom.behavior.events.on_hover.?.invoke();
+    try std.testing.expect(Color.eql(red, backgroundTarget(custom)));
+    try std.testing.expect(Color.eql(red, paintedText(hi)));
+    pressAt(f.cx, custom);
+    try std.testing.expect(Color.eql(blue, backgroundTarget(custom)));
+    pressAt(f.cx, null);
+    custom.behavior.events.on_leave.?.invoke();
+    try std.testing.expect(Color.eql(toneAt(t, .secondary, .{}).background.?, backgroundTarget(custom)));
+    try std.testing.expect(Color.eql(t.tokens.color.fg_primary, paintedText(hi)));
+}
+
+test "Button: hover_style 改字重时 label 按绘制的字重重新测量（布局与绘制同一份文字属性）" {
+    var f = try ButtonFixture.init();
+    defer f.deinit();
+    f.root.style.width = .{ .px = 800 };
+    f.root.style.align_items = .start;
+    // Weight-aware stand-in for the platform measure (the test build's fallback ignores weight).
+    f.cx.text.measure_fn = struct {
+        fn m(_: [*]const u8, len: usize, font_size: f32, font_weight: u16, _: bool) f32 {
+            return @as(f32, @floatFromInt(len)) * font_size * (0.4 + @as(f32, @floatFromInt(font_weight)) / 2000);
+        }
+    }.m;
+    const btn = try f.mount(Button(.{ .label = "Weighted", .variant = .secondary, .hover_style = .{ .font_weight = 700 } }));
+    // References: the label string at the tone's weight and at the hover weight.
+    const regular = try core.text(f.cx, "Weighted", .{ .font_size = 13, .font_weight = 500, .line_height = 1.2 });
+    const bold = try core.text(f.cx, "Weighted", .{ .font_size = 13, .font_weight = 700, .line_height = 1.2 });
+    try f.root.appendChild(std.testing.allocator, regular);
+    try f.root.appendChild(std.testing.allocator, bold);
+    f.cx.layout();
+    const label = findText(btn, "Weighted").?;
+    const width = struct {
+        fn of(n: *Node) f32 {
+            return n.rectFromWorldOrFallback().w;
+        }
+    }.of;
+    try std.testing.expect(width(regular) < width(bold));
+    try std.testing.expectEqual(@as(u16, 500), text_render.resolveNodeLogicalTextProps(label).?.font_weight);
+    try std.testing.expectApproxEqAbs(width(regular), width(label), 0.01);
+    const rest_w = btn.rectFromWorldOrFallback().w;
+    btn.behavior.events.on_hover.?.invoke();
+    f.cx.layout();
+    try std.testing.expectEqual(@as(u16, 700), text_render.resolveNodeLogicalTextProps(label).?.font_weight);
+    try std.testing.expectApproxEqAbs(width(bold), width(label), 0.01);
+    try std.testing.expectApproxEqAbs(rest_w + width(bold) - width(regular), btn.rectFromWorldOrFallback().w, 0.01);
+    btn.behavior.events.on_leave.?.invoke();
+    f.cx.layout();
+    try std.testing.expectApproxEqAbs(width(regular), width(label), 0.01);
+    try std.testing.expectApproxEqAbs(rest_w, btn.rectFromWorldOrFallback().w, 0.01);
+}
+
+test "Button: loading 显示环（当前色）并隐藏图标，环与图标都在 icon 槽；无图标的 loading 也走 leading 几何；icon_tint 覆盖当前色" {
+    var f = try ButtonFixture.init();
+    defer f.deinit();
+    const t = f.cx.tokens;
+    const loading = try f.scope.createSignal(bool, false);
+    const plain = try f.mount(Button(.{ .label = "Save", .variant = .secondary, .loading = loading }));
+    f.cx.layout();
+    const icon_slot = plain.children.items[0];
+    try std.testing.expect(icon_slot.style.display == .none); // no glyph: the slot takes no room
+    const rest_w = plain.rectFromWorldOrFallback().w;
+    loading.set(true);
+    f.cx.layout();
+    try std.testing.expect(icon_slot.style.display != .none);
+    try std.testing.expect(findSpinner(plain) != null);
+    // Leading glyph geometry (narrower left side, tighter gap) + ring.
+    const m = control_shell.metrics(t, .md);
+    try std.testing.expectEqual(@as(f32, 10), plain.style.padding.left);
+    try std.testing.expectApproxEqAbs(rest_w + t.tokens.size.icon + t.tokens.space.space150 - (m.padding_h - 10), plain.rectFromWorldOrFallback().w, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 32), plain.rectFromWorldOrFallback().h, 0.01);
+    loading.set(false);
+    f.cx.layout();
+    try std.testing.expectApproxEqAbs(rest_w, plain.rectFromWorldOrFallback().w, 0.01);
+
+    const tinted = try f.mount(Button(.{ .label = "Star", .variant = .secondary, .icon_asset = svg_assets.common.star, .icon_tint = t.tokens.color.accent }));
+    try std.testing.expectEqual(t.tokens.color.accent, paintedTint(findTag(tinted, .image).?));
+    const current = try f.mount(Button(.{ .label = "Star", .variant = .danger, .icon_asset = svg_assets.common.star }));
+    try std.testing.expectEqual(t.tokens.color.fg_inverse, paintedTint(findTag(current, .image).?));
 }

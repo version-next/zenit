@@ -13,6 +13,29 @@ pub inline fn fireOnChange(state: *TextInputState) void {
     if (state.on_change) |h| h.invokeWithStr(state.getText());
 }
 
+/// Single-line Input field (ControlShell root): focus / blur update editing state here, as
+/// events, never by replacing the node's on_focus / on_blur (the shell's :focus hooks live there).
+/// Blur clears even while disabled (disable revokes focus), then runs as an edit transaction.
+pub fn inputFieldEventHandler(event: Event, context: ?*anyopaque) EventResult {
+    const state: *TextInputState = @ptrCast(@alignCast(context orelse return .ignored));
+    switch (event) {
+        .focus => state.focused = true,
+        .blur => {
+            state.focused = false;
+            state.cancelImeComposition();
+            state.selection_anchor = null;
+            state.syncDocFromCursor();
+            state.is_dragging = false;
+            state.drag_pointer = null;
+            state.suspend_drag_until_mouse_up = false;
+            state.consecutive_mouse_downs = 0;
+            state.last_mouse_down_instant = null;
+        },
+        else => {},
+    }
+    return inputEventHandler(event, context);
+}
+
 /// Input event handler
 ///
 /// Each event is one user edit transaction (TextInputState.beginUserEdit): at exit, value binding

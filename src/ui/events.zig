@@ -556,6 +556,12 @@ pub const Modifiers = packed struct {
     pub const NONE = Modifiers{};
 };
 
+/// A key plus exact modifiers, e.g. for `Cx.setReservedKeyChords`.
+pub const KeyChord = struct {
+    key: KeyCode,
+    mods: Modifiers = .{},
+};
+
 /// Event propagation phase
 pub const EventPhase = enum {
     /// Capture phase: root to target

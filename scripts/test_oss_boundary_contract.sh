@@ -6,7 +6,7 @@ fixture=$(mktemp -d -t zenit_boundary_contract.XXXXXX)
 trap 'rm -rf "$fixture"' EXIT
 mkdir -p "$fixture/scripts" "$fixture/src/ui" "$fixture/bin" "$fixture/.zig-cache/o"
 cp "$repo/scripts/check_oss_boundary.sh" "$fixture/scripts/"
-printf '@import("std")\n@import("zenit_reflection")\n@import("zenit_time")\n@import("zenit_environment")\n@import("calendar_time")\n' >"$fixture/src/ui/root.zig"
+printf '@import("std")\n@import("zenit_reflection")\n@import("zenit_time")\n@import("zenit_corner_radii")\n@import("zenit_environment")\n@import("calendar_time")\n' >"$fixture/src/ui/root.zig"
 printf 'developer cache\n' >"$fixture/.zig-cache/o/sentinel"
 cat >"$fixture/bin/zig" <<'MOCK'
 #!/usr/bin/env bash

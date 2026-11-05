@@ -99,7 +99,7 @@ test "metal packed glyph metadata preserves the legacy 80-byte shader pixels" {
         tr.current_rect_clip = clip;
         tr.clip_shape_kind = @intCast(shape);
         tr.clip_rect = .{ 4, 4, 80, 45 };
-        tr.clip_radius = 6;
+        tr.clip_radii = .{ 6, 0, 9, 3 };
         tr.clip_point_count = 3;
         tr.clip_contour_count = 1;
         tr.clip_polygon_end_points[0] = 3;
@@ -119,13 +119,18 @@ test "metal packed glyph metadata preserves the legacy 80-byte shader pixels" {
                 color[i * 4 + 2] = @intCast((i * 7) % 192);
                 color[i * 4 + 3] = 192;
             }
+            // Pages carry UVs normalized by their own extent; this text fits
+            // every format on its first page, so all pages share one extent.
+            const extent = tr.atlas.pages[0].?.texture.size.width;
             for (tr.atlas.pages[0..tr.atlas.page_count]) |*maybe_page| {
                 if (maybe_page.*) |*page| {
+                    try std.testing.expectEqual(extent, page.texture.size.width);
                     const rgba = page.format != .gray;
-                    try page.texture.writeRegion(0, 4088, 4088, 8, 8, if (rgba) &color else &gray, if (rgba) 32 else 8);
+                    try page.texture.writeRegion(0, extent - 8, extent - 8, 8, 8, if (rgba) &color else &gray, if (rgba) 32 else 8);
                 }
             }
-            const uv = @FieldType(Glyph, "uv_rect").init(.{ 4088.0 / 4096.0, 4089.0 / 4096.0, 4095.0 / 4096.0, 1 });
+            const page_size: f32 = @floatFromInt(extent);
+            const uv = @FieldType(Glyph, "uv_rect").init(.{ (page_size - 8) / page_size, (page_size - 7) / page_size, (page_size - 1) / page_size, 1 });
             for (tr.instances_nearest.items) |*g| g.uv_rect = uv;
             for (tr.instances_linear.items) |*g| g.uv_rect = uv;
         }

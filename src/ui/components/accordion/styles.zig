@@ -20,14 +20,15 @@ pub const AccordionItemRecipe = recipe_mod.recipe(struct {
                 return switch (v) {
                     .default => .{
                         .base = .{
-                            .background = t.tokens.color.bg_secondary,
-                            .corner_radius = t.tokens.radius.xl,
+                            .background = t.tokens.color.bg_primary,
+                            .border = .{ .overlay = true, .width = 1, .color = t.tokens.color.border },
+                            .corner_radius = t.tokens.radius.panel,
                         },
                     },
                     .outline => .{
                         .base = .{
                             .background = Color.TRANSPARENT,
-                            .border = Border{ .width = 1, .color = t.tokens.color.fg_tertiary, .radius = t.tokens.radius.xl },
+                            .border = Border{ .overlay = true, .width = 1, .color = t.tokens.color.border, .radius = t.tokens.radius.panel },
                         },
                     },
                     .ghost => .{
@@ -46,14 +47,15 @@ pub const AccordionItemRecipe = recipe_mod.recipe(struct {
 // body left indent = chevron size + header gap + header left padding (aligns title start),
 // three quantities are part of same geometry contract, declared centrally here.
 
-pub const accordion_header_padding = Padding.symmetric(14, 20);
-pub const accordion_header_gap: f32 = 12;
+pub const accordion_header_padding = Padding.symmetric(0, 12);
+pub const accordion_header_gap: f32 = 6;
 pub const accordion_chevron_size: f32 = 16;
 
 pub fn accordionHeaderStyle(_: *const theme.ThemeTokens) core.BoxStyle {
     return .{
         .width = .{ .grow = .{} },
-        .height = .{ .fit = .{} },
+        .height = .{ .px = 36 },
+        .background = Color.TRANSPARENT,
         .direction = .row,
         .align_items = .center,
         .padding = accordion_header_padding,
@@ -62,12 +64,12 @@ pub fn accordionHeaderStyle(_: *const theme.ThemeTokens) core.BoxStyle {
     };
 }
 
-pub fn accordionTitleText(is_expanded: bool, t: *const theme.ThemeTokens) core.TextStyle {
+pub fn accordionTitleText(_: bool, t: *const theme.ThemeTokens) core.TextStyle {
     return .{
         .color = t.tokens.color.fg_primary,
-        .font_size = t.tokens.font_size.lg,
-        .font_weight = if (is_expanded) 600 else 500,
-        .line_height = 1.538,
+        .font_size = t.tokens.font_size.md,
+        .font_weight = 500,
+        .line_height = 1.4,
     };
 }
 
@@ -77,11 +79,10 @@ pub fn accordionBodyStyle(_: *const theme.ThemeTokens) core.BoxStyle {
         .width = .{ .grow = .{} },
         .height = .{ .fit = .{} },
         .direction = .column,
-        .padding = .{ .top = 0, .right = accordion_header_padding.right, .bottom = 16, .left = body_left },
+        .padding = .{ .top = 0, .right = 12, .bottom = 14, .left = body_left },
     };
 }
 
-/// item container border color on hover (harmonized with variant background)
-pub fn accordionHoverBorderColor(item_bg: Color, t: *const theme.ThemeTokens) Color {
-    return Color.lerp(t.tokens.color.fg_tertiary, item_bg, 0.5);
+pub fn accordionHeaderHover(t: *const theme.ThemeTokens) core.BoxStyle {
+    return .{ .background = t.tokens.color.bg_hover };
 }

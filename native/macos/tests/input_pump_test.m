@@ -539,6 +539,85 @@ static void verifyScrollLifecycle(WindowWrapper *w) {
     fprintf(stderr, "PASS: native scroll lifecycle preserves zero-delta boundaries, momentum and dequeue order\n");
 }
 
+static NSEvent *chordKey(WindowWrapper *w, NSString *text, unsigned short code, NSEventModifierFlags flags) {
+    return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+        modifierFlags:flags timestamp:0 windowNumber:w.window.windowNumber context:nil
+        characters:text charactersIgnoringModifiers:text isARepeat:NO keyCode:code];
+}
+
+// Pumps one queued key and returns whether the input context saw it, the
+// queued key packet count and the text the context inserted.
+static void pumpChord(WindowWrapper *w, PumpInputContext *probe, NSEvent *event,
+                      BOOL expectInterpreted, NSString *expectedText) {
+    [w.keyEventQueue removeAllObjects];
+    [document setString:@""];
+    const NSUInteger calls = probe.calls;
+    enqueue(@[event]);
+    for (int i = 0; i < 8 && w.keyEventQueue.count == 0; i++) pumpAppEventsWithTimeout(0);
+    // The raw key always reaches Zig.
+    assert(w.keyEventQueue.count == 1);
+    KeyEventPacket packet;
+    [w.keyEventQueue.firstObject getValue:&packet];
+    assert(packet.keycode == event.keyCode && packet.pressed);
+    assert(probe.calls == calls + (expectInterpreted ? 1 : 0));
+    if (!expectInterpreted) assert(w.inputTextQueue.count == 0 && w.imeCommitQueue.count == 0);
+    dispatchToClient(w);
+    assert([document isEqualToString:expectedText]);
+}
+
+// Reserved chords (macos_set_reserved_key_chords): ⌥] reaches Zig as a key
+// without the input method typing ‘; anything not reserved exactly (other
+// modifiers, other keys, cleared table) is interpreted as before; Caps Lock
+// does not defeat a reservation; an active composition keeps every key.
+static void verifyReservedChords(WindowWrapper *w, PumpInputContext *probe) {
+    void *ptr = (__bridge void *)w;
+    dispatchToClient(w);
+    macos_set_text_input_enabled(ptr, 1);
+    probe.compose = NO;
+    const NSEventModifierFlags opt = NSEventModifierFlagOption;
+    // Unreserved: today's behaviour (the IME types the Option character).
+    pumpChord(w, probe, chordKey(w, @"‘", 30, opt), YES, @"‘");
+    const uint32_t chords[] = {
+        30u | (ZENIT_CHORD_OPTION << 16),
+        33u | (ZENIT_CHORD_OPTION << 16),
+        42u | (ZENIT_CHORD_OPTION << 16),
+        30u | (ZENIT_CHORD_CONTROL << 16),
+    };
+    macos_set_reserved_key_chords(ptr, chords, 4);
+    pumpChord(w, probe, chordKey(w, @"‘", 30, opt), NO, @"");
+    pumpChord(w, probe, chordKey(w, @"“", 33, opt), NO, @"");
+    pumpChord(w, probe, chordKey(w, @"«", 42, opt), NO, @"");
+    pumpChord(w, probe, chordKey(w, @"‘", 30, opt | NSEventModifierFlagCapsLock), NO, @"");
+    // Exact modifier match: ⌥⇧] and ⌘⌥] are not reserved; nor is ⌥p.
+    pumpChord(w, probe, chordKey(w, @"’", 30, opt | NSEventModifierFlagShift), YES, @"’");
+    pumpChord(w, probe, chordKey(w, @"π", 35, opt), YES, @"π");
+    // A composition in progress owns the key.
+    [w.metalView setMarkedText:@"n" selectedRange:NSMakeRange(1, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
+    [w.imePreeditQueue removeAllObjects];
+    {
+        const NSUInteger calls = probe.calls;
+        enqueue(@[chordKey(w, @"‘", 30, opt)]);
+        for (int i = 0; i < 8 && probe.calls == calls; i++) pumpAppEventsWithTimeout(0);
+        assert(probe.calls == calls + 1);
+        [w.metalView unmarkText];
+        dispatchToClient(w);
+    }
+    // Replacing the table with an empty one restores interpretation.
+    macos_set_reserved_key_chords(ptr, NULL, 0);
+    pumpChord(w, probe, chordKey(w, @"‘", 30, opt), YES, @"‘");
+    // A table over the cap is truncated, never overflows.
+    uint32_t many[40];
+    for (int i = 0; i < 40; i++) many[i] = (uint32_t)(100 + i) | (ZENIT_CHORD_OPTION << 16);
+    many[39] = 30u | (ZENIT_CHORD_OPTION << 16);
+    macos_set_reserved_key_chords(ptr, many, 40);
+    assert(w.reservedKeyChords.length == 32 * sizeof(uint32_t));
+    pumpChord(w, probe, chordKey(w, @"‘", 30, opt), YES, @"‘");
+    macos_set_reserved_key_chords(ptr, NULL, 0);
+    [document setString:@""];
+    macos_set_text_input_enabled(ptr, 0);
+    fprintf(stderr, "PASS: reserved chords reach Zig without IME text; exact match, caps lock, composition and clear\n");
+}
+
 static void verifyKeyboardIsolation(WindowWrapper *w, PumpInputContext *probe) {
     void *ptr = (__bridge void *)w;
     dispatchToClient(w);
@@ -663,6 +742,7 @@ int main(int argc, const char **argv) {
         w.metalView.zenitInputContext = probe;
         w.lastKeyboardInputSource = probe.selectedKeyboardInputSource;
         verifyKeyboardIsolation(w, probe);
+        verifyReservedChords(w, probe);
         verifyQueuedTextBeforeFocusClick(w, probe);
 
         // First click and first key queued together: the old pump consumed

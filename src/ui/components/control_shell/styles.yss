@@ -1,9 +1,8 @@
 //! ControlShell styles: size recipe and variant coloring (YSS, shared source for
-//! Button/Input/Select/DatePicker),
+//! Button/Input/Select/DatePicker/Chip),
 //! plus theme-computed metrics and cross-dimension geometry (literal Zig: line_height = font_size *
 //! multiplier is arithmetic, read theme).
-//! Business logic (controlShell() / ControlShellConfig / slot assembly) in mod.zig; variant enum
-//! from mod.zig.
+//! Structure and states in control_shell.yix; variant enum re-exported from mod.zig.
 const ui = @import("../../ui.zig");
 const core = @import("../../core.zig");
 const theme = core.theme;
@@ -11,64 +10,76 @@ const Sizing = core.Sizing;
 const Padding = core.Padding;
 const ConditionalStyle = core.ConditionalStyle;
 const recipe_mod = @import("../../recipe.zig");
-const mod = @import("mod.zig");
-const ControlVariant = mod.ControlVariant;
 
 /// Size recipe: outer padding (vertical fractional is optical widget tweak) / radius / gap,
 /// text font-size and line-height, icon size. Size tiers are recipe not theme category;
 /// gap, font-size, radius, icon size still draw design-system token.
 recipe SizeRecipe slots(root, content, icon) {
-  base { content { line-height: tight; } }
+  // LKxqO + Foundations: 20/24/32/40 outer heights, 13px labels.
+  // TODO(token): line_height.control = 1.2; optical padding retains fit sizing.
+  base { content { line-height: 1.2; font-size: md; } root { corner-radius: control; gap: space200; } icon { width: md; } }
   variant size = md {
-    xs { root { padding: 2.5 space150; corner-radius: md; gap: space100; } content { font-size: sm; } icon { width: xs; } }
-    sm { root { padding: 4.5 space200; corner-radius: lg; gap: space100; } content { font-size: sm; } icon { width: sm; } }
-    md { root { padding: 7.25 space300; corner-radius: xl; gap: space150; } content { font-size: lg; } icon { width: md; } }
-    lg { root { padding: 10 space400; corner-radius: xxl; gap: space200; } content { font-size: xl; } icon { width: lg; } }
+    xs { root { padding: 2.2 space300; } }
+    sm { root { padding: 4.2 space300; } }
+    md { root { padding: 8.2 space300; } }
+    lg { root { padding: 12.2 space400; } }
   }
 }
 
-/// Variant coloring: background / text / weight / border, hover/press/disabled states.
-/// primary reads theme button-primary-* token (custom theme swaps brand), hover/press derived from
-/// background.
+/// LKxqO: finite interaction colors belong to the shared tone recipe.
 recipe Tone {
   variant kind = secondary {
     primary {
-      background: button-primary-bg; color: button-primary-fg; font-weight: 600; border: 0 transparent;
-      :hover { background: mix(button-primary-bg, #000000, 0.35); }
-      :active { background: mix(button-primary-bg, #ffffff, 0.1); }
-      :disabled { background: bg-secondary; color: fg-tertiary; }
+      background: button-primary-bg; color: button-primary-fg; font-weight: 500; border-overlay: true; border: 0 transparent;
+      :hover { background: accent-hover; }
+      :active { background: accent-pressed; }
+      :disabled { background: disabled-bg; color: fg-disabled; }
     }
     secondary {
-      background: bg-primary; color: fg-primary; font-weight: 500; border: 1 border;
-      :hover { background: bg-hover; border-color: border-strong; }
-      :active { background: bg-active; }
-      :disabled { opacity: 0.5; }
+      background: bg-primary; color: fg-primary; font-weight: 500; border-overlay: true; border: 1 border; shadow: xs;
+      :hover { background: bg-hover; }
+      :active { background: button-pressed-bg; }
+      :disabled { background: disabled-bg; color: fg-disabled; }
     }
     ghost {
-      color: fg-secondary; font-weight: 500;
+      background: transparent; color: fg-primary; font-weight: 500; border-overlay: true; border: 0 transparent;
       :hover { background: bg-hover; }
-      :active { background: bg-active; }
-      :disabled { opacity: 0.5; }
+      :active { background: button-pressed-bg; }
+      :disabled { background: transparent; color: fg-disabled; }
     }
     danger {
-      background: danger; color: status-fg; font-weight: 600;
+      background: danger; color: fg-inverse; font-weight: 500; border-overlay: true; border: 1 transparent; shadow: xs;
       :hover { background: danger-hover; }
-      :active { background: mix(danger-hover, #000000, 0.1); }
-      :disabled { opacity: 0.5; }
+      :active { background: danger-pressed; }
+      :disabled { background: disabled-bg; color: fg-disabled; border-color: border; shadow: 0 0 0 transparent; }
     }
     link {
-      color: accent; font-weight: 500;
-      :disabled { opacity: 0.5; }
+      background: transparent; color: accent; font-weight: 500; border-overlay: true; border: 0 transparent;
+      :hover { color: accent-hover; }
+      :active { color: accent-pressed; }
+      :disabled { background: transparent; color: fg-disabled; }
     }
     field {
-      background: input-bg; color: fg-primary; font-weight: 400; border: 1 border-strong;
-      :hover { border-color: border-focus; }
-      :disabled { background: bg-secondary; color: fg-secondary; border-color: separator; }
+      background: input-bg; color: fg-primary; font-weight: 400; border-overlay: true; border: 1 input-border; shadow: xs;
+      :hover { border-color: accent; }
+      :expanded { border-color: accent; }
+      :focus { border-color: accent; shadow: 0 0 5 focus-halo; }
+      :invalid { border-color: danger; }
+      :disabled { background: disabled-bg; color: fg-disabled; border-color: border; shadow: 0 0 0 transparent; }
+    }
+    base {
+      background: button-base-bg; color: button-base-fg; font-weight: 500; border-overlay: true; border: 0 transparent;
+      :hover { background: button-base-hover-bg; }
+      :active { background: button-base-pressed-bg; }
+      :disabled { background: disabled-bg; color: fg-disabled; border-color: border; }
     }
   }
 }
 
 pub const ControlSize = SizeRecipe.Dim(.size);
+/// Control tones (Tone recipe is the single source): Button defaults to primary, ControlShell to
+/// secondary; base = neutral emphasis, field = Input / Select frame.
+pub const ControlVariant = Tone.Dim(.kind);
 pub const ControlMetrics = struct {
     /// Text font size
     font_size: f32,
@@ -103,83 +114,118 @@ pub const ControlMetrics = struct {
 /// Measurement adapter for controls sharing the shell's line-box contract.
 /// The recipe is the sole owner of the size mapping.
 pub fn metrics(t: *const theme.ThemeTokens, size: ControlSize) ControlMetrics {
-    const root = SizeRecipe.Slot(.root).resolve(.{ .size = size }, t).base;
-    const content = SizeRecipe.Slot(.content).resolveText(.{ .size = size }, .{}, t);
-    const icon = SizeRecipe.Slot(.icon).resolve(.{ .size = size }, t).base;
+    const frame = SizeRecipe.Slot(.root).resolve(.{ .size = size }, t).base;
+    const text = SizeRecipe.Slot(.content).resolveText(.{ .size = size }, .{}, t);
+    const glyph = SizeRecipe.Slot(.icon).resolve(.{ .size = size }, t).base;
     return .{
-        .font_size = content.font_size,
-        .line_height = content.line_height,
-        .radius = root.corner_radius.?,
-        .padding_y = root.padding.?.top,
-        .padding_h = root.padding.?.right,
-        .padding_leading_icon = @max(0, root.padding.?.left - t.tokens.space.space50),
-        .icon_size = @min(icon.width.?.px, content.font_size * content.line_height),
-        .gap = root.gap.?,
+        .font_size = text.font_size,
+        .line_height = text.line_height,
+        .radius = frame.corner_radius.?,
+        .padding_y = frame.padding.?.top,
+        .padding_h = frame.padding.?.right,
+        .padding_leading_icon = @max(0, frame.padding.?.left - t.tokens.space.space50),
+        .icon_size = @min(glyph.width.?.px, text.font_size * text.line_height),
+        .gap = frame.gap.?,
     };
 }
 
 // ============================================================================
-// ControlShellRecipe: recipe() unifying variant x size and 5 dimensions
-//
-// Resolve order: base < variant < derived < external override
-// Variant dimension owns: background / border / text_color / font_weight / interaction states
-// Derived owns cross-dimension geometry: padding / radius / gap (height/width always fit,
-//   height set by content) = f(size, pill, icon_only, leading_icon) (a single-dimension
-//   resolver cannot express this)
+// ControlShell element styles (control_shell.yix). Geometry derives from the size recipe through
+// metrics(t, size): one source for outer height = padding_y * 2 + line box.
 // ============================================================================
-pub const ControlShellRecipe = recipe_mod.recipe(struct {
-    pub const Variants = struct {
-        variant: ControlVariant = .secondary,
-        size: ControlSize = .md,
-        /// pill mode affects radius, dimension three
-        pill: bool = false,
-        /// icon_only affects padding, dimension four
-        icon_only: bool = false,
-        /// leading_icon affects padding, dimension five
-        leading_icon: bool = false,
-    };
 
-    /// Coloring only from YSS Tone recipe (shared with Button)
-    pub const variants = .{
-        .variant = struct {
-            fn resolve(v: ControlVariant, t: *const theme.ThemeTokens) ConditionalStyle {
-                return Tone.resolve(.{ .kind = Tone.toDim(@FieldType(Tone.Variants, "kind"), v) }, t);
-            }
-        }.resolve,
-    };
+/// Root: a row whose hit / clip shapes follow its corner radii (core .auto derivation, per-corner
+/// inside a Group).
+style root { direction: row; align-items: center; }
 
-    /// Cross-dimension geometry only; must not touch background (pollutes bgColors tri-state
-    /// color).
-    /// size/pill/icon_only/leading_icon have no independent resolver, all combined here.
-    ///
-    /// **No height/width pixel output**: outer height = padding_y * 2 + line box (line_height),
-    /// from layout
-    /// fit (line box min height is set in controlShell() per metrics.lineHeightPx()). icon_only:
-    /// four-side padding = padding_y + (line_height - icon_size) / 2, icon slot min icon_size
-    /// square
-    /// -> outer = icon_size + 2*pad = line_height + 2*padding_y: naturally square, text-control
-    /// height.
-    pub fn derived(v: Variants, t: *const theme.ThemeTokens) ConditionalStyle {
-        const m = metrics(t, v.size);
-        const pad: Padding = if (v.icon_only)
-            Padding.all(m.padding_y + (m.lineHeightPx() - m.icon_size) / 2)
-        else if (v.leading_icon)
-            Padding{
-                .top = m.padding_y,
-                .right = m.padding_h,
-                .bottom = m.padding_y,
-                .left = m.padding_leading_icon,
+/// Interaction colors ease like the old animated background (0.15s ease-out = ease_out_quad).
+style fade { transition: background 150ms ease-out, border-color 150ms ease-out; }
+
+/// Padding / radius / gap per size and icon fit (see IconFit).
+style geometry($size: ControlSize, $pill: bool, $icon_only: bool, $leading_icon: bool, $icon_fit: IconFit) {
+  width: fit; no-cross-stretch: true;
+  height: fit;
+  padding: {geometryPadding(t, $size, $icon_only, $leading_icon, $icon_fit)};
+  corner-radius: {if ($pill) @as(f32, 999) else metrics(t, $size).radius};
+  gap: {geometryGap(t, $size, $leading_icon, $icon_fit)};
+}
+
+/// Cursor follows disabled (before the tone, so a composing control's root style can set it).
+style pointer($cursor: core.CursorShape, $disabled_cursor: core.CursorShape, $disabled: bool) {
+  cursor: {if ($disabled) $disabled_cursor else $cursor};
+}
+
+/// Embedded drops the frame (a compound control draws one shell); after the tone, over every state.
+style chrome($embedded: bool) {
+  when $embedded { border-overlay: true; border-width: 0; padding: 0; background: transparent; shadow: 0 0 0 transparent; }
+}
+
+/// Slots: line-box minimum heights so empty / short content never collapses the control.
+style icon_slot($size: ControlSize, $icon_only: bool) {
+  width: fit; height: fit; align-items: center; justify: center;
+  min-height: {if ($icon_only) metrics(t, $size).icon_size else metrics(t, $size).lineHeightPx()};
+  when $icon_only { min-width: {metrics(t, $size).icon_size}; }
+}
+/// The content slot takes the frame's remaining width and never more: `min-width: 0` opts out of
+/// the CSS automatic minimum, so a long value / label (an Input's unscrolled text, a Select's
+/// value) is clipped or scrolled inside the frame instead of widening the slot past it.
+style content_slot($size: ControlSize) {
+  direction: row; width: grow; height: fit; align-items: center;
+  min-width: 0;
+  min-height: {metrics(t, $size).lineHeightPx()};
+}
+style append_slot($size: ControlSize) {
+  direction: row; width: fit; height: fit; align-items: center;
+  gap: {metrics(t, $size).gap};
+  min-height: {metrics(t, $size).lineHeightPx()};
+}
+
+/// How the icon slot sits in the frame's padding.
+pub const IconFit = enum {
+    /// The icon shares the text line box (Input / Select / DatePicker): icon-only is square at
+    /// text-control height, a leading icon takes the narrower left padding.
+    line_box,
+    /// The icon is the tier's glyph (glyphSize, Button, LKxqO): the vertical padding absorbs it
+    /// so the frame keeps the size tier's height; a leading glyph takes the narrower left padding
+    /// and icon-only is square in every tier.
+    glyph,
+};
+
+/// The Button glyph of each size tier (LKxqO).
+pub fn glyphSize(size: ControlSize) f32 {
+    return switch (size) {
+        .xs => 12,
+        .sm => 14,
+        .md => 16,
+        .lg => 20,
+    };
+}
+
+/// Icon-to-label gap: a leading glyph sits closer than the tier's default (LKxqO).
+pub fn geometryGap(t: *const theme.ThemeTokens, size: ControlSize, leading_icon: bool, icon_fit: IconFit) f32 {
+    if (icon_fit != .glyph or !leading_icon) return metrics(t, size).gap;
+    return switch (size) {
+        .xs => t.tokens.space.space100,
+        .sm, .md => t.tokens.space.space150,
+        .lg => t.tokens.space.space200,
+    };
+}
+
+pub fn geometryPadding(t: *const theme.ThemeTokens, size: ControlSize, icon_only: bool, leading_icon: bool, icon_fit: IconFit) Padding {
+    const m = metrics(t, size);
+    switch (icon_fit) {
+        .line_box => {
+            if (icon_only) return Padding.all(m.padding_y + (m.lineHeightPx() - m.icon_size) / 2);
+            if (leading_icon) return .{ .top = m.padding_y, .right = m.padding_h, .bottom = m.padding_y, .left = m.padding_leading_icon };
+        },
+        .glyph => {
+            const glyph = glyphSize(size);
+            if (icon_only) return Padding.all(@max(0, (m.derivedHeight() - glyph) / 2));
+            if (leading_icon) {
+                const pad_y = @max(0, (m.derivedHeight() - @max(m.lineHeightPx(), glyph)) / 2);
+                return .{ .top = pad_y, .right = t.tokens.space.space300, .bottom = pad_y, .left = if (size == .lg) t.tokens.space.space200 else 10 };
             }
-        else
-            Padding.symmetric(m.padding_y, m.padding_h);
-        return .{
-            .base = .{
-                .padding = pad,
-                .corner_radius = if (v.pill) 999 else m.radius,
-                .height = Sizing{ .fit = .{} },
-                .width = Sizing{ .fit = .{} },
-                .gap = m.gap,
-            },
-        };
+        },
     }
-});
+    return Padding.symmetric(m.padding_y, m.padding_h);
+}

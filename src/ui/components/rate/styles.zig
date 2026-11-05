@@ -10,7 +10,7 @@ pub const star_icon_scale: f32 = 0.75;
 
 /// Lit / unlit coloring (warning / fg_disabled)
 pub fn starColor(active: bool, t: *const theme.ThemeTokens) Color {
-    return if (active) t.tokens.color.warning else t.tokens.color.fg_disabled;
+    return if (active) t.tokens.color.accent else t.tokens.color.border_strong;
 }
 
 /// Single star grid cell (square centered container)

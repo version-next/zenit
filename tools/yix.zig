@@ -60,7 +60,7 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(64);
     }
     const source = try std.Io.Dir.cwd().readFileAlloc(io, args[1], a, .limited(8 * 1024 * 1024));
-    const out = (try compileOrReport(a, args[1], source)) orelse std.process.exit(1);
+    const out = (try compileOrReport(a, io, args[1], source, false)) orelse std.process.exit(1);
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = args[2], .data = try std.fmt.allocPrint(a, "{s}\n//# yix-map {s}\n", .{ out, args[1] }) });
 }
 
@@ -107,7 +107,7 @@ fn tree(a: std.mem.Allocator, io: std.Io, root: []const u8, check: bool, problem
         count.* += 1;
         const twin = try compiler.twinPath(a, input);
         const source = try std.Io.Dir.cwd().readFileAlloc(io, input, a, .limited(8 * 1024 * 1024));
-        const out = (try compileOrReport(a, input, source)) orelse {
+        const out = (try compileOrReport(a, io, input, source, true)) orelse {
             problems.* += 1;
             continue;
         };
@@ -149,8 +149,20 @@ fn isSource(name: []const u8) bool {
 }
 
 /// Compile; on error print `path:line:col: error: ...` and return null
-fn compileOrReport(a: std.mem.Allocator, path: []const u8, source: []const u8) !?[]const u8 {
-    return switch (try compiler.compileSource(a, path, source)) {
+fn compileOrReport(a: std.mem.Allocator, io: std.Io, path: []const u8, source: []const u8, sibling: bool) !?[]const u8 {
+    // The single-file translator allows output in another directory. Its source is not
+    // available to a basename @embedFile there; retain its established plain output.
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", a);
+    const absolute = try std.fs.path.resolve(a, &.{ cwd, path });
+    const stable_path = try std.fs.path.relativeAlloc(a, cwd, null, cwd, absolute);
+    if (comptime @import("builtin").os.tag == .windows) for (stable_path) |*ch| {
+        if (ch.* == '\\') ch.* = '/';
+    };
+    const result = if (!sibling and std.mem.endsWith(u8, path, ".yss"))
+        try compiler.style.compile(a, source)
+    else
+        try compiler.compileSource(a, stable_path, source);
+    return switch (result) {
         .output => |o| o,
         .diagnostic => |d| {
             const lc = compiler.lineColumn(source, d.offset);

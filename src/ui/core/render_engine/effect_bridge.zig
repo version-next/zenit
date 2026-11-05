@@ -34,7 +34,7 @@ const CONTROL_HEADER: ItemHeader = .{ .transform_id = INVALID_ID, .node_id = std
 /// (including unpromoted); using it as retained identity lets pass-through layers claim dedicated
 /// texture, but their content depends on outer context, cross-frame reuse fails. Unqualified
 /// returns INVALID_SURFACE_ID; encoder falls back to safe full-repaint each frame.
-fn retainedSurfaceId(layer: layer_tree_mod.CompositedLayer) u32 {
+fn retainedSurfaceId(layer: *const layer_tree_mod.CompositedLayer) u32 {
     if (!layer.promotion_reason.any()) return display_list_mod.INVALID_SURFACE_ID;
     if (layer.stable_id == INVALID_ID) return display_list_mod.INVALID_SURFACE_ID;
     return layer.stable_id;
@@ -48,18 +48,15 @@ pub fn appendLayerBridgeBeginFromPlanState(cx: *RenderContext, effect_state: lay
     // Surface transform case: use Plan's precomputed source/draw bounds instead of world bounds.
     const src = if (layer.has_surface_transform) layer.surface_source_bounds else bounds;
     const draw = if (layer.has_surface_transform) layer.surface_draw_bounds else bounds;
-    if (@import("zenit_environment").has("ZENIT_DEBUG_LAYER") and layer.root_node_id == 440) {
+    if (@import("zenit_environment").flag("ZENIT_DEBUG_LAYER") and layer.root_node_id == 440) {
         std.debug.print("[layer_begin] node=440 kind={s} effect_id={d} src=({d:.1},{d:.1},{d:.1},{d:.1}) draw=({d:.1},{d:.1},{d:.1},{d:.1}) cr={d:.1}\n", .{
             @tagName(layer.effect_kind),                                                                                      layer.effect_id, src.x, src.y, src.w, src.h, draw.x, draw.y, draw.w, draw.h,
             @max(@max(layer.corner_radius[0], layer.corner_radius[1]), @max(layer.corner_radius[2], layer.corner_radius[3])),
         });
     }
-    // Rounded-clip fold (Stage 3): corner_radius from opacity/composited_group effect applied by
-    // composite blit (same as current begin_blur_layer single radius).
-    const fold_radius = @max(
-        @max(layer.corner_radius[0], layer.corner_radius[1]),
-        @max(layer.corner_radius[2], layer.corner_radius[3]),
-    );
+    // Rounded-clip fold (Stage 3): the opacity/composited_group effect's corner radii (TL, TR, BR,
+    // BL) are applied per corner by the composite blit.
+    const fold_radii = layer.corner_radius;
     switch (layer.effect_kind) {
         .opacity => {
             const opacity = effect_state.draw_opacity orelse return false;
@@ -71,10 +68,11 @@ pub fn appendLayerBridgeBeginFromPlanState(cx: *RenderContext, effect_state: lay
                     .w = src.w,
                     .h = src.h,
                     .opacity = opacity,
-                    .corner_radius = fold_radius,
+                    .corner_radii = fold_radii,
                     .rotate = layer.surface_rotate,
                     .use_draw_transform = layer.has_surface_transform,
                     .draw_transform = layer.surface_draw_transform,
+                    .surface_rest_origin = layer.surface_rest_origin,
                     .draw_x = draw.x,
                     .draw_y = draw.y,
                     .draw_w = draw.w,
@@ -96,10 +94,11 @@ pub fn appendLayerBridgeBeginFromPlanState(cx: *RenderContext, effect_state: lay
                     .w = src.w,
                     .h = src.h,
                     .opacity = opacity,
-                    .corner_radius = fold_radius,
+                    .corner_radii = fold_radii,
                     .rotate = layer.surface_rotate,
                     .use_draw_transform = layer.has_surface_transform,
                     .draw_transform = layer.surface_draw_transform,
+                    .surface_rest_origin = layer.surface_rest_origin,
                     .draw_x = draw.x,
                     .draw_y = draw.y,
                     .draw_w = draw.w,
@@ -119,12 +118,12 @@ pub fn appendLayerBridgeBeginFromPlanState(cx: *RenderContext, effect_state: lay
                 .y = src.y,
                 .w = src.w,
                 .h = src.h,
-                .corner_radius = @max(@max(layer.corner_radius[0], layer.corner_radius[1]), @max(layer.corner_radius[2], layer.corner_radius[3])),
                 .corner_radii = layer.corner_radius,
-                .glass = layer.glass,
+                .glass = &layer.glass,
                 .rotate = layer.surface_rotate,
                 .use_draw_transform = layer.has_surface_transform,
                 .draw_transform = layer.surface_draw_transform,
+                .surface_rest_origin = layer.surface_rest_origin,
                 .draw_x = draw.x,
                 .draw_y = draw.y,
                 .draw_w = draw.w,
@@ -132,10 +131,6 @@ pub fn appendLayerBridgeBeginFromPlanState(cx: *RenderContext, effect_state: lay
             },
         }),
         .rounded_clip => {
-            const radius = @max(
-                @max(layer.corner_radius[0], layer.corner_radius[1]),
-                @max(layer.corner_radius[2], layer.corner_radius[3]),
-            );
             try display_list_lowering.appendLoweredBoth(cx, .{
                 .begin_rounded_clip = .{
                     .header = CONTROL_HEADER,
@@ -143,10 +138,11 @@ pub fn appendLayerBridgeBeginFromPlanState(cx: *RenderContext, effect_state: lay
                     .y = src.y,
                     .w = src.w,
                     .h = src.h,
-                    .radius = radius,
+                    .radii = layer.corner_radius,
                     .rotate = layer.surface_rotate,
                     .use_draw_transform = layer.has_surface_transform,
                     .draw_transform = layer.surface_draw_transform,
+                    .surface_rest_origin = layer.surface_rest_origin,
                     .draw_x = draw.x,
                     .draw_y = draw.y,
                     .draw_w = draw.w,
@@ -174,9 +170,9 @@ pub fn appendRectClipBridgeBeginFromPlanState(
     cx: *RenderContext,
     effect_state: layer_tree_mod.LayerTree.EffectPlanState,
     fallback_bounds: ComputedRect,
-    fallback_radius: f32,
+    fallback_radii: [4]f32,
     fallback_shape_kind: display_list_mod.ClipShapeKind,
-    fallback_polygon: display_list_mod.ClipPolygon,
+    fallback_polygon: ?*const display_list_mod.ClipPolygon,
     use_fallback: bool,
     /// true = push_clip falls **inside** effect's surface (after begin layer), needs projection to
     /// surface content frame; false = falls in parent context (blur's clip before
@@ -191,15 +187,18 @@ pub fn appendRectClipBridgeBeginFromPlanState(
         // surface gets world scissor pushing content fully offscreen (e.g., settle+90-degree
         // rotated accordion chevron vanishes). AABB under rotation is covering approximation;
         // overflow clipped by parent-level same clip during composite.
-        const clip_bounds = blk: {
+        // World -> target frame; apply_clip radii are world-oriented (layer_tree), so re-orient them
+        // with the same map.
+        const projection: Transform2D = blk: {
             if (effect_state.layer) |layer| {
                 if (inside_surface and layer.has_surface_transform and layer.transform_id < cx.property_tree.transforms.items.len) {
-                    break :blk cx.property_tree.transforms.items[layer.transform_id].inverse_world.transformRect(clip_bounds_raw);
+                    break :blk cx.property_tree.transforms.items[layer.transform_id].inverse_world;
                 }
-                if (!inside_surface) break :blk layer.surface_parent_inverse.transformRect(clip_bounds_raw);
+                if (!inside_surface) break :blk layer.surface_parent_inverse;
             }
-            break :blk clip_bounds_raw;
+            break :blk Transform2D.identity();
         };
+        const clip_bounds = projection.transformRect(clip_bounds_raw);
         try display_list_lowering.appendLoweredBoth(cx, .{
             .push_clip = .{
                 .header = CONTROL_HEADER,
@@ -207,7 +206,7 @@ pub fn appendRectClipBridgeBeginFromPlanState(
                 .y = clip_bounds.y,
                 .w = clip_bounds.w,
                 .h = clip_bounds.h,
-                .radius = effect_state.apply_clip_radius,
+                .radii = projection.orientCornerRadii(effect_state.apply_clip_radii),
                 .shape_kind = effect_state.apply_clip_shape_kind,
                 .polygon = effect_state.apply_clip_polygon,
             },
@@ -222,7 +221,7 @@ pub fn appendRectClipBridgeBeginFromPlanState(
             .y = fallback_bounds.y,
             .w = fallback_bounds.w,
             .h = fallback_bounds.h,
-            .radius = fallback_radius,
+            .radii = fallback_radii,
             .shape_kind = fallback_shape_kind,
             .polygon = fallback_polygon,
         },
@@ -292,9 +291,9 @@ pub fn appendDisplayEffectBridgeBeginEntry(
             cx,
             entry.state,
             entry.effect.local_bounds,
-            0,
+            .{ 0, 0, 0, 0 },
             .rect,
-            display_list_mod.ClipPolygon.empty(),
+            null,
             false,
             false, // before begin layer -> parent context, world coordinates.
         );
@@ -306,9 +305,9 @@ pub fn appendDisplayEffectBridgeBeginEntry(
                 cx,
                 entry.state,
                 entry.effect.local_bounds,
-                0,
+                .{ 0, 0, 0, 0 },
                 .rect,
-                display_list_mod.ClipPolygon.empty(),
+                null,
                 false,
                 true, // after begin layer -> surface content frame.
             );
@@ -450,16 +449,28 @@ pub fn appendDisplayClipBridgeBeginSuffix(
             active_parent_inverse.mul(cx.property_tree.transforms.items[clip.transform_id].world).extractApproxScale()
         else
             1.0;
+        // Clip-owner-local corners -> the frame the clip rect is emitted in (world, or the active
+        // surface's content frame).
+        const clip_orientation: Transform2D = if (clip.transform_id < cx.property_tree.transforms.items.len) blk: {
+            const world = cx.property_tree.transforms.items[clip.transform_id].world;
+            break :blk if (active_parent_effect_id != INVALID_ID) active_parent_inverse.mul(world) else world;
+        } else Transform2D.identity();
+        const clip_radii = clip_orientation.orientCornerRadii(clip.radii);
         // Polygon point set is clip-rect-origin-relative (clip.zig buildClipPolygonFromPathGeometry
         // subtracts rect origin), naturally translates per rect projection; but when rect is
         // clip_scale-scaled, point set must scale likewise, else shape/rect aspect mismatches (same
         // logic as above radius * clip_scale).
-        var polygon = clip.polygon;
-        if (@abs(clip_scale - 1.0) > 0.0001) {
-            for (polygon.points[0..polygon.point_count]) |*p| {
-                p[0] *= clip_scale;
-                p[1] *= clip_scale;
+        var polygon: ?*const display_list_mod.ClipPolygon = null;
+        if (clip.shape_kind == .polygon or clip.polygon.point_count != 0) {
+            const own = try cx.frame_allocator.create(display_list_mod.ClipPolygon);
+            own.* = clip.polygon;
+            if (@abs(clip_scale - 1.0) > 0.0001) {
+                for (own.points[0..own.point_count]) |*p| {
+                    p[0] *= clip_scale;
+                    p[1] *= clip_scale;
+                }
             }
+            polygon = own;
         }
         try display_list_lowering.appendLoweredBoth(cx, .{
             .push_clip = .{
@@ -468,7 +479,7 @@ pub fn appendDisplayClipBridgeBeginSuffix(
                 .y = clip_rect.y,
                 .w = clip_rect.w,
                 .h = clip_rect.h,
-                .radius = clip.radius * clip_scale,
+                .radii = .{ clip_radii[0] * clip_scale, clip_radii[1] * clip_scale, clip_radii[2] * clip_scale, clip_radii[3] * clip_scale },
                 .shape_kind = clip.shape_kind,
                 .polygon = polygon,
             },

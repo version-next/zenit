@@ -9,6 +9,7 @@ const node_state = @import("node_state.zig");
 const anim_checks = @import("animation_checks.zig");
 const geometry = @import("geometry.zig");
 const clip_mod = @import("clip.zig");
+const display_list_mod = @import("../display_list.zig");
 const retained_scene = @import("../retained_scene.zig");
 
 const Node = node_mod.Node;
@@ -34,7 +35,7 @@ var debug_overlay_env_cache: ?bool = null;
 
 fn debugOverlayEnvEnabled() bool {
     if (debug_overlay_env_cache) |v| return v;
-    const v = @import("zenit_environment").has("ZENIT_DEBUG_OVERLAY");
+    const v = @import("zenit_environment").flag("ZENIT_DEBUG_OVERLAY");
     debug_overlay_env_cache = v;
     return v;
 }
@@ -125,6 +126,16 @@ pub fn collectContentFlags(node: *Node) scene_runtime_mod.ContentFlags {
 // PropertyTree + SceneRuntime writes
 // ---------------------------------------------------------------------
 
+var debug_pass_count_cache: ?bool = null;
+/// ZENIT_DEBUG_PASSCOUNT, read once (this runs per rounded-clip node per frame).
+fn debugPassCountEnabled() bool {
+    return debug_pass_count_cache orelse blk: {
+        const v = @import("zenit_environment").flag("ZENIT_DEBUG_PASSCOUNT");
+        debug_pass_count_cache = v;
+        break :blk v;
+    };
+}
+
 fn hasExternalClip(cx: *RenderContext, node: *Node) bool {
     const ext_map = cx.external_clip_rects orelse return false;
     return ext_map.get(node.id) != null;
@@ -194,8 +205,8 @@ pub fn appendRetainedMetadata(
             .local_rect = local_rect,
             .world_aabb = render_state.clip_world_rect,
             .shape_kind = render_state.clip_shape_kind,
-            .radius = render_state.clip_radius,
-            .polygon = render_state.clip_polygon,
+            .radii = render_state.clip_radii,
+            .polygon = display_list_mod.ClipPolygon.of(render_state.clip_polygon),
             .bounds_fallback = render_state.clip_bounds_fallback,
             .owner_content_exempt = !hasExternalClip(cx, node),
             .owner_wraps_children = !render_state.use_blur and clip_mod.ownerPaintsOutsideChildClip(node),
@@ -254,7 +265,7 @@ pub fn appendRetainedMetadata(
             std.math.approxEqAbs(f32, opacity_local_bounds.y, local_rect.y - 2, 0.5) and
             std.math.approxEqAbs(f32, opacity_local_bounds.w, local_rect.w + 4, 0.5) and
             std.math.approxEqAbs(f32, opacity_local_bounds.h, local_rect.h + 4, 0.5);
-        if (@import("zenit_environment").has("ZENIT_DEBUG_PASSCOUNT") and !(opacity_effect_appended and bounds_match)) {
+        if (debugPassCountEnabled() and !(opacity_effect_appended and bounds_match)) {
             std.debug.print("[nofold] node={d} comp={s} op_layer={} blur={} bounds_match={} ob=({d:.1},{d:.1},{d:.1},{d:.1}) lr=({d:.1},{d:.1},{d:.1},{d:.1})\n", .{
                 node.id,                        node.meta.ownership.meta.component_name orelse "?",
                 render_state.use_opacity_layer, render_state.use_blur,
@@ -288,12 +299,14 @@ pub fn appendRetainedMetadata(
         .local_rect = world_rect,
         .world_bounds = render_state.world_rect,
         .content_transform = content_transform,
+        .content_motion = if (node.style.ext) |ext| ext.motion_offset else .{ 0, 0 },
         .content_bounds = content_transform.transformRect(world_rect),
         .transform_id = transform_id,
         .clip_id = clip_id,
         .clip_bounds_fallback = render_state.clip_bounds_fallback,
         .effect_id = effect_id,
         .paint_order = node.frame_state.frame_local.spatial.paint.order,
+        .retained_index = @intCast(cx.retained_nodes.items.len),
         .content_version = node.meta.per_frame.caches.versions.content,
         .composite_version = node.meta.per_frame.caches.versions.composite,
         .content_flags = collectContentFlags(node),
@@ -314,6 +327,7 @@ pub fn appendRetainedMetadata(
         // and used as this function's return value, only scene_runtime missing this node, later
         // layerize / hit-test query runtime by node_id will silently miss.
     }) catch @panic("OOM: scene_runtime.put (node metadata dropped)");
+    cx.retained_nodes.append(cx.frame_allocator, node) catch @panic("OOM: retained node order");
 
     return .{
         .transform_id = transform_id,

@@ -9,9 +9,9 @@
 //! Coordinate contract: computed in layout space (globalRect = layout rect + translation + sticky,
 //! no scale/rotation); container radius uses its style-local value, same units. Rendering scale
 //! (popup animation etc) applies uniformly to node and glass radius, so they stay concentric when
-//! scaled together; recompute is skipped if only one is scaled or rotated (unsupported). Hit/clip
-//! use a uniform radius only: border.radius takes the max of the four corners (conservative:
-//! small-radius corners get an r_max - r_i unclickable zone, no phantom hits).
+//! scaled together; recompute is skipped if only one is scaled or rotated (unsupported). The four
+//! radii land in corner_radius `.each`, so hit and clip follow each corner (`.auto` shapes);
+//! border.radius keeps the largest for code that reads a single radius.
 const std = @import("std");
 const core = @import("core.zig");
 const Node = core.Node;

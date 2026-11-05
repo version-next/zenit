@@ -164,6 +164,28 @@ pub const Transform2D = struct {
             @abs(self.ty - @round(self.ty)) <= epsilon;
     }
 
+    /// Per-corner radii [TL, TR, BR, BL] of a rect in this transform's source frame, re-indexed
+    /// by the corner each lands on in the target frame. Axis-aligned linear parts (scale, mirror,
+    /// quarter turns) permute the corners exactly; any other rotation returns the radii unchanged,
+    /// where the clip rect itself is already an axis-aligned bounding approximation.
+    pub fn orientCornerRadii(self: Transform2D, radii: [4]f32) [4]f32 {
+        const extent = @abs(self.a) + @abs(self.b) + @abs(self.c) + @abs(self.d);
+        if (!(extent > 0) or !std.math.isFinite(extent)) return radii;
+        const eps = extent * 1e-4;
+        const diagonal = @abs(self.b) <= eps and @abs(self.c) <= eps;
+        const anti_diagonal = @abs(self.a) <= eps and @abs(self.d) <= eps;
+        if (!diagonal and !anti_diagonal) return radii;
+        const corner_signs = [4][2]f32{ .{ -1, -1 }, .{ 1, -1 }, .{ 1, 1 }, .{ -1, 1 } };
+        var out = radii;
+        for (corner_signs, radii) |s, radius| {
+            const left = self.a * s[0] + self.c * s[1] < 0;
+            const top = self.b * s[0] + self.d * s[1] < 0;
+            const corner: usize = if (top) (if (left) 0 else 1) else (if (left) 3 else 2);
+            out[corner] = radius;
+        }
+        return out;
+    }
+
     pub fn extractApproxScale(self: Transform2D) f32 {
         const scale_x = self.extractScaleX();
         const scale_y = self.extractScaleY();
@@ -447,6 +469,14 @@ pub const Margin = struct {
     }
 };
 
+/// Numeric keywords preserve the existing f32 flex_basis API (including explicit zero).
+pub const FlexBasis = struct {
+    pub const auto: f32 = -1;
+    pub const content: f32 = -2;
+    /// Reflected by the YSS schema generator; numbers remain accepted separately.
+    pub const keywords = [_][]const u8{ "auto", "content" };
+};
+
 /// Size definition - 4 modes supported.
 pub const Sizing = union(enum) {
     /// Fixed pixels.
@@ -459,7 +489,8 @@ pub const Sizing = union(enum) {
     percent: f32,
 
     pub const SizingMinMax = struct {
-        min: f32 = 0,
+        /// Negative means CSS automatic minimum on a flex main axis; 0 is explicit.
+        min: f32 = -1,
         max: f32 = std.math.inf(f32),
     };
 
@@ -538,7 +569,11 @@ pub const AlignItems = enum {
     center,
     stretch,
     baseline,
+    first_baseline,
 };
+
+/// Packing flex lines; normal has the CSS stretch behavior.
+pub const AlignContent = enum { normal, start, end, center, stretch, space_between, space_around, space_evenly };
 
 /// Flex wrapping.
 pub const FlexWrap = enum {
@@ -644,6 +679,8 @@ pub const HitShapeSpec = union(enum) {
     none,
     rect,
     rounded_rect: f32,
+    /// Per-corner radii [TL, TR, BR, BL] (attached group items: rounded outer, square inner).
+    rounded_corners: [4]f32,
     circle,
     ellipse,
     ring_arc: RingArcHitSpec,
@@ -666,6 +703,9 @@ pub const ClipShapeSpec = union(enum) {
     none,
     rect,
     rounded_rect: f32,
+    /// Per-corner radii [TL, TR, BR, BL] (attached group items: rounded outer, square inner).
+    /// `.auto` resolves to this for non-uniform `corner_radius`, matching `HitShapeSpec`.
+    rounded_corners: [4]f32,
     ellipse,
     path: PathShapeSpec,
     custom,
@@ -730,6 +770,9 @@ pub const HitProxySpec = struct {
 pub const max_node_hit_proxies: usize = 8;
 
 pub const Border = struct {
+    /// Explicit decorative inset border; maps to an inset shadow/pseudo-element.
+    /// Default false: border consumes space inside the border-box.
+    overlay: bool = false,
     width: f32 = 0,
     color: Color = Color.TRANSPARENT,
     radius: f32 = 0,
@@ -939,6 +982,7 @@ pub const Position = enum {
     relative,
     absolute,
     sticky,
+    static,
 };
 
 /// CSS inset value (top/right/bottom/left).
@@ -960,7 +1004,7 @@ pub const InsetValue = union(enum) {
     }
 };
 
-/// CSS inset config (top/right/bottom/left). Only apply when position != .relative.
+/// CSS inset config. Static ignores inset; relative offsets the flow box.
 pub const Inset = struct {
     top: InsetValue = .auto,
     right: InsetValue = .auto,
@@ -1059,7 +1103,11 @@ pub const CursorShape = enum(u8) {
 pub const GridTrackSize = union(enum) {
     px: f32, // Fixed pixels.
     fr: f32, // Flexible ratio (CSS fr unit).
-    auto, // Fit content.
+    auto, // minmax(auto, max-content), stretched by normal content alignment.
+    minmax: struct { min: Minimum = .auto, max: Maximum = .auto },
+
+    pub const Minimum = union(enum) { px: f32, auto };
+    pub const Maximum = union(enum) { px: f32, fr: f32, auto };
 };
 
 /// Grid container config (pointer-mounted on Style, Grid containers only).
@@ -1104,6 +1152,7 @@ pub const Style = struct {
     direction: Direction = .column,
     justify: JustifyContent = .start,
     align_items: AlignItems = .stretch,
+    align_content: AlignContent = .normal,
     gap: f32 = 0,
     width: Sizing = .{ .fit = .{} },
     height: Sizing = .{ .fit = .{} },
@@ -1183,6 +1232,12 @@ pub const Style = struct {
     pub inline fn tab_index(self: *const Style) ?i32 {
         return self.getExt().tab_index;
     }
+    /// Border-box to content-box insets, shared by layout and text paint.
+    pub fn contentInsets(self: *const Style) Padding {
+        const b = if (self.border.overlay) [4]f32{ 0, 0, 0, 0 } else self.border.resolvedWidths();
+        return .{ .top = self.padding.top + b[0], .right = self.padding.right + b[1], .bottom = self.padding.bottom + b[2], .left = self.padding.left + b[3] };
+    }
+
     pub inline fn aspect_ratio(self: *const Style) f32 {
         return self.getExt().aspect_ratio;
     }
@@ -1193,13 +1248,13 @@ pub const Style = struct {
         return self.getExt().grid_placement;
     }
     pub inline fn min_width(self: *const Style) f32 {
-        return self.getExt().min_width;
+        return @max(0, self.getExt().min_width);
     }
     pub inline fn max_width(self: *const Style) f32 {
         return self.getExt().max_width;
     }
     pub inline fn min_height(self: *const Style) f32 {
-        return self.getExt().min_height;
+        return @max(0, self.getExt().min_height);
     }
     pub inline fn max_height(self: *const Style) f32 {
         return self.getExt().max_height;
@@ -1526,7 +1581,7 @@ pub const GlassParams = struct {
     /// affine T reproduces the blend exactly; null = the affine blend.
     veil_curve: ?[17]f32 = null,
     /// iOS tab-bar selection lens (single glass; see glass.metal native_glass): [0] > 0 marks
-    /// the material, whose displacement is the measured native field (tab_lens_sample_depth);
+    /// the material, whose displacement is the measured native field (glass.metal tab_lens_field);
     /// [1..8) unused.
     tab_lens: [24]f32 = @as([24]f32, @splat(0)),
     /// Liquid Glass intensity (0 = blur only, 1 = default liquid, >1 = thicker/brighter).
@@ -1878,10 +1933,17 @@ pub const StyleExt = struct {
     container_shape_radius: f32 = 0,
     scale_x: f32 = 1.0,
     scale_y: f32 = 1.0,
+    /// Transient part of translate_x/y (parent-local units) that an enter/exit motion currently
+    /// adds, e.g. an overlay's dropdown slide. Not a style property: the transition writes it next
+    /// to the translate it animates and zeroes it when the motion ends. A composited surface
+    /// anchors its texture's pixel grid to the position without it, so the texture does not
+    /// re-raster as the node slides into place.
+    motion_offset: [2]f32 = .{ 0, 0 },
     /// Rotation angle (radians, positive = clockwise), origin controlled by transform_origin.
     rotate: f32 = 0,
     transform_origin: TransformOrigin = .{},
-    flex_basis: f32 = 0,
+    /// CSS flex-basis: nonnegative pixels, FlexBasis.auto or FlexBasis.content.
+    flex_basis: f32 = FlexBasis.auto,
     align_self: ?AlignItems = null,
     /// Reject only inherited cross-axis stretch: align_self null && parent align_items == .stretch
     /// -> .start (preserve intrinsic); parent explicit .center/.end/.start still applies; explicit
@@ -1902,9 +1964,9 @@ pub const StyleExt = struct {
     aspect_ratio: f32 = 0,
     grid: ?*GridConfig = null,
     grid_placement: ?GridPlacement = null,
-    min_width: f32 = 0,
+    min_width: f32 = -1,
     max_width: f32 = std.math.inf(f32),
-    min_height: f32 = 0,
+    min_height: f32 = -1,
     max_height: f32 = std.math.inf(f32),
     flex_wrap: FlexWrap = .no_wrap,
     hit_shape: HitShapeSpec = .auto,
@@ -2005,6 +2067,7 @@ pub const BoxStyle = struct {
     direction: ?Direction = null,
     justify: ?JustifyContent = null,
     align_items: ?AlignItems = null,
+    align_content: ?AlignContent = null,
     gap: ?f32 = null,
     padding: ?Padding = null,
     margin: ?Padding = null,
@@ -2042,6 +2105,7 @@ pub const BoxStyle = struct {
     // -- StyleExt same-name passthrough (type/semantics in StyleExt; write/reset both per
     // ext_passthrough generic) --
     outline: ExtField("outline") = null,
+    /// Nonnegative pixels (including 0), or FlexBasis.auto/content; YSS accepts both keywords.
     flex_basis: ExtField("flex_basis") = null,
     align_self: ExtField("align_self") = null,
     no_cross_stretch: ExtField("no_cross_stretch") = null,
@@ -2086,6 +2150,7 @@ pub const BoxStyle = struct {
     border_color: ?Color = null,
     /// Fine-grained border_width override (width only, unaffected color/radius).
     border_width: ?f32 = null,
+    border_overlay: ?bool = null,
     /// Fine-grained four-edge width override.
     border_top_width: ?f32 = null,
     border_right_width: ?f32 = null,
@@ -2146,6 +2211,7 @@ pub const BoxStyle = struct {
         Add.field(&mask, .direction, self.direction != null);
         Add.field(&mask, .justify, self.justify != null);
         Add.field(&mask, .align_items, self.align_items != null);
+        Add.field(&mask, .align_content, self.align_content != null);
         Add.field(&mask, .gap, self.gap != null);
         Add.field(&mask, .padding, self.padding != null);
         Add.field(&mask, .margin, self.margin != null or self.margin_spec != null);
@@ -2177,7 +2243,7 @@ pub const BoxStyle = struct {
         Add.field(&mask, .rotate, self.rotate != null);
         Add.field(&mask, .transform_origin, self.transform_origin != null);
         Add.field(&mask, .border, self.border != null or self.border_color != null or
-            self.border_width != null or self.border_top_width != null or
+            self.border_overlay != null or self.border_width != null or self.border_top_width != null or
             self.border_right_width != null or self.border_bottom_width != null or
             self.border_left_width != null or self.border_top_color != null or
             self.border_right_color != null or self.border_bottom_color != null or
@@ -2193,12 +2259,23 @@ pub const BoxStyle = struct {
     /// Apply non-null BoxStyle fields onto Style. Best effort: ext alloc fail preserves existing
     /// ext fields. Fallible callers must reserve ext first (toStyleFallible / needsExt).
     pub fn applyTo(self: BoxStyle, style: *Style, maybe_allocator: ?std.mem.Allocator) void {
+        // All or nothing: if ext fields are requested but the ext block cannot be
+        // allocated, apply none of this style (avoids half-applied theme replays).
+        if (maybe_allocator) |allocator| {
+            if (self.needsExt() and style.ext == null) {
+                _ = style.ensureExtFallible(allocator) catch {
+                    std.log.warn("ui: style update dropped: no memory for its ext block", .{});
+                    return;
+                };
+            }
+        }
         // Layout.
         if (self.width) |v| style.width = v;
         if (self.height) |v| style.height = v;
         if (self.direction) |v| style.direction = v;
         if (self.justify) |v| style.justify = v;
         if (self.align_items) |v| style.align_items = v;
+        if (self.align_content) |v| style.align_content = v;
         if (self.gap) |v| style.gap = v;
         if (self.padding) |v| style.padding = v;
         if (self.margin) |v| style.margin = v;
@@ -2231,6 +2308,7 @@ pub const BoxStyle = struct {
         if (self.border) |v| style.border = v;
         if (self.border_color) |v| style.border.color = v;
         if (self.border_width) |v| style.border.setUniformWidth(v);
+        if (self.border_overlay) |v| style.border.overlay = v;
         if (self.border_top_width) |v| style.border.side_widths[Border.SIDE_TOP] = @max(@as(f32, 0), v);
         if (self.border_right_width) |v| style.border.side_widths[Border.SIDE_RIGHT] = @max(@as(f32, 0), v);
         if (self.border_bottom_width) |v| style.border.side_widths[Border.SIDE_BOTTOM] = @max(@as(f32, 0), v);
@@ -2518,6 +2596,7 @@ pub const StyleField = enum {
     direction,
     justify,
     align_items,
+    align_content,
     gap,
     flex,
     flex_shrink,
@@ -2575,8 +2654,8 @@ pub const StyleField = enum {
 pub fn styleDirtyLevel(comptime field: StyleField) DirtyLevel {
     return switch (field) {
         .width, .height => .sizing,
-        .padding, .margin, .direction, .justify, .align_items, .gap, .flex, .flex_shrink, .flex_basis, .flex_wrap, .overflow, .position, .aspect_ratio, .grid, .grid_placement, .min_width, .max_width, .min_height, .max_height, .align_self, .no_cross_stretch, .sticky_insets, .inset => .layout,
-        .border, .opacity, .translate_x, .translate_y, .scale_x, .scale_y, .rotate, .transform_origin, .corner_radius, .overflow_hidden, .z_index, .hit_shape, .clip_shape, .hit_behavior, .hit_roles, .will_change_transform, .will_change_opacity, .composited_group, .content_warp => .interaction,
+        .border, .padding, .margin, .direction, .justify, .align_items, .align_content, .gap, .flex, .flex_shrink, .flex_basis, .flex_wrap, .overflow, .position, .aspect_ratio, .grid, .grid_placement, .min_width, .max_width, .min_height, .max_height, .align_self, .no_cross_stretch, .sticky_insets, .inset => .layout,
+        .opacity, .translate_x, .translate_y, .scale_x, .scale_y, .rotate, .transform_origin, .corner_radius, .overflow_hidden, .z_index, .hit_shape, .clip_shape, .hit_behavior, .hit_roles, .will_change_transform, .will_change_opacity, .composited_group, .content_warp => .interaction,
         .background, .shadow, .gradient, .outline, .overflow_fade, .text_color, .text_font_size, .text_font_weight => .render,
         .tab_index, .layout_isolation => .none,
         .cursor => .interaction,
@@ -2816,6 +2895,10 @@ pub const A11yValueRange = struct {
     max: f32,
     context: ?*anyopaque = null,
     set_value: ?*const fn (context: *anyopaque, value: f32) bool = null,
+    /// Logical increment (+1) / decrement (-1) for the native AX actions. Null routes them as
+    /// synthetic right/left key_down on the node instead, which is wrong for a control whose
+    /// arrow keys belong to an embedded text field (NumberStepper).
+    step: ?*const fn (context: *anyopaque, direction: i8) bool = null,
 };
 
 pub const A11yProps = struct {
@@ -2979,11 +3062,18 @@ pub const ElementTag = enum {
     anchor,
 };
 
+pub const OverflowWrap = enum { normal, break_word, anywhere };
+pub const WordBreak = enum { normal, break_all, keep_all };
+
 pub const TextWrap = enum {
     none,
     word,
     char,
     newline_only, // Line break on \n only, no width wrapping (code fence).
+    // Internal effective modes also support CSS overflow-wrap/word-break.
+    word_break, // overflow-wrap:break-word (emergency breaks do not affect min-content).
+    break_all, // word-break:break-all.
+    keep_all, // word-break:keep-all.
 };
 
 /// Text horizontal alignment within node content width (per visual line, CSS text-align-like).
@@ -3033,13 +3123,13 @@ pub const TextSpan = struct {
     underline: bool = false,
     underline_color: ?Color = null, // null = inherit from span/text color
     underline_style: UnderlineStyle = .solid,
-    /// Underline vertical offset relative to baseline (px, positive downward).
-    /// 0 = default 2px above line bottom; wave diagnostic commonly +1-2
-    /// to sink below descender.
+    /// Underline vertical offset (px, positive downward) from its default top edge, 2px above the
+    /// bottom of the line box (`line_height`), not the baseline: a host that wants the underline
+    /// at a fixed distance below the baseline in a tall line box passes a negative offset.
     underline_offset: f32 = 0,
     /// Underline thickness (px). <= 0 uses style default:
-    ///   solid/dashed/dotted -> 1 / 1 / 1.5
-    ///   wavy -> max(1.0, font_size * 0.12) determined by renderer
+    ///   solid/dashed/dotted -> 1 / 1 / 1.5 (dotted: round dots of this diameter, one apart)
+    ///   wavy -> WavyParams.forFontSize(font_size).thickness (1 at code sizes)
     underline_thickness: f32 = 0,
 };
 
@@ -3048,6 +3138,13 @@ pub const TextSpan = struct {
 pub const font_family_system_ui: u16 = 0xFFFF;
 
 pub const TextProps = struct {
+    /// The text's own style declared `color` / `font_size` / `font_weight` (CSS inheritance): an
+    /// ancestor's text_color / text_font_size / text_font_weight only fills a property the text
+    /// did not declare; a declared one always wins. Resolved for layout and paint alike by
+    /// Node.resolveTextProps (node_inherit.zig).
+    color_set: bool = false,
+    font_size_set: bool = false,
+    font_weight_set: bool = false,
     content: []const u8 = "",
     color: Color = theme.dark.tokens.color.fg_primary,
     font_size: f32 = 14,
@@ -3059,10 +3156,13 @@ pub const TextProps = struct {
     line_height: f32 = 1.4,
     selectable: bool = true,
     wrap: TextWrap = .none,
+    overflow_wrap: OverflowWrap = .normal,
+    word_break: WordBreak = .normal,
+
     max_lines: u16 = 0,
     /// Baseline position fraction (0.0-1.0) relative to line height.
-    /// Default 0.75 suits most Latin fonts; CJK fonts may need 0.8.
-    /// 0 = use default 0.75
+    /// 0 uses the resolved face metrics and half-leading, shared by layout and paint.
+    /// Without a host font resolver the fallback is 0.75.
     baseline_ratio: f32 = 0,
     inline_buf: [16]u8 = undefined,
     inline_len: u8 = 0,
@@ -3146,17 +3246,62 @@ pub const TextProps = struct {
             self.content = self.inline_buf[0..self.inline_len];
         }
     }
+    pub fn layoutWrap(self: TextProps) TextWrap {
+        if (self.wrap == .none or self.wrap == .newline_only) return self.wrap;
+        return switch (self.word_break) {
+            .break_all => .break_all,
+            .keep_all => .keep_all,
+            .normal => switch (self.overflow_wrap) {
+                .anywhere => .char,
+                .break_word => .word_break,
+                .normal => self.wrap,
+            },
+        };
+    }
+};
+
+/// How an icon / image is tinted: a fixed color, or the current color (`current_color`: the nearest
+/// ancestor text color, CSS currentColor, resolved at paint; `color` paints when no ancestor
+/// declares one). The whole mode is one value: restoring a tint restores both.
+pub const TintMode = struct {
+    color: Color,
+    current_color: bool = false,
+
+    pub fn fixed(c: Color) TintMode {
+        return .{ .color = c };
+    }
+
+    pub fn currentColor(fallback: Color) TintMode {
+        return .{ .color = fallback, .current_color = true };
+    }
 };
 
 pub const ImageProps = struct {
     texture_id: u32,
     tint: Color = Color.WHITE,
+    /// Tint with the nearest text color up the ancestors (CSS currentColor), resolved at paint;
+    /// `tint` is the fallback when no ancestor declares one. See IconProps.
+    tint_current_color: bool = false,
+
+    /// Tint painted for this image (currentColor resolved).
+    pub fn paintTint(self: ImageProps, inherited: ?Color) Color {
+        return if (self.tint_current_color) inherited orelse self.tint else self.tint;
+    }
 };
 
 pub const IconProps = struct {
     icon_id: u16,
     rep: icon_ir.Rep,
     tint: Color = Color.WHITE,
+    /// Tint with the nearest text color up the ancestors (CSS currentColor), resolved at paint;
+    /// `tint` is the fallback when no ancestor declares one. A glyph inside a control follows the
+    /// control's foreground through its states without its own state wiring.
+    tint_current_color: bool = false,
+
+    /// Tint painted for this icon on `node` (currentColor resolved).
+    pub fn paintTint(self: IconProps, inherited: ?Color) Color {
+        return if (self.tint_current_color) inherited orelse self.tint else self.tint;
+    }
 };
 
 /// Event callback reference, unified form for component callbacks.
@@ -3319,6 +3464,24 @@ test "Transform2D.transformRect uses four-corner AABB for rotation" {
     try std.testing.expect(rect.h > 50);
 }
 
+test "Transform2D.orientCornerRadii re-indexes corners for flips and quarter turns only" {
+    const radii = [4]f32{ 1, 2, 3, 4 }; // TL, TR, BR, BL
+    const expectEq = std.testing.expectEqual;
+    try expectEq(radii, Transform2D.translation(30, -7).mul(Transform2D.scale(2, 0.5, 0, 0)).orientCornerRadii(radii));
+    // Horizontal mirror: TL <-> TR, BL <-> BR.
+    try expectEq([4]f32{ 2, 1, 4, 3 }, Transform2D.scale(-1, 1, 50, 20).orientCornerRadii(radii));
+    // Vertical mirror: TL <-> BL, TR <-> BR.
+    try expectEq([4]f32{ 4, 3, 2, 1 }, Transform2D.scale(1, -1, 50, 20).orientCornerRadii(radii));
+    // Half turn: TL <-> BR, TR <-> BL.
+    try expectEq([4]f32{ 3, 4, 1, 2 }, Transform2D.rotation(std.math.pi, 50, 20).orientCornerRadii(radii));
+    // Quarter turn clockwise (y down): TL lands top-right, TR bottom-right, ...
+    try expectEq([4]f32{ 4, 1, 2, 3 }, Transform2D.rotation(std.math.pi / 2.0, 0, 0).orientCornerRadii(radii));
+    try expectEq([4]f32{ 2, 3, 4, 1 }, Transform2D.rotation(-std.math.pi / 2.0, 0, 0).orientCornerRadii(radii));
+    // Oblique rotation (AABB-approximated clip) and degenerate maps keep the source order.
+    try expectEq(radii, Transform2D.rotation(0.3, 0, 0).orientCornerRadii(radii));
+    try expectEq(radii, (Transform2D{ .a = 0, .d = 0 }).orientCornerRadii(radii));
+}
+
 test "Transform2D invert round-trips transformed points" {
     const t = Transform2D.translation(40, -12)
         .mul(Transform2D.scale(1.5, 0.75, 10, 20))
@@ -3342,6 +3505,33 @@ test "TransformOrigin resolves percent and px values" {
     }).resolve(200, 80);
     try std.testing.expectApproxEqAbs(@as(f32, 12), custom.x, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 20), custom.y, 0.001);
+}
+
+test "BoxStyle.applyTo is all or nothing when its ext block cannot be had (acceptance)" {
+    // Theme replay re-applies a resolved BoxStyle through applyTo in a void callback. If the
+    // node has no ext block yet and none can be allocated, the replay must leave the style as it
+    // was, not land the plain fields and drop the ext ones (a half-applied theme).
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    var style: Style = .{};
+    style.gap = 2;
+    style.padding = Padding.all(1);
+    const next: BoxStyle = .{
+        .gap = 7,
+        .padding = Padding.all(9),
+        .corner_radius = 8,
+        .z_index = 3,
+    };
+    next.applyTo(&style, failing.allocator());
+    try std.testing.expect(style.ext == null);
+    try std.testing.expectEqual(@as(f32, 2), style.gap);
+    try std.testing.expectEqual(@as(f32, 1), style.padding.top);
+
+    // With memory, every field lands, plain and ext alike.
+    next.applyTo(&style, std.testing.allocator);
+    defer if (style.ext) |ext| std.testing.allocator.destroy(ext);
+    try std.testing.expectEqual(@as(f32, 7), style.gap);
+    try std.testing.expectEqual(@as(f32, 9), style.padding.top);
+    try std.testing.expectEqual(@as(i16, 3), style.ext.?.z_index);
 }
 
 test "BoxStyle applies transform fields into StyleExt" {
@@ -3380,6 +3570,7 @@ test "BoxStyle.merge / isEmpty 覆盖全部字段（曾漏 display）" {
         .direction = .row,
         .justify = .center,
         .align_items = .center,
+        .align_content = .center,
         .gap = 1,
         .padding = Padding.all(1),
         .margin = Padding.all(1),
@@ -3438,6 +3629,7 @@ test "BoxStyle.merge / isEmpty 覆盖全部字段（曾漏 display）" {
         .border = .{},
         .border_color = Color.WHITE,
         .border_width = 1,
+        .border_overlay = true,
         .border_top_width = 1,
         .border_right_width = 1,
         .border_bottom_width = 1,

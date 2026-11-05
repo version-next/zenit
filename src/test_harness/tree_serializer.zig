@@ -402,7 +402,8 @@ test "effective_opacity: 关闭的 Modal 内容计 0，打开后计 1，关回�
 
 test "effective_opacity: 挂起层里的节点计 0（与几何无关）" {
     const allocator = testing.allocator;
-    var stack = OverlayStack{};
+    var stack = OverlayStack{ .allocator = std.testing.allocator };
+    defer stack.deinit();
     const handle = try stack.push(.{ .kind = .non_modal, .enter_transition = .none, .exit_transition = .none });
     const content = try Node.create(allocator, 901, .box, .{ .width = .{ .px = 120 }, .height = .{ .px = 60 } });
     defer content.destroy(allocator);

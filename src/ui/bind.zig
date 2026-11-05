@@ -19,13 +19,19 @@ const eqlValue = eq.eqlValue;
 
 /// bind `src` to `apply(ctx, value)`. `src` accepts `Source(T)` / `*Signal(T)` / `*Memo(T)` /
 /// derived values. `ctx` saved by value, must remain valid during scope lifetime.
+///
+/// `apply` may return an error union (fallible, all-or-nothing writes such as
+/// `setStyleInlineFallible`): the initial application is part of `bind` and its error is
+/// returned (the mount fails); a failed later update is logged, leaves the target unchanged and
+/// is retried by the next change of `src`, even to an equal value.
 pub fn bind(scope: *Scope, src: anytype, ctx: anytype, comptime apply: anytype) !void {
     const S = @TypeOf(reactive.toSource(src));
     const T = S.Value;
     const Ctx = @TypeOf(ctx);
     const s = reactive.toSource(src);
+    const fallible = comptime @typeInfo(@typeInfo(@TypeOf(apply)).@"fn".return_type.?) == .error_union;
     if (s == .value) {
-        apply(ctx, s.value);
+        if (fallible) try apply(ctx, s.value) else apply(ctx, s.value);
         return;
     }
     reactive.checkBorrow(scope, s);
@@ -40,17 +46,24 @@ pub fn bind(scope: *Scope, src: anytype, ctx: anytype, comptime apply: anytype) 
 
         const Self = @This();
 
-        fn run(st: *Self) void {
+        fn run(st: *Self) if (fallible) anyerror!void else void {
             const v = st.src.get();
             const k = eq.eqKey(T, v);
             if (st.has_last and eqlValue(Last, st.last, k)) return;
+            // recorded before applying: a rerun the apply itself triggers sees it as applied
+            const prev: struct { Last, bool } = .{ st.last, st.has_last };
             st.last = k;
             st.has_last = true;
-            ownerOf(st.src).untrack(struct {
-                fn call(args: struct { Ctx, T }) void {
-                    apply(args[0], args[1]);
+            const result = ownerOf(st.src).untrack(struct {
+                fn call(args: struct { Ctx, T }) @typeInfo(@TypeOf(apply)).@"fn".return_type.? {
+                    return apply(args[0], args[1]);
                 }
             }.call, .{ st.ctx, v });
+            // a failed value does not count as applied: the next change applies it even if equal
+            if (fallible) result catch |err| {
+                st.last, st.has_last = prev;
+                return err;
+            };
         }
 
         fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
@@ -297,6 +310,47 @@ test "bind: dynamic source re-applies on change and suppresses equal values" {
     n.set(6);
     try testing.expectEqual(@as(u32, 2), probe.calls);
     try testing.expectEqual(@as(u32, 0), probe.last);
+}
+
+test "bind: fallible apply — the initial error fails bind, a later one leaves the target and the next change applies even an equal value" {
+    var cx = try core.Cx.init(testing.allocator, std.testing.io);
+    defer cx.deinit();
+    const scope = try Scope.init(testing.allocator, null, cx.owner);
+    defer scope.dispose();
+    const Target = struct {
+        applied: ?u32 = null,
+        fail: bool = false,
+        fn apply(t: *@This(), v: u32) error{OutOfMemory}!void {
+            if (t.fail) return error.OutOfMemory;
+            t.applied = v;
+        }
+    };
+    // static source: the error comes back from bind
+    var static_target = Target{ .fail = true };
+    try testing.expectError(error.OutOfMemory, bind(scope, reactive.Source(u32).of(1), &static_target, Target.apply));
+    // dynamic source (tens of n): initial failure fails bind and leaves no effect behind
+    const n = try scope.createSignal(u32, 31);
+    const tens = reactive.map(n, struct {
+        fn f(v: u32) u32 {
+            return v / 10;
+        }
+    }.f);
+    const effects = cx.owner.graph.countByKind().get(.effect);
+    var target = Target{ .fail = true };
+    try testing.expectError(error.OutOfMemory, bind(scope, tens, &target, Target.apply));
+    try testing.expectEqual(effects, cx.owner.graph.countByKind().get(.effect));
+    try testing.expect(target.applied == null);
+    target.fail = false;
+    try bind(scope, tens, &target, Target.apply);
+    try testing.expectEqual(@as(?u32, 3), target.applied);
+    // a later failure keeps the previous value...
+    target.fail = true;
+    n.set(41);
+    try testing.expectEqual(@as(?u32, 3), target.applied);
+    // ...and the failed value is not taken as applied: the next change, still 4, applies it
+    target.fail = false;
+    n.set(42);
+    try testing.expectEqual(@as(?u32, 4), target.applied);
 }
 
 test "bindText: node text follows an owned text signal across buffer growth" {
