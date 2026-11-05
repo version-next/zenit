@@ -7,11 +7,13 @@ TEST_DIR="$(mktemp -d -t zenit-input-pump)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 APP_DIR="$TEST_DIR/InputPumpTest.app"
 mkdir -p "$APP_DIR/Contents/MacOS"
-cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
+# Give each temporary app its own AppKit restoration identity. A previous
+# interrupted test must not put a restore prompt in this run's event queue.
+cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>dev.zenit.input-pump-test</string>
+<key>CFBundleIdentifier</key><string>dev.zenit.input-pump-test.${TEST_DIR##*.}</string>
 <key>CFBundleExecutable</key><string>input-pump-test</string>
 <key>CFBundleName</key><string>Input Pump Test</string>
 <key>CFBundlePackageType</key><string>APPL</string>
