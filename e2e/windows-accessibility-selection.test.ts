@@ -199,9 +199,13 @@ test("Windows ExpandCollapse commits ComboBox popup and Tree visibility with nat
     const updated=(await controls()).find((n:any)=>n.automation_id===node.automation_id);
     assert(updated?.expand_state===(expanded?1:0),"ExpandCollapse snapshot state disagrees");
   }
-  await clickTestId("nav.combobox");
-  const combo=(await controls()).find((n:any)=>n.role===50003 && n.name==="Fruit");
-  assert(combo?.expand_available && combo.expand_state===0,"closed ComboBox expansion missing");
+  // The previous selection case leaves the ComboBox story mounted. Remount
+  // it so this case starts from the component's documented closed state.
+  assert((await clickTestId("nav.button")).ok,"failed to leave ComboBox story");
+  await waitFor(async()=> (await query("story.combobox")).length===0?true:null,4000,50);
+  assert((await clickTestId("nav.combobox")).ok,"failed to mount ComboBox story");
+  const combo=await waitFor(async()=> (await controls()).find((n:any)=>n.role===50003 && n.name==="Fruit")??null,4000,50);
+  assert(combo.expand_available && combo.expand_state===0,"closed ComboBox expansion missing");
   await expand(combo,true);
   assert((await controls()).some((n:any)=>n.name==="Banana" && n.selection_item),"expanded ComboBox options missing");
   await expand(combo,true);

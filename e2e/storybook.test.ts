@@ -878,6 +878,23 @@ for (const key of KEYS) {
       );
       const box = (await query(targetId))[0];
       assert(box != null, `${targetId} 节点不存在，无法做墨量断言`);
+      if (key === "skeleton") {
+        // Shimmer can briefly get close to the Windows page color. Sample a full cycle
+        // and require the same ink floor on a frame where the bones are visible.
+        for (let frame = 0; frame < 5; frame++) {
+          const framePath = frame === 0 ? path : `${DIR}/story-skeleton-shimmer-${frame}.png`;
+          if (frame > 0) {
+            await settle(420);
+            await screenshot(framePath);
+          }
+          const img = decodePng(framePath);
+          const scale = decodedCaptureScale(img);
+          const ink = countNonBackgroundPixels(img, box.rect, scale);
+          appendLog(`  skeleton frame ${frame}: non_bg_pixels=${ink}`);
+          if (ink >= minAtScale(200, scale)) return;
+        }
+        assert(false, "Skeleton must paint visible bones during its shimmer cycle");
+      }
       assertRegionNotBlank(path, box.rect, targetId);
     }
 
@@ -4858,8 +4875,8 @@ test("GlassIosBars: iOS 导航栏 / 工具栏 / 标签栏 / 玻璃按钮——�
   await switchTo("glassiosbars");
   await settle(600);
   await shot("glassiosbars");
-  const img = decodePng(`${DIR}/story-glassiosbars.png`);
-  const sc = decodedCaptureScale(img);
+  let img = decodePng(`${DIR}/story-glassiosbars.png`);
+  let sc = decodedCaptureScale(img);
   const rgb = (x: number, y: number) => { let s = [0, 0, 0], n = 0; for (let dx = -2; dx <= 2; dx++) for (let dy = -2; dy <= 2; dy++) { const i = (Math.round((y + dy * 0.5) * sc) * img.width + Math.round((x + dx * 0.5) * sc)) * img.channels; s = s.map((v, k) => v + img.pixels[i + k]); n++; } return s.map((v) => v / n); };
   const rect = async (id: string) => { const r = (await query(id))[0]?.rect; assert(r, `${id} missing`); return r!; };
   const near = (c: number[], want: number[], tol: number) => c.every((v, k) => Math.abs(v - want[k]) <= tol);
@@ -4886,8 +4903,13 @@ test("GlassIosBars: iOS 导航栏 / 工具栏 / 标签栏 / 玻璃按钮——�
   assert(near(doneBody, [0, 124, 235], 14), `prominent 应约 0,124,235（${fmt(doneBody)}）`);
   assert(near(plate, [181, 181, 181], 8), `选中片应约 181（${fmt(plate)}）`);
   assert(near(clearBody, [151, 151, 151], 8), `clear 按钮应约 151（${fmt(clearBody)}）`);
-  // Over a white page (system light) the native plate is far lighter: body 253, plate 235. A
-  // fixed overlay calibrated on gray (black 30/255) lands at 223 there and reads as a gray slab.
+  // The white-page specimen can sit below the viewport at higher desktop scaling.
+  // Scroll it into view and capture its own frame before sampling the two colors.
+  await bringIntoView(["story.iosbars.white.tab.home"]);
+  await settle(600);
+  await shot("glassiosbars-white-page");
+  img = decodePng(`${DIR}/story-glassiosbars-white-page.png`);
+  sc = decodedCaptureScale(img);
   const whiteHome = await rect("story.iosbars.white.tab.home");
   const whitePlate = rgb(whiteHome.x + 12, whiteHome.y + 6);
   const whiteBody = rgb(whiteHome.x + whiteHome.w + 40, whiteHome.y + 6);
@@ -6504,6 +6526,7 @@ test("Form Composition: a long Select label ellipsizes in the trigger and the li
 
 test("Select: overflowing multi-select chips scroll sideways inside the trigger", async () => {
   await switchTo("select");
+  await bringIntoView(["story.select.multi-open"]);
   await waitFor(async () => (await query("story.select.multi-open.panel"))[0] ?? null, 2500, 40);
   await settle(250);
   await clickText("story.select.multi-open.panel", "Marketing");
