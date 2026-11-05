@@ -679,7 +679,10 @@ int main(int argc,char **argv) { @autoreleasepool {
     assert(macos_should_render_window(raw)==1);
     w.fullscreenHeader.pendingDeadline=CACurrentMediaTime()-1;
     assert(macos_should_render_window(raw)==0); // No unbounded occlusion bypass.
-    w.fullscreenHeader.pendingDeadline=prewarmDeadline;setenv("ZENIT_E2E_BACKGROUND","1",1);
+    // The RPC visual suite can render the hidden window without ordering it front.
+    setenv("ZENIT_E2E_BACKGROUND","1",1);
+    assert(!w.window.visible && macos_should_render_window(raw)==1);
+    w.fullscreenHeader.pendingDeadline=prewarmDeadline;
     assert(macos_fullscreen_header_take_frame_request(raw)==1);
     assert(macos_fullscreen_header_take_frame_request(raw)==0);
     assert(macos_chrome_action(raw,3,1));[w.window toggleFullScreen:nil];

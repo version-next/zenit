@@ -149,7 +149,20 @@ else
   mkdir -p "$RPCDIR"
 fi
 
-echo "==> launch app"
+TEST_FILE="${ZENIT_E2E_TEST_FILE:-e2e/storybook.test.ts}"
+# Storybook drives input through RPC. On macOS the regular app intentionally
+# stops presenting when another window covers it, even though RPC can update
+# its tree. Use the existing background mode for the visual suite so the
+# desktop does not determine whether its Metal frames are submitted.
+case "${TEST_FILE#./}" in
+  e2e/storybook.test.ts|"$PWD/e2e/storybook.test.ts")
+    if [[ -z "${ZENIT_E2E_BACKGROUND+x}" && "$(uname -s)" == Darwin ]]; then
+      export ZENIT_E2E_BACKGROUND=1
+    fi
+    ;;
+esac
+
+echo "==> launch app (background: ${ZENIT_E2E_BACKGROUND:-0})"
 mkdir -p "$(dirname "$APP_LOG")"
 # Isolate real mouse: developer uses computer while running, system pointer
 # events no longer override harness-injected input. Set
@@ -164,7 +177,6 @@ APP_PID=$!
 LAUNCHED_APP_PID=$APP_PID
 echo "    app pid=$APP_PID  log=$APP_LOG"
 
-TEST_FILE="${ZENIT_E2E_TEST_FILE:-e2e/storybook.test.ts}"
 echo "==> run e2e ($BUN $TEST_FILE)"
 # The runner learns the pasteboard name so a test can prove the system clipboard stayed untouched.
 ZENIT_E2E_PASTEBOARD="$PASTEBOARD" ZENIT_E2E_FILE_RPC_DIR="$RPCDIR" "$BUN" "$TEST_FILE" &

@@ -97,6 +97,12 @@ remain available. This does not lock the OS keyboard or suppress system-wide
 shortcuts. Native-message contracts must explicitly seed owned input rather
 than relying on OS keyboard messages while isolation is enabled.
 
+On macOS, `bash scripts/run_storybook_e2e.sh` defaults to background
+rendering for `e2e/storybook.test.ts`. Storybook still submits real Metal
+frames while another app uses the desktop. Set `ZENIT_E2E_BACKGROUND=0` to
+launch the suite in the foreground for inspection. Other test files keep
+their requested window mode.
+
 ## Select a screenshot window
 
 `GET /windows` returns `{ windows: [{ window_id, native_id, bound, closing }] }`.

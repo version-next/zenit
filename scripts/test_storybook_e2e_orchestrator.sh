@@ -49,3 +49,44 @@ fi
 zig build evidence-validate -- "$TEST_DIR/evidence/manifest.json" --require-artifacts
 
 echo "storybook e2e orchestrator + health fail-closed: PASS (${ELAPSED}s)"
+
+# Verify the actual launched app sees the selected mode. An explicitly
+# foreground run and suites with native window checks must keep their mode.
+cat >"$TEST_DIR/mode-app" <<'APP'
+#!/usr/bin/env bash
+printf '%s\n' "${ZENIT_E2E_BACKGROUND-unset}"
+exec sleep 30
+APP
+cat >"$TEST_DIR/mode-bun" <<'BUN'
+#!/usr/bin/env bash
+for _ in $(seq 1 50); do
+  [[ -s "$ZENIT_E2E_APP_LOG" ]] && exit 0
+  sleep 0.1
+done
+exit 1
+BUN
+chmod +x "$TEST_DIR/mode-app" "$TEST_DIR/mode-bun"
+
+check_render_mode() {
+  local name="$1" expected="$2"
+  shift 2
+  local log="$TEST_DIR/$name.log"
+  env -u ZENIT_E2E_BACKGROUND -u ZENIT_E2E_TEST_FILE \
+    ZENIT_E2E_SKIP_BUILD=1 ZENIT_E2E_APP="$TEST_DIR/mode-app" \
+    ZENIT_E2E_BUN="$TEST_DIR/mode-bun" ZENIT_E2E_APP_LOG="$log" \
+    ZENIT_E2E_EVIDENCE_DIR="$TEST_DIR/$name" "$@" \
+    bash scripts/run_storybook_e2e.sh >/dev/null
+  if [[ "$(cat "$log")" != "$expected" ]]; then
+    echo "$name: expected app render mode $expected, got $(cat "$log")" >&2
+    exit 1
+  fi
+}
+
+default_mode=unset
+if [[ "$(uname -s)" == Darwin ]]; then default_mode=1; fi
+check_render_mode default "$default_mode"
+check_render_mode relative "$default_mode" ZENIT_E2E_TEST_FILE=./e2e/storybook.test.ts
+check_render_mode absolute "$default_mode" ZENIT_E2E_TEST_FILE="$PWD/e2e/storybook.test.ts"
+check_render_mode native unset ZENIT_E2E_TEST_FILE=e2e/interaction-lifecycle.test.ts
+check_render_mode foreground 0 ZENIT_E2E_BACKGROUND=0
+echo "storybook e2e render mode contract: PASS"
