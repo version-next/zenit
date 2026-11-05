@@ -4872,8 +4872,15 @@ test("GlassIdiom: 同一玻璃按 macOS / iOS 实测 profile 渲染——iOS reg
 });
 
 test("GlassIosBars: iOS 导航栏 / 工具栏 / 标签栏 / 玻璃按钮——几何与材质对齐 UIKit 原生（baselines/ios-26-5-simulator-iphone-17-pro/system）", async () => {
+  const probeTimeouts = async () => {
+    const probe = (await request("POST", "/stats", {})).glass_probe;
+    assert(typeof probe?.timed_out === "number", "missing glass probe counters");
+    return probe.timed_out;
+  };
+  const initialTimeouts = await probeTimeouts();
   await switchTo("glassiosbars");
   await settle(600);
+  assert(await probeTimeouts() === initialTimeouts, "clipped iOS glass must wait for a visible capture");
   await shot("glassiosbars");
   let img = decodePng(`${DIR}/story-glassiosbars.png`);
   let sc = decodedCaptureScale(img);
@@ -4916,6 +4923,7 @@ test("GlassIosBars: iOS 导航栏 / 工具栏 / 标签栏 / 玻璃按钮——�
   appendLog(`  white page: body ${fmt(whiteBody)} selection ${fmt(whitePlate)} (native 253 / 235)`);
   assert(near(whiteBody, [253, 253, 253], 4), `白底栏体应约 253（${fmt(whiteBody)}）`);
   assert(near(whitePlate, [235, 235, 235], 4), `白底选中片应约 235（${fmt(whitePlate)}）`);
+  assert(await probeTimeouts() === initialTimeouts, "revealing iOS glass must finish its probe without timeout");
 });
 
 test("GlassIosBars tab lens: 按下即抬起透镜、platter 放大、拖动跟手、松手吸附并提交选中（ios/fit_tab_lens.py 原生轨迹）", async () => {

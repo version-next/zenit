@@ -600,6 +600,10 @@ pub const RenderCommandEncoder = struct {
     /// Semantic contract: one owner gets at most one backdrop per frame; repeated begin skips.
     blur_applied_owners: [64]u32 = undefined,
     blur_applied_count: usize = 0,
+    /// Backdrops with visible geometry and a valid capture region. The family
+    /// probe waits for these owners, while blur_applied_owners only deduplicates.
+    glass_probe_owners: [64]u32 = undefined,
+    glass_probe_owner_count: usize = 0,
     /// The frame's glass quarter-grid bank (backdrop_blur.frameQuarter) and
     /// the window-space (logical px) union of everything drawn into the main
     /// target since it was last brought up to date: the ink bounds of each
@@ -1233,6 +1237,7 @@ pub const RenderCommandEncoder = struct {
     /// 3. Remaining commands take normal dispatch
     pub fn encodeCommands(self: *RenderCommandEncoder, commands: anytype) !void {
         self.blur_applied_count = 0;
+        self.glass_probe_owner_count = 0;
         if (@import("zenit_environment").flag("ZENIT_DEBUG_CMDSTREAM")) {
             std.debug.print("[cmdstream] ── frame {d} commands={d} ──\n", .{ self.frame_index, commands.len });
             for (commands, 0..) |it, ci| {

@@ -206,11 +206,15 @@ test("Windows ExpandCollapse commits ComboBox popup and Tree visibility with nat
   assert((await clickTestId("nav.combobox")).ok,"failed to mount ComboBox story");
   const combo=await waitFor(async()=> (await controls()).find((n:any)=>n.role===50003 && n.name==="Fruit")??null,4000,50);
   assert(combo.expand_available && combo.expand_state===0,"closed ComboBox expansion missing");
+  const bananaOptions=async()=> (await controls()).filter((n:any)=>n.name==="Banana" && n.selection_item);
+  // A second, already-open demonstration uses the same option names.
+  const existing=new Set((await bananaOptions()).map((n:any)=>n.automation_id));
   await expand(combo,true);
-  assert((await controls()).some((n:any)=>n.name==="Banana" && n.selection_item),"expanded ComboBox options missing");
+  const opened=(await bananaOptions()).filter((n:any)=>!existing.has(n.automation_id));
+  assert(opened.length===1,"expanded ComboBox must expose its own Banana option");
   await expand(combo,true);
   await expand(combo,false);
-  assert(!(await controls()).some((n:any)=>n.name==="Banana" && n.selection_item),"collapsed ComboBox options stayed visible to UIA");
+  assert(!(await bananaOptions()).some((n:any)=>n.automation_id===opened[0].automation_id),"collapsed ComboBox option stayed visible to UIA");
   await expand(combo,false); await expand(combo,true);
   assert((await screenshot(`${getSessionDir()}/windows-uia-expanded-combobox.png`)).ok,"expanded ComboBox screenshot failed");
   await expand(combo,false);

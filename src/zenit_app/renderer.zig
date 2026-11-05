@@ -2232,13 +2232,13 @@ pub const AppRenderer = struct {
         }
 
         if (comptime @hasField(@TypeOf(cx.*), "glass_encoded_owners")) {
-            const n = @min(enc.blur_applied_count, cx.glass_encoded_owners.len);
+            const n = @min(enc.glass_probe_owner_count, cx.glass_encoded_owners.len);
             // A glass drawn for the first time gets one more frame: its first-frame family probe
             // only runs once it sees the glass encoded (it does not hold frames before that).
-            const newly_drawn = for (enc.blur_applied_owners[0..n]) |id| {
+            const newly_drawn = for (enc.glass_probe_owners[0..n]) |id| {
                 if (std.mem.indexOfScalar(u32, cx.glass_encoded_owners[0..cx.glass_encoded_count], id) == null) break true;
             } else false;
-            @memcpy(cx.glass_encoded_owners[0..n], enc.blur_applied_owners[0..n]);
+            @memcpy(cx.glass_encoded_owners[0..n], enc.glass_probe_owners[0..n]);
             cx.glass_encoded_count = n;
             if (newly_drawn) cx.needs_redraw = true;
         }

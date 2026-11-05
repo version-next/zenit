@@ -37,7 +37,7 @@ pub const entries = [_]Entry{
     .{ .name = "Checkbox", .file = "src/ui/components/checkbox/checkbox.yix", .line = 11, .col = 8, .label = "zenit" },
     .{ .name = "Chip", .file = "src/ui/components/chip/_chip.yix.zig", .line = 107, .col = 35, .label = "zenit" },
     .{ .name = "Chip", .file = "src/ui/components/chip/chip.yix", .line = 12, .col = 8, .label = "zenit" },
-    .{ .name = "ComboBox", .file = "src/ui/components/combo_box/mod.zig", .line = 652, .col = 36, .label = "zenit" },
+    .{ .name = "ComboBox", .file = "src/ui/components/combo_box/mod.zig", .line = 659, .col = 36, .label = "zenit" },
     .{ .name = "ControlShell", .file = "src/ui/components/control_shell/_control_shell.yix.zig", .line = 125, .col = 35, .label = "zenit" },
     .{ .name = "ControlShell", .file = "src/ui/components/control_shell/control_shell.yix", .line = 28, .col = 8, .label = "zenit" },
     .{ .name = "Crumb", .file = "src/ui/components/breadcrumb/_breadcrumb.yix.zig", .line = 62, .col = 35, .label = "zenit" },

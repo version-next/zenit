@@ -1214,7 +1214,7 @@ fn gaussianTextureXY(encoder: anytype, source: gpu.Backend.TextureBinding, width
 // macOS gives each independent glass its own CABackdropLayer (scale 0.25,
 // i.e. a quarter of the physical grid) that captures the glass bounds
 // widened by `marginWidth` and nothing else: content past the margin has no
-// influence at all (scripts/glass_native_model/native_glass_sampling.swift).
+// influence at all.
 // A glass container shares one backdrop over the union of its members.
 // The regular banks below are therefore computed from this glass's own
 // capture, every Gaussian clamped (edge-extended) to the margin rect.
@@ -2856,6 +2856,16 @@ fn tryBackdropBlur(encoder: anytype, p: BackdropBlurParams) !bool {
         });
     }
     const capture_region = @TypeOf(encoder.*).computeBackdropCaptureRegion(sample_x, sample_y, cap_w, cap_h, cap_s, capture_clip, current_rt.width, current_rt.height) orelse return false;
+    // Padding may intersect the target while the glass itself is still clipped.
+    // Deduplication already saw the begin token, but a hidden owner must wait
+    // to start its family probe until its own bounds reach the viewport.
+    if (p.glass_owner_id != std.math.maxInt(u32) and
+        encoder.glass_probe_owner_count < encoder.glass_probe_owners.len and
+        @TypeOf(encoder.*).computeBackdropCaptureRegion(native_bounds[0] + blur_off[0], native_bounds[1] + blur_off[1], native_bounds[2], native_bounds[3], cap_s, capture_clip, current_rt.width, current_rt.height) != null)
+    {
+        encoder.glass_probe_owners[encoder.glass_probe_owner_count] = p.glass_owner_id;
+        encoder.glass_probe_owner_count += 1;
+    }
     // The composite only writes inside the capture rect (pad covers the
     // shadow); the CPU patch reuses these pixels (command_encoder.glass_capture).
     if (!sampling_main) encoder.last_glass_capture = .{ capture_region.src_x, capture_region.src_y, capture_region.copy_w, capture_region.copy_h };

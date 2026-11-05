@@ -177,6 +177,9 @@ pub const ComboBoxState = struct {
         const open = self.open.readAs(tracked);
         const disabled = self.disabled.read(tracked);
         if (self.trigger.behavior.interaction.a11y) |*a| a.disabled = disabled;
+        // A closing popup may remain painted during its fade. Its options
+        // leave the accessibility tree as soon as the control collapses.
+        if (self.panel.behavior.interaction.a11y) |*a| a.hidden = !open;
         if (!self.label.isStatic()) {
             const text = self.label.read(tracked);
             if (!std.mem.eql(u8, self.label_copy, text)) {
@@ -196,7 +199,11 @@ pub const ComboBoxState = struct {
         if (opening and self.filter_reset_pending) _ = applyFilter(self, "");
         if (!open) self.nav.highlight_index = null;
         // The closing panel keeps its highlighted row while it fades out; the next open repaints.
-        if (!closing) applyHighlightStyles(self);
+        if (closing) {
+            syncComboA11y(self);
+        } else {
+            applyHighlightStyles(self);
+        }
     }
 
     /// Selected item changed: write its label to input;
@@ -407,6 +414,10 @@ fn applyHighlightStyles(state: *ComboBoxState) void {
             item.children.items[0].setText(text);
         }
         item.setBackgroundRaw(want);
+        // The second child is the selected option's check icon.
+        if (item.children.items.len > 1) {
+            item.children.items[1].setOpacity(if (state.selected_index == i) 1 else 0);
+        }
         item.markRenderDirty();
     }
     syncComboA11y(state);
@@ -427,10 +438,6 @@ fn syncComboA11y(state: *ComboBoxState) void {
         const selected = state.selected_index != null and state.selected_index.? == i;
         if (item.behavior.interaction.a11y) |*a| {
             a.selected = selected;
-        }
-        // Default: option's second child is check icon for selected state.
-        if (item.children.items.len > 1) {
-            item.children.items[1].setOpacity(if (selected) 1 else 0);
         }
     }
     state.trigger.markRenderDirty();
@@ -1134,10 +1141,19 @@ test "ComboBox: a11y item_selection / expansion —— 返回值如实反映受�
     try testing.expect(!sel0.set(sel0.context, .remove)); // Parent refuses clear
     try testing.expectEqualStrings(fruit[0].value, parent.v.peek().?);
     const expansion = cb.state.trigger.behavior.interaction.a11y.?.expansion.?;
+    const eid = core.ElementId.fromRaw(cb.state.trigger.element_id_raw);
     try testing.expect(expansion.set(expansion.context, true));
     try testing.expect(cb.state.shown_open);
+    env.cx.layout();
+    _ = env.cx.render();
+    try testing.expect(env.cx.accessibility_tree.getNode(eid).?.state.expanded);
     try testing.expect(expansion.set(expansion.context, false));
     try testing.expect(!cb.state.shown_open);
+    env.cx.layout();
+    _ = env.cx.render();
+    try testing.expect(!env.cx.accessibility_tree.getNode(eid).?.state.expanded);
+    const option_id = core.ElementId.fromRaw(cb.state.item_nodes[0].element_id_raw);
+    if (env.cx.accessibility_tree.getNode(option_id)) |option| try testing.expect(option.state.hidden);
 }
 
 test "ComboBox: selected rows keep the selection pairing under hover in every mode" {
