@@ -21,16 +21,18 @@ fn probe(app: *App, path: []const u8, out: []u8) ![]const u8 {
         try stage.appendChild(app.allocator, transformed);
         try app.cx.root.?.appendChild(app.allocator, stage);
         app.cx.root.?.markLayoutDirty();
-        const size = @TypeOf(atlas.*).ATLAS_SIZE;
-        const poison = try app.allocator.alloc(u8, size * size);
+        const max_size = @TypeOf(atlas.*).ATLAS_SIZE;
+        const poison = try app.allocator.alloc(u8, max_size * max_size);
         defer app.allocator.free(poison);
         @memset(poison, 255);
-        for (atlas.pages[0..atlas.page_count]) |*page| {
-            if (page.*.?.format != .gray) continue;
-            try page.*.?.texture.writeRegion(0, 0, 0, size, size, poison, size);
-            page.*.?.packer.current_x = 0;
-            page.*.?.packer.current_y = 0;
-            page.*.?.packer.current_row_height = 0;
+        for (atlas.pages[0..atlas.page_count]) |*slot| {
+            const page = &slot.*.?;
+            if (page.format != .gray) continue;
+            const size = page.texture.size;
+            try page.texture.writeRegion(0, 0, 0, size.width, size.height, poison, size.width);
+            page.packer.current_x = 0;
+            page.packer.current_y = 0;
+            page.packer.current_row_height = 0;
         }
         atlas.cache.clearRetainingCapacity();
         app.renderer.text_renderer.prewarm_signature_valid = false;
@@ -38,16 +40,18 @@ fn probe(app: *App, path: []const u8, out: []u8) ![]const u8 {
         // Oracle: write only the reserved 1px outer ring, never glyph pixels.
         // If production upload already owns that ring this does not change any
         // visible pixels; a change exposes sampling of undefined page contents.
-        const size = @TypeOf(atlas.*).ATLAS_SIZE;
-        const zeros: [size + 2]u8 = @splat(0);
+        const max_size = @TypeOf(atlas.*).ATLAS_SIZE;
+        const zeros: [max_size + 2]u8 = @splat(0);
         var it = atlas.cache.iterator();
         while (it.next()) |entry| {
             const region = entry.value_ptr;
             if (region.width == 0 or region.height == 0) continue;
             const page = &atlas.pages[region.page_index].?;
             if (page.format != .gray) continue;
-            const x: u32 = @intFromFloat(@round(region.uv_min[0] * size));
-            const y: u32 = @intFromFloat(@round(region.uv_min[1] * size));
+            const page_width: f32 = @floatFromInt(page.texture.size.width);
+            const page_height: f32 = @floatFromInt(page.texture.size.height);
+            const x: u32 = @intFromFloat(@round(region.uv_min[0] * page_width));
+            const y: u32 = @intFromFloat(@round(region.uv_min[1] * page_height));
             const w: u32 = @intCast(region.width);
             const h: u32 = @intCast(region.height);
             try page.texture.writeRegion(0, x - 1, y - 1, w + 2, 1, zeros[0 .. w + 2], w + 2);
@@ -60,5 +64,5 @@ fn probe(app: *App, path: []const u8, out: []u8) ![]const u8 {
     app.renderer.offscreen_pool.invalidateRetainedContents();
     app.cx.root.?.markRenderDirty();
     app.cx.needs_redraw = true;
-    return std.fmt.bufPrint(out, "{{\"ok\":true,\"cleared_regions\":{d}}}", .{regions});
+    return std.fmt.bufPrint(out, "{{\"ok\":true,\"cleared_regions\":{d},\"frame_count\":{d}}}", .{ regions, app.renderer.frame_count });
 }

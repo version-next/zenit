@@ -1,15 +1,18 @@
-import { request, query, tree, screenshot, waitForServerReady } from "./client";
+import { request, query, tree, screenshot, stats, waitFor, waitForServerReady } from "./client";
 import { decodePng, countDarkPixels } from "./png";
 import { assert, appendLog, getSessionDir, run, test } from "./runner";
 test("glyph gutter: undefined page contents cannot bleed into transformed text", async () => {
   await waitForServerReady();
-  assert((await request("POST", "/review/glyph-gutter-poison", {})).ok, "poison setup failed");
+  const poison = await request("POST", "/review/glyph-gutter-poison", {});
+  assert(poison.ok, `poison setup failed: ${JSON.stringify(poison)}`);
+  await waitFor(async () => (await stats()).frame_count > poison.frame_count ? true : null);
   const beforePath = `${getSessionDir()}/poisoned.png`;
   assert((await screenshot(beforePath)).ok, "poisoned capture failed");
   const rect = (await query("review.glyph-gutter.stage"))[0].rect;
   const scale = decodePng(beforePath).width / (await tree()).rect.w;
   const result = await request("POST", "/review/glyph-gutter-clear", {});
-  assert(result.ok && result.cleared_regions > 0, "oracle did not clear glyph rings");
+  assert(result.ok && result.cleared_regions > 0, `oracle did not clear glyph rings: ${JSON.stringify(result)}`);
+  await waitFor(async () => (await stats()).frame_count > result.frame_count ? true : null);
   const afterPath = `${getSessionDir()}/cleared.png`;
   assert((await screenshot(afterPath)).ok, "oracle capture failed");
   const before = decodePng(beforePath), after = decodePng(afterPath);

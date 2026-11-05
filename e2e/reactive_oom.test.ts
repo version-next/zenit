@@ -1,11 +1,10 @@
-import { health, query, request, screenshot, sleep, waitForServerReady } from "./client";
+import { clickTestId, health, query, request, screenshot, sleep, waitFor, waitForServerReady } from "./client";
 import { assert, appendLog, getSessionDir, run, test } from "./runner";
 
 test("reactive propagation OOM: one committed write updates the real navigation UI", async () => {
   await waitForServerReady();
-  await sleep(500);
-  const before = (await query("storybook.title"))[0];
-  assert(before?.text === "Button", `unexpected starting story: ${before?.text}`);
+  await clickTestId("nav.button");
+  await waitFor(async () => (await query("storybook.title"))[0]?.text === "Button" ? true : null);
   assert((await screenshot(`${getSessionDir()}/before.png`)).ok, "baseline capture failed");
   const fault = await request("POST", "/review/reactive-propagation-oom", {});
   appendLog(`fault: ${JSON.stringify(fault)}`);
