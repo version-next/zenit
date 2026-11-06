@@ -64,6 +64,7 @@
         "scripts/test_native_contract_runner.py",
         "scripts/test_native_pointer_presence.sh",
         "scripts/test_native_resize_phase.sh",
+        "scripts/test_native_window_capabilities.sh",
         "scripts/test_native_window_focus.sh",
         "scripts/test_native_window_focus_live.sh",
         "scripts/test_preview.py",

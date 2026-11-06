@@ -2655,6 +2655,7 @@ pub fn build(b: *std.Build) void {
             "scripts/test_native_pointer_presence.sh",
             "scripts/test_native_window_focus.sh",
             "scripts/test_native_resize_phase.sh",
+            "scripts/test_native_window_capabilities.sh",
         };
         for (native_test_scripts) |script| {
             const run_native = b.addSystemCommand(&.{ "bash", script });
