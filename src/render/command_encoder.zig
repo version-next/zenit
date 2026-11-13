@@ -1347,7 +1347,7 @@ pub const RenderCommandEncoder = struct {
     /// (opacity/transform/draw_*) are **intentionally excluded**: they only affect compositing, and
     /// retained exists to save work when "content is unchanged, only transform/opacity changed".
     pub fn computeRetainedContentHashes(self: *RenderCommandEncoder, commands: anytype) void {
-        retained_plan.scan(self, commands);
+        retained_plan.scan(self, commands, self.image_renderer);
     }
 
     /// Feed paint command's **pixel-affecting** fields into fingerprint. Overfeed OK (extra
