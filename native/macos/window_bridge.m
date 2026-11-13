@@ -6737,7 +6737,10 @@ static void pumpAppEventsWithTimeout(uint32_t timeout_ms) {
             if (event.type == NSEventTypeMouseMoved || event.type == NSEventTypeLeftMouseDragged || event.type == NSEventTypeRightMouseDragged || event.type == NSEventTypeOtherMouseDragged) {
                 [target.metalView presentDesiredCursor];
             }
-            if (event.type != NSEventTypeMouseMoved) break;
+            if (event.type != NSEventTypeMouseMoved &&
+                event.type != NSEventTypeLeftMouseDragged &&
+                event.type != NSEventTypeRightMouseDragged &&
+                event.type != NSEventTypeOtherMouseDragged) break;
         }
 
         // same as macos_poll_events: fill updateWindows, else
