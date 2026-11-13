@@ -80,6 +80,7 @@ pub const TextureId = u32;
 
 /// Texture slot
 const TextureSlot = struct {
+    content_revision: u64 = 0,
     kind: TextureKind,
     binding: gpu.Backend.TextureBinding,
     owned_texture: ?gpu.Backend.Texture = null,
@@ -434,6 +435,7 @@ pub const ImageTextureStore = struct {
         if (rgba.len != expected) return error.InvalidPixelData;
         var texture = slot.owned_texture.?;
         try texture.writeRegion(0, 0, 0, slot.width, slot.height, rgba, slot.width * 4);
+        self.slotPtr(id & SLOT_MASK).texture.?.content_revision +%= 1;
     }
 
     /// Resident RGBA8 texel bytes, including exact mip dimensions and atlas pages.
@@ -1096,6 +1098,11 @@ pub const ImageRenderer = struct {
             if (shared.device != self.device or shared.namespace != SHARED_TEXTURE_BIT) return error.InvalidTextureStore;
         }
         self.shared_texture_store = store;
+    }
+
+    pub fn textureContentRevision(self: *const ImageRenderer, id: TextureId) u64 {
+        const slot = self.resolveTextureSlot(id) orelse return 0;
+        return slot.content_revision;
     }
 
     fn resolveTextureSlot(self: *const ImageRenderer, id: TextureId) ?TextureSlot {
