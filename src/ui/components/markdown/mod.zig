@@ -209,15 +209,18 @@ const BlockScanner = struct {
         // fenced code block
         if (std.mem.startsWith(u8, trimmed, "```") or std.mem.startsWith(u8, trimmed, "~~~")) {
             const fence_char = trimmed[0];
-            const fence_start = self.pos;
-            _ = fence_start;
+            var fence_length: usize = 3;
+            while (fence_length < trimmed.len and trimmed[fence_length] == fence_char) : (fence_length += 1) {}
+            
             self.pos = line.next;
             const content_start = self.pos;
             // Scan to matching fence or EOF.
             while (self.pos < self.src.len) {
                 const l = peekLine(self.src, self.pos);
                 const t = trimAscii(l.content);
-                if (t.len >= 3 and t[0] == fence_char and t[1] == fence_char and t[2] == fence_char) {
+                var closing_length: usize = 0;
+                while (closing_length < t.len and t[closing_length] == fence_char) : (closing_length += 1) {}
+                if (closing_length >= fence_length and closing_length == t.len) {
                     const content_end = self.pos;
                     self.pos = l.next;
                     return .{ .code_block = .{ .content = trimTrailingNewline(self.src[content_start..content_end]) } };
@@ -699,6 +702,14 @@ test "markdown: detects paragraph vs heading" {
     try std.testing.expectEqualStrings("Hello", h.heading.text);
     const p = (try scanner.next(std.testing.allocator)).?;
     try std.testing.expect(p == .paragraph);
+}
+
+test "markdown: closing fence matches the opening marker and length" {
+    var scanner = BlockScanner{ .src = "````zig\n```\n~~~~\n````suffix\ncode\n`````\nafter" };
+    const block = (try scanner.next(std.testing.allocator)).?;
+    try std.testing.expectEqualStrings("```\n~~~~\n````suffix\ncode", block.code_block.content);
+    const following = (try scanner.next(std.testing.allocator)).?;
+    try std.testing.expectEqualStrings("after", following.paragraph);
 }
 
 test "markdown: fenced code block with unclosed fence" {
