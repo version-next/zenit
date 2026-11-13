@@ -41,7 +41,7 @@ pub const Plan = struct {
 
     pub fn compute(self: *Plan, commands: anytype, scale: f32) void {
         self.scale = scale;
-        scan(self, commands);
+        scan(self, commands, null);
         self.layers = @as([64]Layer, @splat(.{}));
         var stack: [64]usize = undefined;
         var depth: usize = 0;
@@ -73,7 +73,7 @@ pub const Plan = struct {
     }
 };
 
-pub fn scan(self: anytype, commands: anytype) void {
+pub fn scan(self: anytype, commands: anytype, images: ?*@import("../image_renderer.zig").ImageRenderer) void {
     self.retained_hash_count = 0;
     self.damage_scratch_count = 0;
     self.damage_ranges = @as([64]DamageRange, @splat(.{}));
@@ -111,6 +111,10 @@ pub fn scan(self: anytype, commands: anytype) void {
     var capture_depth: usize = 0; // Nested translation-only layers entered count.
 
     for (commands) |it| {
+        const revision: u64 = if (it.kind == .image and it.icon_rep_ptr == null)
+            if (images) |renderer| renderer.textureContentRevision(@intCast(it.resource_handle)) else 0
+        else
+            0;
         // damage-rect capture: top-level layer (depth==1 = only stack[0] open) content commands
         // record {single fingerprint, padded bounds} per item. Own end token doesn't count as
         // content.
@@ -120,6 +124,7 @@ pub fn scan(self: anytype, commands: anytype) void {
         // transform nested layers stay unsafe -> full layer redraw.
         if (fold_depth > 0) {
             paint_fp.hashPaintItemInto(&fold_hasher, it);
+            if (revision != 0) fold_hasher.update(std.mem.asBytes(&revision));
             if (it.kind == .control) switch (it.control_kind) {
                 .begin_opacity_layer => fold_depth += 1,
                 .end_opacity_layer => {
@@ -247,6 +252,7 @@ pub fn scan(self: anytype, commands: anytype) void {
                     if (self.damage_scratch_count < self.damage_scratch.len) {
                         var ih = std.hash.Wyhash.init(0);
                         paint_fp.hashPaintItemInto(&ih, it);
+                        if (revision != 0) ih.update(std.mem.asBytes(&revision));
                         self.damage_scratch[self.damage_scratch_count] = .{
                             .digest = ih.final(),
                             .bounds = bounds,
@@ -275,7 +281,10 @@ pub fn scan(self: anytype, commands: anytype) void {
         // outside cached content), so feed outer layers (stack[0..depth], not the self about to be
         // pushed).
         var di: usize = 0;
-        while (di < depth) : (di += 1) paint_fp.hashPaintItemInto(&stack[di].hasher, it);
+        while (di < depth) : (di += 1) {
+            paint_fp.hashPaintItemInto(&stack[di].hasher, it);
+            if (revision != 0) stack[di].hasher.update(std.mem.asBytes(&revision));
+        }
 
         if (it.kind != .control) continue;
         switch (it.control_kind) {
