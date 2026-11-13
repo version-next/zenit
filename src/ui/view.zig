@@ -3018,6 +3018,7 @@ pub fn Canvas(comptime Props: type, comptime P: type) type {
             }
 
             fn tick(node: *Node) void {
+                if (!node.isDisplayedInTree()) return;
                 const d = node.meta.per_frame.custom_hooks.draw orelse return;
                 if (d.callback != &drawThunk) return;
                 const st: *State = @ptrCast(@alignCast(d.context orelse return));
