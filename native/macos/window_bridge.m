@@ -5600,9 +5600,16 @@ void macos_set_cursor_shape(void *window_ptr, int shape) {
             case 8:  cursor = [NSCursor closedHandCursor]; break;
             case 9:  cursor = [NSCursor resizeLeftRightCursor]; break;
             case 10: cursor = [NSCursor resizeUpDownCursor]; break;
-            case 11: // nwse_resize - macOS no direct API, use arrow
-            case 12: // nesw_resize
-                     cursor = [NSCursor arrowCursor]; break;
+            case 11: // nwse_resize
+            case 12: { // nesw_resize
+                     if (@available(macOS 15.0, *)) {
+                         cursor = [NSCursor frameResizeCursorFromPosition:shape == 11 ? NSCursorFrameResizePositionTopLeft : NSCursorFrameResizePositionTopRight
+                             inDirections:NSCursorFrameResizeDirectionsAll];
+                     } else {
+                         cursor = [NSCursor arrowCursor];
+                     }
+                     break;
+            }
             case 13: cursor = [NSCursor resizeLeftRightCursor]; break;  // col_resize
             case 14: cursor = [NSCursor resizeUpDownCursor]; break;     // row_resize
             case 15: // wait - use system busy cursor (private API unavailable, arrow)
